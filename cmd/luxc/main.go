@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"vapor.solarvoid.com/russell/nuxvm/pkg/lux"
+	"github.com/rmay/nuxvm/pkg/lux"
 )
 
 func main() {

@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"vapor.solarvoid.com/russell/nuxvm/pkg/vm"
+	"github.com/rmay/nuxvm/pkg/vm"
 )
 
 // Helper function aliases for convenience

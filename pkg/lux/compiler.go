@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"vapor.solarvoid.com/russell/nuxvm/pkg/vm"
+	"github.com/rmay/nuxvm/pkg/vm"
 )
 
 // Built-in words map to opcodes

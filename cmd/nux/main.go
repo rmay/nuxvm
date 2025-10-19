@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"vapor.solarvoid.com/russell/nuxvm/pkg/vm"
+	"github.com/rmay/nuxvm/pkg/vm"
 )
 
 var (

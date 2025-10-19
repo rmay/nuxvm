@@ -4,7 +4,7 @@ package lux
 import (
 	"testing"
 
-	"vapor.solarvoid.com/russell/nuxvm/pkg/vm"
+	"github.com/rmay/nuxvm/pkg/vm"
 )
 
 // ==========================================

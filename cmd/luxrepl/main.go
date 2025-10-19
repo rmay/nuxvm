@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"vapor.solarvoid.com/russell/nuxvm/pkg/lux"
-	"vapor.solarvoid.com/russell/nuxvm/pkg/vm"
+	"github.com/rmay/nuxvm/pkg/lux"
+	"github.com/rmay/nuxvm/pkg/vm"
 )
 
 type REPL struct {
