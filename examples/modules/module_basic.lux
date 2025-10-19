@@ -1,0 +1,17 @@
+(( ============================================
+   EXAMPLE 1: Basic Module with Math Functions
+   ============================================ ))
+
+MODULE MATH
+
+@square dup * ;
+@cube dup square * ;
+@double 2 * ;
+
+(( Main program - can use MATH::SQUARE directly ))
+5 MATH::SQUARE .
+10 emit
+10 MATH::CUBE .
+10 emit
+7 MATH::DOUBLE .
+10 emit

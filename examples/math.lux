@@ -1,0 +1,39 @@
+( Math Examples in LUX )
+
+( === HELPER WORD === )
+
+( Define a word to print newline )
+@cr 10 emit ;
+@space 32 emit ;
+
+( Simple arithmetic )
+5 10 + .
+space
+
+( Multiplication )
+7 6 * .
+space
+
+( Complex expression: (5 + 3) * 2 )
+5 3 + 2 * .
+cr
+
+( Using stack operations )
+10 dup + .  ( Double: 10 + 10 = 20 )
+cr
+
+( Hex numbers )
+0xFF .      ( Outputs 255 )
+cr
+
+( Comparison )
+5 5 = .     ( Equal? 1 = true )
+32 emit
+10 5 > .    ( Greater? 1 = true )
+cr
+
+( Bitwise )
+12 10 and . ( 1100 & 1010 = 1000 = 8 )
+32 emit
+12 10 or .  ( 1100 | 1010 = 1110 = 14 )
+cr

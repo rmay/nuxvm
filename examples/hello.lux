@@ -1,0 +1,42 @@
+( === STRING EXAMPLES === )
+
+// Single line comment
+
+( This is a number )
+42 .  // the . prints out numbers
+
+// Now a space
+32 emit
+
+( Method 1: Manual ASCII codes )
+( Print "Hi" )
+// emit prints out the ASCII value of the number
+72 emit   ( H ) 
+105 emit  ( i )
+10 emit   ( newline )
+
+( Method 2: With string support added )
+( Uncomment after adding string support to lexer/compiler )
+
+"Hello, World!"
+10 emit
+( "LUX is cool!"
+10 emit )
+
+( === USEFUL ASCII CODES === )
+
+( Common characters: )
+( 10  = newline )
+( 32  = space )
+( 48-57 = 0-9 )
+( 65-90 = A-Z )
+( 97-122 = a-z )
+
+
+( === HELPER WORD === )
+
+( Define a word to print newline )
+@cr 10 emit ;
+
+( Use it: )
+72 emit 105 emit 32 emit 2 . cr

@@ -1,0 +1,86 @@
+(( ============================================
+   MODULAR CALCULATOR EXAMPLE
+   A practical demonstration of the module system
+   ============================================ ))
+
+(( ===== MATH MODULE ===== ))
+MODULE MATH
+
+(( Basic operations ))
+@square dup * ;
+@cube dup dup * * ;
+@double 2 * ;
+@quadruple double double ;
+
+(( ===== OUTPUT MODULE ===== ))
+MODULE OUTPUT
+
+@newline 10 emit ;
+@space 32 emit ;
+@tab 9 emit ;
+
+@print-num . ;
+@print-char emit ;
+
+(( Print with label ))
+@labeled-output
+  (( Expects: value on stack ))
+  dup . space
+;
+
+(( ===== VALIDATION MODULE ===== ))
+MODULE VALIDATE
+
+@is-positive dup 0 > ;
+@is-zero dup 0 = ;
+@is-negative dup 0 < ;
+@negate-if-negative 
+  dup 0 < swap
+  negate
+;
+
+(( ===== MAIN PROGRAM ===== ))
+MODULE MAIN
+
+IMPORT MATH AS M
+IMPORT OUTPUT AS OUT
+IMPORT VALIDATE AS V
+
+(( Test suite ))
+@test-square
+  5 M::SQUARE OUT::LABELED-OUTPUT
+  OUT::NEWLINE
+;
+
+@test-cube
+  3 M::CUBE OUT::LABELED-OUTPUT
+  OUT::NEWLINE
+;
+
+@test-double
+  10 M::DOUBLE OUT::LABELED-OUTPUT
+  OUT::NEWLINE
+;
+
+@test-quadruple
+  5 M::QUADRUPLE OUT::LABELED-OUTPUT
+  OUT::NEWLINE
+;
+
+@run-all-tests
+  (( Title ))
+  67 OUT::PRINT-CHAR    (( C ))
+  97 OUT::PRINT-CHAR    (( a ))
+  108 OUT::PRINT-CHAR   (( l ))
+  99 OUT::PRINT-CHAR    (( c ))
+  OUT::NEWLINE
+  OUT::NEWLINE
+  
+  test-square
+  test-cube
+  test-double
+  test-quadruple
+;
+
+(( Run the tests ))
+run-all-tests

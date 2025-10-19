@@ -1,0 +1,43 @@
+(( ============================================
+   EXAMPLE 2: Multiple Modules with Imports
+   ============================================ ))
+
+(( Define MATH module ))
+MODULE MATH
+
+@square dup * ;
+@double 2 * ;
+@triple 3 * ;
+
+(( Define STRING module ))
+MODULE STRING
+
+@newline 10 emit ;
+@space 32 emit ;
+@print-hello 72 emit 101 emit 108 emit 108 emit 111 emit ;
+
+(( Main program with imports ))
+MODULE MAIN
+
+IMPORT MATH AS M
+IMPORT STRING AS S
+
+(( Now we can use M:: and S:: shorthand ))
+@test-math
+  5 M::SQUARE .
+  S::SPACE
+  10 M::DOUBLE .
+  S::SPACE
+  7 M::TRIPLE .
+  S::NEWLINE
+;
+
+(( Or use full names ))
+@test-string
+  STRING::PRINT-HELLO
+  STRING::NEWLINE
+;
+
+(( Run tests ))
+test-math
+test-string
