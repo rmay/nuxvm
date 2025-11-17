@@ -332,24 +332,17 @@ func TestCompileIfElse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Log("Hold on...")
 			bytecode, err := Compile(tt.source)
 			if err != nil {
 				t.Fatalf("Compile error: %v", err)
 			}
 
-			// Log bytecode for debugging
-			t.Logf("Bytecode (length %d): %v", len(bytecode), bytecode)
-
 			machine := vm.NewVM(bytecode)
-			t.Logf("Initial VM state:\n%s", machine.DebugInfo())
-
 			if err := machine.Run(); err != nil {
 				t.Fatalf("Runtime error: %v\nFinal VM state:\n%s", err, machine.DebugInfo())
 			}
 
 			stack := machine.Stack()
-			t.Logf("Final VM state:\n%s", machine.DebugInfo())
 			if len(stack) != 1 || stack[0] != tt.expected {
 				t.Errorf("Expected [%d], got %v\nFinal VM state:\n%s", tt.expected, stack, machine.DebugInfo())
 			}
@@ -837,6 +830,42 @@ func TestResolveWordAllPaths(t *testing.T) {
 	_, found = compiler.resolveWord("NOTFOUND")
 	if found {
 		t.Error("Should not have found non-existent word")
+	}
+}
+
+// ==========================================
+// RECURSION TESTS
+// ==========================================
+
+func TestCompileSimpleRecursion(t *testing.T) {
+	source := `@fib dup 1 > [ dup 1 - fib swap 2 - fib + ] ? ; 10 fib`
+	bytecode, err := Compile(source)
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	machine := vm.NewVM(bytecode)
+	if err := machine.Run(); err != nil {
+		t.Fatalf("Runtime error: %v", err)
+	}
+	stack := machine.Stack()
+	if len(stack) != 1 || stack[0] != 55 { // fib(10) = 55
+		t.Errorf("Expected [55], got %v", stack)
+	}
+}
+
+func TestCompileTailRecursionWithTRO(t *testing.T) {
+	source := `@countdown dup 0 = [ drop ] [ 1 - countdown ] ?: ; 10000 countdown`
+	bytecode, err := Compile(source)
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	machine := vm.NewVM(bytecode)
+	if err := machine.Run(); err != nil {
+		t.Fatalf("Runtime error: %v", err) // Should not overflow with TRO
+	}
+	stack := machine.Stack()
+	if len(stack) != 0 {
+		t.Errorf("Expected empty stack, got %v", stack)
 	}
 }
 

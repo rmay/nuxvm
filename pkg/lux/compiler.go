@@ -67,18 +67,35 @@ type Quotation struct {
 	TempAddr int32  // Temporary address for patching
 }
 
+// UnresolvedReference tracks a word in a quotation that needs resolution
+type UnresolvedReference struct {
+	Word      string // Word name (e.g., "fib")
+	Offset    int32  // Bytecode offset where address needs patching
+	Quotation int    // Index of quotation in c.quotations
+	Line      int    // For error reporting
+	Column    int
+}
+
+// UnresolvedJmp tracks a jump instruction that needs address patching
+type UnresolvedJmp struct {
+	Offset   int32 // Bytecode offset where the address placeholder starts (after the opcode)
+	TempAddr int32 // Temporary address key (to look up the real address in addrMap)
+}
+
 // Compiler compiles LUX source to bytecode
 type Compiler struct {
-	tokens        []Token
-	pos           int
-	bytecode      []byte
-	dictionary    map[string]Word
-	quotations    []Quotation
-	currentModule string
-	imports       map[string]string
-	baseAddr      int32 // Added for address calculations
-	tempAlloc     int32 // Added for temporary memory allocation in reserved area
-	trace         bool  // Trace compilation steps, defaults to false
+	tokens         []Token
+	pos            int
+	bytecode       []byte
+	dictionary     map[string]Word
+	quotations     []Quotation
+	currentModule  string
+	imports        map[string]string
+	baseAddr       int32                 // Added for address calculations
+	tempAlloc      int32                 // Added for temporary memory allocation in reserved area
+	unresolved     []UnresolvedReference // Track words to resolve after definitions
+	unresolvedJmps []UnresolvedJmp       // To handle recursion
+	trace          bool                  // Trace compilation steps, defaults to false
 }
 
 // Compile converts LUX source to NUXVM bytecode
@@ -95,16 +112,18 @@ func Compile(source string, trace ...bool) ([]byte, error) {
 	}
 
 	compiler := &Compiler{
-		tokens:        tokens,
-		pos:           0,
-		bytecode:      []byte{},
-		dictionary:    make(map[string]Word),
-		quotations:    []Quotation{},
-		currentModule: "",
-		imports:       make(map[string]string),
-		baseAddr:      4096,
-		tempAlloc:     0,
-		trace:         traceEnabled,
+		tokens:         tokens,
+		pos:            0,
+		bytecode:       []byte{},
+		dictionary:     make(map[string]Word),
+		quotations:     []Quotation{},
+		currentModule:  "",
+		imports:        make(map[string]string),
+		baseAddr:       4096,
+		tempAlloc:      0,
+		unresolved:     []UnresolvedReference{},
+		unresolvedJmps: []UnresolvedJmp{},
+		trace:          traceEnabled,
 	}
 	return compiler.compile()
 }
@@ -120,11 +139,9 @@ func (c *Compiler) compile() ([]byte, error) {
 	}
 	c.emit(vm.OpJmp)
 	c.emit(0, 0, 0, 0)
-
 	startPos := c.pos
 	maxIterations := len(c.tokens) * 2
 	iterations := 0
-
 	// First pass: Handle directives and word definitions
 	for c.pos < len(c.tokens) && c.peek().Type != TokenEOF {
 		iterations++
@@ -151,7 +168,20 @@ func (c *Compiler) compile() ([]byte, error) {
 			c.advance()
 		}
 	}
-
+	// Resolve unresolved word references
+	for _, unresolved := range c.unresolved {
+		word, found := c.resolveWord(unresolved.Word)
+		if !found {
+			return nil, fmt.Errorf("unknown word '%s' in quotation at line %d, column %d", unresolved.Word, unresolved.Line, unresolved.Column)
+		}
+		// Patch placeholder with CALL to word address
+		c.bytecode[unresolved.Offset] = vm.OpCall
+		copy(c.bytecode[unresolved.Offset+1:unresolved.Offset+5], vm.EncodeInt32(word.Address))
+		if c.trace {
+			fmt.Fprintf(os.Stderr, "compile: Patched unresolved word %s at offset %d to CALL addr %d\n", unresolved.Word, unresolved.Offset, word.Address)
+		}
+	}
+	c.unresolved = nil // Clear resolved references
 	mainStart := c.currentAddress()
 	if c.trace {
 		fmt.Fprintf(os.Stderr, "compile: Main code starts at addr=%d\n", mainStart)
@@ -161,7 +191,6 @@ func (c *Compiler) compile() ([]byte, error) {
 		fmt.Fprintf(os.Stderr, "compile: Patching JMP at %d with addr=%d\n", jmpAddr+1, mainStart)
 	}
 	copy(c.bytecode[jmpAddr+1:jmpAddr+5], mainStartBytes)
-
 	c.pos = startPos
 	if c.trace {
 		fmt.Fprintf(os.Stderr, "compile: Starting second pass, pos=%d\n", c.pos)
@@ -221,18 +250,14 @@ func (c *Compiler) compile() ([]byte, error) {
 			break
 		}
 	}
-
 	// After main code completes, emit JMP to skip quotation storage area
 	skipQuotationsLabel := len(c.bytecode)
 	c.emit(vm.OpJmp)
 	c.emit(0, 0, 0, 0) // Placeholder, will be patched to point to HALT
-
 	// Store the position where main code ends (before quotations)
 	mainEndPos := len(c.bytecode)
-
 	// Build a map of temp addresses to real addresses as we place quotations
 	addrMap := make(map[int32]int32)
-
 	// Append quotations at the end and record their real addresses
 	for i := range c.quotations {
 		c.quotations[i].Address = c.currentAddress()
@@ -244,7 +269,6 @@ func (c *Compiler) compile() ([]byte, error) {
 		c.bytecode = append(c.bytecode, c.quotations[i].Code...)
 		c.quotations[i].EndAddr = c.currentAddress()
 	}
-
 	// Now patch all PUSH instructions that reference quotation addresses
 	// First patch addresses in the main code section
 	for j := 0; j < mainEndPos; j++ {
@@ -259,8 +283,7 @@ func (c *Compiler) compile() ([]byte, error) {
 			}
 		}
 	}
-
-	// CRITICAL: Also patch addresses within the quotation bytecode itself
+	// Also patch addresses within the quotation bytecode itself
 	// This handles nested quotations that reference other quotations
 	currentPos := mainEndPos
 	for i := range c.quotations {
@@ -279,14 +302,24 @@ func (c *Compiler) compile() ([]byte, error) {
 		}
 		currentPos += len(c.quotations[i].Code)
 	}
-
+	// Patch unresolved jumps
+	for _, uj := range c.unresolvedJmps {
+		realAddr, ok := addrMap[uj.TempAddr]
+		if !ok {
+			return nil, fmt.Errorf("unresolved jump for temp addr %d not found", uj.TempAddr)
+		}
+		copy(c.bytecode[uj.Offset:uj.Offset+4], vm.EncodeInt32(realAddr))
+		if c.trace {
+			fmt.Fprintf(os.Stderr, "compile: Patched JMP at offset %d with addr=%d (was temp %d)\n", uj.Offset, realAddr, uj.TempAddr)
+		}
+	}
+	c.unresolvedJmps = nil
 	// Emit HALT and patch the skip quotations JMP
 	haltAddr := c.currentAddress()
 	if c.trace {
 		fmt.Fprintf(os.Stderr, "compile: Emitting HALT at addr=%d, bytecode length=%d\n", haltAddr, len(c.bytecode))
 	}
 	c.emit(vm.OpHalt)
-
 	// Patch the JMP that skips quotations to jump to HALT
 	haltAddrBytes := vm.EncodeInt32(haltAddr)
 	copy(c.bytecode[skipQuotationsLabel+1:skipQuotationsLabel+5], haltAddrBytes)
@@ -421,7 +454,9 @@ func (c *Compiler) compileToken(token Token) error {
 		}
 		return fmt.Errorf("unknown word '%s' at line %d", token.Value, token.Line)
 	case TokenLBracket:
-		tempAddr := c.currentAddress() + 5
+		// Use a temporary address that won't conflict with real addresses
+		// We use 0x1000 + quotation index * 0x100 to ensure uniqueness
+		tempAddr := int32(0x1000 + len(c.quotations)*0x100)
 		if c.trace {
 			fmt.Fprintf(os.Stderr, "compileToken: Emitting PUSH for quotation at temp addr=%d\n", tempAddr)
 		}
@@ -453,8 +488,9 @@ func (c *Compiler) compileWordDefinition() error {
 	} else {
 		wordName = baseName
 	}
+	// Add to dictionary before compiling body
 	wordAddress := c.currentAddress()
-
+	c.dictionary[wordName] = Word{Name: wordName, Address: wordAddress, Module: c.currentModule}
 	// Compile the word body
 	for {
 		token := c.peek()
@@ -468,23 +504,19 @@ func (c *Compiler) compileWordDefinition() error {
 		if token.Type == TokenAtSign {
 			return fmt.Errorf("nested word definitions not allowed at line %d", token.Line)
 		}
-
 		// Special handling for quotations in word definitions
 		switch token.Type {
 		case TokenLBracket:
 			// Create a quotation entry
 			tempAddr := c.currentAddress() + 5 // Address after the PUSH instruction
 			c.quotations = append(c.quotations, Quotation{TempAddr: tempAddr, Code: []byte{}})
-
 			// Emit PUSH with temporary address
 			c.emit(vm.OpPush)
 			c.emit(vm.EncodeInt32(tempAddr)...)
-
 			// Skip the [
 			c.advance()
-
-			// Compile the quotation
-			if err := c.compileQuotationInDefinition(); err != nil {
+			// Compile the quotation with context about current word
+			if err := c.compileQuotationInDefinition(wordName, wordAddress); err != nil {
 				return err
 			}
 			// The ] has been consumed by compileQuotationInDefinition
@@ -497,18 +529,28 @@ func (c *Compiler) compileWordDefinition() error {
 			c.advance()
 		}
 	}
-
+	// Emit RET to end the word
 	c.emit(vm.OpRet)
-	c.dictionary[wordName] = Word{
-		Name:    wordName,
-		Address: wordAddress,
-		Module:  c.currentModule,
+
+	// Apply TRO if tail call (simple case: CALL followed by RET)
+	offset := len(c.bytecode)
+	if offset >= 6 && c.bytecode[offset-6] == vm.OpCall && c.bytecode[offset-1] == vm.OpRet {
+		callAddr := int32(binary.BigEndian.Uint32(c.bytecode[offset-5 : offset-1]))
+		// Only optimize if it's a recursive call
+		if callAddr == wordAddress {
+			c.bytecode[offset-6] = vm.OpJmp
+			c.bytecode = c.bytecode[:offset-1]
+			if c.trace {
+				fmt.Fprintf(os.Stderr, "compileWordDefinition: Applied simple TRO for recursive call to %s\n", wordName)
+			}
+		}
 	}
+
 	return nil
 }
 
 // compileQuotationInDefinition is a special version for compiling quotations inside word definitions
-func (c *Compiler) compileQuotationInDefinition() error {
+func (c *Compiler) compileQuotationInDefinition(currentWordName string, currentWordAddr int32) error {
 	quotIndex := len(c.quotations) - 1
 	if quotIndex < 0 {
 		return fmt.Errorf("no quotation started for [ at line %d", c.peek().Line)
@@ -536,7 +578,7 @@ func (c *Compiler) compileQuotationInDefinition() error {
 			c.advance()
 
 			// Recursively compile the nested quotation
-			if err := c.compileQuotationInDefinition(); err != nil {
+			if err := c.compileQuotationInDefinition(currentWordName, currentWordAddr); err != nil {
 				return err
 			}
 
@@ -619,6 +661,58 @@ func (c *Compiler) compileQuotationInDefinition() error {
 
 	// Append RET to end the quotation
 	quot.Code = append(quot.Code, vm.OpRet)
+
+	// Apply TRO if the quotation ends with a tail call to the current word
+	quotLen := len(quot.Code)
+	if quotLen >= 6 && quot.Code[quotLen-6] == vm.OpCall && quot.Code[quotLen-1] == vm.OpRet {
+		// Get the call address
+		callAddr := int32(binary.BigEndian.Uint32(quot.Code[quotLen-5 : quotLen-1]))
+		if c.trace {
+			fmt.Fprintf(os.Stderr, "  Pattern matched! callAddr=%d, currentWordAddr=%d\n", callAddr, currentWordAddr)
+		}
+		// Check if it's a recursive call to the word being defined
+		if callAddr == currentWordAddr {
+			// Add panic recovery to debug any crashes
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Fprintf(os.Stderr, ">>> PANIC during TRO application: %v\n", r)
+					panic(r) // Re-panic after logging
+				}
+			}()
+
+			if c.trace {
+				fmt.Fprintf(os.Stderr, ">>> About to apply TRO...\n")
+			}
+
+			// This is a tail recursive call, optimize it
+			quot.Code[quotLen-6] = vm.OpJmp
+
+			if c.trace {
+				fmt.Fprintf(os.Stderr, ">>> Converted CALL to JMP\n")
+			}
+
+			// Remove the RET instruction
+			quot.Code = quot.Code[:quotLen-1]
+
+			if c.trace {
+				fmt.Fprintf(os.Stderr, "compileQuotationInDefinition: ✓ Applied TRO for tail call to %s at addr %d\n", currentWordName, currentWordAddr)
+				fmt.Fprintf(os.Stderr, "  New quotation length: %d, ends with JMP\n", len(quot.Code))
+				fmt.Fprintf(os.Stderr, ">>> TRO APPLIED! Converted CALL to JMP, removed RET\n")
+				fmt.Fprintf(os.Stderr, "    New quotation length: %d\n", len(quot.Code))
+				if len(quot.Code) >= 5 {
+					fmt.Fprintf(os.Stderr, "    New last 5 bytes: %v\n", quot.Code[len(quot.Code)-5:])
+				}
+			}
+		} else {
+			if c.trace {
+				fmt.Fprintf(os.Stderr, "  ✗ Address mismatch - TRO not applied\n")
+			}
+		}
+	} else {
+		if c.trace {
+			fmt.Fprintf(os.Stderr, "  ✗ Pattern not matched - TRO not applied\n")
+		}
+	}
 
 	// Skip the closing ]
 	c.advance()
@@ -713,7 +807,6 @@ func (c *Compiler) compileQuotation() error {
 
 			case TokenWord:
 				upperVal := strings.ToUpper(token.Value)
-
 				// Check for special output words
 				if upperVal == "." {
 					quot.Code = append(quot.Code, vm.OpPush)
@@ -804,37 +897,6 @@ func (c *Compiler) compileQuotationCombinator(name string, quot *Quotation) erro
 	return nil
 }
 
-func patchQuotationAddresses(bytecode []byte, quotations []Quotation, mainEndPos int) {
-	// Build a map of temp addresses to real addresses
-	addrMap := make(map[int32]int32)
-	for i := range quotations {
-		addrMap[quotations[i].TempAddr] = quotations[i].Address
-	}
-
-	// Patch addresses in main code
-	for j := 0; j < mainEndPos; j++ {
-		if bytecode[j] == vm.OpPush && j+4 < mainEndPos {
-			addr := int32(binary.BigEndian.Uint32(bytecode[j+1 : j+5]))
-			if realAddr, ok := addrMap[addr]; ok {
-				binary.BigEndian.PutUint32(bytecode[j+1:j+5], uint32(realAddr))
-			}
-		}
-	}
-
-	// Also patch addresses within quotations themselves (for nested quotations)
-	for i := range quotations {
-		code := quotations[i].Code
-		for j := 0; j < len(code); j++ {
-			if code[j] == vm.OpPush && j+4 < len(code) {
-				addr := int32(binary.BigEndian.Uint32(code[j+1 : j+5]))
-				if realAddr, ok := addrMap[addr]; ok {
-					binary.BigEndian.PutUint32(code[j+1:j+5], uint32(realAddr))
-				}
-			}
-		}
-	}
-}
-
 // compileCombinator compiles control flow combinators
 func (c *Compiler) compileCombinator(name string, line int) error {
 	if c.trace {
@@ -872,6 +934,22 @@ func (c *Compiler) compileIfElse() error {
 	if len(c.quotations) < 2 {
 		return fmt.Errorf("if-else requires two quotations at line %d", c.peek().Line)
 	}
+
+	// Check if the false (else) quotation ends with JMP (i.e., was TRO-optimized)
+	falseQuot := c.quotations[len(c.quotations)-1]
+	isTailRecursive := len(falseQuot.Code) >= 5 &&
+		falseQuot.Code[len(falseQuot.Code)-5] == vm.OpJmp
+
+	if c.trace {
+		fmt.Fprintf(os.Stderr, "compileIfElse: Checking false quotation for TRO\n")
+		fmt.Fprintf(os.Stderr, "  False quot length=%d\n", len(falseQuot.Code))
+		if len(falseQuot.Code) >= 5 {
+			fmt.Fprintf(os.Stderr, "  falseQuot.Code[len-5]=0x%02X (OpJmp=0x%02X)\n",
+				falseQuot.Code[len(falseQuot.Code)-5], vm.OpJmp)
+		}
+		fmt.Fprintf(os.Stderr, "  isTailRecursive=%v\n", isTailRecursive)
+	}
+
 	c.emit(vm.OpSwap)
 	if c.trace {
 		fmt.Fprintf(os.Stderr, "Emitted SWAP, bytecode=%v\n", c.bytecode)
@@ -906,17 +984,43 @@ func (c *Compiler) compileIfElse() error {
 	}
 	elseBranch := c.currentAddress()
 	if c.trace {
-		fmt.Fprintf(os.Stderr, "Else branch starts at absolute addr=%d\n", elseBranch)
+		fmt.Fprintf(os.Stderr, "Else branch starts at absolute addr=%d, isTailRecursive=%v\n", elseBranch, isTailRecursive)
 	}
 	c.emit(vm.OpPop)
 	if c.trace {
 		fmt.Fprintf(os.Stderr, "Emitted POP (else branch), bytecode=%v\n", c.bytecode)
 	}
-	c.emit(vm.OpCallStack)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Emitted CALLSTACK (else branch), bytecode=%v\n", c.bytecode)
+
+	if isTailRecursive {
+		// For tail recursive quotations, we need to pop BOTH quotation addresses
+		// The first POP already removed the true quotation address
+		// Now we need to pop the false quotation address too
+		c.emit(vm.OpPop)
+
+		// For tail recursive quotations, pop the false quotation address
+		// and get the jump target from the quotation
+		// Extract the JMP target address from the quotation
+		jmpTarget := int32(binary.BigEndian.Uint32(falseQuot.Code[len(falseQuot.Code)-4:]))
+
+		// Inline the quotation code EXCEPT the final JMP
+		// Then emit a direct JMP (not via CALLSTACK)
+		quotCode := falseQuot.Code[:len(falseQuot.Code)-5] // Remove JMP instruction
+		c.emit(quotCode...)
+		c.emit(vm.OpJmp)
+		c.emit(vm.EncodeInt32(jmpTarget)...)
+
+		if c.trace {
+			fmt.Fprintf(os.Stderr, "Inlined tail-recursive quotation and emitted direct JMP to %d\n", jmpTarget)
+		}
+	} else {
+		// Normal case: call the quotation
+		c.emit(vm.OpCallStack)
+		if c.trace {
+			fmt.Fprintf(os.Stderr, "Emitted CALLSTACK (else branch), bytecode=%v\n", c.bytecode)
+		}
 	}
-	// FIX: Calculate end address AFTER emitting else branch code
+
+	// Calculate end address AFTER emitting else branch code
 	end := c.currentAddress()
 	if c.trace {
 		fmt.Fprintf(os.Stderr, "End at absolute addr=%d\n", end)
@@ -975,62 +1079,6 @@ func (c *Compiler) compileUnless() error {
 	copy(c.bytecode[skipLabel:skipLabel+4], skipBytes)
 	endBytes := vm.EncodeInt32(end)
 	copy(c.bytecode[endLabel:endLabel+4], endBytes)
-	return nil
-}
-
-// compileUntil compiles: [ condition ] [ body ] until
-func (c *Compiler) compileUntil() error {
-	// Use reserved memory to store condition and body quotation addresses
-	tempCondAddr, err := c.allocTemp(4)
-	if err != nil {
-		return err
-	}
-	tempBodyAddr, err := c.allocTemp(4)
-	if err != nil {
-		return err
-	}
-
-	// Stack: [... n condition-addr body-addr]
-	// Save body-addr to memory
-	c.emit(vm.OpStore)
-	c.emit(vm.EncodeInt32(tempBodyAddr)...)
-
-	// Save condition-addr to memory
-	c.emit(vm.OpStore)
-	c.emit(vm.EncodeInt32(tempCondAddr)...)
-
-	// Stack: [... n]
-	loopStart := c.currentAddress()
-
-	// Load and execute body
-	c.emit(vm.OpLoad)
-	c.emit(vm.EncodeInt32(tempBodyAddr)...)
-	c.emit(vm.OpCallStack) // Execute body: [... n-1]
-
-	// Load and execute condition
-	c.emit(vm.OpLoad)
-	c.emit(vm.EncodeInt32(tempCondAddr)...)
-	c.emit(vm.OpCallStack) // Execute condition: [... n-1 1/0]
-
-	// Swap to put condition on top
-	c.emit(vm.OpSwap) // [... 1/0 n-1]
-
-	// Check condition: exit if true (non-zero)
-	c.emit(vm.OpJnz)
-	exitLabel := c.currentOffset()
-	c.emit(0, 0, 0, 0) // Placeholder for jump target
-
-	// Loop back
-	c.emit(vm.OpJmp)
-	c.emit(vm.EncodeInt32(loopStart)...)
-
-	// Exit point
-	exit := c.currentAddress()
-
-	// Patch JNZ to jump to exit
-	exitBytes := vm.EncodeInt32(exit)
-	copy(c.bytecode[exitLabel:exitLabel+4], exitBytes)
-
 	return nil
 }
 

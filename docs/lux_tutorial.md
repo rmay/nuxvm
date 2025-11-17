@@ -11,6 +11,7 @@
 - [Output](#output)
 - [User-defined Words](#user-defined-words)
 - [Conditionals and Loops](#conditionals-and-loops)
+- [Recursion](#recursion)
 - [Modules](#modules)
 - [Compiling Lux Source](#compiling-lux-source)
 - [Error Handling](#error-handling)
@@ -405,6 +406,105 @@ lux> 0 [ hello 32 emit 32 emit ] 5 #:
 Hello, World  Hello, World  Hello, World  Hello, World  Hello, World    Stack: [0]
 ```
 
+### Recursion
+
+As anyone knows, recursion is a high-water mark of sophistication and grace. It is the ultimate combination of GOTOs and Ouroboros, forged in the fires of Hephaestus, touched by Godel, and smiled upon by Escher. 
+
+It is, also, a real pain to implement, as I have learned.
+
+Here's the classic example of the Fibonacci function:
+
+```forth
+lux> @fib dup 1 > [ dup 1 - fib swap 2 - fib + ] ? ;
+Defined word 'fib'
+lux> 10 fib
+  Stack: [55]
+lux> 6 fib
+  Stack: [55 8]
+```
+
+Yup, that looks correct.
+
+I'm going to break this down into steps.
+
+#### Definition Start: @fib begins defining the word `fib`. Everything until `;` is the body.
+- Duplicate and Compare:
+`dup`: Duplicates the top of the stack. Stack: `n n`
+`1`: Pushes literal 1. Stack: `n n 1`
+`>`: Pops two values, compares (second > first), pushes 1 (true) or 0 (false). Stack: `n (n>1)`
+
+#### Quotation (Anonymous Block):
+`[ dup 1 - fib swap 2 - fib + ]`: This is a "quotation" in Lux, a code block pushed as data onto the stack (its address in VM memory). It's like a lambda.
+Stack now: `n (n>1) quot_addr`
+
+- The quotation's body (executed only if condition is true):
+`dup`: n n
+`1 -`: n (n-1)
+`fib`: Recursively calls `fib` on (n-1). Stack: `n fib(n-1)`
+`swap`: fib(n-1) n
+`2 -`: fib(n-1) (n-2)
+`fib`: Recursively calls `fib` on (n-2). Stack: `fib(n-1) fib(n-2)`
+`+`: Adds them. Stack: `fib(n)`
+
+#### Conditional Combinator `?`:
+This is a control-flow combinator of "if condition then execute quotation, else drop quotation."
+`Stack before ?`: `n condition quot_addr`
+`If condition (n > 1) is true (non-zero)`: Execute the quotation on the stack (consuming n, producing fib(n)).
+`If false (n <= 1)`: Drop the quotation, leaving n (since fib(n) = n for base cases).
+In the Nux VM, this compiles to bytecode like SWAP (rearrange stack), JZ (jump if zero/false to skip execution), CALLSTACK (execute quotation via jump with return stack push), and POP (drop if skipped).
+
+- `End Definition`: `;` closes the word. Now fib can be called like any built-in word. For example: `10 fib` pushes 55 onto the stack.
+
+Now, for the next example, an iterative factorial!
+
+```forth
+lux> @fact-iter 1 swap dup [ dup rot * swap 1 - ] swap #: drop ;
+Defined word 'fact-iter'
+lux> 5 fact-iter
+  Stack: [120]
+```
+
+Let's break it down.
+
+Start with input n=5 on stack: [5]
+
+#### Definition Start: @fact-iter defines the word. Body ends at ;.
+- Initialize Accumulator and Counter:
+ 1: Push 1 (initial acc). Stack: [5 1]
+- `swap:` Swap top two. Stack: [1 5] // acc=1, i=5 (i will decrement)
+- `dup`: Duplicate i. Stack: [1 5 5] // acc i count=5 (count for #: control)
+
+#### Quotation (Loop Body):
+- `[ dup rot * swap 1 - ]`: Push quotation address. Stack: [1 5 5 quot_addr]
+This block transforms [acc i] → [acc*i (i-1)] each iteration.
+
+
+#### Reorder for Combinator:
+`swap`: Swap top two. Stack: [1 5 quot_addr 5] // acc i quot count
+
+#### Times Combinator #::
+Expects: ... data quot count → executes quot count times on data.
+In compiler.go's compileTimes(): Uses temp memory (allocTemp) for quot and count, DUP/JZ to check count>0, STORE/LOAD to dip (execute quot on data below control vars), DEC count, JMP loop.
+Each iteration (dipping under i quot count):
+- `dup`: [acc i i]
+- `rot`: Cycles left [i i acc] // [a b c] → [b c a]
+- `*`: Pops acc and top i, pushes (i * acc). Stack: [i (i*acc)]
+- `swap`: [(i*acc) i]
+- `1 -`: [(i*acc) (i-1)]
+
+#### After 5 iterations:
+Start: acc=1, i=5
+Iter1: acc=1*5=5, i=4
+Iter2: acc=5*4=20, i=3
+Iter3: acc=20*3=60, i=2
+Iter4: acc=60*2=120, i=1
+Iter5: acc=120*1=120, i=0
+`Stack after: [120 0]`
+
+##### Cleanup:
+- `drop`: Pops 0. Stack: [120] // Final n!
+
+For further reading, see [Recursion](#recursion)
 
 ### Modules
 
@@ -553,10 +653,8 @@ Thank you for reading this quick tutorial on Lux. ==<insert joke here, wait for 
 As I improve the language, I'll update this tutorial.
 
 
-
 ## Coming At Some Point!
 
-- Recursion
 - Importing code files
 - Bug fixes
 
