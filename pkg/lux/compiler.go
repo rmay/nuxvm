@@ -119,7 +119,7 @@ func Compile(source string, trace ...bool) ([]byte, error) {
 		quotations:     []Quotation{},
 		currentModule:  "",
 		imports:        make(map[string]string),
-		baseAddr:       4096,
+		baseAddr:       int32(vm.UserMemoryOffset),
 		tempAlloc:      0,
 		unresolved:     []UnresolvedReference{},
 		unresolvedJmps: []UnresolvedJmp{},
