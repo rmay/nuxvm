@@ -18,14 +18,13 @@ var builtins = map[string]byte{
 	"ROLL": vm.OpRoll,
 	"ROT":  vm.OpRot,
 	// Arithmetic
-	"+":      vm.OpAdd,
-	"-":      vm.OpSub,
-	"*":      vm.OpMul,
-	"/":      vm.OpDiv,
-	"MOD":    vm.OpMod,
-	"INC":    vm.OpInc,
-	"DEC":    vm.OpDec,
-	"NEGATE": vm.OpNeg,
+	"+":   vm.OpAdd,
+	"-":   vm.OpSub,
+	"*":   vm.OpMul,
+	"/":   vm.OpDiv,
+	"MOD": vm.OpMod,
+	"INC": vm.OpInc,
+	"DEC": vm.OpDec,
 	// Bitwise
 	"AND":    vm.OpAnd,
 	"OR":     vm.OpOr,
@@ -35,12 +34,12 @@ var builtins = map[string]byte{
 	// Comparison
 	"=": vm.OpEq,
 	"<": vm.OpLt,
-	">": vm.OpGt,
 	// Memory (indirect / dynamic address)
 	"LOADI":  vm.OpLoadI,
 	"STOREI": vm.OpStoreI,
 	// Control flow
-	"EXIT": vm.OpRet,
+	"EXIT":  vm.OpRet,
+	"YIELD": vm.OpYield,
 }
 
 // Control flow combinators
@@ -448,6 +447,17 @@ func (c *Compiler) compileToken(token Token) error {
 			}
 			return c.compileCombinator(wordName, token.Line)
 		}
+		// Removed opcodes — expand inline.
+		if wordName == ">" {
+			c.emit(vm.OpSwap, vm.OpLt)
+			return nil
+		}
+		if wordName == "NEGATE" {
+			c.emit(vm.OpPush)
+			c.emit(vm.EncodeInt32(0)...)
+			c.emit(vm.OpSwap, vm.OpSub)
+			return nil
+		}
 		if opcode, ok := builtins[wordName]; ok {
 			if c.trace {
 				fmt.Fprintf(os.Stderr, "compileToken: Emitting builtin opcode=%s\n", vm.OpcodeName(opcode))
@@ -625,6 +635,14 @@ func (c *Compiler) compileQuotationInDefinition(currentWordName string, currentW
 					quot.Code = append(quot.Code, vm.OpPush)
 					quot.Code = append(quot.Code, vm.EncodeInt32(1)...)
 					quot.Code = append(quot.Code, vm.OpOut)
+					c.advance()
+				} else if upperVal == ">" {
+					quot.Code = append(quot.Code, vm.OpSwap, vm.OpLt)
+					c.advance()
+				} else if upperVal == "NEGATE" {
+					quot.Code = append(quot.Code, vm.OpPush)
+					quot.Code = append(quot.Code, vm.EncodeInt32(0)...)
+					quot.Code = append(quot.Code, vm.OpSwap, vm.OpSub)
 					c.advance()
 				} else if opcode, ok := builtins[upperVal]; ok {
 					quot.Code = append(quot.Code, opcode)
@@ -821,18 +839,23 @@ func (c *Compiler) compileQuotation() error {
 					quot.Code = append(quot.Code, vm.EncodeInt32(1)...)
 					quot.Code = append(quot.Code, vm.OpOut)
 					c.advance()
+				} else if upperVal == ">" {
+					quot.Code = append(quot.Code, vm.OpSwap, vm.OpLt)
+					c.advance()
+				} else if upperVal == "NEGATE" {
+					quot.Code = append(quot.Code, vm.OpPush)
+					quot.Code = append(quot.Code, vm.EncodeInt32(0)...)
+					quot.Code = append(quot.Code, vm.OpSwap, vm.OpSub)
+					c.advance()
 				} else if opcode, ok := builtins[upperVal]; ok {
-					// Builtin opcode
 					quot.Code = append(quot.Code, opcode)
 					c.advance()
 				} else if combinators[upperVal] {
-					// Handle combinators in quotations
 					c.advance()
 					if err := c.compileQuotationCombinator(upperVal, quot); err != nil {
 						return err
 					}
 				} else if word, ok := c.resolveWord(upperVal); ok {
-					// User-defined word
 					quot.Code = append(quot.Code, vm.OpCall)
 					quot.Code = append(quot.Code, vm.EncodeInt32(word.Address)...)
 					c.advance()
@@ -1074,7 +1097,10 @@ func (c *Compiler) compileUnless() error {
 		return fmt.Errorf("unless requires one quotation at line %d", c.peek().Line)
 	}
 	c.emit(vm.OpSwap)
-	c.emit(vm.OpJnz)
+	c.emit(vm.OpPush)
+	c.emit(vm.EncodeInt32(0)...)
+	c.emit(vm.OpEq)
+	c.emit(vm.OpJz)
 	skipLabel := c.currentOffset()
 	c.emit(0, 0, 0, 0)
 	c.emit(vm.OpCallStack)

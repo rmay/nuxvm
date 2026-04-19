@@ -776,10 +776,6 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		if err := vm.Dec(); err != nil {
 			return currentPC, fmt.Errorf("dec failed: %v", err)
 		}
-	case OpNeg:
-		if err := vm.Neg(); err != nil {
-			return currentPC, fmt.Errorf("neg failed: %v", err)
-		}
 	case OpAnd:
 		if err := vm.And(); err != nil {
 			return currentPC, fmt.Errorf("and failed: %v", err)
@@ -807,10 +803,6 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 	case OpLt:
 		if err := vm.Lt(); err != nil {
 			return currentPC, fmt.Errorf("lt failed: %v", err)
-		}
-	case OpGt:
-		if err := vm.Gt(); err != nil {
-			return currentPC, fmt.Errorf("gt failed: %v", err)
 		}
 	case OpCallStack:
 		if len(vm.stack) < 1 {
@@ -859,27 +851,6 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		} else {
 			if vm.trace {
 				fmt.Fprintf(os.Stderr, "VM: OpJz: Condition true, skipping jump")
-			}
-			vm.pc += 4
-		}
-	case OpJnz:
-		if int(vm.pc+3) >= len(vm.memory) {
-			return currentPC, fmt.Errorf("jnz failed: program counter out of bounds")
-		}
-		addr := int32(binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4]))
-		if len(vm.stack) < 1 {
-			return currentPC, fmt.Errorf("jnz failed: stack underflow")
-		}
-		cond := vm.stack[len(vm.stack)-1]
-		vm.stack = vm.stack[:len(vm.stack)-1]
-		if cond != 0 {
-			if vm.trace {
-				fmt.Fprintf(os.Stderr, "VM: OpJnz: Condition true, jumping to %d", addr)
-			}
-			vm.pc = uint32(addr)
-		} else {
-			if vm.trace {
-				fmt.Fprintf(os.Stderr, "VM: OpJnz: Condition false, skipping jump")
 			}
 			vm.pc += 4
 		}

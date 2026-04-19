@@ -722,54 +722,48 @@ func TestJz(t *testing.T) {
 	}
 }
 
-func TestJnz(t *testing.T) {
-	// Test jump when condition is non-zero
+// TestJnzEquivalent tests the PUSH 0; EQ; JZ pattern that replaces the removed OpJnz.
+func TestJnzEquivalent(t *testing.T) {
+	// Jump when condition is non-zero: PUSH 1; PUSH 0; EQ; JZ target
 	program := []byte{}
-	program = append(program, pushInstruction(1)...) // PUSH 1
-	jnzAddr := len(program)
-	program = append(program, JnzInstruction(0)...)   // JNZ (placeholder)
-	program = append(program, pushInstruction(20)...) // PUSH 20 (skipped)
-	// Target for jump
+	program = append(program, pushInstruction(1)...)  // PUSH 1 (nonzero cond)
+	program = append(program, pushInstruction(0)...)  // PUSH 0
+	program = append(program, OpEq)                   // EQ → 0 (false, so JZ won't jump)
+	jzAddr := len(program)
+	program = append(program, JzInstruction(0)...)    // JZ placeholder (not taken)
+	program = append(program, pushInstruction(20)...) // PUSH 20 (skipped — wait, JZ not taken means we DO execute this)
 	targetAddr := len(program)
 	program = append(program, pushInstruction(30)...) // PUSH 30
-	program = append(program, OpHalt)                 // HALT
+	program = append(program, OpHalt)
 
+	// Since cond=1 → EQ(1,0)=0 → JZ IS taken → skip PUSH 20, land at PUSH 30.
 	vm := createVMWithProgram(program)
-
-	// Fix the JNZ target address to account for reserved memory
 	actualTarget := vm.UserMemoryStart() + uint32(targetAddr)
-	binary.BigEndian.PutUint32(vm.memory[vm.UserMemoryStart()+uint32(jnzAddr)+1:], actualTarget)
+	binary.BigEndian.PutUint32(vm.memory[vm.UserMemoryStart()+uint32(jzAddr)+1:], actualTarget)
 
 	if err := vm.Run(); err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
-
 	stack := vm.Stack()
-	if len(stack) != 1 {
-		t.Errorf("Expected stack length 1, got %d", len(stack))
-	}
-	if stack[0] != 30 {
+	if len(stack) != 1 || stack[0] != 30 {
 		t.Errorf("Expected [30], got %v", stack)
 	}
 
-	// Test no jump when condition is zero
+	// No jump when condition is zero: PUSH 0; PUSH 0; EQ → 1 → JZ not taken
 	program = []byte{}
+	program = append(program, pushInstruction(0)...)  // PUSH 0 (zero cond)
 	program = append(program, pushInstruction(0)...)  // PUSH 0
-	program = append(program, JnzInstruction(100)...) // JNZ to address 100 (not taken)
-	program = append(program, pushInstruction(20)...) // PUSH 20
-	program = append(program, OpHalt)                 // HALT
+	program = append(program, OpEq)                   // EQ → 1 (JZ not taken)
+	program = append(program, JzInstruction(9999)...) // JZ far address (not taken)
+	program = append(program, pushInstruction(20)...) // PUSH 20 (executed)
+	program = append(program, OpHalt)
 
 	vm = createVMWithProgram(program)
-
 	if err := vm.Run(); err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
-
 	stack = vm.Stack()
-	if len(stack) != 1 {
-		t.Errorf("Expected stack length 1, got %d", len(stack))
-	}
-	if stack[0] != 20 {
+	if len(stack) != 1 || stack[0] != 20 {
 		t.Errorf("Expected [20], got %v", stack)
 	}
 }
@@ -1193,7 +1187,6 @@ func TestOpcodeName(t *testing.T) {
 		{OpMod, "MOD"},
 		{OpInc, "INC"},
 		{OpDec, "DEC"},
-		{OpNeg, "NEG"},
 		{OpAnd, "AND"},
 		{OpOr, "OR"},
 		{OpXor, "XOR"},
@@ -1201,11 +1194,9 @@ func TestOpcodeName(t *testing.T) {
 		{OpShl, "SHL"},
 		{OpEq, "EQ"},
 		{OpLt, "LT"},
-		{OpGt, "GT"},
 		{OpCallStack, "CALLSTACK"},
 		{OpJmp, "JMP"},
 		{OpJz, "JZ"},
-		{OpJnz, "JNZ"},
 		{OpCall, "CALL"},
 		{OpRet, "RET"},
 		{OpLoad, "LOAD"},
@@ -1263,15 +1254,6 @@ func TestHelperFunctions(t *testing.T) {
 	}
 	if jzInstr[0] != OpJz {
 		t.Errorf("Expected JZ opcode, got 0x%02X", jzInstr[0])
-	}
-
-	// Test JnzInstruction
-	jnzInstr := JnzInstruction(400)
-	if len(jnzInstr) != 5 {
-		t.Errorf("Expected 5 bytes, got %d", len(jnzInstr))
-	}
-	if jnzInstr[0] != OpJnz {
-		t.Errorf("Expected JNZ opcode, got 0x%02X", jnzInstr[0])
 	}
 
 	// Test CallInstruction
@@ -1563,11 +1545,6 @@ func TestExecuteInstructionErrors(t *testing.T) {
 			errMsg:  "dec failed",
 		},
 		{
-			name:    "NEG underflow",
-			program: []byte{OpNeg},
-			errMsg:  "neg failed",
-		},
-		{
 			name:    "AND underflow",
 			program: []byte{OpAnd},
 			errMsg:  "and failed",
@@ -1603,11 +1580,6 @@ func TestExecuteInstructionErrors(t *testing.T) {
 			errMsg:  "lt failed",
 		},
 		{
-			name:    "GT underflow",
-			program: []byte{OpGt},
-			errMsg:  "gt failed",
-		},
-		{
 			name:    "CALLSTACK underflow",
 			program: []byte{OpCallStack},
 			errMsg:  "callstack failed: stack underflow",
@@ -1626,16 +1598,6 @@ func TestExecuteInstructionErrors(t *testing.T) {
 			name:    "JZ incomplete",
 			program: []byte{OpJz, 0xFF}, // JZ + 1 byte of address
 			errMsg:  "jz failed: program counter out of bounds",
-		},
-		{
-			name:    "JNZ underflow",
-			program: []byte{OpJnz, 0x00, 0x00, 0x00, 0x10}, // JNZ instruction + address
-			errMsg:  "jnz failed: stack underflow",
-		},
-		{
-			name:    "JNZ incomplete",
-			program: []byte{OpJnz, 0xFF}, // JNZ + 1 byte of address
-			errMsg:  "jnz failed: program counter out of bounds",
 		},
 		{
 			name:    "CALL incomplete",

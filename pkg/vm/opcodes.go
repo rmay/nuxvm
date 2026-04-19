@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// Opcode constants
+// Opcode constants — 32 opcodes, 0x00–0x1F.
 const (
 	OpPush      = 0x00
 	OpPop       = 0x01
@@ -20,31 +20,28 @@ const (
 	OpMod       = 0x0A
 	OpInc       = 0x0B
 	OpDec       = 0x0C
-	OpNeg       = 0x0D
-	OpAnd       = 0x0E
-	OpOr        = 0x0F
-	OpXor       = 0x10
-	OpNot       = 0x11
-	OpShl       = 0x12
-	OpEq        = 0x13
-	OpLt        = 0x14
-	OpGt        = 0x15
-	OpCallStack = 0x16
-	OpJmp       = 0x17
-	OpJz        = 0x18
-	OpJnz       = 0x19
-	OpCall      = 0x1A
-	OpRet       = 0x1B
-	OpLoad      = 0x1C
-	OpStore     = 0x1D
-	OpOut       = 0x1E
-	OpHalt      = 0x1F
-	OpYield     = 0x20 // Yield to host; triggers YieldHandler if set
-	OpLoadI     = 0x21 // Pop addr from stack, push memory[addr]
-	OpStoreI    = 0x22 // Pop addr from stack, pop value, store value at addr
+	OpAnd       = 0x0D
+	OpOr        = 0x0E
+	OpXor       = 0x0F
+	OpNot       = 0x10
+	OpShl       = 0x11
+	OpEq        = 0x12
+	OpLt        = 0x13
+	OpCallStack = 0x14
+	OpJmp       = 0x15
+	OpJz        = 0x16
+	OpCall      = 0x17
+	OpRet       = 0x18
+	OpLoad      = 0x19
+	OpStore     = 0x1A
+	OpOut       = 0x1B
+	OpHalt      = 0x1C
+	OpYield     = 0x1D // Yield to host; triggers YieldHandler if set
+	OpLoadI     = 0x1E // Pop addr from stack, push memory[addr]
+	OpStoreI    = 0x1F // Pop addr from stack, pop value, store value at addr
 )
 
-// OpcodeName returns the human-readable name for an opcode
+// OpcodeName returns the human-readable name for an opcode.
 func OpcodeName(op byte) string {
 	switch op {
 	case OpPush:
@@ -73,8 +70,6 @@ func OpcodeName(op byte) string {
 		return "INC"
 	case OpDec:
 		return "DEC"
-	case OpNeg:
-		return "NEG"
 	case OpAnd:
 		return "AND"
 	case OpOr:
@@ -89,16 +84,12 @@ func OpcodeName(op byte) string {
 		return "EQ"
 	case OpLt:
 		return "LT"
-	case OpGt:
-		return "GT"
 	case OpCallStack:
 		return "CALLSTACK"
 	case OpJmp:
 		return "JMP"
 	case OpJz:
 		return "JZ"
-	case OpJnz:
-		return "JNZ"
 	case OpCall:
 		return "CALL"
 	case OpRet:
@@ -124,54 +115,49 @@ func OpcodeName(op byte) string {
 
 // Helper functions for building programs
 
-// EncodeInt32 encodes a 32-bit integer as big-endian bytes
+// EncodeInt32 encodes a 32-bit integer as big-endian bytes.
 func EncodeInt32(value int32) []byte {
 	buf := make([]byte, 4)
 	binary.BigEndian.PutUint32(buf, uint32(value))
 	return buf
 }
 
-// PushInstruction creates a PUSH instruction with the given value
+// PushInstruction creates a PUSH instruction with the given value.
 func PushInstruction(value int32) []byte {
 	return append([]byte{OpPush}, EncodeInt32(value)...)
 }
 
-// JmpInstruction creates a JMP instruction to the given address
+// JmpInstruction creates a JMP instruction to the given address.
 func JmpInstruction(addr int32) []byte {
 	return append([]byte{OpJmp}, EncodeInt32(addr)...)
 }
 
-// JzInstruction creates a JZ instruction to the given address
+// JzInstruction creates a JZ instruction to the given address.
 func JzInstruction(addr int32) []byte {
 	return append([]byte{OpJz}, EncodeInt32(addr)...)
 }
 
-// JnzInstruction creates a JNZ instruction to the given address
-func JnzInstruction(addr int32) []byte {
-	return append([]byte{OpJnz}, EncodeInt32(addr)...)
-}
-
-// CallInstruction creates a CALL instruction to the given address
+// CallInstruction creates a CALL instruction to the given address.
 func CallInstruction(addr int32) []byte {
 	return append([]byte{OpCall}, EncodeInt32(addr)...)
 }
 
-// LoadInstruction creates a LOAD instruction from the given address
+// LoadInstruction creates a LOAD instruction from the given address.
 func LoadInstruction(addr int32) []byte {
 	return append([]byte{OpLoad}, EncodeInt32(addr)...)
 }
 
-// StoreInstruction creates a STORE instruction to the given address
+// StoreInstruction creates a STORE instruction to the given address.
 func StoreInstruction(addr int32) []byte {
 	return append([]byte{OpStore}, EncodeInt32(addr)...)
 }
 
-// OutNumber emits bytecode to output top of stack as number
+// OutNumber emits bytecode to output top of stack as a number.
 func OutNumber() []byte {
 	return append(PushInstruction(0), OpOut)
 }
 
-// OutCharacter emits bytecode to output top of stack as character
+// OutCharacter emits bytecode to output top of stack as a character.
 func OutCharacter() []byte {
 	return append(PushInstruction(1), OpOut)
 }

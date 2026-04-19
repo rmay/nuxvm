@@ -342,7 +342,7 @@
             
             running = true;
             runVal.innerText = "TRUE";
-            msg.innerText = "EXECUTING BOUNCE_PIXEL_DEMO...";
+            msg.innerText = "RUNNING SPRITE_GAME — ARROW KEYS TO MOVE";
             btnRun.innerText = "RESUME_SYSTEM";
             step();
         });
@@ -357,16 +357,15 @@
             updateUI();
         });
 
+        const keyDirMap = { ArrowUp: 1, ArrowDown: 2, ArrowLeft: 3, ArrowRight: 4 };
         function nuxKeydown(e) {
             if (!wasmLoaded) return;
-            if (e.key === ' ' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-                e.preventDefault();
-            }
-            nux_set_keydown(true);
+            if (e.key.startsWith('Arrow') || e.key === ' ') e.preventDefault();
+            nux_set_keydown(keyDirMap[e.key] ?? 5);
         }
         function nuxKeyup(e) {
             if (!wasmLoaded) return;
-            nux_set_keydown(false);
+            nux_set_keydown(0);
         }
         window.addEventListener('keydown', nuxKeydown);
         window.addEventListener('keyup', nuxKeyup);

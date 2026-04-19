@@ -80,7 +80,7 @@ func buildBounceProgram() []byte {
 	phSkipHiX := reserveJmp(vm.OpJmp)
 
 	patchJmp(phLtZeroX, offset())
-	p(vm.OpDup); push(int32(vm.FrameWidth - 1)); p(vm.OpGt)
+	p(vm.OpDup); push(int32(vm.FrameWidth - 1)); p(vm.OpSwap); p(vm.OpLt)
 	phHiX := reserveJmp(vm.OpJz)
 	// nx > FrameWidth-1 → clamp, reverse dx
 	p(vm.OpPop); push(int32(vm.FrameWidth - 1)); push(-1); store(addrDX)
@@ -98,7 +98,7 @@ func buildBounceProgram() []byte {
 	phSkipHiY := reserveJmp(vm.OpJmp)
 
 	patchJmp(phLtZeroY, offset())
-	p(vm.OpDup); push(int32(vm.FrameHeight - 1)); p(vm.OpGt)
+	p(vm.OpDup); push(int32(vm.FrameHeight - 1)); p(vm.OpSwap); p(vm.OpLt)
 	phHiY := reserveJmp(vm.OpJz)
 	p(vm.OpPop); push(int32(vm.FrameHeight - 1)); push(-1); store(addrDY)
 
@@ -119,7 +119,9 @@ func buildBounceProgram() []byte {
 
 	// ── 6. Check keyboard; exit if pressed ───────────────────────────────────
 	p(vm.LoadInstruction(int32(vm.KeyboardStatusAddr))...)
-	phExit := reserveJmp(vm.OpJnz)
+	p(vm.PushInstruction(0)...)
+	p(vm.OpEq)
+	phExit := reserveJmp(vm.OpJz)
 
 	p(vm.JmpInstruction(loopStart)...)
 

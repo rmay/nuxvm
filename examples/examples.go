@@ -80,7 +80,9 @@ func ex3_Absolute() {
 	prog = append(prog, vm.OpLt) // LT (is negative?)
 	negPH := len(prog)
 	prog = append(prog, jz(0)...) // if not negative, skip
-	prog = append(prog, vm.OpNeg) // NEG
+	prog = append(prog, vm.PushInstruction(0)...) // NEGATE = PUSH 0; SWAP; SUB
+	prog = append(prog, vm.OpSwap)
+	prog = append(prog, vm.OpSub)
 	endAddr := int32(len(prog))
 	copy(prog[negPH+1:], enc(endAddr))
 	prog = append(prog, vm.OutNumber()...)
@@ -99,7 +101,7 @@ func ex4_Min() {
 	prog = append(prog, push(21)...)
 	// Stack: [34, 21]
 	prog = append(prog, vm.OpRoll, vm.OpRoll) // ROLL, ROLL -> [34, 21, 34, 21]
-	prog = append(prog, vm.OpGt)              // GT (34 > 21?) -> [34, 21, 1]
+	prog = append(prog, vm.OpSwap, vm.OpLt)   // GT = SWAP; LT  (34 > 21?) -> [34, 21, 1]
 	elsePH := len(prog)
 	prog = append(prog, jz(0)...) // if false (a not > b), a is min
 	// a > b, so b is min

@@ -86,7 +86,7 @@ func buildBounceProgram() []byte {
 	patchJmp(phLtZeroX, offset())
 	p(vm.OpDup)
 	push(int32(vm.FrameWidth - 1))
-	p(vm.OpGt)
+	p(vm.OpSwap); p(vm.OpLt)
 	phHiX := reserveJmp(vm.OpJz)
 	p(vm.OpPop)
 	push(int32(vm.FrameWidth - 1))
@@ -112,7 +112,7 @@ func buildBounceProgram() []byte {
 	patchJmp(phLtZeroY, offset())
 	p(vm.OpDup)
 	push(int32(vm.FrameHeight - 1))
-	p(vm.OpGt)
+	p(vm.OpSwap); p(vm.OpLt)
 	phHiY := reserveJmp(vm.OpJz)
 	p(vm.OpPop)
 	push(int32(vm.FrameHeight - 1))
@@ -140,7 +140,9 @@ func buildBounceProgram() []byte {
 
 	// ── 6. Check keyboard ────────────────────────────────────────────────────
 	p(vm.LoadInstruction(int32(vm.KeyboardStatusAddr))...)
-	phExit := reserveJmp(vm.OpJnz)
+	p(vm.PushInstruction(0)...)
+	p(vm.OpEq)
+	phExit := reserveJmp(vm.OpJz)
 
 	p(vm.JmpInstruction(loopStart)...)
 
@@ -150,8 +152,63 @@ func buildBounceProgram() []byte {
 	return prog
 }
 
+// gameSource is a LUX program for a simple sprite game.
+//
+// Key codes written to the keyboard register by the host:
+//   0 = no key   1 = up   2 = down   3 = left   4 = right
+//
+// Reserved memory layout:
+//   addr  0  player x
+//   addr  4  player y
+const gameSource = `
+( pixel  ( x y color -- )  draw one pixel )
+@pixel SWAP 16 * ROT + 4 * 4096 + STOREI ;
+
+( cls  ( -- )  clear all 128 pixels )
+@cls 0 [ DUP 4 * 4096 + 0 SWAP STOREI INC ] 128 #: DROP ;
+
+( get/set player position )
+@get-x 0 LOADI ;
+@get-y 4 LOADI ;
+@set-x 0 STOREI ;
+@set-y 4 STOREI ;
+
+( clamp x to 0-15, y to 0-7 )
+@clamp-x DUP 0 < [ DROP 0 ] ? DUP 15 > [ DROP 15 ] ? ;
+@clamp-y DUP 0 < [ DROP 0 ] ? DUP 7  > [ DROP 7  ] ? ;
+
+( initialise: player starts at centre )
+8 set-x
+4 set-y
+cls
+get-x get-y 0xffffff pixel
+
+( main game loop - runs forever via tail-call optimisation )
+@tick
+  get-x get-y 0 pixel              ( erase )
+  0x1200 LOADI                      ( read keyboard: key )
+  DUP 1 = [ get-y DEC clamp-y set-y ] ?   ( up    )
+  DUP 2 = [ get-y INC clamp-y set-y ] ?   ( down  )
+  DUP 3 = [ get-x DEC clamp-x set-x ] ?   ( left  )
+  DUP 4 = [ get-x INC clamp-x set-x ] ?   ( right )
+  DROP
+  get-x get-y 0xffffff pixel        ( draw  )
+  YIELD
+  tick ;
+
+tick
+`
+
+func buildGameProgram() []byte {
+	bytecode, err := lux.Compile(gameSource)
+	if err != nil {
+		panic("game compile error: " + err.Error())
+	}
+	return bytecode
+}
+
 func resetVM() {
-	machine = vm.NewVM(buildBounceProgram())
+	machine = vm.NewVM(buildGameProgram())
 	machine.KeyboardHandler = func() int32 { return keyPressed }
 	machine.YieldHandler = func() {}
 	keyPressed = 0
@@ -282,11 +339,7 @@ func runWASM() {
 
 	js.Global().Set("nux_set_keydown", js.FuncOf(func(this js.Value, args []js.Value) any {
 		if len(args) > 0 {
-			if args[0].Bool() {
-				keyPressed = 1
-			} else {
-				keyPressed = 0
-			}
+			keyPressed = int32(args[0].Int())
 		}
 		return nil
 	}))
