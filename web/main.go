@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"syscall/js"
 
+	"github.com/rmay/nuxvm/pkg/lux"
 	"github.com/rmay/nuxvm/pkg/vm"
 )
 
@@ -155,6 +157,85 @@ func resetVM() {
 	keyPressed = 0
 }
 
+// --- LUX REPL state ---
+
+// stdlib is pre-loaded into every REPL session.
+// pixel ( x y color -- )  writes one pixel to the framebuffer.
+// cls   ( -- )             clears the entire framebuffer.
+const replStdlib = `@pixel SWAP 16 * ROT + 4 * 4096 + STOREI ;
+@cls 0 [ DUP 4 * 4096 + 0 SWAP STOREI INC ] 128 #: DROP ;
+`
+
+type replState struct {
+	history     string
+	stack       []int32
+	definitions []string
+	framebuffer []byte // persists across evals
+}
+
+func newReplState() *replState {
+	return &replState{
+		history:     replStdlib,
+		definitions: []string{"pixel", "cls"},
+		framebuffer: make([]byte, vm.VideoBufferSize),
+	}
+}
+
+var repl = newReplState()
+
+func replEval(line string) (stack []int32, output string, errStr string) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return repl.stack, "", ""
+	}
+
+	// Word definition
+	if strings.HasPrefix(line, "@") {
+		if !strings.Contains(line, ";") {
+			return repl.stack, "", "word definition must end with ';'"
+		}
+		repl.history += line + "\n"
+		parts := strings.Fields(line[1:])
+		if len(parts) >= 1 {
+			repl.definitions = append(repl.definitions, parts[0])
+		}
+		return repl.stack, "defined: " + parts[0], ""
+	}
+
+	source := repl.history
+	for _, val := range repl.stack {
+		source += fmt.Sprintf("%d ", val)
+	}
+	source += line
+
+	bytecode, err := lux.Compile(source)
+	if err != nil {
+		return repl.stack, "", err.Error()
+	}
+
+	var outBuf strings.Builder
+	m := vm.NewVM(bytecode)
+	// Restore saved framebuffer so pixels drawn earlier persist.
+	copy(m.Memory()[vm.VideoFramebufferStart:vm.VideoFramebufferStart+vm.VideoBufferSize], repl.framebuffer)
+	m.OutputHandler = func(value int32, format int32) {
+		if format == 1 {
+			outBuf.WriteRune(rune(value))
+		} else {
+			outBuf.WriteString(fmt.Sprintf("%d", value))
+		}
+	}
+	if err := m.Run(); err != nil {
+		return repl.stack, "", err.Error()
+	}
+
+	// Save framebuffer and sync to the display VM so the canvas updates.
+	copy(repl.framebuffer, m.Memory()[vm.VideoFramebufferStart:vm.VideoFramebufferStart+vm.VideoBufferSize])
+	copy(machine.Memory()[vm.VideoFramebufferStart:vm.VideoFramebufferStart+vm.VideoBufferSize], repl.framebuffer)
+
+	repl.stack = m.Stack()
+	return repl.stack, outBuf.String(), ""
+}
+
 // --- WASM Exports ---
 
 func runWASM() {
@@ -177,6 +258,10 @@ func runWASM() {
 
 	js.Global().Set("nux_get_pc", js.FuncOf(func(this js.Value, args []js.Value) any {
 		return int(machine.PC())
+	}))
+
+	js.Global().Set("nux_get_op", js.FuncOf(func(this js.Value, args []js.Value) any {
+		return machine.LastOpcode()
 	}))
 
 	js.Global().Set("nux_get_stack", js.FuncOf(func(this js.Value, args []js.Value) any {
@@ -204,6 +289,40 @@ func runWASM() {
 			}
 		}
 		return nil
+	}))
+
+	js.Global().Set("nux_lux_eval", js.FuncOf(func(this js.Value, args []js.Value) any {
+		line := ""
+		if len(args) > 0 {
+			line = args[0].String()
+		}
+		stack, output, errStr := replEval(line)
+		jsStack := js.Global().Get("Array").New(len(stack))
+		for i, v := range stack {
+			jsStack.SetIndex(i, int(v))
+		}
+		result := js.Global().Get("Object").New()
+		result.Set("stack", jsStack)
+		result.Set("output", output)
+		result.Set("error", errStr)
+		return result
+	}))
+
+	js.Global().Set("nux_lux_reset", js.FuncOf(func(this js.Value, args []js.Value) any {
+		repl = newReplState()
+		// Clear the display framebuffer.
+		for i := vm.VideoFramebufferStart; i < vm.VideoFramebufferStart+vm.VideoBufferSize; i++ {
+			machine.Memory()[i] = 0
+		}
+		return nil
+	}))
+
+	js.Global().Set("nux_lux_get_words", js.FuncOf(func(this js.Value, args []js.Value) any {
+		words := js.Global().Get("Array").New(len(repl.definitions))
+		for i, w := range repl.definitions {
+			words.SetIndex(i, w)
+		}
+		return words
 	}))
 
 	resetVM()

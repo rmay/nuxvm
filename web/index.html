@@ -18,10 +18,10 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: center;
             min-height: 100vh;
             margin: 0;
-            overflow: hidden;
+            padding: 40px 0;
+            overflow-y: auto;
             text-transform: uppercase;
         }
 
@@ -125,6 +125,68 @@
             height: 20px;
         }
 
+        .repl {
+            margin-top: 20px;
+            width: 640px;
+            border: 1px solid var(--neon-green);
+            background: rgba(0, 40, 0, 0.2);
+        }
+
+        .repl-title {
+            font-weight: bold;
+            border-bottom: 1px solid var(--neon-green);
+            padding: 6px 10px;
+        }
+
+        #repl-output {
+            height: 180px;
+            overflow-y: auto;
+            padding: 8px 10px;
+            font-size: 13px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .repl-input-row {
+            display: flex;
+            border-top: 1px solid var(--neon-green);
+        }
+
+        .repl-prompt {
+            padding: 8px 10px;
+            border-right: 1px solid var(--neon-green);
+            flex-shrink: 0;
+        }
+
+        #repl-input {
+            flex: 1;
+            background: transparent;
+            color: var(--neon-green);
+            border: none;
+            outline: none;
+            font-family: inherit;
+            font-size: 13px;
+            padding: 8px 6px;
+        }
+
+        .repl-controls {
+            display: flex;
+            gap: 10px;
+            padding: 8px 10px;
+            border-top: 1px solid var(--neon-green);
+        }
+
+        .repl-controls button {
+            padding: 6px 14px;
+            font-size: 12px;
+        }
+
+        .repl-line-out  { color: #aaffaa; }
+        .repl-line-err  { color: #ff6666; }
+        .repl-line-stack { color: var(--neon-green); }
+        .repl-line-input { color: #66ff66; opacity: 0.7; }
+
         /* Flicker animation */
         @keyframes flicker {
             0% { opacity: 0.97; }
@@ -145,9 +207,24 @@
     
     <div class="container">
         <h1>NUXVM DEVICE I/O</h1>
-        
-        <canvas id="display" width="16" height="8"></canvas>
-        
+
+        <div class="repl">
+            <div class="repl-title">LUX REPL</div>
+            <div id="repl-output"></div>
+            <div class="repl-input-row">
+                <span class="repl-prompt">lux&gt;</span>
+                <input id="repl-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="" />
+            </div>
+            <div class="repl-controls">
+                <button id="repl-run">RUN</button>
+                <button id="repl-clear-stack">CLEAR_STACK</button>
+                <button id="repl-reset">RESET</button>
+                <button id="repl-help">HELP</button>
+            </div>
+        </div>
+
+        <canvas id="display" width="16" height="8" style="margin-top: 20px;"></canvas>
+
         <div class="dashboard">
             <div class="panel">
                 <div class="panel-title">CPU STATUS</div>
@@ -167,7 +244,7 @@
             <button id="btn-run">INIT_SYSTEM</button>
             <button id="btn-reset">REBOOT</button>
         </div>
-        
+
         <div class="status-msg" id="msg">WAITING FOR OPERATOR...</div>
     </div>
 
@@ -201,6 +278,7 @@
             if (!wasmLoaded) return;
             
             pcVal.innerText = nux_get_pc();
+            opVal.innerText = nux_get_op();
             const stack = nux_get_stack();
             stackView.innerHTML = stack.map((v, i) => `[${i}] ${v}`).reverse().join('<br>');
             
@@ -279,29 +357,135 @@
             updateUI();
         });
 
-        window.addEventListener('keydown', (e) => {
+        function nuxKeydown(e) {
             if (!wasmLoaded) return;
-            // Prevent default browser behavior for keys we might want to handle
-            // e.g., prevent spacebar scrolling the page.
             if (e.key === ' ' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
                 e.preventDefault();
             }
             nux_set_keydown(true);
-        });
-
-        window.addEventListener('keyup', (e) => {
+        }
+        function nuxKeyup(e) {
             if (!wasmLoaded) return;
             nux_set_keydown(false);
-        });
+        }
+        window.addEventListener('keydown', nuxKeydown);
+        window.addEventListener('keyup', nuxKeyup);
 
         // Periodic UI update when not running and for initial display
-        // This also helps in polling for audio changes if not using direct callbacks
         setInterval(() => {
             if (!running) {
                 updateUI();
             }
         }, 100);
 
+        // --- LUX REPL ---
+
+        const replOutput = document.getElementById('repl-output');
+        const replInput  = document.getElementById('repl-input');
+        const replHistory = [];
+        let replHistoryIdx = -1;
+
+        function replAppend(text, cls) {
+            const line = document.createElement('div');
+            line.className = cls || '';
+            line.textContent = text;
+            replOutput.appendChild(line);
+            replOutput.scrollTop = replOutput.scrollHeight;
+        }
+
+        function replShowHelp() {
+            replAppend('── LUX REPL ──────────────────────────────', 'repl-line-stack');
+            replAppend('  5 10 +            arithmetic: + - * / mod', 'repl-line-stack');
+            replAppend('  42 .              print number', 'repl-line-stack');
+            replAppend('  72 emit           print char  (72 = H)', 'repl-line-stack');
+            replAppend('  dup swap drop rot stack ops', 'repl-line-stack');
+            replAppend('  x [1 +] 3 #:      repeat x 3 times', 'repl-line-stack');
+            replAppend('  [<] [+] [*] ?:    if-else combinator', 'repl-line-stack');
+            replAppend('  @sq dup * ;       define word', 'repl-line-stack');
+            replAppend('── GRAPHICS (16x8 canvas) ────────────────', 'repl-line-stack');
+            replAppend('  x y color pixel   draw pixel', 'repl-line-stack');
+            replAppend('    color: 0=black  0xffffff=white', 'repl-line-stack');
+            replAppend('    x: 0-15   y: 0-7', 'repl-line-stack');
+            replAppend('  cls                clear screen', 'repl-line-stack');
+            replAppend('  examples:', 'repl-line-stack');
+            replAppend('    0 0 0xffffff pixel', 'repl-line-stack');
+            replAppend('    cls', 'repl-line-stack');
+            replAppend('────────────────────────────────────────', 'repl-line-stack');
+        }
+
+        function replEval() {
+            if (!wasmLoaded) return;
+            const line = replInput.value.trim();
+            replInput.value = '';
+            replHistoryIdx = -1;
+
+            if (line === '') return;
+
+            replHistory.unshift(line);
+            replAppend('lux> ' + line, 'repl-line-input');
+
+            const result = nux_lux_eval(line);
+            if (result.error) {
+                replAppend('error: ' + result.error, 'repl-line-err');
+            } else {
+                if (result.output) {
+                    replAppend(result.output, 'repl-line-out');
+                }
+                const stack = Array.from({length: result.stack.length}, (_, i) => result.stack[i]);
+                replAppend('stack: [' + stack.join(', ') + ']', 'repl-line-stack');
+            }
+            if (!running) updateUI();
+        }
+
+        replInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                replEval();
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (replHistoryIdx + 1 < replHistory.length) {
+                    replHistoryIdx++;
+                    replInput.value = replHistory[replHistoryIdx];
+                }
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (replHistoryIdx > 0) {
+                    replHistoryIdx--;
+                    replInput.value = replHistory[replHistoryIdx];
+                } else {
+                    replHistoryIdx = -1;
+                    replInput.value = '';
+                }
+            }
+        });
+
+        document.getElementById('repl-run').addEventListener('click', replEval);
+
+        document.getElementById('repl-clear-stack').addEventListener('click', () => {
+            if (!wasmLoaded) return;
+            nux_lux_reset();
+            replAppend('stack cleared', 'repl-line-stack');
+        });
+
+        document.getElementById('repl-reset').addEventListener('click', () => {
+            if (!wasmLoaded) return;
+            nux_lux_reset();
+            replOutput.innerHTML = '';
+            replAppend('repl reset', 'repl-line-stack');
+            if (!running) updateUI();
+        });
+
+        document.getElementById('repl-help').addEventListener('click', replShowHelp);
+
+        // Focus REPL input when not running the VM demo
+        replInput.addEventListener('focus', () => {
+            window.removeEventListener('keydown', nuxKeydown);
+            window.removeEventListener('keyup', nuxKeyup);
+        });
+        replInput.addEventListener('blur', () => {
+            window.addEventListener('keydown', nuxKeydown);
+            window.addEventListener('keyup', nuxKeyup);
+        });
 
     </script>
 </body>

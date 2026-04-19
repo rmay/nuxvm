@@ -55,6 +55,12 @@ type VM struct {
 	// YieldHandler is called on OpYield. Use it to render the framebuffer and
 	// control frame rate. The VM blocks until YieldHandler returns.
 	YieldHandler func()
+
+	// OutputHandler is called by OpOut instead of writing to stdout.
+	// format: 0 = print as number, 1 = print as character.
+	OutputHandler func(value int32, format int32)
+
+	lastOpcode byte
 }
 
 // NewVM initializes a new VM with the given program.
@@ -165,6 +171,11 @@ func (vm *VM) ReturnStack() []int32 {
 // PC returns the current program counter
 func (vm *VM) PC() uint32 {
 	return vm.pc
+}
+
+// LastOpcode returns the name of the most recently executed opcode.
+func (vm *VM) LastOpcode() string {
+	return OpcodeName(vm.lastOpcode)
 }
 
 // Running returns whether the VM is currently running
@@ -674,6 +685,10 @@ func (vm *VM) Out() error {
 		return err
 	}
 
+	if vm.OutputHandler != nil {
+		vm.OutputHandler(value, format)
+		return nil
+	}
 	if format == 1 {
 		fmt.Printf("%c", value)
 	} else {
@@ -695,6 +710,7 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		return currentPC, fmt.Errorf("program counter out of bounds")
 	}
 	opcode := vm.memory[vm.pc]
+	vm.lastOpcode = opcode
 	vm.pc++
 
 	if vm.trace {

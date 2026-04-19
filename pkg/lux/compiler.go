@@ -36,6 +36,9 @@ var builtins = map[string]byte{
 	"=": vm.OpEq,
 	"<": vm.OpLt,
 	">": vm.OpGt,
+	// Memory (indirect / dynamic address)
+	"LOADI":  vm.OpLoadI,
+	"STOREI": vm.OpStoreI,
 	// Control flow
 	"EXIT": vm.OpRet,
 }
