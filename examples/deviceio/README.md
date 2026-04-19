@@ -2,7 +2,26 @@
 
 Demonstrates memory-mapped device I/O on the NUXVM stack VM.
 
-## Running
+## Interactive demo
+
+```bash
+go run ./examples/deviceio/demo/
+```
+
+A pixel bounces around a 16 × 8 framebuffer rendered as block characters in the
+terminal. Press **any key** to exit.
+
+The demo shows all three device I/O mechanisms working together:
+
+- **Video framebuffer** — the VM erases and redraws a pixel each frame using
+  `OpStoreI` (indirect store; address computed at runtime from x/y state in
+  reserved memory)
+- **Keyboard register** — wired to real stdin via a goroutine; the VM polls it
+  every frame with `LOAD KeyboardStatusAddr` and halts when a key is pressed
+- **OpYield** — the VM calls `YIELD` at the end of each frame, which triggers
+  the host's render + 15 fps sleep before resuming execution
+
+## Static examples
 
 ```bash
 go run ./examples/deviceio/
