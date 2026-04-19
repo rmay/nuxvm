@@ -2,6 +2,7 @@ package vm
 
 import (
 	"encoding/binary"
+	"fmt"
 	"testing"
 )
 
@@ -58,9 +59,9 @@ func TestNewVM(t *testing.T) {
 	if !vm.Running() {
 		t.Error("Expected VM to be running initially")
 	}
-	expectedMemSize := int(vm.ReservedMemorySize()) + len(program)
+	expectedMemSize := int(ReservedMemorySize) + int(DeviceMemorySize) + len(program)
 	if len(vm.memory) != expectedMemSize {
-		t.Errorf("Expected memory length %d (reserved + program), got %d", expectedMemSize, len(vm.memory))
+		t.Errorf("Expected memory length %d (reserved + device + program), got %d", expectedMemSize, len(vm.memory))
 	}
 	if len(vm.ReturnStack()) != 0 {
 		t.Errorf("Expected empty return stack, got length %d", len(vm.ReturnStack()))
@@ -590,43 +591,21 @@ func TestGt(t *testing.T) {
 }
 
 func TestCallStack(t *testing.T) {
-	// Build program: push quotation addr, call it, halt
+	// Build program: push quotation addr, callstack, halt, then quotation
 	program := []byte{}
-	program = append(program, pushInstruction(10)...) // Push address 10
-	program = append(program, OpCallStack)            // CALLSTACK
-	program = append(program, OpHalt)                 // HALT
-
-	// Pad to address 10
-	for len(program) < 10 {
-		program = append(program, OpHalt)
-	}
-
-	// Quotation at address 10
+	pushAddr := len(program)
+	program = append(program, pushInstruction(0)...) // placeholder address
+	program = append(program, OpCallStack)           // pop addr and call
+	program = append(program, OpHalt)                // reached after RET
+	quotationAddr := len(program)
 	program = append(program, pushInstruction(42)...) // PUSH 42
 	program = append(program, OpRet)                  // RET
 
 	vm := createVMWithProgram(program)
 
-	// Adjust the pushed address to account for reserved memory offset
-	// We need to push the actual address in VM memory space
-	quotationAddr := vm.UserMemoryStart() + 10
+	actualCallTarget := vm.UserMemoryStart() + uint32(quotationAddr)
+	binary.BigEndian.PutUint32(vm.memory[vm.UserMemoryStart()+uint32(pushAddr)+1:], actualCallTarget)
 
-	// Recreate the VM with corrected program
-	program = []byte{}
-	program = append(program, pushInstruction(int32(quotationAddr))...) // Push actual address
-	program = append(program, OpCallStack)                              // CALLSTACK
-	program = append(program, OpHalt)                                   // HALT
-
-	// Pad to address 10 in user space
-	for len(program) < 10 {
-		program = append(program, OpHalt)
-	}
-
-	// Quotation at address 10
-	program = append(program, pushInstruction(42)...) // PUSH 42
-	program = append(program, OpRet)                  // RET
-
-	vm = createVMWithProgram(program)
 	if err := vm.Run(); err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -638,19 +617,26 @@ func TestCallStack(t *testing.T) {
 }
 
 func TestCallStackUnderflow(t *testing.T) {
-	vm := createVMWithProgram([]byte{})
-	err := vm.CallStack()
+	vm := createVMWithProgram([]byte{OpCallStack})
+	_, err := vm.ExecuteInstruction()
 	if err == nil {
 		t.Error("Expected error for CALLSTACK with empty stack")
+	}
+	if !contains(err.Error(), "callstack failed: stack underflow") {
+		t.Errorf("Expected 'callstack failed: stack underflow' error, got: %v", err)
 	}
 }
 
 func TestCallStackInvalidAddress(t *testing.T) {
+	// Test calling an address that's too far out of bounds
 	vm := createVMWithProgram([]byte{})
 	pushValue(t, vm, 10000) // Invalid address
 	err := vm.CallStack()
 	if err == nil {
 		t.Error("Expected error for CALLSTACK with invalid address")
+	}
+	if !contains(err.Error(), "invalid call address: 10000") {
+		t.Errorf("Expected 'invalid call address: 10000' error, got: %v", err)
 	}
 }
 
@@ -660,6 +646,7 @@ func TestJmp(t *testing.T) {
 	jmpAddr := len(program)
 	program = append(program, JmpInstruction(0)...)   // JMP (placeholder)
 	program = append(program, pushInstruction(20)...) // PUSH 20 (skipped)
+	// Target for jump
 	targetAddr := len(program)
 	program = append(program, pushInstruction(30)...) // PUSH 30
 	program = append(program, OpHalt)                 // HALT
@@ -690,7 +677,7 @@ func TestJz(t *testing.T) {
 	jzAddr := len(program)
 	program = append(program, JzInstruction(0)...)    // JZ (placeholder)
 	program = append(program, pushInstruction(20)...) // PUSH 20 (skipped)
-	// Jump target
+	// Target for jump
 	targetAddr := len(program)
 	program = append(program, pushInstruction(30)...) // PUSH 30
 	program = append(program, OpHalt)                 // HALT
@@ -742,7 +729,7 @@ func TestJnz(t *testing.T) {
 	jnzAddr := len(program)
 	program = append(program, JnzInstruction(0)...)   // JNZ (placeholder)
 	program = append(program, pushInstruction(20)...) // PUSH 20 (skipped)
-	// Jump target
+	// Target for jump
 	targetAddr := len(program)
 	program = append(program, pushInstruction(30)...) // PUSH 30
 	program = append(program, OpHalt)                 // HALT
@@ -797,9 +784,6 @@ func TestCallRet(t *testing.T) {
 	program = append(program, OpHalt)                 // HALT
 	// Subroutine at calculated address:
 	subroutineAddr := len(program)
-	for len(program) < subroutineAddr+16 {
-		program = append(program, OpHalt) // Pad
-	}
 	program = append(program, pushInstruction(30)...) // PUSH 30
 	program = append(program, pushInstruction(40)...) // PUSH 40
 	program = append(program, OpAdd)                  // ADD (30+40=70)
@@ -808,7 +792,7 @@ func TestCallRet(t *testing.T) {
 	vm := createVMWithProgram(program)
 
 	// Fix the CALL target to point to actual subroutine address in VM memory
-	actualTarget := vm.UserMemoryStart() + uint32(subroutineAddr+16)
+	actualTarget := vm.UserMemoryStart() + uint32(subroutineAddr)
 	binary.BigEndian.PutUint32(vm.memory[vm.UserMemoryStart()+uint32(callAddr)+1:], actualTarget)
 
 	if err := vm.Run(); err != nil {
@@ -846,22 +830,21 @@ func TestReturnStackOverflow(t *testing.T) {
 
 	vm = createVMWithProgram(program)
 
-	// Position PC at the CALL instruction (it's already there, but making it explicit)
-	// The PC should be at UserMemoryStart(), pointing to the OpCall byte
-
 	// Fill return stack to max capacity
 	// The VM checks against MaxStackSize for return stack overflow
-	for i := 0; i < MaxStackSize; i++ {
+	for i := 0; i < MaxReturnStackSize; i++ { // Use MaxReturnStackSize
 		vm.returnStack = append(vm.returnStack, int32(i))
 	}
 
 	// Call the Call() method directly instead of ExecuteInstruction()
 	// This is necessary because Call() has the overflow check,
-	// but ExecuteInstruction's OpCall case does not
+	// but ExecuteInstruction's OpCall case does not directly check it before delegating.
+	// NOTE: The actual check is inside the Call() method.
 	err := vm.Call()
 	if err == nil {
 		t.Error("Expected error when CALL causes return stack overflow")
-	} else if !contains(err.Error(), "return stack overflow") {
+	}
+	if !contains(err.Error(), "return stack overflow") {
 		t.Errorf("Expected 'return stack overflow' error, got: %v", err)
 	}
 }
@@ -1039,12 +1022,31 @@ func TestUnknownOpcode(t *testing.T) {
 }
 
 func TestPCOutOfBounds(t *testing.T) {
-	program := []byte{OpPush} // PUSH without immediate value
+	// Test PC going out of bounds during instruction fetch
+	program := []byte{OpPush} // PUSH without immediate value, PC will advance past end of program
 	vm := createVMWithProgram(program)
 
 	err := vm.Run()
 	if err == nil {
-		t.Error("Expected error for PC out of bounds")
+		t.Error("Expected error for PC out of bounds during instruction fetch")
+	}
+	if !contains(err.Error(), "program counter out of bounds") {
+		t.Errorf("Expected 'program counter out of bounds' in error, got: %v", err)
+	}
+
+	// Test PC out of bounds due to jump/call
+	// Create a program that jumps/calls beyond the end of the memory
+	programJmp := make([]byte, 10)
+	programJmp[0] = OpJmp
+	binary.BigEndian.PutUint32(programJmp[1:], 99999) // Jump to address well beyond memory
+
+	vmJmp := createVMWithProgram(programJmp)
+	err = vmJmp.Run()
+	if err == nil {
+		t.Error("Expected error for PC out of bounds after JMP")
+	}
+	if !contains(err.Error(), "program counter out of bounds") {
+		t.Errorf("Expected 'program counter out of bounds' in error, got: %v", err)
 	}
 }
 
@@ -1301,20 +1303,22 @@ func TestHelperFunctions(t *testing.T) {
 
 	// Test OutNumber
 	outNum := OutNumber()
+	// OpPush (1 byte) + value (4 bytes) + OpOut (1 byte) = 6 bytes
 	if len(outNum) != 6 {
-		t.Errorf("Expected 6 bytes, got %d", len(outNum))
+		t.Errorf("Expected 6 bytes for OutNumber, got %d", len(outNum))
 	}
-	if outNum[5] != OpOut {
-		t.Errorf("Expected OUT opcode at end, got 0x%02X", outNum[5])
+	if outNum[0] != OpPush || outNum[5] != OpOut {
+		t.Errorf("OutNumber instruction incorrect. Got: %x", outNum)
 	}
 
 	// Test OutCharacter
 	outChar := OutCharacter()
+	// OpPush (1 byte) + value (4 bytes) + OpOut (1 byte) = 6 bytes
 	if len(outChar) != 6 {
-		t.Errorf("Expected 6 bytes, got %d", len(outChar))
+		t.Errorf("Expected 6 bytes for OutCharacter, got %d", len(outChar))
 	}
-	if outChar[5] != OpOut {
-		t.Errorf("Expected OUT opcode at end, got 0x%02X", outChar[5])
+	if outChar[0] != OpPush || outChar[5] != OpOut {
+		t.Errorf("OutCharacter instruction incorrect. Got: %x", outChar)
 	}
 }
 
@@ -1332,10 +1336,10 @@ func TestReservedMemory(t *testing.T) {
 		t.Error("Expected non-zero user memory start")
 	}
 
-	// Test that user memory start equals reserved memory size
-	if vm.UserMemoryStart() != vm.ReservedMemorySize() {
-		t.Errorf("Expected user memory start (%d) to equal reserved memory size (%d)",
-			vm.UserMemoryStart(), vm.ReservedMemorySize())
+	// Test that user memory start equals reserved memory size + device memory size (for NewVM default)
+	if vm.UserMemoryStart() != vm.ReservedMemorySize()+DeviceMemorySize {
+		t.Errorf("Expected user memory start (%d) to equal reserved memory size + device memory size (%d)",
+			vm.UserMemoryStart(), vm.ReservedMemorySize()+DeviceMemorySize)
 	}
 
 	// Test writing to reserved memory
@@ -1357,27 +1361,27 @@ func TestReservedMemory(t *testing.T) {
 		}
 	}
 
-	// Test writing out of bounds
+	// Test writing out of bounds (exactly at reservedSize)
 	err = vm.WriteReservedMemory(vm.ReservedMemorySize(), testData)
 	if err == nil {
-		t.Error("Expected error when writing past reserved memory bounds")
+		t.Error("Expected error when writing exactly at reserved memory size boundary")
 	}
 
-	// Test reading out of bounds
+	// Test reading out of bounds (exactly at reservedSize)
 	_, err = vm.ReadReservedMemory(vm.ReservedMemorySize(), 4)
 	if err == nil {
-		t.Error("Expected error when reading past reserved memory bounds")
+		t.Error("Expected error when reading exactly at reserved memory size boundary")
 	}
 
-	// Test overflow write
+	// Test overflow write (writing beyond reserved memory)
 	largeOffset := vm.ReservedMemorySize() - 2
-	err = vm.WriteReservedMemory(largeOffset, testData)
+	err = vm.WriteReservedMemory(largeOffset, testData) // This write will overflow
 	if err == nil {
 		t.Error("Expected error when write would overflow reserved memory")
 	}
 
-	// Test overflow read
-	_, err = vm.ReadReservedMemory(largeOffset, 4)
+	// Test overflow read (reading beyond reserved memory)
+	_, err = vm.ReadReservedMemory(largeOffset, 4) // This read will overflow
 	if err == nil {
 		t.Error("Expected error when read would overflow reserved memory")
 	}
@@ -1398,17 +1402,19 @@ func TestNewVMWithReservedMemory(t *testing.T) {
 			customReservedSize, vm.ReservedMemorySize())
 	}
 
-	if vm.UserMemoryStart() != customReservedSize {
+	// With DeviceMemorySize, UserMemoryStart should be customReservedSize + DeviceMemorySize
+	expectedUserStart := customReservedSize + DeviceMemorySize
+	if vm.UserMemoryStart() != expectedUserStart {
 		t.Errorf("Expected user memory start %d, got %d",
-			customReservedSize, vm.UserMemoryStart())
+			expectedUserStart, vm.UserMemoryStart())
 	}
 
-	if vm.PC() != customReservedSize {
+	if vm.PC() != expectedUserStart {
 		t.Errorf("Expected PC to start at %d, got %d",
-			customReservedSize, vm.PC())
+			expectedUserStart, vm.PC())
 	}
 
-	expectedMemSize := int(customReservedSize) + len(program)
+	expectedMemSize := int(customReservedSize) + int(DeviceMemorySize) + len(program)
 	if len(vm.memory) != expectedMemSize {
 		t.Errorf("Expected memory length %d, got %d", expectedMemSize, len(vm.memory))
 	}
@@ -1420,7 +1426,7 @@ func TestReservedMemoryInDebugInfo(t *testing.T) {
 	program = append(program, OpHalt)
 
 	vm := createVMWithProgram(program)
-	pushValue(t, vm, 100)
+	pushValue(t, vm, 100) // Add to stack for debug info
 
 	debugInfo := vm.DebugInfo()
 	if debugInfo == "" {
@@ -1443,13 +1449,18 @@ func TestReservedMemoryInDebugInfo(t *testing.T) {
 	if !contains(debugInfo, "User Memory:") {
 		t.Error("Debug info should contain User Memory")
 	}
+	if !contains(debugInfo, fmt.Sprintf("Reserved Memory: 0x0-0x%X (%d bytes)", vm.ReservedMemorySize(), vm.ReservedMemorySize())) {
+		t.Errorf("Debug info missing correct reserved memory range: %s", debugInfo)
+	}
 }
 
 func TestReservedMemoryWithCode(t *testing.T) {
 	// Create a VM
 	program := []byte{}
 	program = append(program, pushInstruction(10)...) // PUSH 10
-	program = append(program, OpHalt)                 // HALT
+	callAddr := len(program)
+	program = append(program, CallInstruction(0)...) // CALL (placeholder)
+	program = append(program, OpHalt)                // HALT
 
 	vm := createVMWithProgram(program)
 
@@ -1459,38 +1470,28 @@ func TestReservedMemoryWithCode(t *testing.T) {
 	subroutine = append(subroutine, pushInstruction(42)...)
 	subroutine = append(subroutine, OpRet)
 
+	// Write subroutine at offset 100 within reserved memory
 	err := vm.WriteReservedMemory(100, subroutine)
 	if err != nil {
-		t.Fatalf("Failed to write subroutine to reserved memory: %v", err)
+		t.Fatalf("Failed to write subroutine to reserved memory at offset 100: %v", err)
 	}
 
-	// Modify program to call the reserved subroutine
-	program2 := []byte{}
-	program2 = append(program2, pushInstruction(10)...)  // PUSH 10
-	program2 = append(program2, CallInstruction(100)...) // CALL reserved subroutine at address 100
-	program2 = append(program2, OpAdd)                   // ADD (10 + 42)
-	program2 = append(program2, OpHalt)                  // HALT
-
-	vm2 := createVMWithProgram(program2)
-
-	// Write the same subroutine
-	err = vm2.WriteReservedMemory(100, subroutine)
-	if err != nil {
-		t.Fatalf("Failed to write subroutine to reserved memory: %v", err)
-	}
+	// Fix the CALL target to point to the actual reserved memory address
+	actualCallTarget := uint32(100) // Address within reserved memory
+	binary.BigEndian.PutUint32(vm.memory[vm.UserMemoryStart()+uint32(callAddr)+1:], actualCallTarget)
 
 	// Run the program
-	if err := vm2.Run(); err != nil {
+	if err := vm.Run(); err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
 
-	// Check result
-	stack := vm2.Stack()
-	if len(stack) != 1 {
-		t.Errorf("Expected stack length 1, got %d", len(stack))
+	// Check result: stack should contain [10, 42]
+	stack := vm.Stack()
+	if len(stack) != 2 {
+		t.Errorf("Expected stack length 2, got %d; stack: %v", len(stack), stack)
 	}
-	if len(stack) >= 1 && stack[0] != 52 {
-		t.Errorf("Expected result 52 (10+42), got %d", stack[0])
+	if len(stack) >= 2 && (stack[0] != 10 || stack[1] != 42) {
+		t.Errorf("Expected stack [10, 42], got %v", stack)
 	}
 }
 
@@ -1609,47 +1610,74 @@ func TestExecuteInstructionErrors(t *testing.T) {
 		{
 			name:    "CALLSTACK underflow",
 			program: []byte{OpCallStack},
-			errMsg:  "callstack failed",
+			errMsg:  "callstack failed: stack underflow",
 		},
 		{
 			name:    "JMP incomplete",
-			program: []byte{OpJmp, 0xFF},
-			errMsg:  "jmp failed",
+			program: []byte{OpJmp, 0xFF}, // Opcode + 1 byte of address
+			errMsg:  "jmp failed: program counter out of bounds",
 		},
 		{
 			name:    "JZ underflow",
-			program: []byte{OpJz, 0x00, 0x00, 0x00, 0x10},
-			errMsg:  "jz failed",
+			program: []byte{OpJz, 0x00, 0x00, 0x00, 0x10}, // JZ instruction + address
+			errMsg:  "jz failed: stack underflow",
+		},
+		{
+			name:    "JZ incomplete",
+			program: []byte{OpJz, 0xFF}, // JZ + 1 byte of address
+			errMsg:  "jz failed: program counter out of bounds",
 		},
 		{
 			name:    "JNZ underflow",
-			program: []byte{OpJnz, 0x00, 0x00, 0x00, 0x10},
-			errMsg:  "jnz failed",
+			program: []byte{OpJnz, 0x00, 0x00, 0x00, 0x10}, // JNZ instruction + address
+			errMsg:  "jnz failed: stack underflow",
+		},
+		{
+			name:    "JNZ incomplete",
+			program: []byte{OpJnz, 0xFF}, // JNZ + 1 byte of address
+			errMsg:  "jnz failed: program counter out of bounds",
 		},
 		{
 			name:    "CALL incomplete",
-			program: []byte{OpCall, 0xFF},
-			errMsg:  "call failed",
+			program: []byte{OpCall, 0xFF}, // Opcode + 1 byte of address
+			errMsg:  "call failed: program counter out of bounds",
 		},
 		{
 			name:    "RET underflow",
 			program: []byte{OpRet},
-			errMsg:  "ret failed",
+			errMsg:  "ret failed: return stack underflow",
 		},
 		{
 			name:    "LOAD incomplete",
-			program: []byte{OpLoad, 0xFF},
-			errMsg:  "load failed",
+			program: []byte{OpLoad, 0xFF}, // Opcode + 1 byte of address
+			errMsg:  "load failed: program counter out of bounds",
 		},
 		{
 			name:    "STORE underflow",
-			program: []byte{OpStore, 0x00, 0x00, 0x00, 0x10},
-			errMsg:  "store failed",
+			program: []byte{OpStore, 0x00, 0x00, 0x00, 0x10}, // STORE instruction + address
+			errMsg:  "store failed: stack underflow",
+		},
+		{
+			name:    "STORE incomplete",
+			program: []byte{OpStore, 0xFF}, // OpStore + 1 byte address
+			setup: func(vm *VM) {
+				// Push a value to be stored
+				pushValue(t, vm, 42)
+			},
+			errMsg: "store failed: program counter out of bounds",
 		},
 		{
 			name:    "OUT underflow",
 			program: []byte{OpOut},
-			errMsg:  "out failed",
+			errMsg:  "out failed: stack underflow",
+		},
+		{
+			name:    "OUT needs 2 values",
+			program: []byte{OpOut}, // OUT
+			setup: func(vm *VM) { // Stack has only 1 value
+				pushValue(t, vm, 42)
+			},
+			errMsg: "out failed: stack underflow",
 		},
 	}
 
@@ -1666,5 +1694,188 @@ func TestExecuteInstructionErrors(t *testing.T) {
 				t.Errorf("Expected error containing '%s', got '%s'", tt.errMsg, err.Error())
 			}
 		})
+	}
+}
+
+// --- Device I/O Tests ---
+
+func TestDeviceReadKeyboardStatus(t *testing.T) {
+	program := []byte{}
+	// Load from keyboard status address
+	program = append(program, LoadInstruction(KeyboardStatusAddr)...)
+	program = append(program, OpHalt)
+
+	vm := createVMWithProgram(program)
+	vm.trace = true // Enable trace for seeing handler calls
+
+	if err := vm.Run(); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	stack := vm.Stack()
+	if len(stack) != 1 {
+		t.Errorf("Expected stack length 1, got %d", len(stack))
+	}
+	// Expecting 1 because it simulates key pressed
+	if stack[0] != 1 {
+		t.Errorf("Expected keyboard status 1, got %d", stack[0])
+	}
+}
+
+func TestDeviceReadVideoFramebuffer(t *testing.T) {
+	program := []byte{}
+	// Load from a video framebuffer address
+	program = append(program, LoadInstruction(VideoFramebufferStart)...)
+	program = append(program, OpHalt)
+
+	vm := createVMWithProgram(program)
+	vm.trace = true // Enable trace for seeing handler calls
+
+	if err := vm.Run(); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	stack := vm.Stack()
+	if len(stack) != 1 {
+		t.Errorf("Expected stack length 1, got %d", len(stack))
+	}
+	// Expecting 0 because reading framebuffer returns 0 in simulation
+	if stack[0] != 0 {
+		t.Errorf("Expected video framebuffer read value 0, got %d", stack[0])
+	}
+}
+
+func TestDeviceWriteVideoFramebuffer(t *testing.T) {
+	program := []byte{}
+	// Push value to write
+	program = append(program, pushInstruction(-1)...) // PUSH a value (e.g., white color)
+	// Store to video framebuffer address
+	program = append(program, StoreInstruction(VideoFramebufferStart)...)
+	program = append(program, OpHalt)
+
+	vm := createVMWithProgram(program)
+	vm.trace = true // Enable trace for seeing handler calls
+
+	// Capture stderr to check for trace messages if needed, but we'll check vm.memory
+	if err := vm.Run(); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Verify the value was written to vm.memory, which simulates the framebuffer
+	// The STORE instruction writes 4 bytes from the stack value.
+	expectedValue := int32(-1)
+	// Note: The actual write happens *after* handleDeviceWrite returns.
+	// The simulation logs the write but relies on the standard memory write for framebuffer.
+	writtenValue := int32(binary.BigEndian.Uint32(vm.memory[VideoFramebufferStart : VideoFramebufferStart+4]))
+	if writtenValue != expectedValue {
+		t.Errorf("Expected video framebuffer memory[%d] = %d, got %d",
+			VideoFramebufferStart, expectedValue, writtenValue)
+	}
+}
+
+func TestDeviceWriteAudioControl(t *testing.T) {
+	program := []byte{}
+	// Push a value representing an audio command
+	program = append(program, pushInstruction(123)...) // Simulate an audio command value
+	// Write to audio control address
+	program = append(program, StoreInstruction(AudioControlAddr)...)
+	program = append(program, OpHalt)
+
+	vm := createVMWithProgram(program)
+	vm.trace = true
+
+	if err := vm.Run(); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Verify the write to vm.memory occurred (as per current Store logic)
+	expectedValue := int32(123)
+	writtenValue := int32(binary.BigEndian.Uint32(vm.memory[AudioControlAddr : AudioControlAddr+4]))
+	if writtenValue != expectedValue {
+		t.Errorf("Expected audio control memory[%d] = %d, got %d",
+			AudioControlAddr, expectedValue, writtenValue)
+	}
+}
+
+func TestDeviceWriteKeyboardStatusUnsupported(t *testing.T) {
+	program := []byte{}
+	// Push a value to write
+	program = append(program, pushInstruction(1)...)
+	// Attempt to write to keyboard status address
+	program = append(program, StoreInstruction(KeyboardStatusAddr)...)
+	program = append(program, OpHalt)
+
+	vm := createVMWithProgram(program)
+	vm.trace = true
+
+	err := vm.Run()
+	if err == nil {
+		t.Error("Expected error when writing to keyboard status address")
+	}
+	if !contains(err.Error(), "writing to keyboard status address") {
+		t.Errorf("Expected error message about unsupported write to keyboard status, got: %v", err)
+	}
+}
+
+func TestDeviceAccessUnhandledAddress(t *testing.T) {
+	program := []byte{}
+	// Address within device memory range but not explicitly handled
+	unhandledDeviceAddr := DeviceMemoryOffset + DeviceMemorySize - 4 // Last 4 bytes of device region, not specifically mapped
+
+	// Test read
+	program = append(program, LoadInstruction(int32(unhandledDeviceAddr))...)
+	// Test write
+	program = append(program, pushInstruction(99)...)
+	program = append(program, StoreInstruction(int32(unhandledDeviceAddr))...)
+	program = append(program, OpHalt)
+
+	vm := createVMWithProgram(program)
+	vm.trace = true
+
+	err := vm.Run()
+	if err == nil {
+		t.Error("Expected error for unhandled device read/write access")
+	}
+	// The error message might come from either load or store depending on execution order,
+	// but it should indicate an unhandled device access.
+	if !contains(err.Error(), "unhandled device read") && !contains(err.Error(), "unhandled device write") {
+		t.Errorf("Expected error related to unhandled device access, got: %v", err)
+	}
+}
+
+func TestDeviceAccessOutsideRange(t *testing.T) {
+	// Test that normal memory access still works and is not redirected
+	normalMemAddr := NewVM([]byte{}).UserMemoryStart() + 100 // Address in normal user memory
+	program := []byte{}
+	// Write to normal memory
+	program = append(program, pushInstruction(123)...)
+	program = append(program, StoreInstruction(int32(normalMemAddr))...)
+	// Read from normal memory
+	program = append(program, LoadInstruction(int32(normalMemAddr))...)
+	program = append(program, OpHalt)
+	// Pad so memory extends to the store/load target address
+	for uint32(len(program)) < 104 {
+		program = append(program, 0)
+	}
+
+	vm := createVMWithProgram(program)
+	vm.trace = true
+
+	if err := vm.Run(); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	stack := vm.Stack()
+	if len(stack) != 1 {
+		t.Errorf("Expected stack length 1, got %d", len(stack))
+	}
+	if stack[0] != 123 {
+		t.Errorf("Expected loaded value 123, got %d", stack[0])
+	}
+
+	// Verify write to normal memory
+	writtenValue := int32(binary.BigEndian.Uint32(vm.memory[normalMemAddr : normalMemAddr+4]))
+	if writtenValue != 123 {
+		t.Errorf("Expected memory[%d] = 123, got %d", normalMemAddr, writtenValue)
 	}
 }

@@ -13,9 +13,28 @@ const MaxReturnStackSize = 1024
 
 // Memory layout constants
 const (
-	ReservedMemorySize   = 4096               // Size of reserved memory for internal use (DIP, quotations, etc.)
-	ReservedMemoryOffset = 0                  // Reserved memory starts at address 0
-	UserMemoryOffset     = ReservedMemorySize // User program starts after reserved memory
+	ReservedMemorySize   = 4096                                  // Size of reserved memory for internal use (DIP, quotations, etc.)
+	ReservedMemoryOffset = 0                                     // Reserved memory starts at address 0
+	DeviceMemorySize     = 1024                                  // Size of memory dedicated to device I/O
+	DeviceMemoryOffset   = ReservedMemorySize                    // Device memory starts after reserved memory
+	UserMemoryOffset     = DeviceMemoryOffset + DeviceMemorySize // User program starts after device memory
+)
+
+// Device memory map constants
+const (
+	// Video Framebuffer: 512 bytes for a simple framebuffer.
+	VideoBufferSize       = 512
+	VideoFramebufferStart = DeviceMemoryOffset
+	VideoFramebufferEnd   = VideoFramebufferStart + VideoBufferSize
+
+	// Keyboard Status: A single byte to check if a key is pressed.
+	KeyboardStatusAddr = DeviceMemoryOffset + VideoBufferSize
+
+	// Audio Control: A single byte for audio command/data.
+	AudioControlAddr = KeyboardStatusAddr + 1
+
+	// Next available device address.
+	FirstAvailableDeviceAddr = AudioControlAddr + 1
 )
 
 // VM represents the stack-based virtual machine.
@@ -33,8 +52,8 @@ type VM struct {
 // NewVM initializes a new VM with the given program.
 // The program is loaded after the reserved memory region.
 func NewVM(program []byte, trace ...bool) *VM {
-	// Allocate memory: reserved region + program
-	totalMemory := make([]byte, ReservedMemorySize+len(program))
+	// Allocate memory: reserved region + device region + program
+	totalMemory := make([]byte, ReservedMemorySize+DeviceMemorySize+len(program))
 
 	// Copy program to user memory area
 	copy(totalMemory[UserMemoryOffset:], program)
@@ -58,25 +77,27 @@ func NewVM(program []byte, trace ...bool) *VM {
 
 // NewVMWithReservedMemory creates a VM with custom reserved memory size
 func NewVMWithReservedMemory(program []byte, reservedSize uint32, trace ...bool) *VM {
-	// Allocate memory: reserved region + program
-	totalMemory := make([]byte, reservedSize+uint32(len(program)))
+	// Allocate memory: reserved region + device region + program
+	totalMemory := make([]byte, reservedSize+DeviceMemorySize+uint32(len(program)))
 
 	// Copy program to user memory area
-	copy(totalMemory[reservedSize:], program)
+	copy(totalMemory[reservedSize+DeviceMemorySize:], program)
 
 	traceEnabled := false
 	if len(trace) > 0 {
 		traceEnabled = trace[0]
 	}
 
+	userStart := reservedSize + DeviceMemorySize
+
 	return &VM{
 		stack:              make([]int32, 0, MaxStackSize),
 		returnStack:        make([]int32, 0, MaxStackSize),
 		memory:             totalMemory,
-		pc:                 reservedSize, // Start execution at user memory
+		pc:                 userStart, // Start execution at user memory
 		running:            true,
 		reservedMemorySize: reservedSize,
-		userMemoryStart:    reservedSize,
+		userMemoryStart:    userStart,
 		trace:              traceEnabled,
 	}
 }
@@ -463,7 +484,7 @@ func (vm *VM) CallStack() error {
 		return fmt.Errorf("invalid call address: %d", addr)
 	}
 
-	if len(vm.returnStack) >= MaxStackSize {
+	if len(vm.returnStack) >= MaxReturnStackSize {
 		return fmt.Errorf("return stack overflow")
 	}
 
@@ -474,30 +495,37 @@ func (vm *VM) CallStack() error {
 
 // Jmp jumps to the specified address.
 func (vm *VM) Jmp() error {
-	if int(vm.pc+4) > len(vm.memory) {
-		return fmt.Errorf("program counter out of bounds for JMP immediate")
+	if int(vm.pc+3) >= len(vm.memory) {
+		return fmt.Errorf("jmp failed: program counter out of bounds")
 	}
-	address := binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4])
-	vm.pc = address
+	addr := int32(binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4]))
+	if vm.trace {
+		fmt.Fprintf(os.Stderr, "VM: OpJmp: Jumping to %d", addr)
+	}
+	vm.pc = uint32(addr)
 	return nil
 }
 
 // Jz pops a value and jumps if it's zero.
 func (vm *VM) Jz() error {
+	if int(vm.pc+3) >= len(vm.memory) {
+		return fmt.Errorf("jz failed: program counter out of bounds")
+	}
+	addr := int32(binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4]))
 	if len(vm.stack) < 1 {
-		return fmt.Errorf("stack underflow: need 1 value for JZ")
+		return fmt.Errorf("jz failed: stack underflow")
 	}
-	cond, err := vm.Pop()
-	if err != nil {
-		return err
-	}
-	if int(vm.pc+4) > len(vm.memory) {
-		return fmt.Errorf("program counter out of bounds for JZ immediate")
-	}
-	address := binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4])
+	cond := vm.stack[len(vm.stack)-1]
+	vm.stack = vm.stack[:len(vm.stack)-1]
 	if cond == 0 {
-		vm.pc = address
+		if vm.trace {
+			fmt.Fprintf(os.Stderr, "VM: OpJz: Condition false, jumping to %d", addr)
+		}
+		vm.pc = uint32(addr)
 	} else {
+		if vm.trace {
+			fmt.Fprintf(os.Stderr, "VM: OpJz: Condition true, skipping jump")
+		}
 		vm.pc += 4
 	}
 	return nil
@@ -505,20 +533,24 @@ func (vm *VM) Jz() error {
 
 // Jnz pops a value and jumps if it's non-zero.
 func (vm *VM) Jnz() error {
+	if int(vm.pc+3) >= len(vm.memory) {
+		return fmt.Errorf("jnz failed: program counter out of bounds")
+	}
+	addr := int32(binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4]))
 	if len(vm.stack) < 1 {
-		return fmt.Errorf("stack underflow: need 1 value for JNZ")
+		return fmt.Errorf("jnz failed: stack underflow")
 	}
-	cond, err := vm.Pop()
-	if err != nil {
-		return err
-	}
-	if int(vm.pc+4) > len(vm.memory) {
-		return fmt.Errorf("program counter out of bounds for JNZ immediate")
-	}
-	address := binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4])
+	cond := vm.stack[len(vm.stack)-1]
+	vm.stack = vm.stack[:len(vm.stack)-1]
 	if cond != 0 {
-		vm.pc = address
+		if vm.trace {
+			fmt.Fprintf(os.Stderr, "VM: OpJnz: Condition true, jumping to %d", addr)
+		}
+		vm.pc = uint32(addr)
 	} else {
+		if vm.trace {
+			fmt.Fprintf(os.Stderr, "VM: OpJnz: Condition false, skipping jump")
+		}
 		vm.pc += 4
 	}
 	return nil
@@ -526,47 +558,57 @@ func (vm *VM) Jnz() error {
 
 // Call pushes return address to RETURN STACK and jumps to subroutine.
 func (vm *VM) Call() error {
-	if int(vm.pc+4) > len(vm.memory) {
-		return fmt.Errorf("program counter out of bounds for CALL immediate")
+	if int(vm.pc+3) >= len(vm.memory) {
+		return fmt.Errorf("call failed: program counter out of bounds")
 	}
-
-	// Push return address to RETURN STACK (not data stack!)
-	if len(vm.returnStack) >= MaxStackSize {
+	addr := int32(binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4]))
+	if len(vm.returnStack) >= MaxReturnStackSize {
 		return fmt.Errorf("return stack overflow")
 	}
 	vm.returnStack = append(vm.returnStack, int32(vm.pc+4))
-
-	// Jump to subroutine
-	address := binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4])
-	vm.pc = address
+	if vm.trace {
+		fmt.Fprintf(os.Stderr, "VM: OpCall: Pushing return addr=%d, jumping to %d", vm.pc+4, addr)
+	}
+	vm.pc = uint32(addr)
 	return nil
 }
 
 // Ret pops an address from RETURN STACK and returns to it.
 func (vm *VM) Ret() error {
-	if len(vm.returnStack) < 1 {
-		return fmt.Errorf("return stack underflow")
+	if len(vm.returnStack) == 0 {
+		return fmt.Errorf("ret failed: return stack underflow")
 	}
-
-	// Pop from return stack
-	address := vm.returnStack[len(vm.returnStack)-1]
+	vm.pc = uint32(vm.returnStack[len(vm.returnStack)-1])
 	vm.returnStack = vm.returnStack[:len(vm.returnStack)-1]
-
-	vm.pc = uint32(address)
+	if vm.trace {
+		fmt.Fprintf(os.Stderr, "VM: OpRet: Returning to addr=%d", vm.pc)
+	}
 	return nil
 }
 
 // Load reads a value from memory and pushes it.
 func (vm *VM) Load() error {
-	if int(vm.pc+4) > len(vm.memory) {
-		return fmt.Errorf("program counter out of bounds for LOAD immediate")
+	if int(vm.pc+3) >= len(vm.memory) {
+		return fmt.Errorf("load failed: program counter out of bounds")
 	}
 	address := binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4])
+	vm.pc += 4
+
+	// Check if the address is within the device memory region
+	if address >= DeviceMemoryOffset && address < UserMemoryOffset {
+		// It's a device memory access, call device handler
+		value, err := vm.handleDeviceRead(address)
+		if err != nil {
+			return fmt.Errorf("device read error at address %d: %v", address, err)
+		}
+		return vm.Push(value)
+	}
+
+	// Standard memory access
 	if int(address)+4 > len(vm.memory) {
 		return fmt.Errorf("load address out of bounds: %d", address)
 	}
 	value := int32(binary.BigEndian.Uint32(vm.memory[address : address+4]))
-	vm.pc += 4
 	return vm.Push(value)
 }
 
@@ -579,15 +621,30 @@ func (vm *VM) Store() error {
 	if err != nil {
 		return err
 	}
-	if int(vm.pc+4) > len(vm.memory) {
-		return fmt.Errorf("program counter out of bounds for STORE immediate")
+	if int(vm.pc+3) >= len(vm.memory) {
+		return fmt.Errorf("store failed: program counter out of bounds")
 	}
 	address := binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4])
+	vm.pc += 4
+
+	// Check if the address is within the device memory region
+	if address >= DeviceMemoryOffset && address < UserMemoryOffset {
+		// It's a device memory access, call device handler
+		err := vm.handleDeviceWrite(address, value)
+		if err != nil {
+			return fmt.Errorf("device write error at address %d: %v", address, err)
+		}
+		// For device registers, we might want to prevent the write to vm.memory here.
+		// However, for framebuffers, vm.memory *is* the simulation.
+		// Current logic proceeds to write to vm.memory if handleDeviceWrite succeeds.
+		// This is acceptable for this simulation's scope.
+	}
+
+	// Standard memory access OR device access that didn't return an error
 	if int(address)+4 > len(vm.memory) {
 		return fmt.Errorf("store address out of bounds: %d", address)
 	}
 	binary.BigEndian.PutUint32(vm.memory[address:address+4], uint32(value))
-	vm.pc += 4
 	return nil
 }
 
@@ -627,17 +684,17 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 	vm.pc++
 
 	if vm.trace {
-		fmt.Fprintf(os.Stderr, "VM: PC=%d, Instruction=%s, Stack=%v, ReturnStack=%v\n", currentPC, OpcodeName(opcode), vm.stack, vm.returnStack)
+		fmt.Fprintf(os.Stderr, "VM: PC=%d, Instruction=%s, Stack=%v, ReturnStack=%v", currentPC, OpcodeName(opcode), vm.stack, vm.returnStack)
 	}
 
 	switch opcode {
 	case OpPush:
 		if int(vm.pc+3) >= len(vm.memory) {
-			return currentPC, fmt.Errorf("push failed: not enough bytes for operand")
+			return currentPC, fmt.Errorf("push failed: program counter out of bounds")
 		}
 		value := int32(binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4]))
 		if vm.trace {
-			fmt.Fprintf(os.Stderr, "VM: OpPush: Pushing value=%d\n", value)
+			fmt.Fprintf(os.Stderr, "VM: OpPush: Pushing value=%d", value)
 		}
 		vm.stack = append(vm.stack, value)
 		vm.pc += 4
@@ -729,34 +786,34 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		if len(vm.stack) < 1 {
 			return currentPC, fmt.Errorf("callstack failed: stack underflow")
 		}
-		if len(vm.returnStack) >= MaxStackSize {
+		if len(vm.returnStack) >= MaxReturnStackSize {
 			return currentPC, fmt.Errorf("call failed: return stack overflow")
 		}
 		addr, err := vm.Pop()
 		if err != nil {
 			return currentPC, fmt.Errorf("callstack failed: %v", err)
 		}
-		if int(addr) >= len(vm.memory) || int(addr) < int(vm.userMemoryStart) {
+		if addr < 0 || int(addr) >= len(vm.memory) {
 			return currentPC, fmt.Errorf("callstack failed: address %d out of bounds", addr)
 		}
 		returnAddr := int32(vm.pc)
 		vm.returnStack = append(vm.returnStack, returnAddr)
 		if vm.trace {
-			fmt.Fprintf(os.Stderr, "VM: OpCallStack: Pushing return addr=%d, jumping to %d\n", returnAddr, addr)
+			fmt.Fprintf(os.Stderr, "VM: OpCallStack: Pushing return addr=%d, jumping to %d", returnAddr, addr)
 		}
 		vm.pc = uint32(addr)
 	case OpJmp:
 		if int(vm.pc+3) >= len(vm.memory) {
-			return currentPC, fmt.Errorf("jmp failed: not enough bytes for operand")
+			return currentPC, fmt.Errorf("jmp failed: program counter out of bounds")
 		}
 		addr := int32(binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4]))
 		if vm.trace {
-			fmt.Fprintf(os.Stderr, "VM: OpJmp: Jumping to %d\n", addr)
+			fmt.Fprintf(os.Stderr, "VM: OpJmp: Jumping to %d", addr)
 		}
 		vm.pc = uint32(addr)
 	case OpJz:
 		if int(vm.pc+3) >= len(vm.memory) {
-			return currentPC, fmt.Errorf("jz failed: not enough bytes for operand")
+			return currentPC, fmt.Errorf("jz failed: program counter out of bounds")
 		}
 		addr := int32(binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4]))
 		if len(vm.stack) < 1 {
@@ -766,18 +823,18 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		vm.stack = vm.stack[:len(vm.stack)-1]
 		if cond == 0 {
 			if vm.trace {
-				fmt.Fprintf(os.Stderr, "VM: OpJz: Condition false, jumping to %d\n", addr)
+				fmt.Fprintf(os.Stderr, "VM: OpJz: Condition false, jumping to %d", addr)
 			}
 			vm.pc = uint32(addr)
 		} else {
 			if vm.trace {
-				fmt.Fprintf(os.Stderr, "VM: OpJz: Condition true, skipping jump\n")
+				fmt.Fprintf(os.Stderr, "VM: OpJz: Condition true, skipping jump")
 			}
 			vm.pc += 4
 		}
 	case OpJnz:
 		if int(vm.pc+3) >= len(vm.memory) {
-			return currentPC, fmt.Errorf("jnz failed: not enough bytes for operand")
+			return currentPC, fmt.Errorf("jnz failed: program counter out of bounds")
 		}
 		addr := int32(binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4]))
 		if len(vm.stack) < 1 {
@@ -787,23 +844,26 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		vm.stack = vm.stack[:len(vm.stack)-1]
 		if cond != 0 {
 			if vm.trace {
-				fmt.Fprintf(os.Stderr, "VM: OpJnz: Condition true, jumping to %d\n", addr)
+				fmt.Fprintf(os.Stderr, "VM: OpJnz: Condition true, jumping to %d", addr)
 			}
 			vm.pc = uint32(addr)
 		} else {
 			if vm.trace {
-				fmt.Fprintf(os.Stderr, "VM: OpJnz: Condition false, skipping jump\n")
+				fmt.Fprintf(os.Stderr, "VM: OpJnz: Condition false, skipping jump")
 			}
 			vm.pc += 4
 		}
 	case OpCall:
 		if int(vm.pc+3) >= len(vm.memory) {
-			return currentPC, fmt.Errorf("call failed: not enough bytes for operand")
+			return currentPC, fmt.Errorf("call failed: program counter out of bounds")
 		}
 		addr := int32(binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4]))
+		if len(vm.returnStack) >= MaxReturnStackSize {
+			return currentPC, fmt.Errorf("return stack overflow")
+		}
 		vm.returnStack = append(vm.returnStack, int32(vm.pc+4))
 		if vm.trace {
-			fmt.Fprintf(os.Stderr, "VM: OpCall: Pushing return addr=%d, jumping to %d\n", vm.pc+4, addr)
+			fmt.Fprintf(os.Stderr, "VM: OpCall: Pushing return addr=%d, jumping to %d", vm.pc+4, addr)
 		}
 		vm.pc = uint32(addr)
 	case OpRet:
@@ -813,7 +873,7 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		vm.pc = uint32(vm.returnStack[len(vm.returnStack)-1])
 		vm.returnStack = vm.returnStack[:len(vm.returnStack)-1]
 		if vm.trace {
-			fmt.Fprintf(os.Stderr, "VM: OpRet: Returning to addr=%d\n", vm.pc)
+			fmt.Fprintf(os.Stderr, "VM: OpRet: Returning to addr=%d", vm.pc)
 		}
 	case OpLoad:
 		if err := vm.Load(); err != nil {
@@ -830,7 +890,7 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 	case OpHalt:
 		vm.running = false
 		if vm.trace {
-			fmt.Fprintf(os.Stderr, "VM: OpHalt: Stopping execution\n")
+			fmt.Fprintf(os.Stderr, "VM: OpHalt: Stopping execution")
 		}
 	default:
 		return currentPC, fmt.Errorf("unknown opcode 0x%02X at PC=%d", opcode, currentPC)
@@ -838,30 +898,29 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 	return currentPC, nil
 }
 
-func (vm *VM) Run() error {
-	for vm.running && int(vm.pc) < len(vm.memory) {
-		// Log instruction, PC, and stack for debugging
-		if vm.trace {
-			fmt.Fprintf(os.Stderr, "PC: %d, Instruction: %s, Stack: %v\n", vm.pc, OpcodeName(vm.memory[vm.pc]), vm.stack)
-		}
-		_, err := vm.ExecuteInstruction()
-		if err != nil {
-			return fmt.Errorf("error at PC=%d: %v", vm.pc, err)
-		}
-	}
-	return nil
-}
-
 // Step executes a single instruction and returns whether to continue.
 func (vm *VM) Step() (bool, error) {
-	if !vm.running || int(vm.pc) >= len(vm.memory) {
+	if !vm.running {
 		return false, nil
+	}
+	if int(vm.pc) >= len(vm.memory) {
+		return false, fmt.Errorf("program counter out of bounds")
 	}
 	_, err := vm.ExecuteInstruction()
 	if err != nil {
 		return false, err
 	}
-	return vm.running && int(vm.pc) < len(vm.memory), nil
+	return vm.running, nil
+}
+
+func (vm *VM) Run() error {
+	for vm.running {
+		_, err := vm.Step()
+		if err != nil {
+			return fmt.Errorf("error at PC=%d: %v", vm.pc, err)
+		}
+	}
+	return nil
 }
 
 // DebugInfo returns detailed state for error reporting
@@ -879,15 +938,15 @@ func (vm *VM) DebugInfo() string {
 	info += fmt.Sprintf("Stack: %v\n", adjustedStack)
 	info += fmt.Sprintf("Stack: %v\n", vm.Stack())
 	info += fmt.Sprintf("Return Stack: %v\n", vm.ReturnStack())
-	info += fmt.Sprintf("Stack Depth: %d/%d\n", len(vm.stack), MaxStackSize)
-	info += fmt.Sprintf("Return Stack Depth: %d/%d\n", len(vm.returnStack), MaxStackSize)
-	info += fmt.Sprintf("Reserved Memory: 0x0-0x%X (%d bytes)\n", vm.reservedMemorySize, vm.reservedMemorySize)
-	info += fmt.Sprintf("User Memory: 0x%X-0x%X\n", vm.userMemoryStart, len(vm.memory))
+	info += fmt.Sprintf("Stack Depth: %d/%d", len(vm.stack), MaxStackSize)
+	info += fmt.Sprintf("Return Stack Depth: %d/%d\\n", len(vm.returnStack), MaxReturnStackSize) // Corrected to MaxReturnStackSize
+	info += fmt.Sprintf("Reserved Memory: 0x0-0x%X (%d bytes)", vm.reservedMemorySize, vm.reservedMemorySize)
+	info += fmt.Sprintf("User Memory: 0x%X-0x%X", vm.userMemoryStart, len(vm.memory))
 
 	// Show current opcode if available
 	if int(vm.pc) < len(vm.memory) {
 		currentOpcode := vm.memory[vm.pc]
-		info += fmt.Sprintf("\nCurrent Instruction: %s (0x%02X)\n",
+		info += fmt.Sprintf("\\nCurrent Instruction: %s (0x%02X)\n",
 			OpcodeName(currentOpcode), currentOpcode)
 	}
 
@@ -901,17 +960,81 @@ func (vm *VM) DebugInfo() string {
 		if end > len(vm.memory) {
 			end = len(vm.memory)
 		}
-		info += "\nBytecode around PC:\n"
+		info += "\\nBytecode around PC:\n"
 		for i := start; i < end; i++ {
 			marker := " "
 			if i == int(vm.pc) {
 				marker = ">"
 			}
 			opcode := vm.memory[i]
-			info += fmt.Sprintf("%s %04d: 0x%02X  %s\n",
+			info += fmt.Sprintf("%s %04d: 0x%02X  %s\\n",
 				marker, i, opcode, OpcodeName(opcode))
 		}
 	}
 
 	return info
+}
+
+// handleDeviceRead simulates reading from a device memory address.
+func (vm *VM) handleDeviceRead(address uint32) (int32, error) {
+	// Video Framebuffer read:
+	if address >= VideoFramebufferStart && address < VideoFramebufferEnd {
+		if vm.trace {
+			fmt.Fprintf(os.Stderr, "VM: Device Read: Video Framebuffer read at %d (returning 0)", address)
+		}
+		return 0, nil
+	}
+
+	// Keyboard Status read:
+	if address == KeyboardStatusAddr {
+		// Simulate key press: return 1 if a key is considered "pressed", 0 otherwise.
+		// For this example, let's always simulate a key press for simplicity in testing.
+		if vm.trace {
+			fmt.Fprintf(os.Stderr, "VM: Device Read: Keyboard Status read at %d (simulating key pressed - returning 1)", address)
+		}
+		return 1, nil // Simulate key pressed
+	}
+
+	// Audio Control read:
+	if address == AudioControlAddr {
+		// Simulate audio status: return 0 for idle.
+		if vm.trace {
+			fmt.Fprintf(os.Stderr, "VM: Device Read: Audio Control read at %d (returning 0 - idle)", address)
+		}
+		return 0, nil
+	}
+
+	// Unhandled device address
+	return 0, fmt.Errorf("unhandled device read at address %d", address)
+}
+
+// handleDeviceWrite simulates writing to a device memory address.
+func (vm *VM) handleDeviceWrite(address uint32, value int32) error {
+	// Video Framebuffer write:
+	if address >= VideoFramebufferStart && address < VideoFramebufferEnd {
+		// This simulates writing to the video memory. The 'value' is a 32-bit integer.
+		if vm.trace {
+			fmt.Fprintf(os.Stderr, "VM: Device Write: Video Framebuffer write at address %d with value %d (will be written to memory)", address, value)
+		}
+		// Acknowledge the operation. The actual write to vm.memory happens in the Store method after this returns.
+		return nil
+	}
+
+	// Keyboard Control write (unsupported):
+	if address == KeyboardStatusAddr {
+		return fmt.Errorf("writing to keyboard status address %d is not supported", address)
+	}
+
+	// Audio Control write:
+	if address == AudioControlAddr {
+		// Simulate an audio command. 'value' could represent a command ID, frequency, etc.
+		if vm.trace {
+			fmt.Fprintf(os.Stderr, "VM: Device Write: Audio Control write at %d with value %d (simulating audio command)", address, value)
+		}
+		// In a real scenario, this would interact with an audio playback system.
+		return nil
+	}
+
+	// Unhandled device address
+	return fmt.Errorf("unhandled device write at address %d with value %d", address, value)
 }
