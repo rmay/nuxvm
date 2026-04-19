@@ -47,6 +47,14 @@ type VM struct {
 	reservedMemorySize uint32  // Size of reserved memory region
 	userMemoryStart    uint32  // Start of user-accessible memory
 	trace              bool
+
+	// KeyboardHandler is called when the keyboard status register is read.
+	// Return 1 if a key is pressed, 0 otherwise. Defaults to always-pressed (1).
+	KeyboardHandler func() int32
+
+	// YieldHandler is called on OpYield. Use it to render the framebuffer and
+	// control frame rate. The VM blocks until YieldHandler returns.
+	YieldHandler func()
 }
 
 // NewVM initializes a new VM with the given program.
@@ -137,6 +145,12 @@ func (vm *VM) ReservedMemorySize() uint32 {
 // UserMemoryStart returns the address where user memory begins
 func (vm *VM) UserMemoryStart() uint32 {
 	return vm.userMemoryStart
+}
+
+// Memory returns a direct slice of the VM's memory.
+// The device framebuffer lives at [VideoFramebufferStart : VideoFramebufferEnd].
+func (vm *VM) Memory() []byte {
+	return vm.memory
 }
 
 // Stack returns a copy of the current stack (for debugging/testing)
@@ -892,6 +906,45 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		if vm.trace {
 			fmt.Fprintf(os.Stderr, "VM: OpHalt: Stopping execution")
 		}
+	case OpYield:
+		if vm.YieldHandler != nil {
+			vm.YieldHandler()
+		}
+	case OpLoadI:
+		addr, err := vm.Pop()
+		if err != nil {
+			return currentPC, fmt.Errorf("loadi failed: %v", err)
+		}
+		if addr < 0 || int(addr)+4 > len(vm.memory) {
+			return currentPC, fmt.Errorf("loadi failed: address %d out of bounds", addr)
+		}
+		if uint32(addr) >= DeviceMemoryOffset && uint32(addr) < UserMemoryOffset {
+			val, err := vm.handleDeviceRead(uint32(addr))
+			if err != nil {
+				return currentPC, fmt.Errorf("loadi device read failed: %v", err)
+			}
+			vm.stack = append(vm.stack, val)
+		} else {
+			vm.stack = append(vm.stack, int32(binary.BigEndian.Uint32(vm.memory[addr:addr+4])))
+		}
+	case OpStoreI:
+		addr, err := vm.Pop()
+		if err != nil {
+			return currentPC, fmt.Errorf("storei failed: %v", err)
+		}
+		value, err := vm.Pop()
+		if err != nil {
+			return currentPC, fmt.Errorf("storei failed: %v", err)
+		}
+		if addr < 0 || int(addr)+4 > len(vm.memory) {
+			return currentPC, fmt.Errorf("storei failed: address %d out of bounds", addr)
+		}
+		if uint32(addr) >= DeviceMemoryOffset && uint32(addr) < UserMemoryOffset {
+			if err := vm.handleDeviceWrite(uint32(addr), value); err != nil {
+				return currentPC, fmt.Errorf("storei device write failed: %v", err)
+			}
+		}
+		binary.BigEndian.PutUint32(vm.memory[addr:addr+4], uint32(value))
 	default:
 		return currentPC, fmt.Errorf("unknown opcode 0x%02X at PC=%d", opcode, currentPC)
 	}
@@ -977,31 +1030,40 @@ func (vm *VM) DebugInfo() string {
 
 // handleDeviceRead simulates reading from a device memory address.
 func (vm *VM) handleDeviceRead(address uint32) (int32, error) {
-	// Video Framebuffer read:
+	// Video Framebuffer read: data lives in vm.memory (written there by Store).
 	if address >= VideoFramebufferStart && address < VideoFramebufferEnd {
-		if vm.trace {
-			fmt.Fprintf(os.Stderr, "VM: Device Read: Video Framebuffer read at %d (returning 0)", address)
+		if int(address)+4 > len(vm.memory) {
+			return 0, fmt.Errorf("framebuffer read out of bounds at address %d", address)
 		}
-		return 0, nil
+		value := int32(binary.BigEndian.Uint32(vm.memory[address : address+4]))
+		if vm.trace {
+			fmt.Fprintf(os.Stderr, "VM: Device Read: Video Framebuffer read at %d = %d", address, value)
+		}
+		return value, nil
 	}
 
 	// Keyboard Status read:
 	if address == KeyboardStatusAddr {
-		// Simulate key press: return 1 if a key is considered "pressed", 0 otherwise.
-		// For this example, let's always simulate a key press for simplicity in testing.
-		if vm.trace {
-			fmt.Fprintf(os.Stderr, "VM: Device Read: Keyboard Status read at %d (simulating key pressed - returning 1)", address)
+		var val int32 = 1 // default: simulate key always pressed
+		if vm.KeyboardHandler != nil {
+			val = vm.KeyboardHandler()
 		}
-		return 1, nil // Simulate key pressed
+		if vm.trace {
+			fmt.Fprintf(os.Stderr, "VM: Device Read: Keyboard Status read at %d = %d", address, val)
+		}
+		return val, nil
 	}
 
-	// Audio Control read:
+	// Audio Control read: returns the last value written (stored in vm.memory).
 	if address == AudioControlAddr {
-		// Simulate audio status: return 0 for idle.
-		if vm.trace {
-			fmt.Fprintf(os.Stderr, "VM: Device Read: Audio Control read at %d (returning 0 - idle)", address)
+		if int(address)+4 > len(vm.memory) {
+			return 0, fmt.Errorf("audio control read out of bounds at address %d", address)
 		}
-		return 0, nil
+		value := int32(binary.BigEndian.Uint32(vm.memory[address : address+4]))
+		if vm.trace {
+			fmt.Fprintf(os.Stderr, "VM: Device Read: Audio Control read at %d = %d", address, value)
+		}
+		return value, nil
 	}
 
 	// Unhandled device address

@@ -39,6 +39,9 @@ const (
 	OpStore     = 0x1D
 	OpOut       = 0x1E
 	OpHalt      = 0x1F
+	OpYield     = 0x20 // Yield to host; triggers YieldHandler if set
+	OpLoadI     = 0x21 // Pop addr from stack, push memory[addr]
+	OpStoreI    = 0x22 // Pop addr from stack, pop value, store value at addr
 )
 
 // OpcodeName returns the human-readable name for an opcode
@@ -108,6 +111,12 @@ func OpcodeName(op byte) string {
 		return "OUT"
 	case OpHalt:
 		return "HALT"
+	case OpYield:
+		return "YIELD"
+	case OpLoadI:
+		return "LOADI"
+	case OpStoreI:
+		return "STOREI"
 	default:
 		return fmt.Sprintf("UNKNOWN(0x%02X)", op)
 	}

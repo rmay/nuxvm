@@ -1044,6 +1044,9 @@ func (c *Compiler) compileIfElse() error {
 
 // compileIf compiles: condition [ true ] ?
 func (c *Compiler) compileIf() error {
+	if len(c.quotations) < 1 {
+		return fmt.Errorf("if requires one quotation at line %d", c.peek().Line)
+	}
 	c.emit(vm.OpSwap)
 	c.emit(vm.OpJz)
 	skipLabel := c.currentOffset() // Use offset, not address
@@ -1064,6 +1067,9 @@ func (c *Compiler) compileIf() error {
 
 // compileUnless compiles: condition [ false ] !:
 func (c *Compiler) compileUnless() error {
+	if len(c.quotations) < 1 {
+		return fmt.Errorf("unless requires one quotation at line %d", c.peek().Line)
+	}
 	c.emit(vm.OpSwap)
 	c.emit(vm.OpJnz)
 	skipLabel := c.currentOffset()
@@ -1084,6 +1090,9 @@ func (c *Compiler) compileUnless() error {
 
 // compileWhile compiles: [ condition ] [ body ] |:
 func (c *Compiler) compileWhile() error {
+	if len(c.quotations) < 2 {
+		return fmt.Errorf("while requires two quotations at line %d", c.peek().Line)
+	}
 	tempCondAddr, err := c.allocTemp(4)
 	if err != nil {
 		return err

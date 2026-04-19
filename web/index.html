@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NUXVM Showcase</title>
+    <style>
+        :root {
+            --neon-green: #39ff14;
+            --dark-bg: #0a0a0a;
+            --crt-glow: rgba(57, 255, 20, 0.2);
+        }
+
+        body {
+            background-color: var(--dark-bg);
+            color: var(--neon-green);
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            text-transform: uppercase;
+        }
+
+        .crt-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: repeating-linear-gradient(
+                0deg,
+                rgba(0, 0, 0, 0.15),
+                rgba(0, 0, 0, 0.15) 1px,
+                transparent 1px,
+                transparent 2px
+            );
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        .container {
+            position: relative;
+            padding: 20px;
+            border: 2px solid var(--neon-green);
+            box-shadow: 0 0 20px var(--crt-glow), inset 0 0 20px var(--crt-glow);
+            background: rgba(0, 20, 0, 0.1);
+        }
+
+        h1 {
+            margin-top: 0;
+            text-align: center;
+            text-shadow: 0 0 10px var(--neon-green);
+            letter-spacing: 4px;
+        }
+
+        canvas {
+            image-rendering: pixelated;
+            border: 1px solid var(--neon-green);
+            width: 640px;
+            height: 320px;
+            background: #000;
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 20px;
+            width: 640px;
+        }
+
+        .panel {
+            border: 1px solid var(--neon-green);
+            padding: 10px;
+            background: rgba(0, 40, 0, 0.2);
+        }
+
+        .panel-title {
+            font-weight: bold;
+            border-bottom: 1px solid var(--neon-green);
+            margin-bottom: 5px;
+            padding-bottom: 2px;
+        }
+
+        #stack-view, #status-view {
+            font-size: 14px;
+            height: 100px;
+            overflow-y: auto;
+        }
+
+        .controls {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            background: transparent;
+            color: var(--neon-green);
+            border: 1px solid var(--neon-green);
+            padding: 10px 20px;
+            cursor: pointer;
+            text-transform: uppercase;
+            font-family: inherit;
+            transition: all 0.2s;
+        }
+
+        button:hover {
+            background: var(--neon-green);
+            color: var(--dark-bg);
+            box-shadow: 0 0 15px var(--neon-green);
+        }
+
+        button:active {
+            transform: translateY(2px);
+        }
+
+        .status-msg {
+            margin-top: 10px;
+            font-size: 12px;
+            height: 20px;
+        }
+
+        /* Flicker animation */
+        @keyframes flicker {
+            0% { opacity: 0.97; }
+            5% { opacity: 0.95; }
+            10% { opacity: 0.9; }
+            15% { opacity: 0.98; }
+            20% { opacity: 0.92; }
+            100% { opacity: 1; }
+        }
+
+        .container {
+            animation: flicker 0.1s infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="crt-overlay"></div>
+    
+    <div class="container">
+        <h1>NUXVM DEVICE I/O</h1>
+        
+        <canvas id="display" width="16" height="8"></canvas>
+        
+        <div class="dashboard">
+            <div class="panel">
+                <div class="panel-title">CPU STATUS</div>
+                <div id="status-view">
+                    PC: <span id="pc-val">0</span><br>
+                    RUNNING: <span id="run-val">FALSE</span><br>
+                    OP: <span id="op-val">-</span>
+                </div>
+            </div>
+            <div class="panel">
+                <div class="panel-title">DATA STACK</div>
+                <div id="stack-view"></div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button id="btn-run">INIT_SYSTEM</button>
+            <button id="btn-reset">REBOOT</button>
+        </div>
+        
+        <div class="status-msg" id="msg">WAITING FOR OPERATOR...</div>
+    </div>
+
+    <script src="wasm_exec.js"></script>
+    <script>
+        const canvas = document.getElementById('display');
+        const ctx = canvas.getContext('2d');
+        const pcVal = document.getElementById('pc-val');
+        const runVal = document.getElementById('run-val');
+        const opVal = document.getElementById('op-val');
+        const stackView = document.getElementById('stack-view');
+        const msg = document.getElementById('msg');
+        const btnRun = document.getElementById('btn-run');
+        const btnReset = document.getElementById('btn-reset');
+
+        let running = false;
+        let wasmLoaded = false;
+
+        const go = new Go();
+        WebAssembly.instantiateStreaming(fetch("nux.wasm"), go.importObject).then((result) => {
+            go.run(result.instance);
+            wasmLoaded = true;
+            msg.innerText = "SYSTEM READY. PRESS ANY KEY TO HALT AFTER INIT.";
+        }).catch(err => {
+            console.error(err);
+            msg.innerText = "SYSTEM FAILURE: WASM LOAD ERROR";
+        });
+
+
+        function updateUI() {
+            if (!wasmLoaded) return;
+            
+            pcVal.innerText = nux_get_pc();
+            const stack = nux_get_stack();
+            stackView.innerHTML = stack.map((v, i) => `[${i}] ${v}`).reverse().join('<br>');
+            
+            // Render Framebuffer
+            const mem = nux_get_memory();
+            const fbOffset = 4096; // VideoFramebufferStart (DeviceMemoryOffset)
+            const frameWidth = 16;
+            const frameHeight = 8;
+
+            const imageData = ctx.createImageData(frameWidth, frameHeight);
+            for (let i = 0; i < frameWidth * frameHeight; i++) {
+                const pixelOffset = fbOffset + i * 4;
+                // Read 4 bytes for each pixel. The Go program seems to write 32-bit values.
+                // Check if the memory slice is long enough.
+                if (pixelOffset + 3 >= mem.length) {
+                    console.error(`Framebuffer read out of bounds at offset ${pixelOffset}`);
+                    break; 
+                }
+                const val = (mem[pixelOffset] << 24) | (mem[pixelOffset+1] << 16) | (mem[pixelOffset+2] << 8) | mem[pixelOffset+3];
+                
+                const idx = i * 4;
+                if (val !== 0) {
+                    imageData.data[idx] = 57;   // Neon green R
+                    imageData.data[idx+1] = 255; // Neon green G
+                    imageData.data[idx+2] = 20;  // Neon green B
+                    imageData.data[idx+3] = 255; // Alpha
+                } else {
+                    imageData.data[idx] = 0;
+                    imageData.data[idx+1] = 0;
+                    imageData.data[idx+2] = 0;
+                    imageData.data[idx+3] = 255;
+                }
+            }
+            ctx.putImageData(imageData, 0, 0);
+
+        }
+
+        function step() {
+            if (!running) return;
+            
+            // Run multiple steps per animation frame for speed
+            for (let i = 0; i < 50; i++) {
+                const stillRunning = nux_step();
+                if (!stillRunning) {
+                    running = false;
+                    runVal.innerText = "HALTED";
+                    msg.innerText = "PROGRAM TERMINATED.";
+                    break;
+                }
+            }
+            
+            updateUI();
+            if (running) {
+                requestAnimationFrame(step);
+            }
+        }
+
+        btnRun.addEventListener('click', () => {
+            if (!wasmLoaded) return;
+            if (running) return;
+            
+            running = true;
+            runVal.innerText = "TRUE";
+            msg.innerText = "EXECUTING BOUNCE_PIXEL_DEMO...";
+            btnRun.innerText = "RESUME_SYSTEM";
+            step();
+        });
+
+        btnReset.addEventListener('click', () => {
+            if (!wasmLoaded) return;
+            nux_reset();
+            running = false;
+            runVal.innerText = "FALSE";
+            btnRun.innerText = "INIT_SYSTEM";
+            msg.innerText = "SYSTEM REBOOTED.";
+            updateUI();
+        });
+
+        window.addEventListener('keydown', (e) => {
+            if (!wasmLoaded) return;
+            // Prevent default browser behavior for keys we might want to handle
+            // e.g., prevent spacebar scrolling the page.
+            if (e.key === ' ' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                e.preventDefault();
+            }
+            nux_set_keydown(true);
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (!wasmLoaded) return;
+            nux_set_keydown(false);
+        });
+
+        // Periodic UI update when not running and for initial display
+        // This also helps in polling for audio changes if not using direct callbacks
+        setInterval(() => {
+            if (!running) {
+                updateUI();
+            }
+        }, 100);
+
+
+    </script>
+</body>
+</html>

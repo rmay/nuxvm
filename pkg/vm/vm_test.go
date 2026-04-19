@@ -1879,3 +1879,93 @@ func TestDeviceAccessOutsideRange(t *testing.T) {
 		t.Errorf("Expected memory[%d] = 123, got %d", normalMemAddr, writtenValue)
 	}
 }
+
+func TestStackLimits(t *testing.T) {
+	vm := createVMWithProgram([]byte{OpHalt})
+	
+	// Test Data Stack Overflow
+	for i := 0; i < MaxStackSize; i++ {
+		if err := vm.Push(int32(i)); err != nil {
+			t.Fatalf("Failed to push value %d: %v", i, err)
+		}
+	}
+	if err := vm.Push(999); err == nil {
+		t.Error("Expected stack overflow error")
+	}
+
+	// Test Return Stack Overflow
+	vm = createVMWithProgram([]byte{OpCall, 0, 0, 0, 0})
+	for i := 0; i < MaxReturnStackSize; i++ {
+		vm.returnStack = append(vm.returnStack, int32(i))
+	}
+	// Attempt a CALL which should fail due to return stack overflow
+	vm.memory[vm.UserMemoryStart()] = OpCall
+	binary.BigEndian.PutUint32(vm.memory[vm.UserMemoryStart()+1:], vm.UserMemoryStart())
+	vm.pc = vm.UserMemoryStart()
+	_, err := vm.ExecuteInstruction()
+	if err == nil || !contains(err.Error(), "return stack overflow") {
+		t.Errorf("Expected return stack overflow error, got: %v", err)
+	}
+}
+
+func TestShlLargeAmount(t *testing.T) {
+	vm := createVMWithProgram([]byte{})
+	
+	// 1 << 33 should be equivalent to 1 << 1 (which is 2)
+	pushValue(t, vm, 1)
+	pushValue(t, vm, 33)
+	if err := vm.Shl(); err != nil {
+		t.Fatalf("Shl failed: %v", err)
+	}
+	val, _ := vm.Pop()
+	if val != 2 {
+		t.Errorf("Expected 2 for 1 << 33 (masked to 1 << 1), got %d", val)
+	}
+
+	// 1 << 32 should be equivalent to 1 << 0 (which is 1)
+	pushValue(t, vm, 1)
+	pushValue(t, vm, 32)
+	vm.Shl()
+	val, _ = vm.Pop()
+	if val != 1 {
+		t.Errorf("Expected 1 for 1 << 32 (masked to 1 << 0), got %d", val)
+	}
+}
+
+func TestLoadStoreBoundaries(t *testing.T) {
+	program := make([]byte, 100)
+	program[0] = OpHalt
+	vm := NewVM(program)
+	memLen := uint32(len(vm.memory))
+
+	// Store at the very last 4 bytes
+	addr := memLen - 4
+	pushValue(t, vm, 0x12345678)
+	
+	// Manually set PC to point to an address we'll use for OpStore/OpLoad
+	// OpStore expects 4 bytes after PC for the address
+	vm.pc = vm.UserMemoryStart()
+	binary.BigEndian.PutUint32(vm.memory[vm.pc:], addr)
+	
+	if err := vm.Store(); err != nil {
+		t.Fatalf("Store at boundary failed: %v", err)
+	}
+
+	// Load it back
+	vm.pc = vm.UserMemoryStart()
+	if err := vm.Load(); err != nil {
+		t.Fatalf("Load from boundary failed: %v", err)
+	}
+	val, _ := vm.Pop()
+	if val != 0x12345678 {
+		t.Errorf("Expected 0x12345678, got 0x%x", val)
+	}
+
+	// Try to store 1 byte past the boundary (should fail)
+	vm.pc = vm.UserMemoryStart()
+	binary.BigEndian.PutUint32(vm.memory[vm.pc:], memLen-3)
+	pushValue(t, vm, 1)
+	if err := vm.Store(); err == nil {
+		t.Error("Expected error for store out of bounds")
+	}
+}
