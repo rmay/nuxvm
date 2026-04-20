@@ -1084,6 +1084,16 @@ func (vm *VM) handleDeviceRead(address uint32) (int32, error) {
 		return value, nil
 	}
 
+	// RNG register read: apply Xorshift32 and return next value.
+	if address == RNGDataAddr {
+		x := vm.rngState
+		x ^= x << 13
+		x ^= x >> 17
+		x ^= x << 5
+		vm.rngState = x
+		return int32(x), nil
+	}
+
 	// RNG register read: advance LCG and return next value.
 	if address == RNGDataAddr {
 		vm.rngState = vm.rngState*1664525 + 1013904223

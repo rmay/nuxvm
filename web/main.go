@@ -212,6 +212,17 @@ const gameSource = `
   0x3000 LOADI
   DUP 0 = [ DROP ] [ process-key ] ?: ;
 
+( --- pixel at next head position --- )
+@pix-new  get-nx get-ny pix-at ;
+
+( --- collision --- )
+@lnot  0 = ;
+@wall?
+  get-nx 0 < get-nx 64 < lnot OR
+  get-ny 0 < OR  get-ny 32 < lnot OR ;
+@self?  pix-new DUP 0 = lnot SWAP APPLE = lnot AND ;
+@apple? pix-new APPLE = ;
+
 ( --- audio: 0x3001 trigger: 1=eat 2=spawn 3=game_over 0=silence --- )
 @get-snd-timer  1632 LOADI ;
 @set-snd-timer  1632 STOREI ;
@@ -223,16 +234,9 @@ const gameSource = `
 @play-eat    1 snd!  10 set-snd-timer ;
 @play-spawn  2 snd!   6 set-snd-timer ;
 
-( --- pixel at next head position --- )
-@pix-new  get-nx get-ny pix-at ;
 
-( --- collision --- )
-@lnot  0 = ;
-@wall?
-  get-nx 0 < get-nx 64 < lnot OR
-  get-ny 0 < OR  get-ny 32 < lnot OR ;
-@self?  pix-new DUP 0 = lnot SWAP APPLE = lnot AND ;
-@apple? pix-new APPLE = ;
+
+
 
 ( --- advance head: update hptr, store seg, draw --- )
 @advance
@@ -445,12 +449,24 @@ func runWASM() {
 	}))
 
 	js.Global().Set("nux_step_frame", js.FuncOf(func(this js.Value, args []js.Value) any {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("PANIC in nux_step_frame: %v\n", r)
+			}
+		}()
+
+		if machine == nil {
+			fmt.Println("VM not initialized")
+			return false
+		}
+
 		for machine.Running() {
 			_, err := machine.Step()
 			if err != nil {
-				fmt.Printf("VM Error: %v", err)
+				fmt.Printf("VM Error: %v\n", err)
 				return false
 			}
+			// Use string comparison for Opcode as defined in vm.go
 			if machine.LastOpcode() == "YIELD" {
 				return true
 			}
