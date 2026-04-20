@@ -310,6 +310,9 @@ func resetVM() {
 	machine = vm.NewVM(buildBounceProgram())
 	machine.KeyboardHandler = func() int32 { return keyPressed }
 	machine.YieldHandler = func() {}
+	machine.SoundHandler = func(soundID int32) {
+		js.Global().Call("nux_play_sound", soundID)
+	}
 	keyPressed = 0
 }
 
@@ -411,6 +414,9 @@ func runWASM() {
 		machine = vm.NewVM(buildGameProgram())
 		machine.KeyboardHandler = func() int32 { return keyPressed }
 		machine.YieldHandler = func() {}
+		machine.SoundHandler = func(soundID int32) {
+			js.Global().Call("nux_play_sound", soundID)
+		}
 		keyPressed = 0
 		return nil
 	}))

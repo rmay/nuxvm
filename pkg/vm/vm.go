@@ -66,6 +66,9 @@ type VM struct {
 	// control frame rate. The VM blocks until YieldHandler returns.
 	YieldHandler func()
 
+	// SoundHandler is called when a sound ID is written to AudioControlAddr.
+	SoundHandler func(soundID int32)
+
 	// OutputHandler is called by OpOut instead of writing to stdout.
 	// format: 0 = print as number, 1 = print as character.
 	OutputHandler func(value int32, format int32)
@@ -1027,24 +1030,6 @@ func (vm *VM) DebugInfo() string {
 	return info
 }
 
-// fillSquareWave fills a raw audio buffer with a square wave at the given frequency.
-// buf must be AudioSampleBufferByteSize bytes; samples are big-endian int32.
-func fillSquareWave(buf []byte, sampleRate, freq, amplitude int32) {
-	period := int(sampleRate / freq)
-	if period < 2 {
-		period = 2
-	}
-	half := period / 2
-	for i := 0; i < AudioSampleBufferSize; i++ {
-		var sample int32
-		if i%period < half {
-			sample = amplitude
-		} else {
-			sample = -amplitude
-		}
-		binary.BigEndian.PutUint32(buf[i*4:i*4+4], uint32(sample))
-	}
-}
 
 // handleDeviceRead simulates reading from a device memory address.
 func (vm *VM) handleDeviceRead(address uint32) (int32, error) {
@@ -1129,20 +1114,10 @@ func (vm *VM) handleDeviceWrite(address uint32, value int32) error {
 		return fmt.Errorf("writing to keyboard status address %d is not supported", address)
 	}
 
-	// Audio Control write: fill the sample buffer with the requested sound.
-	// 0=silence  1=eat apple (880 Hz)  2=spawn apple (440 Hz)  3=game over (110 Hz)
+	// Audio Control write: trigger sound event.
 	if address == AudioControlAddr {
-		buf := vm.memory[AudioSampleBufferAddr : AudioSampleBufferAddr+AudioSampleBufferByteSize]
-		for i := range buf {
-			buf[i] = 0
-		}
-		switch value {
-		case 1:
-			fillSquareWave(buf, 22050, 880, 90)
-		case 2:
-			fillSquareWave(buf, 22050, 440, 50)
-		case 3:
-			fillSquareWave(buf, 22050, 110, 100)
+		if vm.SoundHandler != nil {
+			vm.SoundHandler(value)
 		}
 		return nil
 	}
