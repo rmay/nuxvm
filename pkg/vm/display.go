@@ -6,10 +6,10 @@ import (
 )
 
 // FrameWidth and FrameHeight define the logical pixel dimensions of the framebuffer.
-// 16 × 8 = 128 pixels × 4 bytes each = 512 bytes (VideoBufferSize).
+// 64 × 32 = 2048 pixels × 4 bytes each = 8192 bytes (VideoBufferSize).
 const (
-	FrameWidth  = 16
-	FrameHeight = 8
+	FrameWidth  = 64
+	FrameHeight = 32
 )
 
 // RenderFramebuffer returns the video framebuffer as a terminal-safe grid.

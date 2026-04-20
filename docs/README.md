@@ -58,7 +58,7 @@ go test -v
 ## Quick Example
 
 ```go
-import "gvapor.solarvoid.com/russell/nuxvm"
+import "github.com/rmay/nuxvm"
 
 // Create a simple program: 5 + 3
 program := []byte{}

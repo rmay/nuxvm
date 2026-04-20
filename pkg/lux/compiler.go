@@ -39,6 +39,7 @@ var builtins = map[string]byte{
 	"STOREI": vm.OpStoreI,
 	// Control flow
 	"EXIT":  vm.OpRet,
+	"HALT":  vm.OpHalt,
 	"YIELD": vm.OpYield,
 }
 
@@ -456,6 +457,17 @@ func (c *Compiler) compileToken(token Token) error {
 			c.emit(vm.OpPush)
 			c.emit(vm.EncodeInt32(0)...)
 			c.emit(vm.OpSwap, vm.OpSub)
+			return nil
+		}
+		if wordName == "RND" {
+			c.emit(vm.OpPush)
+			c.emit(vm.EncodeInt32(int32(vm.RNGDataAddr))...)
+			c.emit(vm.OpLoadI)
+			return nil
+		}
+		if wordName == "SND" {
+			c.emit(vm.OpPush)
+			c.emit(vm.EncodeInt32(int32(vm.AudioSampleBufferAddr))...)
 			return nil
 		}
 		if opcode, ok := builtins[wordName]; ok {

@@ -28,7 +28,7 @@ go run main.go vm_examples.go
 ### ✅ Example 3: Absolute Value
 **Input:** -25  
 **Output:** 25  
-**Demonstrates:** Conditional execution, NEG operation
+**Demonstrates:** Conditional execution, negate (PUSH 0; SWAP; SUB)
 
 ### ✅ Example 4: Minimum of Two Numbers
 **Input:** 34, 21  
@@ -70,7 +70,7 @@ func ex1_GCD() {
     // ... algorithm ...
     
     prog = append(prog, jmp(loop)...)
-    prog = append(prog, 0x1E, 0x1F) // OUT, HALT
+    prog = append(prog, 0x1B, 0x1C) // OUT, HALT
     
     // Run it!
     vm := NewVM(prog)
@@ -101,11 +101,11 @@ func myExample() {
     
     // 2. Your algorithm
     // Use opcodes: 0x00=PUSH, 0x01=POP, 0x02=DUP, 0x03=SWAP
-    //              0x04=OVER, 0x05=ROT, 0x06=ADD, etc.
+    //              0x04=ROLL, 0x05=ROT, 0x06=ADD, etc.
     
     // 3. Output and halt
-    prog = append(prog, 0x1E) // OUT
-    prog = append(prog, 0x1F) // HALT
+    prog = append(prog, 0x1B) // OUT
+    prog = append(prog, 0x1C) // HALT
     
     // 4. Run
     fmt.Print("Result: ")
@@ -117,29 +117,43 @@ func myExample() {
 
 ## Opcode Quick Reference
 
-| Hex  | Name | Action |
-|------|------|--------|
-| 0x00 | PUSH | Push 32-bit value |
-| 0x01 | POP  | Pop and discard |
-| 0x02 | DUP  | Duplicate top |
-| 0x03 | SWAP | Swap top two |
-| 0x04 | OVER | Copy 2nd to top |
-| 0x05 | ROT  | Rotate top 3 |
-| 0x06 | ADD  | Add top two |
-| 0x07 | SUB  | Subtract |
-| 0x08 | MUL  | Multiply |
-| 0x09 | DIV  | Divide |
-| 0x0A | MOD  | Modulus |
-| 0x0B | INC  | Increment |
-| 0x0C | DEC  | Decrement |
-| 0x0D | NEG  | Negate |
-| 0x13 | EQ   | Equal? (1 or 0) |
-| 0x14 | LT   | Less than? |
-| 0x15 | GT   | Greater than? |
-| 0x17 | JMP  | Jump to address |
-| 0x18 | JZ   | Jump if zero |
-| 0x1E | OUT  | Output value |
-| 0x1F | HALT | Stop |
+| Hex  | Name      | Action |
+|------|-----------|--------|
+| 0x00 | PUSH      | Push 32-bit value |
+| 0x01 | POP       | Pop and discard |
+| 0x02 | DUP       | Duplicate top |
+| 0x03 | SWAP      | Swap top two |
+| 0x04 | ROLL      | Roll nth element to top |
+| 0x05 | ROT       | Rotate top 3 |
+| 0x06 | ADD       | Add top two |
+| 0x07 | SUB       | Subtract |
+| 0x08 | MUL       | Multiply |
+| 0x09 | DIV       | Divide |
+| 0x0A | MOD       | Modulus |
+| 0x0B | INC       | Increment |
+| 0x0C | DEC       | Decrement |
+| 0x0D | AND       | Bitwise AND |
+| 0x0E | OR        | Bitwise OR |
+| 0x0F | XOR       | Bitwise XOR |
+| 0x10 | NOT       | Bitwise NOT |
+| 0x11 | SHL       | Left shift |
+| 0x12 | EQ        | Equal? (1 or 0) |
+| 0x13 | LT        | Less than? |
+| 0x14 | CALLSTACK | Call address from stack |
+| 0x15 | JMP       | Jump to address |
+| 0x16 | JZ        | Jump if zero |
+| 0x17 | CALL      | Call inline address |
+| 0x18 | RET       | Return from call |
+| 0x19 | LOAD      | Load from inline address |
+| 0x1A | STORE     | Store to inline address |
+| 0x1B | OUT       | Output value (format + value) |
+| 0x1C | HALT      | Stop |
+| 0x1D | YIELD     | Yield to host |
+| 0x1E | LOADI     | Indirect load (address from stack) |
+| 0x1F | STOREI    | Indirect store (address from stack) |
+
+> **Removed opcodes**: NEG, GT, JNZ no longer exist. Use `PUSH 0; SWAP; SUB` for
+> negate, `SWAP; LT` for greater-than, and `PUSH 0; EQ; JZ` for jump-if-nonzero.
 
 ## Stack Notation
 
@@ -188,7 +202,7 @@ copy(prog[endPH+1:], enc(endAddr))
 1. **Track Stack State** - Comment what's on the stack after each operation
 2. **Calculate Addresses** - Jump addresses must be computed after the code is placed
 3. **Test Incrementally** - Build programs one section at a time
-4. **Use OVER for Peeking** - Copy values without consuming them
+4. **Use ROLL for Peeking** - Copy values without consuming them
 5. **Watch for Underflows** - Ensure enough values are on stack for operations
 
 ## Try These Challenges

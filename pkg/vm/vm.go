@@ -15,15 +15,15 @@ const MaxReturnStackSize = 1024
 const (
 	ReservedMemorySize   = 4096                                  // Size of reserved memory for internal use (DIP, quotations, etc.)
 	ReservedMemoryOffset = 0                                     // Reserved memory starts at address 0
-	DeviceMemorySize     = 1024                                  // Size of memory dedicated to device I/O
+	DeviceMemorySize     = 12288                                 // Size of memory dedicated to device I/O (video + registers + audio buffer)
 	DeviceMemoryOffset   = ReservedMemorySize                    // Device memory starts after reserved memory
 	UserMemoryOffset     = DeviceMemoryOffset + DeviceMemorySize // User program starts after device memory
 )
 
 // Device memory map constants
 const (
-	// Video Framebuffer: 512 bytes for a simple framebuffer.
-	VideoBufferSize       = 512
+	// Video Framebuffer: 8192 bytes for a 64×32 framebuffer.
+	VideoBufferSize       = 8192
 	VideoFramebufferStart = DeviceMemoryOffset
 	VideoFramebufferEnd   = VideoFramebufferStart + VideoBufferSize
 
@@ -33,8 +33,18 @@ const (
 	// Audio Control: A single byte for audio command/data.
 	AudioControlAddr = KeyboardStatusAddr + 1
 
-	// Next available device address.
-	FirstAvailableDeviceAddr = AudioControlAddr + 1
+	// RNG register: read returns next pseudo-random int32 (LCG); write sets seed.
+	RNGDataAddr = AudioControlAddr + 1
+
+	// Audio Sample Buffer: 512 int32 samples (2048 bytes) for Mac Plus/SE-style looping PCM.
+	// Starts at 0x3010, leaving 0x3006–0x300F for future control registers.
+	// Each sample is an int32 in [-128, 127]; JS reads and plays on a continuous loop.
+	AudioSampleBufferAddr     = RNGDataAddr + 14 // 0x3010
+	AudioSampleBufferSize     = 512              // sample count
+	AudioSampleBufferByteSize = AudioSampleBufferSize * 4
+
+	// Next available device address (after audio buffer).
+	FirstAvailableDeviceAddr = AudioSampleBufferAddr + AudioSampleBufferByteSize
 )
 
 // VM represents the stack-based virtual machine.
@@ -61,6 +71,7 @@ type VM struct {
 	OutputHandler func(value int32, format int32)
 
 	lastOpcode byte
+	rngState   uint32 // LCG state for RNGDataAddr reads
 }
 
 // NewVM initializes a new VM with the given program.
@@ -86,6 +97,7 @@ func NewVM(program []byte, trace ...bool) *VM {
 		reservedMemorySize: ReservedMemorySize,
 		userMemoryStart:    UserMemoryOffset,
 		trace:              traceEnabled,
+		rngState:           1,
 	}
 }
 
@@ -1015,6 +1027,25 @@ func (vm *VM) DebugInfo() string {
 	return info
 }
 
+// fillSquareWave fills a raw audio buffer with a square wave at the given frequency.
+// buf must be AudioSampleBufferByteSize bytes; samples are big-endian int32.
+func fillSquareWave(buf []byte, sampleRate, freq, amplitude int32) {
+	period := int(sampleRate / freq)
+	if period < 2 {
+		period = 2
+	}
+	half := period / 2
+	for i := 0; i < AudioSampleBufferSize; i++ {
+		var sample int32
+		if i%period < half {
+			sample = amplitude
+		} else {
+			sample = -amplitude
+		}
+		binary.BigEndian.PutUint32(buf[i*4:i*4+4], uint32(sample))
+	}
+}
+
 // handleDeviceRead simulates reading from a device memory address.
 func (vm *VM) handleDeviceRead(address uint32) (int32, error) {
 	// Video Framebuffer read: data lives in vm.memory (written there by Store).
@@ -1053,6 +1084,20 @@ func (vm *VM) handleDeviceRead(address uint32) (int32, error) {
 		return value, nil
 	}
 
+	// RNG register read: advance LCG and return next value.
+	if address == RNGDataAddr {
+		vm.rngState = vm.rngState*1664525 + 1013904223
+		return int32(vm.rngState), nil
+	}
+
+	// Audio Sample Buffer read: data lives in vm.memory.
+	if address >= AudioSampleBufferAddr && address < AudioSampleBufferAddr+AudioSampleBufferByteSize {
+		if int(address)+4 > len(vm.memory) {
+			return 0, fmt.Errorf("audio buffer read out of bounds at address %d", address)
+		}
+		return int32(binary.BigEndian.Uint32(vm.memory[address : address+4])), nil
+	}
+
 	// Unhandled device address
 	return 0, fmt.Errorf("unhandled device read at address %d", address)
 }
@@ -1074,13 +1119,32 @@ func (vm *VM) handleDeviceWrite(address uint32, value int32) error {
 		return fmt.Errorf("writing to keyboard status address %d is not supported", address)
 	}
 
-	// Audio Control write:
+	// Audio Control write: fill the sample buffer with the requested sound.
+	// 0=silence  1=eat apple (880 Hz)  2=spawn apple (440 Hz)  3=game over (110 Hz)
 	if address == AudioControlAddr {
-		// Simulate an audio command. 'value' could represent a command ID, frequency, etc.
-		if vm.trace {
-			fmt.Fprintf(os.Stderr, "VM: Device Write: Audio Control write at %d with value %d (simulating audio command)", address, value)
+		buf := vm.memory[AudioSampleBufferAddr : AudioSampleBufferAddr+AudioSampleBufferByteSize]
+		for i := range buf {
+			buf[i] = 0
 		}
-		// In a real scenario, this would interact with an audio playback system.
+		switch value {
+		case 1:
+			fillSquareWave(buf, 22050, 880, 90)
+		case 2:
+			fillSquareWave(buf, 22050, 440, 50)
+		case 3:
+			fillSquareWave(buf, 22050, 110, 100)
+		}
+		return nil
+	}
+
+	// RNG register write: seed the LCG.
+	if address == RNGDataAddr {
+		vm.rngState = uint32(value)
+		return nil
+	}
+
+	// Audio Sample Buffer write: passes through to vm.memory.
+	if address >= AudioSampleBufferAddr && address < AudioSampleBufferAddr+AudioSampleBufferByteSize {
 		return nil
 	}
 

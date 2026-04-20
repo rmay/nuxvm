@@ -8,7 +8,7 @@ Demonstrates memory-mapped device I/O on the NUXVM stack VM.
 go run ./examples/deviceio/demo/
 ```
 
-A pixel bounces around a 16 × 8 framebuffer rendered as block characters in the
+A pixel bounces around a 64 × 32 framebuffer rendered as block characters in the
 terminal. Press **any key** to exit.
 
 The demo shows all three device I/O mechanisms working together:
@@ -36,10 +36,12 @@ From the repo root. Expected output:
 
 ╔══ EXAMPLE 6: Device Memory Map ══╗
   Reserved memory:     0x0000–0x0FFF (4096 bytes)
-  Video framebuffer:   0x1000–0x11FF (512 bytes)
-  Keyboard status:     0x1200
-  Audio control:       0x1201
-  User memory start:   0x1400
+  Video framebuffer:   0x1000–0x2FFF (8192 bytes, 64×32 pixels × 4 bytes)
+  Keyboard status:     0x3000
+  Audio control:       0x3001
+  RNG data:            0x3002
+  Audio sample buffer: 0x3010–0x380F (2048 bytes, 512 × int32 samples)
+  User memory start:   0x4000
 ...
 ```
 
@@ -50,10 +52,12 @@ The VM's address space is divided into three regions:
 | Region | Start | End | Size | Description |
 |--------|-------|-----|------|-------------|
 | Reserved | `0x0000` | `0x0FFF` | 4096 B | Internal use (DIP, temporaries) |
-| Video framebuffer | `0x1000` | `0x11FF` | 512 B | Pixel/display data |
-| Keyboard status | `0x1200` | `0x1200` | 1 reg | Read: 1 if key held, 0 otherwise |
-| Audio control | `0x1201` | `0x1201` | 1 reg | Write: send audio command; Read: last value written |
-| User memory | `0x1400` | — | remainder | Program and data |
+| Video framebuffer | `0x1000` | `0x2FFF` | 8192 B | 64×32 pixels, 4 bytes each (0x00RRGGBB big-endian) |
+| Keyboard status | `0x3000` | `0x3000` | 1 reg | Read: direction (0=none 1=up 2=down 3=left 4=right) |
+| Audio control | `0x3001` | `0x3001` | 1 reg | Write: send audio command; Read: last value written |
+| RNG data | `0x3002` | `0x3005` | 1 reg | Read: next pseudo-random int32 (advances LCG state); Write: seed |
+| Audio sample buffer | `0x3010` | `0x380F` | 512 × int32 | Looping PCM; write int32 samples in [-128, 127]; JS plays continuously |
+| User memory | `0x4000` | — | remainder | Program and data |
 
 Reads and writes to the device region go through device handlers in `pkg/vm/vm.go`. Accesses outside this region use plain memory.
 
@@ -75,15 +79,17 @@ Reads and writes to the device region go through device handlers in `pkg/vm/vm.g
 Programs interact with devices using the standard `LOAD` and `STORE` instructions with device-region addresses:
 
 ```go
-// Write pixel value 0xFF0000 to framebuffer[0]
-prog = append(prog, push(0xFF0000)...)
+// Write pixel color 0x00FF00 (green) to framebuffer pixel 0
+prog = append(prog, push(0x00FF00)...)
 prog = append(prog, store(vm.VideoFramebufferStart)...)
 
 // Read it back
 prog = append(prog, load(vm.VideoFramebufferStart)...)
 ```
 
-The VM intercepts any `LOAD`/`STORE` whose address falls in `[0x1000, 0x1400)` and routes it through `handleDeviceRead` / `handleDeviceWrite` in `pkg/vm/vm.go`. Accesses outside that range use plain memory directly.
+Pixel colors are stored as `0x00RRGGBB` big-endian. Each pixel occupies 4 bytes; pixel `(x, y)` is at `VideoFramebufferStart + (y*64 + x)*4`.
+
+The VM intercepts any `LOAD`/`STORE` whose address falls in `[0x1000, 0x3200)` and routes it through `handleDeviceRead` / `handleDeviceWrite` in `pkg/vm/vm.go`. Accesses outside that range use plain memory directly.
 
 ### Keyboard register
 
@@ -93,10 +99,15 @@ The keyboard status register is read-only. Writing to it returns an error:
 device write error: writing to keyboard status address 4608 is not supported
 ```
 
+### RNG register
+
+Reading `RNGDataAddr` (`0x3002`) advances an internal LCG state and returns the next pseudo-random `int32`. Writing to it seeds the generator.
+
 ### Simulation behaviour
 
 | Device | Read | Write |
 |--------|------|-------|
 | Video framebuffer | Returns value last written | Stores to `vm.memory` |
-| Keyboard status | Returns 1 (key always simulated as pressed) | Error |
+| Keyboard status | Returns direction code (0–4); wired to real input in demos | Error |
 | Audio control | Returns value last written | Stores to `vm.memory` |
+| RNG data | Advances LCG, returns next int32 | Seeds the LCG state |

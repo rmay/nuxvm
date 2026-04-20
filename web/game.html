@@ -168,6 +168,51 @@
         let running = false;
         let wasmLoaded = false;
 
+        // --- Audio (Mac Plus/SE style: looping 512-sample int32 PCM buffer) ---
+        const AUDIO_SAMPLE_COUNT = 512;
+        let audioCtx = null;
+        let audioSource = null;
+
+        function startAudio() {
+            if (audioCtx) return;
+            try {
+                audioCtx = new AudioContext();
+                audioCtx.resume();
+            } catch(e) {
+                console.warn('audio init failed:', e);
+                audioCtx = null;
+            }
+        }
+
+        function stopAudio() {
+            if (audioSource) { try { audioSource.stop(); } catch(e) {} audioSource = null; }
+            if (audioCtx) { audioCtx.close(); audioCtx = null; }
+        }
+
+        // Called each game tick to sync the audio buffer from WASM memory.
+        function updateAudio() {
+            if (!audioCtx) return;
+            try {
+                const raw = nux_get_audio_buffer();
+                const rate = audioCtx.sampleRate;
+                const abuf = audioCtx.createBuffer(1, AUDIO_SAMPLE_COUNT, rate);
+                const out = abuf.getChannelData(0);
+                for (let i = 0; i < AUDIO_SAMPLE_COUNT; i++) {
+                    const p = i * 4;
+                    let s = (raw[p] << 24) | (raw[p+1] << 16) | (raw[p+2] << 8) | raw[p+3];
+                    out[i] = Math.max(-1, Math.min(1, s / 128.0));
+                }
+                if (audioSource) { try { audioSource.stop(); } catch(e) {} }
+                audioSource = audioCtx.createBufferSource();
+                audioSource.buffer = abuf;
+                audioSource.loop = true;
+                audioSource.connect(audioCtx.destination);
+                audioSource.start();
+            } catch(e) {
+                console.warn('audio update failed:', e);
+            }
+        }
+
         const go = new Go();
         WebAssembly.instantiateStreaming(fetch("nux.wasm"), go.importObject).then((result) => {
             go.run(result.instance);
@@ -178,6 +223,12 @@
             msg.innerText = "SYSTEM FAILURE: WASM LOAD ERROR";
         });
 
+        function readScore() {
+            const mem = nux_get_memory();
+            // Score is big-endian int32 at reserved memory addr 8
+            return ((mem[8] << 24) | (mem[9] << 16) | (mem[10] << 8) | mem[11]) >>> 0;
+        }
+
         function updateDisplay() {
             const mem = nux_get_memory();
             const fbOffset = 4096;
@@ -185,40 +236,54 @@
             const imageData = ctx.createImageData(frameWidth, frameHeight);
             for (let i = 0; i < frameWidth * frameHeight; i++) {
                 const p = fbOffset + i * 4;
-                const val = (mem[p] << 24) | (mem[p+1] << 16) | (mem[p+2] << 8) | mem[p+3];
+                // stored as 0x00RRGGBB big-endian: bytes [0x00, R, G, B]
+                const r = mem[p + 1];
+                const g = mem[p + 2];
+                const b = mem[p + 3];
                 const idx = i * 4;
-                if (val !== 0) {
-                    imageData.data[idx]   = 57;
-                    imageData.data[idx+1] = 255;
-                    imageData.data[idx+2] = 20;
-                    imageData.data[idx+3] = 255;
-                } else {
-                    imageData.data[idx]   = 0;
-                    imageData.data[idx+1] = 0;
-                    imageData.data[idx+2] = 0;
-                    imageData.data[idx+3] = 255;
-                }
+                imageData.data[idx]     = r;
+                imageData.data[idx + 1] = g;
+                imageData.data[idx + 2] = b;
+                imageData.data[idx + 3] = 255;
             }
             ctx.putImageData(imageData, 0, 0);
         }
 
+        let frameCounter = 0;
+        const FRAMES_PER_TICK = 6; // 60fps / 6 = ~10 game ticks/sec
         function step() {
             if (!running) return;
-            const stillRunning = nux_step_frame();
-            if (!stillRunning) {
-                running = false;
-                msg.innerText = "PROGRAM TERMINATED.";
+            try {
+                frameCounter = (frameCounter + 1) % FRAMES_PER_TICK;
+                if (frameCounter === 0) {
+                    const stillRunning = nux_step_frame();
+                    if (!stillRunning) {
+                        running = false;
+                        updateDisplay();
+                        updateAudio();
+                        setTimeout(stopAudio, 1200);
+                        msg.innerText = `GAME OVER — SCORE: ${readScore()}`;
+                        btnRun.innerText = "INIT_SYSTEM";
+                        return;
+                    }
+                    updateDisplay();
+                    updateAudio();
+                    msg.innerText = `SCORE: ${readScore()}`;
+                }
+            } catch(e) {
+                console.error('step error:', e);
             }
-            updateDisplay();
-            if (running) requestAnimationFrame(step);
+            requestAnimationFrame(step);
         }
 
         btnRun.addEventListener('click', () => {
             if (!wasmLoaded || running) return;
             nux_game_reset();
             running = true;
-            msg.innerText = "RUNNING — ARROW KEYS TO MOVE";
+            frameCounter = 0;
+            msg.innerText = "SCORE: 0";
             btnRun.innerText = "RUNNING...";
+            startAudio();
             step();
         });
 
@@ -226,6 +291,7 @@
             if (!wasmLoaded) return;
             running = false;
             nux_game_reset();
+            stopAudio();
             btnRun.innerText = "INIT_SYSTEM";
             msg.innerText = "SYSTEM REBOOTED.";
             updateDisplay();

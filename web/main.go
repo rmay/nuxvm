@@ -1,3 +1,5 @@
+//go:build js && wasm
+
 package main
 
 import (
@@ -86,7 +88,8 @@ func buildBounceProgram() []byte {
 	patchJmp(phLtZeroX, offset())
 	p(vm.OpDup)
 	push(int32(vm.FrameWidth - 1))
-	p(vm.OpSwap); p(vm.OpLt)
+	p(vm.OpSwap)
+	p(vm.OpLt) // FrameWidth-1 < nx  →  nx > FrameWidth-1
 	phHiX := reserveJmp(vm.OpJz)
 	p(vm.OpPop)
 	push(int32(vm.FrameWidth - 1))
@@ -112,7 +115,8 @@ func buildBounceProgram() []byte {
 	patchJmp(phLtZeroY, offset())
 	p(vm.OpDup)
 	push(int32(vm.FrameHeight - 1))
-	p(vm.OpSwap); p(vm.OpLt)
+	p(vm.OpSwap)
+	p(vm.OpLt) // FrameHeight-1 < ny  →  ny > FrameHeight-1
 	phHiY := reserveJmp(vm.OpJz)
 	p(vm.OpPop)
 	push(int32(vm.FrameHeight - 1))
@@ -138,7 +142,7 @@ func buildBounceProgram() []byte {
 	// ── 5. Yield ─────────────────────────────────────────────────────────────
 	p(vm.OpYield)
 
-	// ── 6. Check keyboard ────────────────────────────────────────────────────
+	// ── 6. Check keyboard — halt if any key held ──────────────────────────────
 	p(vm.LoadInstruction(int32(vm.KeyboardStatusAddr))...)
 	p(vm.PushInstruction(0)...)
 	p(vm.OpEq)
@@ -152,47 +156,138 @@ func buildBounceProgram() []byte {
 	return prog
 }
 
-// gameSource is a LUX program for a simple sprite game.
-//
-// Key codes written to the keyboard register by the host:
-//   0 = no key   1 = up   2 = down   3 = left   4 = right
-//
-// Reserved memory layout:
-//   addr  0  player x
-//   addr  4  player y
+// gameSource is a LUX snake game.
+// Arrow keys move the snake; eating apples grows it.
+// Hitting a wall or the snake's own body ends the game.
+// Sound effects use AudioControlAddr (0x3001): 1=eat, 2=spawn, 3=game_over, 0=silence.
 const gameSource = `
-( pixel  ( x y color -- )  draw one pixel )
-@pixel SWAP 16 * ROT + 4 * 4096 + STOREI ;
+( ===  S N A K E  ===
+  Arrow keys: 1=up  2=down  3=left  4=right
+  Reserved memory:
+    0=dir  4=len  8=score  12=hptr  16=ax  20=ay  24=nx  28=ny
+    1632=snd_timer
+  Ring buffer @ 32: segment i -> x at i*8+32, y at i*8+36  max 200 segs
+  RNG device register: 0x3002
+  Audio control: 0x3001  (1=eat 2=spawn 3=game_over 0=silence) )
 
-( cls  ( -- )  clear all 128 pixels )
-@cls 0 [ DUP 4 * 4096 + 0 SWAP STOREI INC ] 128 #: DROP ;
+( --- pixel ops --- )
+@pixel  SWAP 64 * ROT + 4 * 4096 + STOREI ;
+@cls    0 [ DUP 4 * 4096 + 0 SWAP STOREI INC ] 2048 #: DROP ;
+@pix-at 64 * + 4 * 4096 + LOADI ;
 
-( get/set player position )
-@get-x 0 LOADI ;
-@get-y 4 LOADI ;
-@set-x 0 STOREI ;
-@set-y 4 STOREI ;
+( --- colors --- )
+@SNAKE  0x00FF00 ;
+@APPLE  0xFF3300 ;
 
-( clamp x to 0-15, y to 0-7 )
-@clamp-x DUP 0 < [ DROP 0 ] ? DUP 15 > [ DROP 15 ] ? ;
-@clamp-y DUP 0 < [ DROP 0 ] ? DUP 7  > [ DROP 7  ] ? ;
+( --- state accessors --- )
+@get-dir    0 LOADI ;  @set-dir    0 STOREI ;
+@get-len    4 LOADI ;  @set-len    4 STOREI ;
+@get-score  8 LOADI ;  @set-score  8 STOREI ;
+@get-hptr  12 LOADI ;  @set-hptr  12 STOREI ;
+@get-ax    16 LOADI ;  @set-ax    16 STOREI ;
+@get-ay    20 LOADI ;  @set-ay    20 STOREI ;
+@get-nx    24 LOADI ;  @set-nx    24 STOREI ;
+@get-ny    28 LOADI ;  @set-ny    28 STOREI ;
 
-( initialise: player starts at centre )
-8 set-x
-4 set-y
-cls
-get-x get-y 0xffffff pixel
+( --- ring buffer --- )
+@seg-xa  8 * 32 + ;
+@seg-ya  8 * 36 + ;
+@head-x  get-hptr seg-xa LOADI ;
+@head-y  get-hptr seg-ya LOADI ;
 
-( main game loop - runs forever via tail-call optimisation )
-@tick
-  get-x get-y 0 pixel              ( erase )
-  0x1200 LOADI                      ( read keyboard: key )
-  DUP 1 = [ get-y DEC clamp-y set-y ] ?   ( up    )
-  DUP 2 = [ get-y INC clamp-y set-y ] ?   ( down  )
-  DUP 3 = [ get-x DEC clamp-x set-x ] ?   ( left  )
-  DUP 4 = [ get-x INC clamp-x set-x ] ?   ( right )
+( --- direction deltas: default 0, overwrite on match --- )
+@dx  0 get-dir 4 = [ DROP  1 ] ?
+       get-dir 3 = [ DROP -1 ] ? ;
+@dy  0 get-dir 2 = [ DROP  1 ] ?
+       get-dir 1 = [ DROP -1 ] ? ;
+
+( --- block 180-degree reversal --- )
+@try-turn
+  DUP get-dir + DUP 3 = SWAP 7 = OR
+  [ DROP ] [ set-dir ] ?: ;
+
+( --- keyboard --- )
+@process-key  DUP 5 = [ DROP ] [ try-turn ] ?: ;
+@handle-keys
+  0x3000 LOADI
+  DUP 0 = [ DROP ] [ process-key ] ?: ;
+
+( --- audio: 0x3001 trigger: 1=eat 2=spawn 3=game_over 0=silence --- )
+@get-snd-timer  1632 LOADI ;
+@set-snd-timer  1632 STOREI ;
+@snd!           0x3001 STOREI ;
+@snd-silence-if-done  get-snd-timer 0 = [ 0 snd! ] ? ;
+@snd-tick
+  get-snd-timer 0 = lnot
+  [ get-snd-timer DEC set-snd-timer  snd-silence-if-done ] ? ;
+@play-eat    1 snd!  10 set-snd-timer ;
+@play-spawn  2 snd!   6 set-snd-timer ;
+
+( --- pixel at next head position --- )
+@pix-new  get-nx get-ny pix-at ;
+
+( --- collision --- )
+@lnot  0 = ;
+@wall?
+  get-nx 0 < get-nx 64 < lnot OR
+  get-ny 0 < OR  get-ny 32 < lnot OR ;
+@self?  pix-new DUP 0 = lnot SWAP APPLE = lnot AND ;
+@apple? pix-new APPLE = ;
+
+( --- advance head: update hptr, store seg, draw --- )
+@advance
+  get-hptr 1 + 200 MOD
+  DUP set-hptr
+  DUP get-nx SWAP seg-xa STOREI
+  DUP get-ny SWAP seg-ya STOREI
   DROP
-  get-x get-y 0xffffff pixel        ( draw  )
+  get-nx get-ny SNAKE pixel ;
+
+( --- erase old tail, called after advance --- )
+@erase-tail
+  get-hptr get-len - 200 + 200 MOD
+  DUP seg-xa LOADI SWAP seg-ya LOADI 0 pixel ;
+
+( --- spawn apple at random position, play spawn sound --- )
+@spawn-apple
+  RND 0x7FFFFFFF AND 64 MOD set-ax
+  RND 0x7FFFFFFF AND 32 MOD set-ay
+  get-ax get-ay APPLE pixel
+  play-spawn ;
+
+( --- game over: sound, clear screen, halt --- )
+@game-over  3 snd!  cls HALT ;
+
+( === init: cls MUST run first — #: clobbers addr 0 and 4 as temp vars === )
+cls
+4 set-dir
+3 set-len
+0 set-score
+2 set-hptr
+
+( initial 3-segment snake at row 16, cols 10-12, heading right )
+10  0 seg-xa STOREI   16  0 seg-ya STOREI
+11  1 seg-xa STOREI   16  1 seg-ya STOREI
+12  2 seg-xa STOREI   16  2 seg-ya STOREI
+10 16 SNAKE pixel
+11 16 SNAKE pixel
+12 16 SNAKE pixel
+
+spawn-apple
+
+( === main loop === )
+@tick
+  snd-tick
+  handle-keys
+  head-x dx + set-nx
+  head-y dy + set-ny
+  wall?  [ game-over ] ?
+  self?  [ game-over ] ?
+  apple?
+  advance
+  [ get-len 1 + set-len  get-score 1 + set-score  spawn-apple  play-eat ]
+  [ erase-tail ]
+  ?:
   YIELD
   tick ;
 
@@ -208,7 +303,7 @@ func buildGameProgram() []byte {
 }
 
 func resetVM() {
-	machine = vm.NewVM(buildGameProgram())
+	machine = vm.NewVM(buildBounceProgram())
 	machine.KeyboardHandler = func() int32 { return keyPressed }
 	machine.YieldHandler = func() {}
 	keyPressed = 0
@@ -216,18 +311,16 @@ func resetVM() {
 
 // --- LUX REPL state ---
 
-// stdlib is pre-loaded into every REPL session.
-// pixel ( x y color -- )  writes one pixel to the framebuffer.
-// cls   ( -- )             clears the entire framebuffer.
-const replStdlib = `@pixel SWAP 16 * ROT + 4 * 4096 + STOREI ;
-@cls 0 [ DUP 4 * 4096 + 0 SWAP STOREI INC ] 128 #: DROP ;
+// replStdlib is pre-loaded into every REPL session.
+const replStdlib = `@pixel SWAP 64 * ROT + 4 * 4096 + STOREI ;
+@cls 0 [ DUP 4 * 4096 + 0 SWAP STOREI INC ] 2048 #: DROP ;
 `
 
 type replState struct {
 	history     string
 	stack       []int32
 	definitions []string
-	framebuffer []byte // persists across evals
+	framebuffer []byte
 }
 
 func newReplState() *replState {
@@ -246,7 +339,6 @@ func replEval(line string) (stack []int32, output string, errStr string) {
 		return repl.stack, "", ""
 	}
 
-	// Word definition
 	if strings.HasPrefix(line, "@") {
 		if !strings.Contains(line, ";") {
 			return repl.stack, "", "word definition must end with ';'"
@@ -272,7 +364,6 @@ func replEval(line string) (stack []int32, output string, errStr string) {
 
 	var outBuf strings.Builder
 	m := vm.NewVM(bytecode)
-	// Restore saved framebuffer so pixels drawn earlier persist.
 	copy(m.Memory()[vm.VideoFramebufferStart:vm.VideoFramebufferStart+vm.VideoBufferSize], repl.framebuffer)
 	m.OutputHandler = func(value int32, format int32) {
 		if format == 1 {
@@ -285,7 +376,6 @@ func replEval(line string) (stack []int32, output string, errStr string) {
 		return repl.stack, "", err.Error()
 	}
 
-	// Save framebuffer and sync to the display VM so the canvas updates.
 	copy(repl.framebuffer, m.Memory()[vm.VideoFramebufferStart:vm.VideoFramebufferStart+vm.VideoBufferSize])
 	copy(machine.Memory()[vm.VideoFramebufferStart:vm.VideoFramebufferStart+vm.VideoBufferSize], repl.framebuffer)
 
@@ -313,6 +403,14 @@ func runWASM() {
 		return nil
 	}))
 
+	js.Global().Set("nux_game_reset", js.FuncOf(func(this js.Value, args []js.Value) any {
+		machine = vm.NewVM(buildGameProgram())
+		machine.KeyboardHandler = func() int32 { return keyPressed }
+		machine.YieldHandler = func() {}
+		keyPressed = 0
+		return nil
+	}))
+
 	js.Global().Set("nux_get_pc", js.FuncOf(func(this js.Value, args []js.Value) any {
 		return int(machine.PC())
 	}))
@@ -335,6 +433,29 @@ func runWASM() {
 		uint8Array := js.Global().Get("Uint8Array").New(len(mem))
 		js.CopyBytesToJS(uint8Array, mem)
 		return uint8Array
+	}))
+
+	js.Global().Set("nux_get_audio_buffer", js.FuncOf(func(this js.Value, args []js.Value) any {
+		mem := machine.Memory()
+		start := vm.AudioSampleBufferAddr
+		size := vm.AudioSampleBufferByteSize
+		uint8Array := js.Global().Get("Uint8Array").New(size)
+		js.CopyBytesToJS(uint8Array, mem[start:start+size])
+		return uint8Array
+	}))
+
+	js.Global().Set("nux_step_frame", js.FuncOf(func(this js.Value, args []js.Value) any {
+		for machine.Running() {
+			_, err := machine.Step()
+			if err != nil {
+				fmt.Printf("VM Error: %v", err)
+				return false
+			}
+			if machine.LastOpcode() == "YIELD" {
+				return true
+			}
+		}
+		return false
 	}))
 
 	js.Global().Set("nux_set_keydown", js.FuncOf(func(this js.Value, args []js.Value) any {
@@ -363,7 +484,6 @@ func runWASM() {
 
 	js.Global().Set("nux_lux_reset", js.FuncOf(func(this js.Value, args []js.Value) any {
 		repl = newReplState()
-		// Clear the display framebuffer.
 		for i := vm.VideoFramebufferStart; i < vm.VideoFramebufferStart+vm.VideoBufferSize; i++ {
 			machine.Memory()[i] = 0
 		}
@@ -381,12 +501,8 @@ func runWASM() {
 	resetVM()
 }
 
-// main function is required for the Go toolchain but not directly called by WASM.
-// The actual WASM entry point is runWASM, invoked via syscall/js.
-// This select{} keeps the Go program running indefinitely, which is necessary
-// for the syscall/js interaction to function correctly.
 func main() {
 	fmt.Println("NUXVM WASM module loaded. Ready for JavaScript interaction.")
-	runWASM() // Call the WASM entry point
-	select {} // Keep the program running
+	runWASM()
+	select {}
 }

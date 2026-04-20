@@ -326,40 +326,44 @@ The compiler resolves words in this order:
 
 ### Opcode Reference
 
-| Hex  | Mnemonic | Stack Effect | Description |
-|------|----------|--------------|-------------|
-| 0x00 | PUSH     | `[] → [value]` | Push 32-bit immediate value |
-| 0x01 | POP      | `[a] → []`         | Discard top of stack |
-| 0x02 | DUP      | `[a] → [a a]`   | Duplicate top |
-| 0x03 | SWAP     | `[a b] → [b a]`  | Swap top two |
-| 0x04 | ROLL     | `[a b] → [a b a]` | Copy second to top |
-| 0x05 | ROT      | `[a b c] → [b c a]` | Rotate top three |
-| 0x06 | ADD      | `[a b] → [a + b]` | Add |
-| 0x07 | SUB      | `[a b] → [a - b]` | Subtract |
-| 0x08 | MUL      | `[a b] → [a * b]` | Multiply |
-| 0x09 | DIV      | `[a b] → [a / b]` | Integer divide |
-| 0x0A | MOD      | `[a b] → [a % b]` | Modulus |
-| 0x0B | INC      | `[a] → [a + 1]`   | Increment |
-| 0x0C | DEC      | `[a] → [a - 1]`   | Decrement |
-| 0x0D | NEG      | `[a] → [-a]`    | Negate |
-| 0x0E | AND      | `[a b] → [a & b]` | Bitwise AND |
-| 0x0F | OR       | `[a b] → [a \| b]` | Bitwise OR |
-| 0x10 | XOR      | `[a b] → [a ^ b]` | Bitwise XOR |
-| 0x11 | NOT      | `[a] → [~a]` | Bitwise NOT |
-| 0x12 | SHL      | `[a b] → [a<<b]` | Left shift (b mod 32) |
-| 0x13 | EQ       | `[a, b] → [a == b ? 1 : 0]`| Equal (1 or 0) |
-| 0x14 | LT       | `[a, b] → [a < b ? 1 : 0]` | Less than |
-| 0x15 | GT       | `[a, b] → [a > b ? 1 : 0]` | Greater than |
-| 0x16 | CALLSTACK | `[addr] → [result]` | Pop address, push return address to return stack, jump to address (for calling quotations) |
-| 0x17 | JMP      | `[] → []`  | Unconditional jump to address |
-| 0x18 | JZ       | `[cond] → []` | Jump if zero |
-| 0x19 | JNZ      | `[cond] → []` | Jump if non-zero |
-| 0x1A | CALL     | `[] → [ret_addr]` | Call subroutine (pushes return address to return stack) |
-| 0x1B | RET      | `[addr] → []` | Return from subroutine (pops from return stack) |
-| 0x1C | LOAD     | `[] → [mem[addr]]` | Load from memory address |
-| 0x1D | STORE    | `[value] → []` | Store to memory address |
-| 0x1E | OUT      | `[format n]  → []` | Output value (format: 0=number, 1=char) |
-| 0x1F | HALT     | --    | Stop execution |
+| Hex  | Mnemonic  | Stack Effect | Description |
+|------|-----------|--------------|-------------|
+| 0x00 | PUSH      | `[] → [value]` | Push 32-bit immediate value (5 bytes) |
+| 0x01 | POP       | `[a] → []`         | Discard top of stack |
+| 0x02 | DUP       | `[a] → [a a]`   | Duplicate top |
+| 0x03 | SWAP      | `[a b] → [b a]`  | Swap top two |
+| 0x04 | ROLL      | `[a b] → [a b a]` | Roll nth element to top |
+| 0x05 | ROT       | `[a b c] → [b c a]` | Rotate top three |
+| 0x06 | ADD       | `[a b] → [a + b]` | Add |
+| 0x07 | SUB       | `[a b] → [a - b]` | Subtract |
+| 0x08 | MUL       | `[a b] → [a * b]` | Multiply |
+| 0x09 | DIV       | `[a b] → [a / b]` | Integer divide |
+| 0x0A | MOD       | `[a b] → [a % b]` | Modulus |
+| 0x0B | INC       | `[a] → [a + 1]`   | Increment |
+| 0x0C | DEC       | `[a] → [a - 1]`   | Decrement |
+| 0x0D | AND       | `[a b] → [a & b]` | Bitwise AND |
+| 0x0E | OR        | `[a b] → [a \| b]` | Bitwise OR |
+| 0x0F | XOR       | `[a b] → [a ^ b]` | Bitwise XOR |
+| 0x10 | NOT       | `[a] → [~a]` | Bitwise NOT |
+| 0x11 | SHL       | `[a b] → [a<<b]` | Left shift (b mod 32) |
+| 0x12 | EQ        | `[a b] → [a==b ? 1 : 0]` | Equal (1 or 0) |
+| 0x13 | LT        | `[a b] → [a<b ? 1 : 0]` | Less than |
+| 0x14 | CALLSTACK | `[addr] → [...]` | Pop address, push return addr to return stack, jump (for quotations) |
+| 0x15 | JMP       | `[] → []`  | Unconditional jump to address (5 bytes) |
+| 0x16 | JZ        | `[cond] → []` | Jump if zero (pops condition) |
+| 0x17 | CALL      | `[] → []` | Call subroutine at inline address (pushes return addr to return stack) |
+| 0x18 | RET       | `[] → []` | Return from subroutine (pops return stack) |
+| 0x19 | LOAD      | `[] → [mem[addr]]` | Load from inline address (5 bytes) |
+| 0x1A | STORE     | `[value] → []` | Store to inline address (5 bytes) |
+| 0x1B | OUT       | `[format value] → []` | Output value (format: 0=number, 1=char) |
+| 0x1C | HALT      | --    | Stop execution |
+| 0x1D | YIELD     | --    | Yield to host (calls YieldHandler) |
+| 0x1E | LOADI     | `[addr] → [mem[addr]]` | Indirect load — pop address, push value |
+| 0x1F | STOREI    | `[addr value] → []` | Indirect store — pop address and value, store |
+
+> **Removed opcodes from previous version**: NEG (replaced by `PUSH 0; SWAP; SUB`), GT (replaced by `SWAP; LT`),
+> JNZ (replaced by `PUSH 0; EQ; JZ`). The LUX compiler provides `NEGATE` and `>` words
+> that expand to these sequences automatically.
 
 ### Bytecode Format
 
@@ -370,7 +374,7 @@ PUSH 42:     00 00 00 00 2A
              ^^ opcode
                 ^^^^^^^^^^ 32-bit immediate
 
-JMP 0x100:   17 00 00 01 00
+JMP 0x100:   15 00 00 01 00
              ^^ opcode
                 ^^^^^^^^^^ 32-bit address
 ```
@@ -380,7 +384,7 @@ JMP 0x100:   17 00 00 01 00
 ```go
 package main
 
-import "vapor.solarvoid.com/russell/nuxvm/pkg/vm"
+import "github.com/rmay/nuxvm/pkg/vm"
 
 func main() {
     program := []byte{}

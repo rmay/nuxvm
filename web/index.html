@@ -223,7 +223,7 @@
             </div>
         </div>
 
-        <canvas id="display" width="16" height="8" style="margin-top: 20px;"></canvas>
+        <canvas id="display" width="64" height="32" style="margin-top: 20px;"></canvas>
 
         <div class="dashboard">
             <div class="panel">
@@ -246,6 +246,10 @@
         </div>
 
         <div class="status-msg" id="msg">WAITING FOR OPERATOR...</div>
+
+        <div style="margin-top: 20px; text-align: center;">
+            <a href="game.html" style="color: var(--neon-green); text-decoration: none; border: 1px solid var(--neon-green); padding: 8px 20px; font-size: 12px; letter-spacing: 2px;">&#9658; SPRITE_GAME</a>
+        </div>
     </div>
 
     <script src="wasm_exec.js"></script>
@@ -262,6 +266,32 @@
 
         let running = false;
         let wasmLoaded = false;
+
+        // --- Audio (Mac Plus/SE style: looping 512-sample int32 PCM buffer) ---
+        const AUDIO_SAMPLE_COUNT = 512;
+        let audioCtx = null;
+        let scriptNode = null;
+
+        function startAudio() {
+            if (audioCtx) return;
+            audioCtx = new AudioContext({ sampleRate: 22050 });
+            scriptNode = audioCtx.createScriptProcessor(AUDIO_SAMPLE_COUNT, 0, 1);
+            scriptNode.onaudioprocess = (e) => {
+                const out = e.outputBuffer.getChannelData(0);
+                const buf = nux_get_audio_buffer();
+                for (let i = 0; i < AUDIO_SAMPLE_COUNT; i++) {
+                    const p = i * 4;
+                    let s = (buf[p] << 24) | (buf[p+1] << 16) | (buf[p+2] << 8) | buf[p+3];
+                    out[i] = Math.max(-1, Math.min(1, s / 128.0));
+                }
+            };
+            scriptNode.connect(audioCtx.destination);
+        }
+
+        function stopAudio() {
+            if (scriptNode) { scriptNode.disconnect(); scriptNode = null; }
+            if (audioCtx) { audioCtx.close(); audioCtx = null; }
+        }
 
         const go = new Go();
         WebAssembly.instantiateStreaming(fetch("nux.wasm"), go.importObject).then((result) => {
@@ -285,32 +315,18 @@
             // Render Framebuffer
             const mem = nux_get_memory();
             const fbOffset = 4096; // VideoFramebufferStart (DeviceMemoryOffset)
-            const frameWidth = 16;
-            const frameHeight = 8;
+            const frameWidth = 64;
+            const frameHeight = 32;
 
             const imageData = ctx.createImageData(frameWidth, frameHeight);
             for (let i = 0; i < frameWidth * frameHeight; i++) {
-                const pixelOffset = fbOffset + i * 4;
-                // Read 4 bytes for each pixel. The Go program seems to write 32-bit values.
-                // Check if the memory slice is long enough.
-                if (pixelOffset + 3 >= mem.length) {
-                    console.error(`Framebuffer read out of bounds at offset ${pixelOffset}`);
-                    break; 
-                }
-                const val = (mem[pixelOffset] << 24) | (mem[pixelOffset+1] << 16) | (mem[pixelOffset+2] << 8) | mem[pixelOffset+3];
-                
+                const p = fbOffset + i * 4;
+                // stored as 0x00RRGGBB big-endian: bytes [0x00, R, G, B]
                 const idx = i * 4;
-                if (val !== 0) {
-                    imageData.data[idx] = 57;   // Neon green R
-                    imageData.data[idx+1] = 255; // Neon green G
-                    imageData.data[idx+2] = 20;  // Neon green B
-                    imageData.data[idx+3] = 255; // Alpha
-                } else {
-                    imageData.data[idx] = 0;
-                    imageData.data[idx+1] = 0;
-                    imageData.data[idx+2] = 0;
-                    imageData.data[idx+3] = 255;
-                }
+                imageData.data[idx]     = mem[p + 1];
+                imageData.data[idx + 1] = mem[p + 2];
+                imageData.data[idx + 2] = mem[p + 3];
+                imageData.data[idx + 3] = 255;
             }
             ctx.putImageData(imageData, 0, 0);
 
@@ -339,11 +355,12 @@
         btnRun.addEventListener('click', () => {
             if (!wasmLoaded) return;
             if (running) return;
-            
+
             running = true;
             runVal.innerText = "TRUE";
-            msg.innerText = "RUNNING SPRITE_GAME — ARROW KEYS TO MOVE";
+            msg.innerText = "EXECUTING BOUNCE_PIXEL_DEMO...";
             btnRun.innerText = "RESUME_SYSTEM";
+            startAudio();
             step();
         });
 
@@ -351,6 +368,7 @@
             if (!wasmLoaded) return;
             nux_reset();
             running = false;
+            stopAudio();
             runVal.innerText = "FALSE";
             btnRun.innerText = "INIT_SYSTEM";
             msg.innerText = "SYSTEM REBOOTED.";

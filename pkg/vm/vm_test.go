@@ -630,13 +630,13 @@ func TestCallStackUnderflow(t *testing.T) {
 func TestCallStackInvalidAddress(t *testing.T) {
 	// Test calling an address that's too far out of bounds
 	vm := createVMWithProgram([]byte{})
-	pushValue(t, vm, 10000) // Invalid address
+	pushValue(t, vm, 9999999) // Invalid address (well beyond memory)
 	err := vm.CallStack()
 	if err == nil {
 		t.Error("Expected error for CALLSTACK with invalid address")
 	}
-	if !contains(err.Error(), "invalid call address: 10000") {
-		t.Errorf("Expected 'invalid call address: 10000' error, got: %v", err)
+	if !contains(err.Error(), "invalid call address: 9999999") {
+		t.Errorf("Expected 'invalid call address: 9999999' error, got: %v", err)
 	}
 }
 
@@ -904,7 +904,7 @@ func TestLoadStoreOutOfBounds(t *testing.T) {
 	offset := 0
 
 	program[offset] = OpLoad
-	binary.BigEndian.PutUint32(program[offset+1:], 10000)
+	binary.BigEndian.PutUint32(program[offset+1:], 9999999)
 	offset += 5
 
 	program[offset] = OpHalt
@@ -924,7 +924,7 @@ func TestLoadStoreOutOfBounds(t *testing.T) {
 	offset += 5
 
 	program[offset] = OpStore
-	binary.BigEndian.PutUint32(program[offset+1:], 10000)
+	binary.BigEndian.PutUint32(program[offset+1:], 9999999)
 	offset += 5
 
 	program[offset] = OpHalt
