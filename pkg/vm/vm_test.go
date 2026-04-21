@@ -59,9 +59,9 @@ func TestNewVM(t *testing.T) {
 	if !vm.Running() {
 		t.Error("Expected VM to be running initially")
 	}
-	expectedMemSize := int(ReservedMemorySize) + int(DeviceMemorySize) + len(program)
+	expectedMemSize := int(UserMemoryOffset) + len(program)
 	if len(vm.memory) != expectedMemSize {
-		t.Errorf("Expected memory length %d (reserved + device + program), got %d", expectedMemSize, len(vm.memory))
+		t.Errorf("Expected memory length %d (UserMemoryOffset + program), got %d", expectedMemSize, len(vm.memory))
 	}
 	if len(vm.ReturnStack()) != 0 {
 		t.Errorf("Expected empty return stack, got length %d", len(vm.ReturnStack()))
@@ -1318,10 +1318,10 @@ func TestReservedMemory(t *testing.T) {
 		t.Error("Expected non-zero user memory start")
 	}
 
-	// Test that user memory start equals reserved memory size + device memory size (for NewVM default)
-	if vm.UserMemoryStart() != vm.ReservedMemorySize()+DeviceMemorySize {
-		t.Errorf("Expected user memory start (%d) to equal reserved memory size + device memory size (%d)",
-			vm.UserMemoryStart(), vm.ReservedMemorySize()+DeviceMemorySize)
+	// Test that user memory start equals UserMemoryOffset (fixed in new architecture)
+	if vm.UserMemoryStart() != UserMemoryOffset {
+		t.Errorf("Expected user memory start (%d) to equal UserMemoryOffset (%d)",
+			vm.UserMemoryStart(), UserMemoryOffset)
 	}
 
 	// Test writing to reserved memory
@@ -1384,19 +1384,18 @@ func TestNewVMWithReservedMemory(t *testing.T) {
 			customReservedSize, vm.ReservedMemorySize())
 	}
 
-	// With DeviceMemorySize, UserMemoryStart should be customReservedSize + DeviceMemorySize
-	expectedUserStart := customReservedSize + DeviceMemorySize
-	if vm.UserMemoryStart() != expectedUserStart {
+	// UserMemoryStart should be fixed at UserMemoryOffset
+	if vm.UserMemoryStart() != UserMemoryOffset {
 		t.Errorf("Expected user memory start %d, got %d",
-			expectedUserStart, vm.UserMemoryStart())
+			UserMemoryOffset, vm.UserMemoryStart())
 	}
 
-	if vm.PC() != expectedUserStart {
+	if vm.PC() != UserMemoryOffset {
 		t.Errorf("Expected PC to start at %d, got %d",
-			expectedUserStart, vm.PC())
+			UserMemoryOffset, vm.PC())
 	}
 
-	expectedMemSize := int(customReservedSize) + int(DeviceMemorySize) + len(program)
+	expectedMemSize := int(UserMemoryOffset) + len(program)
 	if len(vm.memory) != expectedMemSize {
 		t.Errorf("Expected memory length %d, got %d", expectedMemSize, len(vm.memory))
 	}

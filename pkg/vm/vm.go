@@ -13,38 +13,38 @@ const MaxReturnStackSize = 1024
 
 // Memory layout constants
 const (
-	ReservedMemorySize   = 4096                                  // Size of reserved memory for internal use (DIP, quotations, etc.)
-	ReservedMemoryOffset = 0                                     // Reserved memory starts at address 0
-	DeviceMemorySize     = 12288                                 // Size of memory dedicated to device I/O (video + registers + audio buffer)
-	DeviceMemoryOffset   = ReservedMemorySize                    // Device memory starts after reserved memory
-	UserMemoryOffset     = DeviceMemoryOffset + DeviceMemorySize // User program starts after device memory
+	ReservedMemorySize = 0x1000 // 4KB (0x0000-0x0FFF)
+	DeviceMemoryOffset = 0x3000 // Device ports start at 0x3000 (standardized)
+	DeviceMemorySize   = 0x1000 // 4KB for device ports (0x3000-0x3FFF)
+
+	// Video Framebuffer: 64x32 pixels, each pixel is a 32-bit color (0xRRGGBB).
+	// We'll move it to its own region (starting at 0x4000) to keep ports separate.
+	VideoBufferSize       = 64 * 32 * 4
+	VideoFramebufferStart = 0x4000
+	VideoFramebufferEnd   = VideoFramebufferStart + VideoBufferSize
+
+	// User memory starts after the video framebuffer
+	UserMemoryOffset = VideoFramebufferEnd
 )
 
 // Device memory map constants
 const (
-	// Video Framebuffer: 8192 bytes for a 64×32 framebuffer.
-	VideoBufferSize       = 8192
-	VideoFramebufferStart = DeviceMemoryOffset
-	VideoFramebufferEnd   = VideoFramebufferStart + VideoBufferSize
+	// Port offsets within the MMIO region (0x3000–0x3FFF)
+	SystemPort   = DeviceMemoryOffset + 0x0000 // 0x3000: System Control
+	ConsolePort  = DeviceMemoryOffset + 0x0010 // 0x3010: Standard I/O
+	ScreenPort   = DeviceMemoryOffset + 0x0020 // 0x3020: Graphics Control
+	AudioPort    = DeviceMemoryOffset + 0x0030 // 0x3030: Sound Synthesis
+	KeyboardPort = DeviceMemoryOffset + 0x0040 // 0x3040: Input Keyboard
+	MousePort    = DeviceMemoryOffset + 0x0050 // 0x3050: Input Mouse
+	RNGPort      = DeviceMemoryOffset + 0x0060 // 0x3060: Random Number Gen
 
-	// Keyboard Status: A single byte to check if a key is pressed.
-	KeyboardStatusAddr = DeviceMemoryOffset + VideoBufferSize
+	// Standard Device Addresses (mapped to specific port indices)
+	KeyboardStatusAddr = KeyboardPort + 0
+	AudioControlAddr   = AudioPort + 0
+	RNGDataAddr        = RNGPort + 0
 
-	// Audio Control: A single byte for audio command/data.
-	AudioControlAddr = KeyboardStatusAddr + 1
-
-	// RNG register: read returns next pseudo-random int32 (LCG); write sets seed.
-	RNGDataAddr = AudioControlAddr + 1
-
-	// Audio Sample Buffer: 512 int32 samples (2048 bytes) for Mac Plus/SE-style looping PCM.
-	// Starts at 0x3010, leaving 0x3006–0x300F for future control registers.
-	// Each sample is an int32 in [-128, 127]; JS reads and plays on a continuous loop.
-	AudioSampleBufferAddr     = RNGDataAddr + 14 // 0x3010
-	AudioSampleBufferSize     = 512              // sample count
-	AudioSampleBufferByteSize = AudioSampleBufferSize * 4
-
-	// Next available device address (after audio buffer).
-	FirstAvailableDeviceAddr = AudioSampleBufferAddr + AudioSampleBufferByteSize
+	// Next available device address (after RNG port).
+	FirstAvailableDeviceAddr = DeviceMemoryOffset + 0x0100
 )
 
 // VM represents the stack-based virtual machine.
@@ -78,10 +78,11 @@ type VM struct {
 }
 
 // NewVM initializes a new VM with the given program.
-// The program is loaded after the reserved memory region.
+// The program is loaded at UserMemoryOffset.
 func NewVM(program []byte, trace ...bool) *VM {
-	// Allocate memory: reserved region + device region + program
-	totalMemory := make([]byte, ReservedMemorySize+DeviceMemorySize+len(program))
+	// Allocate memory up to user program end
+	memSize := UserMemoryOffset + uint32(len(program))
+	totalMemory := make([]byte, memSize)
 
 	// Copy program to user memory area
 	copy(totalMemory[UserMemoryOffset:], program)
@@ -104,30 +105,31 @@ func NewVM(program []byte, trace ...bool) *VM {
 	}
 }
 
-// NewVMWithReservedMemory creates a VM with custom reserved memory size
+// NewVMWithReservedMemory creates a VM with custom reserved memory size.
+// Note: In the new architecture, UserMemoryOffset is fixed to start after the Video Framebuffer.
 func NewVMWithReservedMemory(program []byte, reservedSize uint32, trace ...bool) *VM {
-	// Allocate memory: reserved region + device region + program
-	totalMemory := make([]byte, reservedSize+DeviceMemorySize+uint32(len(program)))
+	// Allocate memory up to user program end
+	memSize := UserMemoryOffset + uint32(len(program))
+	totalMemory := make([]byte, memSize)
 
 	// Copy program to user memory area
-	copy(totalMemory[reservedSize+DeviceMemorySize:], program)
+	copy(totalMemory[UserMemoryOffset:], program)
 
 	traceEnabled := false
 	if len(trace) > 0 {
 		traceEnabled = trace[0]
 	}
 
-	userStart := reservedSize + DeviceMemorySize
-
 	return &VM{
 		stack:              make([]int32, 0, MaxStackSize),
 		returnStack:        make([]int32, 0, MaxStackSize),
 		memory:             totalMemory,
-		pc:                 userStart, // Start execution at user memory
+		pc:                 UserMemoryOffset, // Start execution at user memory
 		running:            true,
 		reservedMemorySize: reservedSize,
-		userMemoryStart:    userStart,
+		userMemoryStart:    UserMemoryOffset,
 		trace:              traceEnabled,
+		rngState:           1,
 	}
 }
 
@@ -1079,20 +1081,6 @@ func (vm *VM) handleDeviceRead(address uint32) (int32, error) {
 		return int32(x), nil
 	}
 
-	// RNG register read: advance LCG and return next value.
-	if address == RNGDataAddr {
-		vm.rngState = vm.rngState*1664525 + 1013904223
-		return int32(vm.rngState), nil
-	}
-
-	// Audio Sample Buffer read: data lives in vm.memory.
-	if address >= AudioSampleBufferAddr && address < AudioSampleBufferAddr+AudioSampleBufferByteSize {
-		if int(address)+4 > len(vm.memory) {
-			return 0, fmt.Errorf("audio buffer read out of bounds at address %d", address)
-		}
-		return int32(binary.BigEndian.Uint32(vm.memory[address : address+4])), nil
-	}
-
 	// Unhandled device address
 	return 0, fmt.Errorf("unhandled device read at address %d", address)
 }
@@ -1122,14 +1110,13 @@ func (vm *VM) handleDeviceWrite(address uint32, value int32) error {
 		return nil
 	}
 
-	// RNG register write: seed the LCG.
+	// RNG register write: seed the state.
 	if address == RNGDataAddr {
-		vm.rngState = uint32(value)
-		return nil
-	}
-
-	// Audio Sample Buffer write: passes through to vm.memory.
-	if address >= AudioSampleBufferAddr && address < AudioSampleBufferAddr+AudioSampleBufferByteSize {
+		if value == 0 {
+			vm.rngState = 1 // Prevent state from becoming 0
+		} else {
+			vm.rngState = uint32(value)
+		}
 		return nil
 	}
 

@@ -159,7 +159,7 @@ func buildBounceProgram() []byte {
 // gameSource is a LUX snake game.
 // Arrow keys move the snake; eating apples grows it.
 // Hitting a wall or the snake's own body ends the game.
-// Sound effects use AudioControlAddr (0x3001): 1=eat, 2=spawn, 3=game_over, 0=silence.
+// Sound effects use AudioControlAddr (0x3030): 1=eat, 2=spawn, 3=game_over, 0=silence.
 const gameSource = `
 ( ===  S N A K E  ===
   Arrow keys: 1=up  2=down  3=left  4=right
@@ -167,13 +167,13 @@ const gameSource = `
     0=dir  4=len  8=score  12=hptr  16=ax  20=ay  24=nx  28=ny
     1632=snd_timer
   Ring buffer @ 32: segment i -> x at i*8+32, y at i*8+36  max 200 segs
-  RNG device register: 0x3002
-  Audio control: 0x3001  (1=eat 2=spawn 3=game_over 0=silence) )
+  RNG device register: 0x3060
+  Audio control: 0x3030  (1=eat 2=spawn 3=game_over 0=silence) )
 
 ( --- pixel ops --- )
-@pixel  SWAP 64 * ROT + 4 * 4096 + STOREI ;
-@cls    0 [ DUP 4 * 4096 + 0 SWAP STOREI INC ] 2048 #: DROP ;
-@pix-at 64 * + 4 * 4096 + LOADI ;
+@pixel  SWAP 64 * ROT + 4 * 0x4000 + STOREI ;
+@cls    0 [ DUP 4 * 0x4000 + 0 SWAP STOREI INC ] 2048 #: DROP ;
+@pix-at 64 * + 4 * 0x4000 + LOADI ;
 
 ( --- colors --- )
 @SNAKE  0x00FF00 ;
@@ -209,7 +209,7 @@ const gameSource = `
 ( --- keyboard --- )
 @process-key  DUP 5 = [ DROP ] [ try-turn ] ?: ;
 @handle-keys
-  0x3000 LOADI
+  0x3040 LOADI
   DUP 0 = [ DROP ] [ process-key ] ?: ;
 
 ( --- pixel at next head position --- )
@@ -223,10 +223,10 @@ const gameSource = `
 @self?  pix-new DUP 0 = lnot SWAP APPLE = lnot AND ;
 @apple? pix-new APPLE = ;
 
-( --- audio: 0x3001 trigger: 1=eat 2=spawn 3=game_over 0=silence --- )
+( --- audio: 0x3030 trigger: 1=eat 2=spawn 3=game_over 0=silence --- )
 @get-snd-timer  1632 LOADI ;
 @set-snd-timer  1632 STOREI ;
-@snd!           0x3001 STOREI ;
+@snd!           0x3030 STOREI ;
 @snd-silence-if-done  get-snd-timer 0 = [ 0 snd! ] ? ;
 @snd-tick
   get-snd-timer 0 = lnot
@@ -319,8 +319,8 @@ func resetVM() {
 // --- LUX REPL state ---
 
 // replStdlib is pre-loaded into every REPL session.
-const replStdlib = `@pixel SWAP 64 * ROT + 4 * 4096 + STOREI ;
-@cls 0 [ DUP 4 * 4096 + 0 SWAP STOREI INC ] 2048 #: DROP ;
+const replStdlib = `@pixel SWAP 64 * ROT + 4 * 0x4000 + STOREI ;
+@cls 0 [ DUP 4 * 0x4000 + 0 SWAP STOREI INC ] 2048 #: DROP ;
 `
 
 type replState struct {
@@ -384,7 +384,10 @@ func replEval(line string) (stack []int32, output string, errStr string) {
 	}
 
 	copy(repl.framebuffer, m.Memory()[vm.VideoFramebufferStart:vm.VideoFramebufferStart+vm.VideoBufferSize])
-	copy(machine.Memory()[vm.VideoFramebufferStart:vm.VideoFramebufferStart+vm.VideoBufferSize], repl.framebuffer)
+	// machine.Memory() might be smaller or larger depending on initialization, but VideoFramebufferStart is absolute.
+	if vm.VideoFramebufferStart < uint32(len(machine.Memory())) {
+		copy(machine.Memory()[vm.VideoFramebufferStart:vm.VideoFramebufferStart+vm.VideoBufferSize], repl.framebuffer)
+	}
 
 	repl.stack = m.Stack()
 	return repl.stack, outBuf.String(), ""
@@ -442,15 +445,6 @@ func runWASM() {
 		mem := machine.Memory()
 		uint8Array := js.Global().Get("Uint8Array").New(len(mem))
 		js.CopyBytesToJS(uint8Array, mem)
-		return uint8Array
-	}))
-
-	js.Global().Set("nux_get_audio_buffer", js.FuncOf(func(this js.Value, args []js.Value) any {
-		mem := machine.Memory()
-		start := vm.AudioSampleBufferAddr
-		size := vm.AudioSampleBufferByteSize
-		uint8Array := js.Global().Get("Uint8Array").New(size)
-		js.CopyBytesToJS(uint8Array, mem[start:start+size])
 		return uint8Array
 	}))
 

@@ -219,11 +219,12 @@
 
         function updateDisplay() {
             const mem = nux_get_memory();
-            const fbOffset = 4096;
+            const fbOffset = 0x4000;
             const frameWidth = 64, frameHeight = 32;
             const imageData = ctx.createImageData(frameWidth, frameHeight);
             for (let i = 0; i < frameWidth * frameHeight; i++) {
                 const p = fbOffset + i * 4;
+                if (p + 3 >= mem.length) break;
                 // stored as 0x00RRGGBB big-endian: bytes [0x00, R, G, B]
                 const r = mem[p + 1];
                 const g = mem[p + 2];

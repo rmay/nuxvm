@@ -220,15 +220,16 @@ Define reusable functions with `@name ... ;`
 
 @cube dup square * ;
 
-( NOT DONE YET )
-@factorial
-    dup 1 >
-    ( n -- n! )
-    dup 1 - factorial *
-;
+( Define fact-iter )
+@fact-iter 1 swap dup [ dup rot * swap 1 - ] swap #: drop ;
 
-5 square .     ( Output: 25 )
-3 cube .       ( Output: 27 )
+( Define factor recursive)
+@fact-rec dup 1 > [ dup 1 - fact-rec * ] ? ;
+
+5 square .        ( Output: 25 )
+3 cube .          ( Output: 27 )
+5 fact-iter .     ( Outputs 120 )
+5 fact-rec .      ( Outputs 120 )
 ```
 
 **Note**: Word definitions are compiled first, then the main program code runs.

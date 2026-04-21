@@ -12,8 +12,8 @@ func load(addr uint32) []byte { return vm.LoadInstruction(int32(addr)) }
 func store(addr uint32) []byte { return vm.StoreInstruction(int32(addr)) }
 
 // Example 1: Write a pixel value to the video framebuffer and read it back.
-// The framebuffer is 512 bytes starting at DeviceMemoryOffset.
-// Each 4-byte word holds one pixel (or packed data).
+// The framebuffer is 8KB starting at 0x4000.
+// Each 4-byte word holds one pixel (0x00RRGGBB).
 func ex1_VideoFramebuffer() {
 	fmt.Println("╔══ EXAMPLE 1: Video Framebuffer Write/Read ══╗")
 
@@ -32,7 +32,7 @@ func ex1_VideoFramebuffer() {
 		fmt.Printf("  Error: %v\n", err)
 		return
 	}
-	fmt.Printf("  Pixel at [0]: ")
+	fmt.Printf("  Pixel at [0x%04X]: ", pixelAddr)
 	fmt.Printf(" (Expected: %d)\n\n", pixelValue)
 }
 

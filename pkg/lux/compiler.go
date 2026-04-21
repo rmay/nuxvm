@@ -465,11 +465,6 @@ func (c *Compiler) compileToken(token Token) error {
 			c.emit(vm.OpLoadI)
 			return nil
 		}
-		if wordName == "SND" {
-			c.emit(vm.OpPush)
-			c.emit(vm.EncodeInt32(int32(vm.AudioSampleBufferAddr))...)
-			return nil
-		}
 		if opcode, ok := builtins[wordName]; ok {
 			if c.trace {
 				fmt.Fprintf(os.Stderr, "compileToken: Emitting builtin opcode=%s\n", vm.OpcodeName(opcode))
