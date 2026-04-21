@@ -35,14 +35,16 @@ func main() {
 
 ## Token Types
 
-The lexer recognizes 6 types of tokens:
+The lexer recognizes several types of tokens:
 
 1. **TokenNumber** - Numbers: `42`, `-17`, `0xFF`
-2. **TokenWord** - Identifiers: `+`, `DUP`, `square`
-3. **TokenColon** - Start of definition: `:`
+2. **TokenWord** - Identifiers and Combinators: `+`, `DUP`, `?:`, `|:`, `#:`
+3. **TokenAtSign** - Start of definition: `@`
 4. **TokenSemicolon** - End of definition: `;`
-5. **TokenComment** - Comments: `( ... )` (filtered out)
-6. **TokenEOF** - End of file
+5. **TokenComment** - Comments: `( ... )` or `// ...` (filtered out)
+6. **TokenString** - Quoted strings: `"Hello"`
+7. **TokenLBracket / TokenRBracket** - Quotations: `[` and `]`
+8. **TokenEOF** - End of file
 
 ## Key Functions
 
@@ -60,19 +62,18 @@ value, err := ParseNumber(token)  // Convert number token to int32
 ## How It Works
 
 ```
-Source: ": square dup * ;"
+Source: "@square dup * ;"
 
 Step 1: Skip whitespace
-Step 2: See ':' → emit TokenColon
-Step 3: Skip whitespace  
-Step 4: Read "square" → emit TokenWord("square")
-Step 5: Skip whitespace
-Step 6: Read "dup" → emit TokenWord("dup")
-Step 7: Skip whitespace
-Step 8: Read "*" → emit TokenWord("*")
-Step 9: Skip whitespace
-Step 10: See ';' → emit TokenSemicolon
-Step 11: End of input → emit TokenEOF
+Step 2: See '@' → emit TokenAtSign
+Step 3: Read "square" → emit TokenWord("square")
+Step 4: Skip whitespace
+Step 5: Read "dup" → emit TokenWord("dup")
+Step 6: Skip whitespace
+Step 7: Read "*" → emit TokenWord("*")
+Step 8: Skip whitespace
+Step 9: See ';' → emit TokenSemicolon
+Step 10: End of input → emit TokenEOF
 ```
 
 ## Testing It

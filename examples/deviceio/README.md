@@ -36,30 +36,38 @@ From the repo root. Expected output:
 
 ╔══ EXAMPLE 6: Device Memory Map ══╗
   Reserved memory:     0x0000–0x0FFF (4096 bytes)
-  Video framebuffer:   0x1000–0x2FFF (8192 bytes, 64×32 pixels × 4 bytes)
-  Keyboard status:     0x3000
-  Audio control:       0x3001
-  RNG data:            0x3002
-  Audio sample buffer: 0x3010–0x380F (2048 bytes, 512 × int32 samples)
-  User memory start:   0x4000
+  Device ports:        0x3000–0x3FFF (16-byte blocks)
+  Video framebuffer:   0x4000–0x5FFF (8192 bytes, 64×32 pixels × 4 bytes)
+  User memory start:   0x6000
 ...
 ```
 
 ## Device Memory Map
 
-The VM's address space is divided into three regions:
+The VM's address space is divided into several regions:
 
 | Region | Start | End | Size | Description |
 |--------|-------|-----|------|-------------|
-| Reserved | `0x0000` | `0x0FFF` | 4096 B | Internal use (DIP, temporaries) |
-| Video framebuffer | `0x1000` | `0x2FFF` | 8192 B | 64×32 pixels, 4 bytes each (0x00RRGGBB big-endian) |
-| Keyboard status | `0x3000` | `0x3000` | 1 reg | Read: direction (0=none 1=up 2=down 3=left 4=right) |
-| Audio control | `0x3001` | `0x3001` | 1 reg | Write: send audio command; Read: last value written |
-| RNG data | `0x3002` | `0x3005` | 1 reg | Read: next pseudo-random int32 (advances LCG state); Write: seed |
-| Audio sample buffer | `0x3010` | `0x380F` | 512 × int32 | Looping PCM; write int32 samples in [-128, 127]; JS plays continuously |
-| User memory | `0x4000` | — | remainder | Program and data |
+| Reserved | `0x0000` | `0x0FFF` | 4KB | Internal use (DIP, temporaries) |
+| Device Ports | `0x3000` | `0x3FFF` | 4KB | Standardized 16-byte I/O ports |
+| Video framebuffer | `0x4000` | `0x5FFF` | 8KB | 64×32 pixels, 4 bytes each (0x00RRGGBB big-endian) |
+| User memory | `0x6000` | — | remainder | Program and data |
 
-Reads and writes to the device region go through device handlers in `pkg/vm/vm.go`. Accesses outside this region use plain memory.
+### Standard Ports
+
+Starting at `0x3000`:
+
+| Port | Device | Description |
+|------|--------|-------------|
+| `0x3000` | System | VM control and metadata |
+| `0x3010` | Console | Standard I/O characters |
+| `0x3020` | Screen | Graphics control |
+| `0x3030` | Audio | Sound synthesis trigger |
+| `0x3040` | Keyboard| Input status and keys |
+| `0x3050` | Mouse | Cursor position and buttons |
+| `0x3060` | RNG | Random number seed/read |
+
+Reads and writes to the device or video regions go through device handlers in `pkg/vm/vm.go`. Accesses outside these regions use plain memory directly.
 
 ## Examples
 
@@ -68,7 +76,7 @@ Reads and writes to the device region go through device handlers in `pkg/vm/vm.g
 | 1 | Video Framebuffer Write/Read | Write a pixel value, read it back via LOAD |
 | 2 | Fill Framebuffer Row | Write 8 pixels and verify with LOAD |
 | 3 | Keyboard Status Read | Read the keyboard register (simulated as always-pressed) |
-| 4 | Audio Control Write | Write a frequency (440 Hz) and confirm with a read-back |
+| 4 | Audio Control Write | Write a sound ID and confirm with a read-back |
 | 5 | Framebuffer Scan | Write a sentinel at pixel 5 and scan the row |
 | 6 | Device Memory Map | Print the base address of each device region |
 | 7 | Normal Memory Unaffected | Confirm stores to user memory work normally |
@@ -89,19 +97,13 @@ prog = append(prog, load(vm.VideoFramebufferStart)...)
 
 Pixel colors are stored as `0x00RRGGBB` big-endian. Each pixel occupies 4 bytes; pixel `(x, y)` is at `VideoFramebufferStart + (y*64 + x)*4`.
 
-The VM intercepts any `LOAD`/`STORE` whose address falls in `[0x1000, 0x3200)` and routes it through `handleDeviceRead` / `handleDeviceWrite` in `pkg/vm/vm.go`. Accesses outside that range use plain memory directly.
+### Keyboard port
 
-### Keyboard register
+The keyboard status register (`0x3040`) is read-only. Writing to it returns an error.
 
-The keyboard status register is read-only. Writing to it returns an error:
+### RNG port
 
-```
-device write error: writing to keyboard status address 4608 is not supported
-```
-
-### RNG register
-
-Reading `RNGDataAddr` (`0x3002`) advances an internal LCG state and returns the next pseudo-random `int32`. Writing to it seeds the generator.
+Reading the RNG data register (`0x3060`) advances an internal **Xorshift32** state and returns the next pseudo-random `int32`. Writing to it seeds the generator.
 
 ### Simulation behaviour
 
@@ -109,5 +111,5 @@ Reading `RNGDataAddr` (`0x3002`) advances an internal LCG state and returns the 
 |--------|------|-------|
 | Video framebuffer | Returns value last written | Stores to `vm.memory` |
 | Keyboard status | Returns direction code (0–4); wired to real input in demos | Error |
-| Audio control | Returns value last written | Stores to `vm.memory` |
-| RNG data | Advances LCG, returns next int32 | Seeds the LCG state |
+| Audio control | Returns value last written | Triggers SoundHandler |
+| RNG data | Advances state, returns next int32 | Seeds the state |

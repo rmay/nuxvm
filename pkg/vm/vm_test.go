@@ -1893,6 +1893,102 @@ func TestShlLargeAmount(t *testing.T) {
 	}
 }
 
+func TestVMGetters(t *testing.T) {
+	program := []byte{OpPush, 0, 0, 0, 42, OpHalt}
+	vm := NewVM(program)
+
+	if len(vm.Memory()) == 0 {
+		t.Error("Expected Memory() to return non-empty slice")
+	}
+
+	// Run one step to set lastOpcode
+	vm.Step()
+	if vm.LastOpcode() != "PUSH" {
+		t.Errorf("Expected LastOpcode PUSH, got %s", vm.LastOpcode())
+	}
+}
+
+func TestDirectVMMethods(t *testing.T) {
+	program := make([]byte, 100)
+	vm := NewVM(program)
+
+	// Test Jmp directly
+	target := vm.UserMemoryStart() + 10
+	binary.BigEndian.PutUint32(vm.memory[vm.pc:], uint32(target))
+	if err := vm.Jmp(); err != nil {
+		t.Fatalf("Direct Jmp failed: %v", err)
+	}
+	if vm.pc != uint32(target) {
+		t.Errorf("Expected PC=%d, got %d", target, vm.pc)
+	}
+
+	// Test Jz directly (not zero)
+	vm.pc = vm.UserMemoryStart()
+	binary.BigEndian.PutUint32(vm.memory[vm.pc:], 99)
+	pushValue(t, vm, 1)
+	if err := vm.Jz(); err != nil {
+		t.Fatalf("Direct Jz failed: %v", err)
+	}
+	if vm.pc != vm.UserMemoryStart()+4 {
+		t.Errorf("Expected PC to skip 4 bytes, got %d", vm.pc)
+	}
+
+	// Test Jz directly (is zero)
+	vm.pc = vm.UserMemoryStart()
+	target = vm.UserMemoryStart() + 20
+	binary.BigEndian.PutUint32(vm.memory[vm.pc:], uint32(target))
+	pushValue(t, vm, 0)
+	if err := vm.Jz(); err != nil {
+		t.Fatalf("Direct Jz failed: %v", err)
+	}
+	if vm.pc != uint32(target) {
+		t.Errorf("Expected PC to jump to %d, got %d", target, vm.pc)
+	}
+
+	// Test Halt directly
+	vm.Halt()
+	if vm.Running() {
+		t.Error("Expected Running() to be false after Halt()")
+	}
+}
+
+func TestDeviceReadKeyboardRNG(t *testing.T) {
+	vm := NewVM([]byte{})
+	
+	// Test Keyboard Read
+	vm.KeyboardHandler = func() int32 { return 42 }
+	val, err := vm.handleDeviceRead(KeyboardStatusAddr)
+	if err != nil {
+		t.Fatalf("Keyboard read failed: %v", err)
+	}
+	if val != 42 {
+		t.Errorf("Expected keyboard value 42, got %d", val)
+	}
+
+	// Test RNG Read
+	val1, err := vm.handleDeviceRead(RNGDataAddr)
+	if err != nil {
+		t.Fatalf("RNG read 1 failed: %v", err)
+	}
+	val2, err := vm.handleDeviceRead(RNGDataAddr)
+	if err != nil {
+		t.Fatalf("RNG read 2 failed: %v", err)
+	}
+	if val1 == val2 {
+		t.Error("RNG should return different values on consecutive reads")
+	}
+
+	// Test Video Buffer Read Out of Bounds
+	// Create a VM with very small memory to trigger out of bounds
+	vmSmall := NewVM([]byte{})
+	// Manually shrink memory to just before framebuffer
+	vmSmall.memory = vmSmall.memory[:VideoFramebufferStart+2] 
+	_, err = vmSmall.handleDeviceRead(VideoFramebufferStart)
+	if err == nil {
+		t.Error("Expected error for video buffer read out of bounds")
+	}
+}
+
 func TestLoadStoreBoundaries(t *testing.T) {
 	program := make([]byte, 100)
 	program[0] = OpHalt
@@ -1928,5 +2024,84 @@ func TestLoadStoreBoundaries(t *testing.T) {
 	pushValue(t, vm, 1)
 	if err := vm.Store(); err == nil {
 		t.Error("Expected error for store out of bounds")
+	}
+}
+
+func TestCallRetDirect(t *testing.T) {
+	program := make([]byte, 100)
+	vm := NewVM(program)
+
+	// Test Call directly
+	target := vm.UserMemoryStart() + 30
+	binary.BigEndian.PutUint32(vm.memory[vm.pc:], uint32(target))
+	returnAddr := vm.pc + 4
+	if err := vm.Call(); err != nil {
+		t.Fatalf("Direct Call failed: %v", err)
+	}
+	if vm.pc != uint32(target) {
+		t.Errorf("Expected PC=%d, got %d", target, vm.pc)
+	}
+	if len(vm.returnStack) != 1 || vm.returnStack[0] != int32(returnAddr) {
+		t.Errorf("Expected return stack to have %d, got %v", returnAddr, vm.returnStack)
+	}
+
+	// Test Ret directly
+	if err := vm.Ret(); err != nil {
+		t.Fatalf("Direct Ret failed: %v", err)
+	}
+	if vm.pc != returnAddr {
+		t.Errorf("Expected PC back to %d, got %d", returnAddr, vm.pc)
+	}
+}
+
+func TestDeviceIOEdgeCases(t *testing.T) {
+	vm := NewVM([]byte{})
+
+	// handleDeviceWrite: RNG seed with 0
+	err := vm.handleDeviceWrite(RNGDataAddr, 0)
+	if err != nil {
+		t.Fatalf("handleDeviceWrite RNG 0 failed: %v", err)
+	}
+	if vm.rngState != 1 {
+		t.Errorf("Expected rngState 1 when seeding with 0, got %d", vm.rngState)
+	}
+
+	// handleDeviceWrite: unhandled address
+	err = vm.handleDeviceWrite(0x3FFF, 42)
+	if err == nil {
+		t.Error("Expected error for unhandled device write")
+	}
+
+	// handleDeviceRead: unhandled address
+	_, err = vm.handleDeviceRead(0x3FFF)
+	if err == nil {
+		t.Error("Expected error for unhandled device read")
+	}
+}
+
+func TestJnzMethod(t *testing.T) {
+	vm := NewVM(make([]byte, 100))
+	
+	// Test Jnz directly (not zero)
+	vm.pc = vm.UserMemoryStart()
+	target := vm.UserMemoryStart() + 20
+	binary.BigEndian.PutUint32(vm.memory[vm.pc:], uint32(target))
+	pushValue(t, vm, 1)
+	if err := vm.Jnz(); err != nil {
+		t.Fatalf("Direct Jnz failed: %v", err)
+	}
+	if vm.pc != uint32(target) {
+		t.Errorf("Expected PC to jump to %d, got %d", target, vm.pc)
+	}
+
+	// Test Jnz directly (is zero)
+	vm.pc = vm.UserMemoryStart()
+	binary.BigEndian.PutUint32(vm.memory[vm.pc:], 99)
+	pushValue(t, vm, 0)
+	if err := vm.Jnz(); err != nil {
+		t.Fatalf("Direct Jnz failed: %v", err)
+	}
+	if vm.pc != vm.UserMemoryStart()+4 {
+		t.Errorf("Expected PC to skip 4 bytes, got %d", vm.pc)
 	}
 }
