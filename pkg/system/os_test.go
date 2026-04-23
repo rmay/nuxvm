@@ -13,7 +13,7 @@ func TestOSKeyboard(t *testing.T) {
 		t.Fatalf("Failed to read keyboard.bin: %v", err)
 	}
 
-	machine := NewMachine(program)
+	machine := NewMachine(program, 0)
 	var output strings.Builder
 	machine.CPU.OutputHandler = func(value int32, format int32) {
 		if format == 1 {

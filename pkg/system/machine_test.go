@@ -7,7 +7,7 @@ import (
 
 func TestMachinePushKeyAndMouse(t *testing.T) {
 	program := []byte{vm.OpHalt}
-	machine := NewMachine(program)
+	machine := NewMachine(program, 0)
 	
 	// Set vector 4 (Controller) and vector 5 (Mouse)
 	controllerHandlerAddr := uint32(0x1000)
@@ -51,7 +51,7 @@ func TestMachinePushKeyAndMouse(t *testing.T) {
 func TestMachineVBlank(t *testing.T) {
 	// Program that just yields
 	program := []byte{vm.OpYield, vm.OpHalt}
-	machine := NewMachine(program)
+	machine := NewMachine(program, 0)
 	
 	// Set vector 2 (Screen)
 	screenHandlerAddr := uint32(0x1000)

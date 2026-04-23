@@ -378,7 +378,7 @@ func (l *Lexer) readWord() (Token, error) {
 
 		// Stop at whitespace, brackets, or special characters
 		if unicode.IsSpace(rune(ch)) || ch == '(' || ch == ')' ||
-			ch == ';' || ch == '@' || ch == '"' || ch == '[' || ch == ']' {
+			ch == ';' || ch == '"' || ch == '[' || ch == ']' {
 			break
 		}
 
@@ -399,7 +399,7 @@ func (l *Lexer) readWord() (Token, error) {
 		if unicode.IsLetter(rune(ch)) || unicode.IsDigit(rune(ch)) || ch == '_' ||
 			ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == '%' ||
 			ch == '&' || ch == '|' || ch == '^' || ch == '!' || ch == '?' || ch == '>' ||
-			ch == '<' || ch == '.' || ch == '=' {
+			ch == '<' || ch == '.' || ch == '=' || ch == '@' {
 			word.WriteByte(l.advance())
 		} else {
 			break

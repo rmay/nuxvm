@@ -1,0 +1,41 @@
+( === NUX OS SYSTEM LIBRARY === )
+MODULE SYSTEM
+
+( MMIO Base Addresses )
+@port-system     12288 ; ( 0x3000 )
+@port-screen     12320 ; ( 0x3020 )
+@port-audio      12336 ; ( 0x3030 )
+@port-controller 12352 ; ( 0x3040 )
+@port-file       12384 ; ( 0x3060 )
+@port-datetime   12400 ; ( 0x3070 )
+
+@framebuffer     16384 ; ( 0x4000 )
+
+( --- SCREEN --- )
+@vector-screen!  port-screen STOREI ;
+@pixel! ( color x y -- )
+    64 * + 4 * framebuffer +
+    STOREI
+;
+
+( --- AUDIO --- )
+@vector-audio!   port-audio STOREI ;
+@sound! ( id -- )
+    port-audio 4 + STOREI
+;
+
+( --- CONTROLLER --- )
+@vector-controller! port-controller STOREI ;
+
+( --- FILE --- )
+@file-vector!  port-file STOREI ;
+@file-name!    ( ptr -- ) port-file 4 + STOREI ;
+@file-buffer!  ( ptr -- ) port-file 8 + STOREI ;
+@file-read! ( len -- res )
+    16777216 ( Cmd 1 << 24 ) OR
+    port-file 12 + STOREI
+    port-file 12 + LOADI
+;
+
+( --- DATETIME --- )
+@unix-ts@ ( -- ts ) port-datetime 4 + LOADI ;

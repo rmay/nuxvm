@@ -1,0 +1,37 @@
+INCLUDE "lib/system.lux"
+IMPORT SYSTEM
+IMPORT SCREEN
+IMPORT CTRL
+
+@on-key
+    CTRL::key@
+    dup 0 > [
+        "Key: " 
+        dup .
+        10 emit
+        ( Change clear color based on key )
+        65536 * SCREEN::clear
+    ] [
+        drop
+    ] ?:
+;
+
+@main
+    ( Clear to Cyan )
+    65535 SCREEN::clear
+    
+    ( Setup keyboard vector )
+    [ on-key ] CTRL::vector!
+
+    "NUX OS Booted." 10 emit
+    "Default Shell Active." 10 emit
+    "32MB RAM Initialized." 10 emit
+
+    [ 1 ]
+    [
+        ( Just keep alive )
+        YIELD
+    ] |:
+;
+
+main

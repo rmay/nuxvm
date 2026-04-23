@@ -98,6 +98,7 @@ type Compiler struct {
 	tempAlloc      int32                 // Added for temporary memory allocation in reserved area
 	unresolved     []UnresolvedReference // Track words to resolve after definitions
 	unresolvedJmps []UnresolvedJmp       // To handle recursion
+	includeDepth   int                   // To prevent infinite INCLUDE recursion
 	trace          bool                  // Trace compilation steps, defaults to false
 }
 
@@ -143,20 +144,18 @@ func (c *Compiler) compile() ([]byte, error) {
 	c.emit(vm.OpJmp)
 	c.emit(0, 0, 0, 0)
 	startPos := c.pos
-	maxIterations := len(c.tokens) * 2
-	iterations := 0
 	// First pass: Handle directives and word definitions
 	for c.pos < len(c.tokens) && c.peek().Type != TokenEOF {
-		iterations++
-		if iterations > maxIterations {
-			return nil, fmt.Errorf("infinite loop detected in first pass at pos=%d, token=%v", c.pos, c.peek())
-		}
 		token := c.peek()
 		if c.trace {
 			fmt.Fprintf(os.Stderr, "compile: First pass, pos=%d, token=%v\n", c.pos, token)
 		}
 		if token.Type == TokenWord && strings.ToUpper(token.Value) == "MODULE" {
 			if err := c.handleModuleDirective(); err != nil {
+				return nil, err
+			}
+		} else if token.Type == TokenWord && strings.ToUpper(token.Value) == "INCLUDE" {
+			if err := c.handleIncludeDirective(); err != nil {
 				return nil, err
 			}
 		} else if token.Type == TokenWord && strings.ToUpper(token.Value) == "IMPORT" {
@@ -222,6 +221,13 @@ func (c *Compiler) compile() ([]byte, error) {
 				}
 				if c.trace {
 					fmt.Fprintf(os.Stderr, "compile: Skipped IMPORT directive\n")
+				}
+				continue
+			} else if upperVal == "INCLUDE" {
+				c.advance() // Skip INCLUDE
+				c.advance() // Skip path
+				if c.trace {
+					fmt.Fprintf(os.Stderr, "compile: Skipped INCLUDE directive\n")
 				}
 				continue
 			}
@@ -336,13 +342,20 @@ func (c *Compiler) compile() ([]byte, error) {
 
 // handleIncludeDirective processes INCLUDE directives
 func (c *Compiler) handleIncludeDirective() error {
+	if c.includeDepth > 10 {
+		return fmt.Errorf("too many nested INCLUDEs (circular dependency?)")
+	}
+	c.includeDepth++
+	defer func() { c.includeDepth-- }()
+
+	startPos := c.pos
 	c.advance() // Skip INCLUDE
 	pathToken := c.peek()
 	if pathToken.Type != TokenString && pathToken.Type != TokenWord {
 		return fmt.Errorf("expected file path after INCLUDE at line %d", pathToken.Line)
 	}
 	filePath := pathToken.Value
-	c.advance()
+	c.advance() // Skip path
 
 	// Read and tokenize the included file
 	content, err := os.ReadFile(filePath)
@@ -361,12 +374,14 @@ func (c *Compiler) handleIncludeDirective() error {
 		tokens = tokens[:len(tokens)-1]
 	}
 
-	// Insert tokens into the current stream after the current position
-	newTokens := make([]Token, 0, len(c.tokens)+len(tokens))
-	newTokens = append(newTokens, c.tokens[:c.pos]...)
+	// Replace the INCLUDE and path tokens with the content of the included file
+	// We insert them at startPos, and the loop will continue from startPos
+	newTokens := make([]Token, 0, len(c.tokens)+len(tokens)-2)
+	newTokens = append(newTokens, c.tokens[:startPos]...)
 	newTokens = append(newTokens, tokens...)
 	newTokens = append(newTokens, c.tokens[c.pos:]...)
 	c.tokens = newTokens
+	c.pos = startPos // Move pos back to the start of the newly included tokens
 
 	return nil
 }
@@ -392,16 +407,17 @@ func (c *Compiler) handleImportDirective() error {
 	}
 	moduleName := strings.ToUpper(nameToken.Value)
 	c.advance()
+	shorthand := moduleName
 	if c.peek().Type == TokenWord && strings.ToUpper(c.peek().Value) == "AS" {
 		c.advance() // Skip AS
 		shorthandToken := c.peek()
 		if shorthandToken.Type != TokenWord {
 			return fmt.Errorf("expected shorthand name after AS at line %d", shorthandToken.Line)
 		}
-		shorthand := strings.ToUpper(shorthandToken.Value)
-		c.imports[shorthand] = moduleName
+		shorthand = strings.ToUpper(shorthandToken.Value)
 		c.advance()
 	}
+	c.imports[shorthand] = moduleName
 	return nil
 }
 
@@ -1182,19 +1198,14 @@ func (c *Compiler) compileWhile() error {
 
 	loopStart := c.currentAddress()
 
-	c.emit(vm.OpDup)
-
 	c.emit(vm.OpLoad)
 	c.emit(vm.EncodeInt32(tempCondAddr)...)
 	c.emit(vm.OpCallStack)
-	// Stack: [... original-value result]
-
-	// NO SWAP - result is already on top for JZ
+	// Stack: [... result]
 
 	c.emit(vm.OpJz)
 	exitLabel := c.currentOffset()
 	c.emit(0, 0, 0, 0)
-	// JZ pops result, leaves original-value
 
 	c.emit(vm.OpLoad)
 	c.emit(vm.EncodeInt32(tempBodyAddr)...)

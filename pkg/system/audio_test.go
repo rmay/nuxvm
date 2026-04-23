@@ -12,7 +12,7 @@ func TestAudioSoundHandler(t *testing.T) {
 	program = append(program, vm.StoreInstruction(vm.AudioControlAddr)...)
 	program = append(program, vm.OpHalt)
 
-	machine := NewMachine(program)
+	machine := NewMachine(program, 0)
 	
 	var playedSoundID int32
 	machine.System.SoundHandler = func(soundID int32) {

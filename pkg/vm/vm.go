@@ -101,6 +101,33 @@ func NewVM(program []byte, trace ...bool) *VM {
 	}
 }
 
+// NewVMWithMemorySize creates a VM with a fixed memory size.
+// The program is loaded at UserMemoryOffset.
+func NewVMWithMemorySize(program []byte, totalSize uint32, trace ...bool) *VM {
+	if totalSize < UserMemoryOffset+uint32(len(program)) {
+		totalSize = UserMemoryOffset + uint32(len(program))
+	}
+
+	totalMemory := make([]byte, totalSize)
+	copy(totalMemory[UserMemoryOffset:], program)
+
+	traceEnabled := false
+	if len(trace) > 0 {
+		traceEnabled = trace[0]
+	}
+
+	return &VM{
+		stack:              make([]int32, 0, MaxStackSize),
+		returnStack:        make([]int32, 0, MaxStackSize),
+		memory:             totalMemory,
+		pc:                 UserMemoryOffset,
+		running:            true,
+		reservedMemorySize: ReservedMemorySize,
+		userMemoryStart:    UserMemoryOffset,
+		trace:              traceEnabled,
+	}
+}
+
 // NewVMWithReservedMemory creates a VM with custom reserved memory size.
 func NewVMWithReservedMemory(program []byte, reservedSize uint32, trace ...bool) *VM {
 	memSize := UserMemoryOffset + uint32(len(program))

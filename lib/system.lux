@@ -1,86 +1,140 @@
 ( === NUX OS SYSTEM LIBRARY === )
+
+( Common Utils )
+@TWO-DUP ROLL ROLL ;
+@TWO-DROP DROP DROP ;
+
 MODULE SYSTEM
 
 ( MMIO Base Addresses )
-@port-system     12288 ; ( 0x3000 )
-@port-console    12304 ; ( 0x3010 )
-@port-screen     12320 ; ( 0x3020 )
-@port-audio      12336 ; ( 0x3030 )
-@port-controller 12352 ; ( 0x3040 )
-@port-mouse      12368 ; ( 0x3050 )
-@port-file       12384 ; ( 0x3060 )
-@port-datetime   12400 ; ( 0x3070 )
+@port-system     12288 ; 
+@port-console    12304 ; 
+@port-screen     12320 ; 
+@port-audio      12336 ; 
+@port-controller 12352 ; 
+@port-mouse      12368 ; 
+@port-file       12384 ; 
+@port-datetime   12400 ; 
 
-@framebuffer     16384 ; ( 0x4000 )
+@framebuffer     16384 ; 
 
 ( --- SCREEN --- )
 
-@vector-screen!  port-screen STOREI ;
+MODULE SCREEN
+@addr   12320 ;
+@fb     16384 ;
+@width  64 ;
+@height 32 ;
+
+@vector! addr STOREI ;
+
 @pixel! ( color x y -- )
-    64 * + 4 * framebuffer +
+    width * + 4 * fb +
     STOREI
 ;
-@pixel@ ( x y -- color )
-    64 * + 4 * framebuffer +
+
+@pixel-get ( x y -- color )
+    width * + 4 * fb +
     LOADI
+;
+
+@clear ( color -- )
+    fb
+    [ TWO-DUP STOREI 4 + ]
+    2048 #: 
+    TWO-DROP
 ;
 
 ( --- AUDIO --- )
 
-@vector-audio!   port-audio STOREI ;
-@sound! ( id -- )
-    port-audio 4 + STOREI
+MODULE AUDIO
+@addr 12336 ;
+
+@vector! addr STOREI ;
+
+@play ( id -- )
+    addr 4 + STOREI
 ;
+
+@stop 0 play ;
 
 ( --- CONTROLLER --- )
 
-@vector-controller! port-controller STOREI ;
+MODULE CTRL
+@addr 12352 ;
+
+@vector! addr STOREI ;
+
 @key@ ( -- key )
-    port-controller 12 + LOADI
+    addr 12 + LOADI
 ;
+
 @buttons@ ( -- mask )
-    port-controller 8 + LOADI
+    addr 8 + LOADI
 ;
 
 ( --- MOUSE --- )
 
-@vector-mouse! port-mouse STOREI ;
-@mouse-x@ ( -- x ) port-mouse 4 + LOADI ;
-@mouse-y@ ( -- y ) port-mouse 8 + LOADI ;
-@mouse-btns@ ( -- mask ) port-mouse 12 + LOADI ;
+MODULE MOUSE
+@addr 12368 ;
+
+@vector! addr STOREI ;
+@x@ ( -- x ) addr 4 + LOADI ;
+@y@ ( -- y ) addr 8 + LOADI ;
+@btns@ ( -- mask ) addr 12 + LOADI ;
 
 ( --- FILE --- )
 
-@file-vector!  port-file STOREI ;
-@file-name!    ( ptr -- ) port-file 4 + STOREI ;
-@file-buffer!  ( ptr -- ) port-file 8 + STOREI ;
+MODULE FILE
+@addr 12384 ;
 
-@file-read! ( len -- res )
-    16777216 ( Cmd 1 << 24 ) OR
-    port-file 12 + STOREI
-    port-file 12 + LOADI
+@vector! addr STOREI ;
+@name!   ( ptr -- ) addr 4 + STOREI ;
+@buf!    ( ptr -- ) addr 8 + STOREI ;
+
+@read ( len -- res )
+    16777216 OR
+    addr 12 + STOREI
+    addr 12 + LOADI
 ;
 
-@file-write! ( len -- res )
-    33554432 ( Cmd 2 << 24 ) OR
-    port-file 12 + STOREI
-    port-file 12 + LOADI
+@write ( len -- res )
+    33554432 OR
+    addr 12 + STOREI
+    addr 12 + LOADI
 ;
 
-@file-size@ ( -- size )
-    50331648 ( Cmd 3 << 24 )
-    port-file 12 + STOREI
-    port-file 12 + LOADI
+@size ( -- size )
+    50331648 
+    addr 12 + STOREI
+    addr 12 + LOADI
 ;
 
-@file-delete! ( -- res )
-    67108864 ( Cmd 4 << 24 )
-    port-file 12 + STOREI
-    port-file 12 + LOADI
+@delete ( -- res )
+    67108864 
+    addr 12 + STOREI
+    addr 12 + LOADI
 ;
 
 ( --- DATETIME --- )
 
-@unix-ts@ ( -- ts ) port-datetime 4 + LOADI ;
-@date-packed@ ( -- year-month-day ) port-datetime 8 + LOADI ;
-@time-packed@ ( -- hour-min-sec ) port-datetime 12 + LOADI ;
+MODULE TIME
+@addr 12400 ;
+
+@unix@   ( -- ts ) addr 4 + LOADI ;
+@date@   ( -- year-month-day ) addr 8 + LOADI ;
+@time@   ( -- hour-min-sec ) addr 12 + LOADI ;
+
+( --- Legacy Aliases --- )
+MODULE SYSTEM
+@pixel!  SCREEN::pixel! ;
+@pixel@  SCREEN::pixel-get ;
+@sound!  AUDIO::play ;
+@key@    CTRL::key@ ;
+@buttons@ CTRL::buttons@ ;
+@file-name! FILE::name! ;
+@file-buffer! FILE::buf! ;
+@file-read!  FILE::read ;
+@file-write! FILE::write ;
+@file-size@  FILE::size ;
+@file-delete! FILE::delete ;

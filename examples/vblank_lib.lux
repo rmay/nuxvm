@@ -1,0 +1,45 @@
+( === V-Blank Animation using System Library === )
+
+IMPORT SYSTEM AS SYS
+
+( State in RAM )
+( X position at address 0 )
+( Frame counter at address 4 )
+
+@on-vblank
+    ( 1. Erase old pixel )
+    0 LOADI ( Current X )
+    0 ( Y )
+    0 ( Color: Black )
+    swap SYS::PIXEL!
+
+    ( 2. Update X )
+    0 LOADI 1 +
+    64 MOD
+    0 swap STOREI ( Save new X )
+
+    ( 3. Draw new pixel )
+    0 LOADI
+    0 ( Y )
+    16777215 ( Color: White )
+    swap SYS::PIXEL!
+
+    ( 4. Increment frame counter )
+    4 LOADI 1 + 4 swap STOREI
+;
+
+@setup
+    0 0 STOREI ( X = 0 )
+    0 4 STOREI ( Frame = 0 )
+
+    ( Set Screen Vector )
+    [ on-vblank ] SYS::VECTOR-SCREEN!
+
+    "V-Blank with library started." 10 emit
+    "Current Unix Time: " SYS::UNIX-TS@ . 10 emit
+;
+
+setup
+
+( Main loop )
+[ 1 ] [ YIELD ] |: drop

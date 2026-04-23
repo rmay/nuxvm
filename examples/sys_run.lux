@@ -1,0 +1,28 @@
+( === System Library Test === )
+MODULE MAIN
+IMPORT SYSTEM AS SYS
+
+( Word to print a number and a space )
+@print . 32 emit ;
+
+@on-vblank
+    ( 1. Play sound )
+    440 SYS::SOUND!
+    
+    ( 2. Write pixel )
+    16777215 ( White ) 10 10 SYS::PIXEL!
+;
+
+@main
+    "System lib test" 10 emit
+    
+    ( Set vectors )
+    [ on-vblank ] SYS::VECTOR-SCREEN!
+    
+    "Unix Time: " SYS::UNIX-TS@ print 10 emit
+    
+    ( Infinite loop )
+    [ 1 ] [ YIELD ] |: drop
+;
+
+main

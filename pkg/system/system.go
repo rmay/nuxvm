@@ -285,9 +285,34 @@ func (s *System) Framebuffer() []byte {
 }
 
 func (s *System) DebugInfo() string {
-	return fmt.Sprintf("Controller: K=%d B=0x%X\nMouse: %d,%d B=0x%X\nFile: Ptr=0x%X Buf=0x%X Res=%d",
+	return fmt.Sprintf("Controller: K=%d B=0x%X\nMouse: %d,%d B=0x%X\nFile: Ptr=0x%X Buf=0x%X Res=%d\nRNG: 0x%08X",
 		s.controllerKey, s.controllerButton,
 		s.mouseX, s.mouseY, s.mouseButton,
-		s.fileNamePtr, s.fileBufferPtr, s.lastFileResult)
+		s.fileNamePtr, s.fileBufferPtr, s.lastFileResult,
+		s.rngState)
+}
+
+func (s *System) MMIORegisters() []struct {
+	Name  string
+	Value int32
+} {
+	return []struct {
+		Name  string
+		Value int32
+	}{
+		{"SYS_CTRL", 0},
+		{"CON_OUT", 0},
+		{"SCR_VEC", 0},
+		{"AUD_CTRL", 0},
+		{"CTRL_BTN", int32(s.controllerButton)},
+		{"CTRL_KEY", s.controllerKey},
+		{"MSE_X", s.mouseX},
+		{"MSE_Y", s.mouseY},
+		{"MSE_BTN", int32(s.mouseButton)},
+		{"FILE_PTR", int32(s.fileNamePtr)},
+		{"FILE_BUF", int32(s.fileBufferPtr)},
+		{"FILE_RES", s.lastFileResult},
+		{"RNG_DATA", int32(s.rngState)},
+	}
 }
 

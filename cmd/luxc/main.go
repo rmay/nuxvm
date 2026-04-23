@@ -9,6 +9,7 @@ import (
 )
 
 func main() {
+	trace := flag.Bool("trace", false, "enable compilation tracing")
 	flag.Parse()
 
 	if len(flag.Args()) < 1 {
@@ -20,7 +21,7 @@ func main() {
 	source, _ := os.ReadFile(flag.Args()[0])
 
 	// Compile to bytecode
-	bytecode, err := lux.Compile(string(source))
+	bytecode, err := lux.Compile(string(source), *trace)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

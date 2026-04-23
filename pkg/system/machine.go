@@ -10,8 +10,13 @@ type Machine struct {
 	System *System
 }
 
-func NewMachine(program []byte, trace ...bool) *Machine {
-	cpu := vm.NewVM(program, trace...)
+func NewMachine(program []byte, memSize uint32, trace ...bool) *Machine {
+	var cpu *vm.VM
+	if memSize > 0 {
+		cpu = vm.NewVMWithMemorySize(program, memSize, trace...)
+	} else {
+		cpu = vm.NewVM(program, trace...)
+	}
 	sys := NewSystem()
 	sys.SetMemory(cpu.Memory())
 	cpu.SetBus(sys)
