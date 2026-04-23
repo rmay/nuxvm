@@ -171,7 +171,7 @@ Complete reference for all 32 opcodes in the NUX virtual machine.
 
 #### 0x1F - STOREI
 **Format**: `STOREI` (1 byte)  
-**Action**: `[addr, value] → []`  
+**Action**: `[value, addr] → []`  
 **Description**: Pop address, pop value, store value at address. Indirect store — address is computed at runtime. Used for device I/O and dynamic memory access.
 
 ### I/O Operations

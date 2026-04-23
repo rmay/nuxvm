@@ -2,7 +2,11 @@
 
 # Build the nux binary
 vmbuild:
-	go build -o nux ./cmd/nux
+	go build -o bin/nux ./cmd/nux
+
+# Build the cloister graphical emulator
+cloisterbuild:
+	go build -o bin/cloister ./cmd/cloister
 
 # Run tests
 vmtest:
@@ -15,31 +19,37 @@ vmcoverage:
 
 # Clean build artifacts
 vmclean:
-	rm -f nux
+	rm -rf bin/
 	rm -f pkg/vm/coverage.out
 
 # Install nux to $GOPATH/bin
 vminstall:
 	go install ./cmd/nux
 
+# Install cloister to $GOPATH/bin
+cloisterinstall:
+	go install ./cmd/cloister
+
 # Run examples
 vmexamples:
 	cd examples && go run examples.go
 
 buildall:
-	go build -o nux ./cmd/nux
-	go build -o luxc cmd/luxc/main.go
-	go build -o luxrepl cmd/luxrepl/main.go
+	mkdir -p bin
+	go build -o bin/nux ./cmd/nux
+	go build -o bin/cloister ./cmd/cloister
+	go build -o bin/luxc cmd/luxc/main.go
+	go build -o bin/luxrepl cmd/luxrepl/main.go
 
 luxbuild:
-	go build -o luxc cmd/luxc/main.go
+	go build -o bin/luxc cmd/luxc/main.go
 
 # Run compiler tests
 compilertest:
 	cd pkg/lux && go test -v
 
 replbuild:
-	go build -o luxrepl cmd/luxrepl/main.go
+	go build -o bin/luxrepl cmd/luxrepl/main.go
 
 # Format code
 fmt:
@@ -56,10 +66,12 @@ check: fmt test
 help:
 	@echo "Available targets:"
 	@echo "  vmbuild      - Build the nux binary"
+	@echo "  cloisterbuild - Build the CLOISTER graphical emulator"
 	@echo "  vmtest       - Run tests"
 	@echo "  vmcoverage   - Run tests with coverage report"
 	@echo "  vmclean      - Remove build artifacts"
 	@echo "  vminstall    - Install nux to GOPATH/bin"
+	@echo "  cloisterinstall - Install cloister to GOPATH/bin"
 	@echo "  vmexamples   - Run example programs"
 	@echo "  compilertest - Run compiler tests"
 	@echo "  buildall     - Build all the things"

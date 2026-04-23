@@ -155,7 +155,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		// CPU info
 		msg := fmt.Sprintf("PC: 0x%04X\nOP: %s\nStack: %v\n",
 			cpu.PC(), cpu.LastOpcode(), stack)
-		
+
 		// MMIO Registers
 		msg += "\nMMIO Registers:\n"
 		for _, reg := range sys.MMIORegisters() {
@@ -202,14 +202,14 @@ func main() {
 	}
 
 	machine := system.NewMachine(program, memSize)
-	
+
 	game := &Game{
 		machine:   machine,
-		bootTimer: 300,
+		bootTimer: 120,
 	}
 
 	ebiten.SetWindowSize(screenWidth*screenScale, screenHeight*screenScale)
-	ebiten.SetWindowTitle("NUX OS")
+	ebiten.SetWindowTitle("CLOISTER")
 	if err := ebiten.RunGame(game); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

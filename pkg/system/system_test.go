@@ -46,7 +46,7 @@ func TestFileReadWrite(t *testing.T) {
 	sys.SetMemory(mem)
 
 	filename := "testfile.txt"
-	content := "Hello NUX OS!"
+	content := "Hello CLOISTER!"
 	
 	// Use addresses relative to UserMemoryOffset for safety
 	nameAddr := uint32(vm.UserMemoryOffset) + 100

@@ -126,4 +126,4 @@ The lexer reports:
 - Errors for unclosed comments
 - Context for invalid numbers
 
-This makes debugging easy later!
+This makes debugging easy later. You do want something easier, right?

@@ -49,8 +49,8 @@ I picked Go over something like C because of:
 
 **NUX** is a 32-opcode stack-based virtual machine with a simple instruction set, designed for learning and experimentation. It features:
 
-- **32-bit integer stack** with overflow protection (8192 elements max, which is 32KB, with 4KB reserved)
-- **Separate return stack** for clean subroutine calls
+- **32-bit integer stack** with overflow protection (8192 elements max)
+- **Separate return stack** for clean subroutine calls (1024 elements max)
 - **32 opcodes** covering stack ops, arithmetic, bitwise, comparisons, control flow, and I/O
 - **Big-endian bytecode** format
 - **Memory-mapped program and data space**
@@ -60,6 +60,7 @@ I picked Go over something like C because of:
 - **Reverse Polish Notation** (postfix) syntax
 - **User-defined words** (functions)
 - **Module system** with namespacing and imports
+- **File inclusion** via `INCLUDE`
 - **Hex and decimal literals**
 - **String output** support
 - **Interactive REPL** for rapid prototyping
@@ -72,9 +73,9 @@ I picked Go over something like C because of:
 
 NUX uses a dual-stack architecture:
 
-- **Data Stack**: Primary stack for computation (32-bit signed integers)
-- **Return Stack**: Dedicated stack for subroutine return addresses
-- **Memory**: Unified space for program code and runtime data
+- **Data Stack**: Primary stack for computation (32-bit signed integers, max 8192)
+- **Return Stack**: Dedicated stack for subroutine return addresses (max 1024)
+- **Memory**: Unified space for program code and runtime data (default 32MB in cloister)
 - **Program Counter (PC)**: 32-bit address pointer
 
 ### Execution Model
@@ -103,11 +104,13 @@ cd nuxvm
 
 # Build all tools
 go build -o bin/nux cmd/nux/main.go
+go build -o bin/cloister cmd/cloister/main.go
 go build -o bin/luxc cmd/luxc/main.go
 go build -o bin/luxrepl cmd/luxrepl/main.go
 
 # Or use go install
 go install ./cmd/nux
+go install ./cmd/cloister
 go install ./cmd/luxc
 go install ./cmd/luxrepl
 ```
@@ -121,14 +124,11 @@ go install ./cmd/luxrepl
 # Compile a LUX source file to bytecode
 ./bin/luxc program.lux
 
-# Run the compiled bytecode
+# Run the compiled bytecode in the graphical emulator
+./bin/cloister program.bin
+
+# Run the compiled bytecode in the console runner
 ./bin/nux program.bin
-
-# Run with debugging
-./bin/nux --debug program.bin
-
-# Run with execution trace
-./bin/nux --trace program.bin
 ```
 
 ---
@@ -144,6 +144,12 @@ LUX uses postfix notation where operators follow their operands. Data flows thro
 7 dup *       ( Push 7, duplicate, multiply → stack: [49] )
 42 .          ( Push 42, print as number → output: 42 )
 72 emit       ( Push 72, print as character → output: H )
+```
+
+### File Inclusion
+
+```forth
+INCLUDE "lib/system.lux"
 ```
 
 ### Numbers
@@ -232,7 +238,7 @@ Define reusable functions with `@name ... ;`
 5 fact-rec .      ( Outputs 120 )
 ```
 
-**Note**: Word definitions are compiled first, then the main program code runs.
+**Note**: Word definitions are compiled first, then the main program code runs. Idiomatic names can include symbols like `vector!` or `key@`.
 
 ### Reserved symbols and words
 
@@ -270,6 +276,7 @@ Define reusable functions with `@name ... ;`
 | Combinators    | KEEP    ||
 | Directives     | MODULE  ||
 | Directives     | IMPORT  ||
+| Directives     | INCLUDE ||
 ---
 
 ## Module System
@@ -482,14 +489,36 @@ Compiles LUX source files to NUXVM bytecode:
 # Creates program.bin
 ```
 
-### 3. nux - NUXVM Runner
+### 3. cloister - Graphical Emulator
+
+The flagship NUX environment with graphics, keyboard, and mouse support.
+
+```bash
+# Start with default boot shell
+./bin/cloister
+
+# Load a specific program
+./bin/cloister program.bin
+
+# Configure memory (default 32MB, max 128MB)
+./bin/cloister -mem 64 program.bin
+```
+
+**Features:**
+- 5-second "CLOISTER" boot screen
+- 64x32 color display
+- Mouse support with cursor
+- Keyboard input mapping
+- MMIO interface for all devices
+
+### 4. nux - NUXVM Console Runner
 
 Executes NUXVM bytecode:
 
 ```bash
 # Normal execution
 ./bin/nux program.bin
-
+```
 # Debug mode (step-by-step)
 ./bin/nux --debug program.bin
 
@@ -621,14 +650,21 @@ lux> .s
 ```
 nuxvm/
 ├── cmd/
-│   ├── nux/        - VM runner
+│   ├── nux/        - VM console runner
+│   ├── cloister/   - Graphical emulator
 │   ├── luxc/       - LUX compiler
 │   └── luxrepl/    - Interactive REPL
+├── lib/
+│   ├── system.lux  - System library (MMIO helpers)
+│   └── boot.lux    - Default boot program
 ├── pkg/
 │   ├── vm/         - Virtual machine implementation
 │   │   ├── vm.go       - Core VM
 │   │   ├── opcodes.go  - Opcode definitions
 │   │   └── vm_test.go  - VM tests
+│   ├── system/     - Hardware abstraction
+│   │   ├── machine.go  - Machine (CPU + System)
+│   │   └── system.go   - MMIO and devices
 │   └── lux/        - LUX language implementation
 │       ├── lexer.go    - Tokenizer
 │       ├── compiler.go - Bytecode compiler
@@ -672,7 +708,7 @@ Contributions welcome! Areas for improvement:
 
 ### Stack Size Limits
 
-- Maximum stack depth: **1024 elements**
+- Maximum stack depth: **8192 elements**
 - Maximum return stack depth: **1024 elements**
 - Stack overflow causes runtime error
 
@@ -701,10 +737,11 @@ Contributions welcome! Areas for improvement:
 ## Acknowledgments
 
 - Inspired by **Forth** and other stack-based languages
-- Test suite written with the help of Claude Sonnet 4.5
-- Code written by me, but enhanced and expanded through using Grok 3.5 and Claude Sonnet 4.5
+- Test suite written with the help of Claude Sonnet 4.5 and Gemini 3.
+- Code written by me, but enhanced and expanded through using Grok 3.5, Claude Sonnet 4.5, and Gemini 3.
 - Designed for learning and experimentation
-- Documentation rewritten by Claude Sonnet 4.5
+- Documentation rewritten by Claude Sonnet 4.5 and Gemini 3.
+- The boring bits are from my faithful robotic servants.
 
 ---
 

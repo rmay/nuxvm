@@ -23,7 +23,7 @@ IMPORT CTRL
     ( Setup keyboard vector )
     [ on-key ] CTRL::vector!
 
-    "NUX OS Booted." 10 emit
+    "CLOISTER Booted." 10 emit
     "Default Shell Active." 10 emit
     "32MB RAM Initialized." 10 emit
 

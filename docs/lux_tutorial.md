@@ -47,7 +47,7 @@ Type 'help' for commands, 'exit' to quit
 lux>
 ```
 
-The `300k` is the current version. I'm using the Kelvin versioning system as defined here: https://jtobin.io/kelvin-versioning because we can't make this too easy.
+The `280k` is the current version. I'm using the Kelvin versioning system as defined here: https://jtobin.io/kelvin-versioning because we can't make this too easy.
 
 Back to the tutorial!
 
@@ -262,6 +262,18 @@ Hello, World  Stack: [25]
 ```
 
 Nice! No need to type all those numbers and emits.
+
+You can also use symbols like `!` or `@` in your word names (as long as they don't start with `@` which is the definition sigil). This is idiomatic for words that perform I/O or read state, like `pixel!` or `key@`.
+
+### File Inclusion
+
+If your project grows, you can split it into multiple files and use `INCLUDE` to bring them together:
+
+```forth
+INCLUDE "lib/system.lux"
+```
+
+The compiler will recursively include the file's content at that position.
 
 ### Conditionals and Loops
 
@@ -508,34 +520,29 @@ For further reading, see [Recursion](#recursion)
 
 ### Modules
 
-Modules are in place, just a bit rough and not useful yet.
-
-Here's an example:
+Modules allow you to namespace your words.
 
 ```forth
 MODULE MATH
 @square dup * ;
 @cube dup dup * * ;
-@power4 square square ;
-
-MODULE SHAPES
-IMPORT MATH AS M
-@area-circle 
-    ( radius -- area )
-    M::SQUARE 
-    314 * 100 /    ( π ≈ 3.14 )
-;
-
-MODULE MAIN
-IMPORT MATH
-IMPORT SHAPES
-
-5 MATH::SQUARE .        ( 25 )
-3 MATH::CUBE .          ( 27 )
-10 SHAPES::AREA-CIRCLE . ( 314 )
 ```
 
-Tantalizing!
+You can use these words by qualifying them: `MATH::square`.
+
+To make them easier to use, you can `IMPORT` a module:
+
+```forth
+IMPORT MATH
+5 MATH::SQUARE .
+```
+
+Or use an alias:
+
+```forth
+IMPORT MATH AS M
+5 M::SQUARE .
+```
 
 ### Compiling Lux Source
 
@@ -655,6 +662,5 @@ As I improve the language, I'll update this tutorial.
 
 ## Coming At Some Point!
 
-- Importing code files
 - Bug fixes
 
