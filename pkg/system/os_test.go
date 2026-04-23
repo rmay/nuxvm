@@ -1,16 +1,30 @@
 package system
 
 import (
-	"os"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/rmay/nuxvm/pkg/lux"
+	"github.com/rmay/nuxvm/pkg/vm"
 )
 
 func TestOSKeyboard(t *testing.T) {
-	program, err := os.ReadFile("../../examples/keyboard.bin")
+	// Simple keyboard handler in LUX
+	// We need an infinite loop with YIELD so the VM is "running"
+	// but yielding to the host between instructions.
+	source := fmt.Sprintf(`
+		@on-key
+			%d LOADI dup 0 > [ . ] [ drop ] ?:
+		;
+		[ on-key ] %d STOREI
+		0 ( Initial value for while loop )
+		[ 1 ] [ YIELD ] |:
+	`, vm.ControllerKeyAddr, vm.ControllerPort)
+	program, err := lux.Compile(source)
 	if err != nil {
-		t.Fatalf("Failed to read keyboard.bin: %v", err)
+		t.Fatalf("Failed to compile test program: %v", err)
 	}
 
 	machine := NewMachine(program, 0)
@@ -24,15 +38,9 @@ func TestOSKeyboard(t *testing.T) {
 	}
 
 	// Run initial setup (setting vectors, etc.)
-	// We need to run it until it yields.
-	for i := 0; i < 1000; i++ {
-		if machine.CPU.Yielded() {
-			break
-		}
-		_, err := machine.CPU.Step()
-		if err != nil {
-			t.Fatalf("Error during setup: %v", err)
-		}
+	_, err = machine.Tick()
+	if err != nil {
+		t.Fatalf("Error during setup: %v", err)
 	}
 
 	if !machine.CPU.Yielded() {
@@ -40,7 +48,7 @@ func TestOSKeyboard(t *testing.T) {
 	}
 
 	output.Reset()
-	
+
 	// Simulate key press 'A' (65)
 	err = machine.PushKey(65)
 	if err != nil {
@@ -48,14 +56,14 @@ func TestOSKeyboard(t *testing.T) {
 	}
 
 	// Run after vector trigger
-	// machine.Tick() clears yield and runs until next yield
 	_, err = machine.Tick()
 	if err != nil {
 		t.Fatalf("Tick failed: %v", err)
 	}
 
 	got := output.String()
-	if !strings.Contains(got, "Key pressed:") || !strings.Contains(got, "65") {
-		t.Errorf("Unexpected output: %q", got)
+	if !strings.Contains(got, "65") {
+		t.Errorf("Unexpected output: %q, expected it to contain '65'", got)
 	}
 }
+

@@ -224,16 +224,16 @@ func TestCompileAllStackOps(t *testing.T) {
 
 			machine := vm.NewVM(bytecode)
 			if err := machine.Run(); err != nil {
-				t.Fatalf("Runtime error: %v", err)
+				t.Fatalf("%s: runtime error: %v (source: %q)", tt.name, err, tt.source)
 			}
 
 			stack := machine.Stack()
 			if len(stack) != len(tt.expected) {
-				t.Fatalf("Expected stack length %d, got %d", len(tt.expected), len(stack))
+				t.Fatalf("%s: expected stack length %d, got %d (source: %q)", tt.name, len(tt.expected), len(stack), tt.source)
 			}
 			for i, v := range tt.expected {
 				if stack[i] != v {
-					t.Errorf("Position %d: expected %d, got %d", i, v, stack[i])
+					t.Errorf("%s: position %d: expected %d, got %d (source: %q)", tt.name, i, v, stack[i], tt.source)
 				}
 			}
 		})
@@ -368,16 +368,16 @@ func TestCompileIf(t *testing.T) {
 
 			machine := vm.NewVM(bytecode)
 			if err := machine.Run(); err != nil {
-				t.Fatalf("Runtime error: %v", err)
+				t.Fatalf("%s: runtime error: %v (source: %q)", tt.name, err, tt.source)
 			}
 
 			stack := machine.Stack()
 			if len(stack) != len(tt.expected) {
-				t.Fatalf("Expected stack length %d, got %d", len(tt.expected), len(stack))
+				t.Fatalf("%s: expected stack length %d, got %d (source: %q)", tt.name, len(tt.expected), len(stack), tt.source)
 			}
 			for i, v := range tt.expected {
 				if stack[i] != v {
-					t.Errorf("Position %d: expected %d, got %d", i, v, stack[i])
+					t.Errorf("%s: position %d: expected %d, got %d (source: %q)", tt.name, i, v, stack[i], tt.source)
 				}
 			}
 		})
@@ -403,16 +403,16 @@ func TestCompileUnless(t *testing.T) {
 
 			machine := vm.NewVM(bytecode)
 			if err := machine.Run(); err != nil {
-				t.Fatalf("Runtime error: %v", err)
+				t.Fatalf("%s: runtime error: %v (source: %q)", tt.name, err, tt.source)
 			}
 
 			stack := machine.Stack()
 			if len(stack) != len(tt.expected) {
-				t.Fatalf("Expected stack length %d, got %d", len(tt.expected), len(stack))
+				t.Fatalf("%s: expected stack length %d, got %d (source: %q)", tt.name, len(tt.expected), len(stack), tt.source)
 			}
 			for i, v := range tt.expected {
 				if stack[i] != v {
-					t.Errorf("Position %d: expected %d, got %d", i, v, stack[i])
+					t.Errorf("%s: position %d: expected %d, got %d (source: %q)", tt.name, i, v, stack[i], tt.source)
 				}
 			}
 		})
@@ -615,6 +615,30 @@ func TestCompileMultipleWordsInModule(t *testing.T) {
 	stack := machine.Stack()
 	if len(stack) != 1 || stack[0] != 16 { // 10+1+2+3
 		t.Errorf("Expected [16], got %v", stack)
+	}
+}
+
+func TestCompileImportWithoutAlias(t *testing.T) {
+	source := `
+		MODULE MATH
+		@SQUARE dup * ;
+		MODULE MAIN
+		IMPORT MATH
+		5 MATH::SQUARE
+	`
+	bytecode, err := Compile(source)
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+
+	machine := vm.NewVM(bytecode)
+	if err := machine.Run(); err != nil {
+		t.Fatalf("Runtime error: %v", err)
+	}
+
+	stack := machine.Stack()
+	if len(stack) != 1 || stack[0] != 25 {
+		t.Errorf("Expected [25], got %v", stack)
 	}
 }
 

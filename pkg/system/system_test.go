@@ -36,20 +36,29 @@ func TestDateTime(t *testing.T) {
 }
 
 func TestFileReadWrite(t *testing.T) {
+	tempDir := t.TempDir()
+	origDir, _ := os.Getwd()
+	os.Chdir(tempDir)
+	defer os.Chdir(origDir)
+
 	sys := NewSystem()
-	mem := make([]byte, 1024)
+	mem := make([]byte, vm.UserMemoryOffset+1024) 
 	sys.SetMemory(mem)
 
 	filename := "testfile.txt"
 	content := "Hello NUX OS!"
 	
+	// Use addresses relative to UserMemoryOffset for safety
+	nameAddr := uint32(vm.UserMemoryOffset) + 100
+	bufAddr := uint32(vm.UserMemoryOffset) + 200
+
 	// Setup filename in VM memory
-	copy(mem[100:], []byte(filename+"\x00"))
-	sys.Write(vm.FilePort+4, 100) // FileNamePtr
+	copy(mem[nameAddr:], []byte(filename+"\x00"))
+	sys.Write(vm.FilePort+4, int32(nameAddr)) // FileNamePtr
 
 	// Setup data in VM memory
-	copy(mem[200:], []byte(content))
-	sys.Write(vm.FilePort+8, 200) // FileBufferPtr
+	copy(mem[bufAddr:], []byte(content))
+	sys.Write(vm.FilePort+8, int32(bufAddr)) // FileBufferPtr
 
 	// 1. Test Write
 	// Command 2 (Write), Length 13
@@ -66,9 +75,8 @@ func TestFileReadWrite(t *testing.T) {
 
 	// Verify file was written
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
-		t.Fatalf("File was not created")
+		t.Fatalf("File was not created in %s", tempDir)
 	}
-	defer os.Remove(filename)
 
 	// 2. Test Stat
 	cmdStat := (uint32(3) << 24)
@@ -80,7 +88,7 @@ func TestFileReadWrite(t *testing.T) {
 
 	// 3. Test Read
 	// Clear memory first
-	for i := 200; i < 300; i++ { mem[i] = 0 }
+	for i := bufAddr; i < bufAddr+100; i++ { mem[i] = 0 }
 	
 	cmdRead := (uint32(1) << 24) | uint32(len(content))
 	sys.Write(vm.FilePort+12, int32(cmdRead))
@@ -89,7 +97,7 @@ func TestFileReadWrite(t *testing.T) {
 		t.Errorf("Expected read result %d, got %d", len(content), resRead)
 	}
 	
-	readContent := string(mem[200 : 200+len(content)])
+	readContent := string(mem[bufAddr : bufAddr+uint32(len(content))])
 	if readContent != content {
 		t.Errorf("Expected read content %q, got %q", content, readContent)
 	}

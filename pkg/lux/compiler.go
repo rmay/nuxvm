@@ -1198,6 +1198,8 @@ func (c *Compiler) compileWhile() error {
 
 	loopStart := c.currentAddress()
 
+	c.emit(vm.OpDup)
+
 	c.emit(vm.OpLoad)
 	c.emit(vm.EncodeInt32(tempCondAddr)...)
 	c.emit(vm.OpCallStack)

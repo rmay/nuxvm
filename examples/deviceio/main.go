@@ -28,7 +28,7 @@ func ex1_VideoFramebuffer() {
 	prog = append(prog, vm.OutNumber()...)
 	prog = append(prog, vm.OpHalt)
 
-	machine := system.NewMachine(prog)
+	machine := system.NewMachine(prog, 0)
 	if err := machine.CPU.Run(); err != nil {
 		fmt.Printf("  Error: %v\n", err)
 		return
@@ -61,7 +61,7 @@ func ex2_FillFramebufferRow() {
 	}
 	prog = append(prog, vm.OpHalt)
 
-	machine := system.NewMachine(prog)
+	machine := system.NewMachine(prog, 0)
 	fmt.Print("  Pixels: ")
 	if err := machine.CPU.Run(); err != nil {
 		fmt.Printf("  Error: %v\n", err)
@@ -80,7 +80,7 @@ func ex3_KeyboardStatus() {
 	prog = append(prog, vm.OutNumber()...)
 	prog = append(prog, vm.OpHalt)
 
-	machine := system.NewMachine(prog)
+	machine := system.NewMachine(prog, 0)
 	machine.PushKey(1) // Simulate key pressed
 	fmt.Print("  Key pressed: ")
 	if err := machine.CPU.Run(); err != nil {
@@ -105,7 +105,7 @@ func ex4_AudioControl() {
 	prog = append(prog, vm.OutNumber()...)
 	prog = append(prog, vm.OpHalt)
 
-	machine := system.NewMachine(prog)
+	machine := system.NewMachine(prog, 0)
 	fmt.Print("  Audio command: ")
 	if err := machine.CPU.Run(); err != nil {
 		fmt.Printf("  Error: %v\n", err)
@@ -137,7 +137,7 @@ func ex5_FramebufferScan() {
 	}
 	prog = append(prog, vm.OpHalt)
 
-	machine := system.NewMachine(prog)
+	machine := system.NewMachine(prog, 0)
 	fmt.Print("  Pixels [0–7]: ")
 	if err := machine.CPU.Run(); err != nil {
 		fmt.Printf("  Error: %v\n", err)
@@ -174,7 +174,7 @@ func ex7_NormalMemoryUnaffected() {
 	instructions = append(instructions, vm.OpHalt)
 	copy(prog, instructions)
 
-	machine := system.NewMachine(prog)
+	machine := system.NewMachine(prog, 0)
 	fmt.Print("  Value at user mem+200: ")
 	if err := machine.CPU.Run(); err != nil {
 		fmt.Printf("  Error: %v\n", err)
@@ -219,7 +219,7 @@ func ex8_KeyboardPoll() {
 
 	prog = append(prog, vm.OpHalt)
 
-	machine := system.NewMachine(prog)
+	machine := system.NewMachine(prog, 0)
 	machine.PushButton(1) // Simulate key pressed
 	fmt.Print("  Keyboard reads: ")
 	if err := machine.CPU.Run(); err != nil {

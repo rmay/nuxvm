@@ -252,364 +252,67 @@ func TestRot(t *testing.T) {
 	}
 }
 
-func TestAdd(t *testing.T) {
-	vm := createVMWithProgram([]byte{})
-	pushValue(t, vm, 10)
-	pushValue(t, vm, 20)
-
-	if err := vm.Add(); err != nil {
-		t.Fatalf("Add failed: %v", err)
+func TestArithmeticBitwise(t *testing.T) {
+	tests := []struct {
+		name     string
+		setup    []int32
+		op       func(*VM) error
+		expected []int32
+		wantErr  string
+	}{
+		{"Add", []int32{10, 20}, (*VM).Add, []int32{30}, ""},
+		{"Add Underflow", []int32{10}, (*VM).Add, nil, "stack underflow"},
+		{"Sub", []int32{30, 10}, (*VM).Sub, []int32{20}, ""},
+		{"Mul", []int32{5, 7}, (*VM).Mul, []int32{35}, ""},
+		{"Div", []int32{20, 4}, (*VM).Div, []int32{5}, ""},
+		{"Div By Zero", []int32{10, 0}, (*VM).Div, nil, "division by zero"},
+		{"Mod", []int32{17, 5}, (*VM).Mod, []int32{2}, ""},
+		{"Mod By Zero", []int32{10, 0}, (*VM).Mod, nil, "modulus by zero"},
+		{"And", []int32{0b1100, 0b1010}, (*VM).And, []int32{0b1000}, ""},
+		{"Or", []int32{0b1100, 0b1010}, (*VM).Or, []int32{0b1110}, ""},
+		{"Xor", []int32{0b1100, 0b1010}, (*VM).Xor, []int32{0b0110}, ""},
+		{"Not", []int32{0}, (*VM).Not, []int32{-1}, ""},
+		{"Inc", []int32{41}, (*VM).Inc, []int32{42}, ""},
+		{"Dec", []int32{43}, (*VM).Dec, []int32{42}, ""},
+		{"Neg", []int32{42}, (*VM).Neg, []int32{-42}, ""},
+		{"Shl", []int32{5, 2}, (*VM).Shl, []int32{20}, ""},
+		{"Shl Modulo 32", []int32{5, 34}, (*VM).Shl, []int32{20}, ""},
+		{"Eq True", []int32{42, 42}, (*VM).Eq, []int32{1}, ""},
+		{"Eq False", []int32{10, 20}, (*VM).Eq, []int32{0}, ""},
+		{"Lt True", []int32{10, 20}, (*VM).Lt, []int32{1}, ""},
+		{"Lt False", []int32{20, 10}, (*VM).Lt, []int32{0}, ""},
+		{"Gt True", []int32{20, 10}, (*VM).Gt, []int32{1}, ""},
+		{"Gt False", []int32{10, 20}, (*VM).Gt, []int32{0}, ""},
 	}
 
-	stack := vm.Stack()
-	if len(stack) != 1 {
-		t.Errorf("Expected stack length 1, got %d", len(stack))
-	}
-	if stack[0] != 30 {
-		t.Errorf("Expected 30, got %d", stack[0])
-	}
-
-	// Test add with insufficient values
-	vm = createVMWithProgram([]byte{})
-	pushValue(t, vm, 1)
-	if err := vm.Add(); err == nil {
-		t.Error("Expected error when adding with only one value")
-	}
-}
-
-func TestSub(t *testing.T) {
-	vm := createVMWithProgram([]byte{})
-	pushValue(t, vm, 30)
-	pushValue(t, vm, 10)
-
-	if err := vm.Sub(); err != nil {
-		t.Fatalf("Sub failed: %v", err)
-	}
-
-	stack := vm.Stack()
-	if len(stack) != 1 {
-		t.Errorf("Expected stack length 1, got %d", len(stack))
-	}
-	if stack[0] != 20 {
-		t.Errorf("Expected 20, got %d", stack[0])
-	}
-}
-
-func TestMul(t *testing.T) {
-	vm := createVMWithProgram([]byte{})
-	pushValue(t, vm, 5)
-	pushValue(t, vm, 7)
-
-	if err := vm.Mul(); err != nil {
-		t.Fatalf("Mul failed: %v", err)
-	}
-
-	stack := vm.Stack()
-	if len(stack) != 1 {
-		t.Errorf("Expected stack length 1, got %d", len(stack))
-	}
-	if stack[0] != 35 {
-		t.Errorf("Expected 35, got %d", stack[0])
-	}
-}
-
-func TestDiv(t *testing.T) {
-	vm := createVMWithProgram([]byte{})
-	pushValue(t, vm, 20)
-	pushValue(t, vm, 4)
-
-	if err := vm.Div(); err != nil {
-		t.Fatalf("Div failed: %v", err)
-	}
-
-	stack := vm.Stack()
-	if len(stack) != 1 {
-		t.Errorf("Expected stack length 1, got %d", len(stack))
-	}
-	if stack[0] != 5 {
-		t.Errorf("Expected 5, got %d", stack[0])
-	}
-
-	// Test division by zero
-	vm = createVMWithProgram([]byte{})
-	pushValue(t, vm, 10)
-	pushValue(t, vm, 0)
-	if err := vm.Div(); err == nil {
-		t.Error("Expected error when dividing by zero")
-	}
-}
-
-func TestMod(t *testing.T) {
-	vm := createVMWithProgram([]byte{})
-	pushValue(t, vm, 17)
-	pushValue(t, vm, 5)
-
-	if err := vm.Mod(); err != nil {
-		t.Fatalf("Mod failed: %v", err)
-	}
-
-	stack := vm.Stack()
-	if len(stack) != 1 {
-		t.Errorf("Expected stack length 1, got %d", len(stack))
-	}
-	if stack[0] != 2 {
-		t.Errorf("Expected 2, got %d", stack[0])
-	}
-
-	// Test modulus by zero
-	vm = createVMWithProgram([]byte{})
-	pushValue(t, vm, 10)
-	pushValue(t, vm, 0)
-	if err := vm.Mod(); err == nil {
-		t.Error("Expected error when modulus by zero")
-	}
-}
-
-func TestInc(t *testing.T) {
-	vm := createVMWithProgram([]byte{})
-	pushValue(t, vm, 41)
-
-	if err := vm.Inc(); err != nil {
-		t.Fatalf("Inc failed: %v", err)
-	}
-
-	stack := vm.Stack()
-	if len(stack) != 1 {
-		t.Errorf("Expected stack length 1, got %d", len(stack))
-	}
-	if stack[0] != 42 {
-		t.Errorf("Expected 42, got %d", stack[0])
-	}
-
-	// Test inc on empty stack
-	vm = createVMWithProgram([]byte{})
-	if err := vm.Inc(); err == nil {
-		t.Error("Expected error when inc on empty stack")
-	}
-}
-
-func TestDec(t *testing.T) {
-	vm := createVMWithProgram([]byte{})
-	pushValue(t, vm, 43)
-
-	if err := vm.Dec(); err != nil {
-		t.Fatalf("Dec failed: %v", err)
-	}
-
-	stack := vm.Stack()
-	if len(stack) != 1 {
-		t.Errorf("Expected stack length 1, got %d", len(stack))
-	}
-	if stack[0] != 42 {
-		t.Errorf("Expected 42, got %d", stack[0])
-	}
-}
-
-func TestNeg(t *testing.T) {
-	vm := createVMWithProgram([]byte{})
-	pushValue(t, vm, 42)
-
-	if err := vm.Neg(); err != nil {
-		t.Fatalf("Neg failed: %v", err)
-	}
-
-	stack := vm.Stack()
-	if len(stack) != 1 {
-		t.Errorf("Expected stack length 1, got %d", len(stack))
-	}
-	if stack[0] != -42 {
-		t.Errorf("Expected -42, got %d", stack[0])
-	}
-
-	// Test double negation
-	if err := vm.Neg(); err != nil {
-		t.Fatalf("Second Neg failed: %v", err)
-	}
-	stack = vm.Stack()
-	if stack[0] != 42 {
-		t.Errorf("Expected 42 after double negation, got %d", stack[0])
-	}
-}
-
-func TestAnd(t *testing.T) {
-	vm := createVMWithProgram([]byte{})
-	pushValue(t, vm, 0b1100)
-	pushValue(t, vm, 0b1010)
-
-	if err := vm.And(); err != nil {
-		t.Fatalf("And failed: %v", err)
-	}
-
-	stack := vm.Stack()
-	if len(stack) != 1 {
-		t.Errorf("Expected stack length 1, got %d", len(stack))
-	}
-	if stack[0] != 0b1000 {
-		t.Errorf("Expected 0b1000 (8), got %d", stack[0])
-	}
-}
-
-func TestOr(t *testing.T) {
-	vm := createVMWithProgram([]byte{})
-	pushValue(t, vm, 0b1100)
-	pushValue(t, vm, 0b1010)
-
-	if err := vm.Or(); err != nil {
-		t.Fatalf("Or failed: %v", err)
-	}
-
-	stack := vm.Stack()
-	if len(stack) != 1 {
-		t.Errorf("Expected stack length 1, got %d", len(stack))
-	}
-	if stack[0] != 0b1110 {
-		t.Errorf("Expected 0b1110 (14), got %d", stack[0])
-	}
-}
-
-func TestXor(t *testing.T) {
-	vm := createVMWithProgram([]byte{})
-	pushValue(t, vm, 0b1100)
-	pushValue(t, vm, 0b1010)
-
-	if err := vm.Xor(); err != nil {
-		t.Fatalf("Xor failed: %v", err)
-	}
-
-	stack := vm.Stack()
-	if len(stack) != 1 {
-		t.Errorf("Expected stack length 1, got %d", len(stack))
-	}
-	if stack[0] != 0b0110 {
-		t.Errorf("Expected 0b0110 (6), got %d", stack[0])
-	}
-}
-
-func TestNot(t *testing.T) {
-	vm := createVMWithProgram([]byte{})
-	pushValue(t, vm, 0)
-
-	if err := vm.Not(); err != nil {
-		t.Fatalf("Not failed: %v", err)
-	}
-
-	stack := vm.Stack()
-	if len(stack) != 1 {
-		t.Errorf("Expected stack length 1, got %d", len(stack))
-	}
-	if stack[0] != -1 {
-		t.Errorf("Expected -1, got %d", stack[0])
-	}
-}
-
-func TestShl(t *testing.T) {
-	vm := createVMWithProgram([]byte{})
-	pushValue(t, vm, 5)
-	pushValue(t, vm, 2)
-
-	if err := vm.Shl(); err != nil {
-		t.Fatalf("Shl failed: %v", err)
-	}
-
-	stack := vm.Stack()
-	if len(stack) != 1 {
-		t.Errorf("Expected stack length 1, got %d", len(stack))
-	}
-	if stack[0] != 20 {
-		t.Errorf("Expected 20, got %d", stack[0])
-	}
-
-	// Test shift with modulo 32
-	vm = createVMWithProgram([]byte{})
-	pushValue(t, vm, 5)
-	pushValue(t, vm, 34) // Should be treated as 34 % 32 = 2
-	if err := vm.Shl(); err != nil {
-		t.Fatalf("Shl with large shift failed: %v", err)
-	}
-	stack = vm.Stack()
-	if stack[0] != 20 {
-		t.Errorf("Expected 20 with modulo shift, got %d", stack[0])
-	}
-}
-
-func TestEq(t *testing.T) {
-	vm := createVMWithProgram([]byte{})
-
-	// Test equal values
-	pushValue(t, vm, 42)
-	pushValue(t, vm, 42)
-	if err := vm.Eq(); err != nil {
-		t.Fatalf("Eq failed: %v", err)
-	}
-	stack := vm.Stack()
-	if stack[0] != 1 {
-		t.Errorf("Expected 1 for equal values, got %d", stack[0])
-	}
-
-	// Test unequal values
-	vm = createVMWithProgram([]byte{})
-	pushValue(t, vm, 10)
-	pushValue(t, vm, 20)
-	if err := vm.Eq(); err != nil {
-		t.Fatalf("Eq failed: %v", err)
-	}
-	stack = vm.Stack()
-	if stack[0] != 0 {
-		t.Errorf("Expected 0 for unequal values, got %d", stack[0])
-	}
-}
-
-func TestLt(t *testing.T) {
-	vm := createVMWithProgram([]byte{})
-
-	// Test less than
-	pushValue(t, vm, 10)
-	pushValue(t, vm, 20)
-	if err := vm.Lt(); err != nil {
-		t.Fatalf("Lt failed: %v", err)
-	}
-	stack := vm.Stack()
-	if stack[0] != 1 {
-		t.Errorf("Expected 1 for 10 < 20, got %d", stack[0])
-	}
-
-	// Test not less than
-	vm = createVMWithProgram([]byte{})
-	pushValue(t, vm, 20)
-	pushValue(t, vm, 10)
-	if err := vm.Lt(); err != nil {
-		t.Fatalf("Lt failed: %v", err)
-	}
-	stack = vm.Stack()
-	if stack[0] != 0 {
-		t.Errorf("Expected 0 for 20 < 10, got %d", stack[0])
-	}
-}
-
-func TestGt(t *testing.T) {
-	vm := createVMWithProgram([]byte{})
-
-	// Test greater than
-	pushValue(t, vm, 20)
-	pushValue(t, vm, 10)
-	if err := vm.Gt(); err != nil {
-		t.Fatalf("Gt failed: %v", err)
-	}
-	stack := vm.Stack()
-	if stack[0] != 1 {
-		t.Errorf("Expected 1 for 20 > 10, got %d", stack[0])
-	}
-
-	// Test not greater than
-	vm = createVMWithProgram([]byte{})
-	pushValue(t, vm, 10)
-	pushValue(t, vm, 20)
-	if err := vm.Gt(); err != nil {
-		t.Fatalf("Gt failed: %v", err)
-	}
-	stack = vm.Stack()
-	if stack[0] != 0 {
-		t.Errorf("Expected 0 for 10 > 20, got %d", stack[0])
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vm := createVMWithProgram([]byte{})
+			for _, v := range tt.setup {
+				pushValue(t, vm, v)
+			}
+			err := tt.op(vm)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Errorf("%s: expected error containing %q, got nil", tt.name, tt.wantErr)
+				} else if !contains(err.Error(), tt.wantErr) {
+					t.Errorf("%s: expected error containing %q, got %q", tt.name, tt.wantErr, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", tt.name, err)
+			}
+			stack := vm.Stack()
+			if len(stack) != len(tt.expected) {
+				t.Fatalf("%s: expected stack length %d, got %d", tt.name, len(tt.expected), len(stack))
+			}
+			for i := range stack {
+				if stack[i] != tt.expected[i] {
+					t.Errorf("%s: stack[%d] mismatch: expected %d, got %d", tt.name, i, tt.expected[i], stack[i])
+				}
+			}
+		})
 	}
 }
 

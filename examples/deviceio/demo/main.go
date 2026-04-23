@@ -153,7 +153,7 @@ func main() {
 		}
 	}()
 
-	machine := system.NewMachine(buildBounceProgram())
+	machine := system.NewMachine(buildBounceProgram(), 0)
 
 	const fps = 15
 	frame := time.Duration(time.Second / fps)
