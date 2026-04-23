@@ -725,7 +725,7 @@ A: Yes, with word definitions, conditionals (via jumps), and recursion.
 
 I'm using the Kelvin versioning system as defined here: https://jtobin.io/kelvin-versioning 
 
-Currently at 300K.
+Currently at 280K.
 
 ---
 
