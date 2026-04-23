@@ -1,0 +1,31 @@
+( === Keyboard Input Example === )
+
+( Constants for MMIO )
+( Controller Port base at 0x3040 )
+( Controller Key address at 0x304C )
+
+@cr 10 emit ;
+
+@on-key
+    ( Handler for keyboard events )
+    12364 LOADI    ( Load from ControllerKeyAddr 0x304C )
+    dup 0 > [     ( If key > 0 )
+        "Key pressed: " 
+        . cr
+    ] [
+        drop
+    ] ?:
+;
+
+( Setup: Set vector 4 to point to on-key )
+( We need the address of on-key. In LUX, quotations or words? )
+( The compiler currently doesn't have a word to get the address of a defined word easily )
+( except for quotations. )
+
+[ on-key ] 12352 STOREI ( Store quotation address into ControllerPort 0x3040 )
+
+"Keyboard listener started. Press keys to see their ASCII codes." cr
+
+( Infinite loop to keep VM running )
+1 [ 1 ] [ YIELD ] |:
+

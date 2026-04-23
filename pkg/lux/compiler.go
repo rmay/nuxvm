@@ -334,6 +334,43 @@ func (c *Compiler) compile() ([]byte, error) {
 	return c.bytecode, nil
 }
 
+// handleIncludeDirective processes INCLUDE directives
+func (c *Compiler) handleIncludeDirective() error {
+	c.advance() // Skip INCLUDE
+	pathToken := c.peek()
+	if pathToken.Type != TokenString && pathToken.Type != TokenWord {
+		return fmt.Errorf("expected file path after INCLUDE at line %d", pathToken.Line)
+	}
+	filePath := pathToken.Value
+	c.advance()
+
+	// Read and tokenize the included file
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read included file '%s': %v", filePath, err)
+	}
+
+	lexer := NewLexer(string(content), c.trace)
+	tokens, err := lexer.Tokenize()
+	if err != nil {
+		return fmt.Errorf("failed to tokenize included file '%s': %v", filePath, err)
+	}
+
+	// Remove EOF from included tokens if present
+	if len(tokens) > 0 && tokens[len(tokens)-1].Type == TokenEOF {
+		tokens = tokens[:len(tokens)-1]
+	}
+
+	// Insert tokens into the current stream after the current position
+	newTokens := make([]Token, 0, len(c.tokens)+len(tokens))
+	newTokens = append(newTokens, c.tokens[:c.pos]...)
+	newTokens = append(newTokens, tokens...)
+	newTokens = append(newTokens, c.tokens[c.pos:]...)
+	c.tokens = newTokens
+
+	return nil
+}
+
 // handleModuleDirective processes MODULE directives
 func (c *Compiler) handleModuleDirective() error {
 	c.advance() // Skip MODULE

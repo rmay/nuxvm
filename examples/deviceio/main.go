@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"github.com/rmay/nuxvm/pkg/system"
 	"github.com/rmay/nuxvm/pkg/vm"
 )
 
@@ -27,8 +28,8 @@ func ex1_VideoFramebuffer() {
 	prog = append(prog, vm.OutNumber()...)
 	prog = append(prog, vm.OpHalt)
 
-	machine := vm.NewVM(prog)
-	if err := machine.Run(); err != nil {
+	machine := system.NewMachine(prog)
+	if err := machine.CPU.Run(); err != nil {
 		fmt.Printf("  Error: %v\n", err)
 		return
 	}
@@ -60,9 +61,9 @@ func ex2_FillFramebufferRow() {
 	}
 	prog = append(prog, vm.OpHalt)
 
-	machine := vm.NewVM(prog)
+	machine := system.NewMachine(prog)
 	fmt.Print("  Pixels: ")
-	if err := machine.Run(); err != nil {
+	if err := machine.CPU.Run(); err != nil {
 		fmt.Printf("  Error: %v\n", err)
 		return
 	}
@@ -75,17 +76,18 @@ func ex3_KeyboardStatus() {
 	fmt.Println("╔══ EXAMPLE 3: Keyboard Status Read ══╗")
 
 	prog := []byte{}
-	prog = append(prog, load(vm.KeyboardStatusAddr)...)
+	prog = append(prog, load(vm.ControllerStatusAddr)...)
 	prog = append(prog, vm.OutNumber()...)
 	prog = append(prog, vm.OpHalt)
 
-	machine := vm.NewVM(prog)
+	machine := system.NewMachine(prog)
+	machine.PushKey(1) // Simulate key pressed
 	fmt.Print("  Key pressed: ")
-	if err := machine.Run(); err != nil {
+	if err := machine.CPU.Run(); err != nil {
 		fmt.Printf("  Error: %v\n", err)
 		return
 	}
-	fmt.Print(" (1 = key held, 0 = no key; simulated as 1)\n\n")
+	fmt.Print(" (1 = key held, 0 = no key; simulated via Machine.PushKey)\n\n")
 }
 
 // Example 4: Send a command to the audio control register.
@@ -103,9 +105,9 @@ func ex4_AudioControl() {
 	prog = append(prog, vm.OutNumber()...)
 	prog = append(prog, vm.OpHalt)
 
-	machine := vm.NewVM(prog)
+	machine := system.NewMachine(prog)
 	fmt.Print("  Audio command: ")
-	if err := machine.Run(); err != nil {
+	if err := machine.CPU.Run(); err != nil {
 		fmt.Printf("  Error: %v\n", err)
 		return
 	}
@@ -135,9 +137,9 @@ func ex5_FramebufferScan() {
 	}
 	prog = append(prog, vm.OpHalt)
 
-	machine := vm.NewVM(prog)
+	machine := system.NewMachine(prog)
 	fmt.Print("  Pixels [0–7]: ")
-	if err := machine.Run(); err != nil {
+	if err := machine.CPU.Run(); err != nil {
 		fmt.Printf("  Error: %v\n", err)
 		return
 	}
@@ -151,10 +153,10 @@ func ex6_DeviceMemoryMap() {
 		0, vm.ReservedMemorySize-1, vm.ReservedMemorySize)
 	fmt.Printf("  Video framebuffer:   0x%04X–0x%04X (%d bytes)\n",
 		vm.VideoFramebufferStart, vm.VideoFramebufferEnd-1, vm.VideoBufferSize)
-	fmt.Printf("  Keyboard status:     0x%04X\n", vm.KeyboardStatusAddr)
+	fmt.Printf("  Controller status:   0x%04X\n", vm.ControllerStatusAddr)
 	fmt.Printf("  Audio control:       0x%04X\n", vm.AudioControlAddr)
 	fmt.Printf("  User memory start:   0x%04X\n\n", vm.UserMemoryOffset)
-}
+	}
 
 // Example 7: Verify that writing outside the device region (to user memory) works normally.
 func ex7_NormalMemoryUnaffected() {
@@ -172,9 +174,9 @@ func ex7_NormalMemoryUnaffected() {
 	instructions = append(instructions, vm.OpHalt)
 	copy(prog, instructions)
 
-	machine := vm.NewVM(prog)
+	machine := system.NewMachine(prog)
 	fmt.Print("  Value at user mem+200: ")
-	if err := machine.Run(); err != nil {
+	if err := machine.CPU.Run(); err != nil {
 		fmt.Printf("  Error: %v\n", err)
 		return
 	}
@@ -197,7 +199,7 @@ func ex8_KeyboardPoll() {
 	// loop: read keyboard, print status, decrement counter, repeat if > 0
 	loopStart := vm.UserMemoryOffset + int32(len(prog))
 
-	prog = append(prog, load(vm.KeyboardStatusAddr)...)
+	prog = append(prog, load(vm.ControllerStatusAddr)...)
 	prog = append(prog, vm.OutNumber()...)
 	prog = append(prog, push(32)...)
 	prog = append(prog, vm.OutCharacter()...)
@@ -217,13 +219,14 @@ func ex8_KeyboardPoll() {
 
 	prog = append(prog, vm.OpHalt)
 
-	machine := vm.NewVM(prog)
+	machine := system.NewMachine(prog)
+	machine.PushButton(1) // Simulate key pressed
 	fmt.Print("  Keyboard reads: ")
-	if err := machine.Run(); err != nil {
+	if err := machine.CPU.Run(); err != nil {
 		fmt.Printf("  Error: %v\n", err)
 		return
 	}
-	fmt.Print("\n  (Expected: 1 1 1 — key simulated as always pressed)\n\n")
+	fmt.Print("\n  (Expected: 1 1 1 — key simulated via Machine.PushButton)\n\n")
 }
 
 func main() {

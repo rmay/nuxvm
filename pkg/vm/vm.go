@@ -33,15 +33,20 @@ const (
 	SystemPort   = DeviceMemoryOffset + 0x0000 // 0x3000: System Control
 	ConsolePort  = DeviceMemoryOffset + 0x0010 // 0x3010: Standard I/O
 	ScreenPort   = DeviceMemoryOffset + 0x0020 // 0x3020: Graphics Control
-	AudioPort    = DeviceMemoryOffset + 0x0030 // 0x3030: Sound Synthesis
-	KeyboardPort = DeviceMemoryOffset + 0x0040 // 0x3040: Input Keyboard
-	MousePort    = DeviceMemoryOffset + 0x0050 // 0x3050: Input Mouse
-	RNGPort      = DeviceMemoryOffset + 0x0060 // 0x3060: Random Number Gen
+	AudioPort      = DeviceMemoryOffset + 0x0030 // 0x3030: Sound Synthesis
+	ControllerPort = DeviceMemoryOffset + 0x0040 // 0x3040: Input Controller
+	MousePort      = DeviceMemoryOffset + 0x0050 // 0x3050: Input Mouse
+	FilePort       = DeviceMemoryOffset + 0x0060 // 0x3060: File System
+	DateTimePort   = DeviceMemoryOffset + 0x0070 // 0x3070: System Clock
+	RNGPort        = DeviceMemoryOffset + 0x0080 // 0x3080: Random Number Gen
 
 	// Standard Device Addresses (mapped to specific port indices)
-	KeyboardStatusAddr = KeyboardPort + 0
-	AudioControlAddr   = AudioPort + 0
-	RNGDataAddr        = RNGPort + 0
+	ControllerStatusAddr = ControllerPort + 4
+	ControllerButtonAddr = ControllerPort + 8
+	ControllerKeyAddr    = ControllerPort + 12
+	AudioControlAddr     = AudioPort + 4
+	RNGDataAddr          = RNGPort + 4
+	DateTimeAddr         = DateTimePort + 4
 
 	// Next available device address (after RNG port).
 	FirstAvailableDeviceAddr = DeviceMemoryOffset + 0x0100
@@ -51,36 +56,28 @@ const (
 type VM struct {
 	stack              []int32 // Stack for 32-bit integers
 	returnStack        []int32 // Return stack for return addresses
-	memory             []byte  // Program and data memory
+	memory             []byte  // RAM (Reserved + User Memory)
 	pc                 uint32  // Program counter (32-bit address)
 	running            bool    // VM execution state
 	reservedMemorySize uint32  // Size of reserved memory region
 	userMemoryStart    uint32  // Start of user-accessible memory
 	trace              bool
 
-	// KeyboardHandler is called when the keyboard status register is read.
-	// Return 1 if a key is pressed, 0 otherwise. Defaults to always-pressed (1).
-	KeyboardHandler func() int32
-
-	// YieldHandler is called on OpYield. Use it to render the framebuffer and
-	// control frame rate. The VM blocks until YieldHandler returns.
-	YieldHandler func()
-
-	// SoundHandler is called when a sound ID is written to AudioControlAddr.
-	SoundHandler func(soundID int32)
+	vectors [16]uint32 // Interrupt/Jump vectors
+	bus     Bus        // External I/O bus
 
 	// OutputHandler is called by OpOut instead of writing to stdout.
-	// format: 0 = print as number, 1 = print as character.
 	OutputHandler func(value int32, format int32)
 
 	lastOpcode byte
-	rngState   uint32 // LCG state for RNGDataAddr reads
 }
 
 // NewVM initializes a new VM with the given program.
 // The program is loaded at UserMemoryOffset.
 func NewVM(program []byte, trace ...bool) *VM {
-	// Allocate memory up to user program end
+	// Allocate RAM: Reserved + (Framebuffer range but not allocated) + User Memory
+	// Actually, we should only allocate what the VM physically needs to address as RAM.
+	// Let's keep UserMemoryOffset as the constant it is, but memory slice will be sized to fit.
 	memSize := UserMemoryOffset + uint32(len(program))
 	totalMemory := make([]byte, memSize)
 
@@ -101,14 +98,11 @@ func NewVM(program []byte, trace ...bool) *VM {
 		reservedMemorySize: ReservedMemorySize,
 		userMemoryStart:    UserMemoryOffset,
 		trace:              traceEnabled,
-		rngState:           1,
 	}
 }
 
 // NewVMWithReservedMemory creates a VM with custom reserved memory size.
-// Note: In the new architecture, UserMemoryOffset is fixed to start after the Video Framebuffer.
 func NewVMWithReservedMemory(program []byte, reservedSize uint32, trace ...bool) *VM {
-	// Allocate memory up to user program end
 	memSize := UserMemoryOffset + uint32(len(program))
 	totalMemory := make([]byte, memSize)
 
@@ -129,8 +123,12 @@ func NewVMWithReservedMemory(program []byte, reservedSize uint32, trace ...bool)
 		reservedMemorySize: reservedSize,
 		userMemoryStart:    UserMemoryOffset,
 		trace:              traceEnabled,
-		rngState:           1,
 	}
+}
+
+// SetBus connects the VM to an external I/O bus for MMIO.
+func (vm *VM) SetBus(bus Bus) {
+	vm.bus = bus
 }
 
 // WriteReservedMemory writes data to reserved memory region (for setting up DIP, etc.)
@@ -190,6 +188,41 @@ func (vm *VM) PC() uint32 {
 	return vm.pc
 }
 
+// Halt stops the VM from running.
+func (vm *VM) Halt() {
+	vm.running = false
+}
+
+// WriteVector sets a jump address for a specific vector index.
+func (vm *VM) WriteVector(index int, address uint32) error {
+	if index < 0 || index >= len(vm.vectors) {
+		return fmt.Errorf("invalid vector index: %d", index)
+	}
+	vm.vectors[index] = address
+	return nil
+}
+
+// TriggerVector jumps to the address stored in the specified vector.
+// It sets the VM to running state if it was halted.
+func (vm *VM) TriggerVector(index int) error {
+	if index < 0 || index >= len(vm.vectors) {
+		return fmt.Errorf("invalid vector index: %d", index)
+	}
+
+	addr := vm.vectors[index]
+	if addr == 0 {
+		return nil // Vector not set
+	}
+
+	if addr >= uint32(len(vm.memory)) {
+		return fmt.Errorf("vector address 0x%X out of bounds", addr)
+	}
+
+	vm.pc = addr
+	vm.running = true
+	return nil
+}
+
 // LastOpcode returns the name of the most recently executed opcode.
 func (vm *VM) LastOpcode() string {
 	return OpcodeName(vm.lastOpcode)
@@ -198,6 +231,16 @@ func (vm *VM) LastOpcode() string {
 // Running returns whether the VM is currently running
 func (vm *VM) Running() bool {
 	return vm.running
+}
+
+// Yielded returns true if the last executed instruction was YIELD.
+func (vm *VM) Yielded() bool {
+	return vm.lastOpcode == OpYield
+}
+
+// ClearYield resets the yield state so the VM can continue after yielding.
+func (vm *VM) ClearYield() {
+	vm.lastOpcode = 0xFF // Set to an invalid opcode to clear yield status
 }
 
 // Push adds a value to the top of the stack.
@@ -676,13 +719,10 @@ func (vm *VM) Store() error {
 		if err != nil {
 			return fmt.Errorf("device write error at address %d: %v", address, err)
 		}
-		// For device registers, we might want to prevent the write to vm.memory here.
-		// However, for framebuffers, vm.memory *is* the simulation.
-		// Current logic proceeds to write to vm.memory if handleDeviceWrite succeeds.
-		// This is acceptable for this simulation's scope.
+		return nil
 	}
 
-	// Standard memory access OR device access that didn't return an error
+	// Standard memory access
 	if int(address)+4 > len(vm.memory) {
 		return fmt.Errorf("store address out of bounds: %d", address)
 	}
@@ -706,17 +746,12 @@ func (vm *VM) Out() error {
 		vm.OutputHandler(value, format)
 		return nil
 	}
+
 	if format == 1 {
 		fmt.Printf("%c", value)
 	} else {
 		fmt.Printf("%d", value)
 	}
-	return nil
-}
-
-// Halt stops the VM.
-func (vm *VM) Halt() error {
-	vm.running = false
 	return nil
 }
 
@@ -911,15 +946,22 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 			fmt.Fprintf(os.Stderr, "VM: OpHalt: Stopping execution")
 		}
 	case OpYield:
-		if vm.YieldHandler != nil {
-			vm.YieldHandler()
-		}
+		// Yield to host; handled by the external loop
 	case OpLoadI:
 		addr, err := vm.Pop()
 		if err != nil {
 			return currentPC, fmt.Errorf("loadi failed: %v", err)
 		}
 		if addr < 0 || int(addr)+4 > len(vm.memory) {
+			// Check if it's a device address (even if not in vm.memory)
+			if uint32(addr) >= DeviceMemoryOffset && uint32(addr) < UserMemoryOffset {
+				val, err := vm.handleDeviceRead(uint32(addr))
+				if err != nil {
+					return currentPC, fmt.Errorf("loadi device read failed: %v", err)
+				}
+				vm.stack = append(vm.stack, val)
+				return currentPC, nil
+			}
 			return currentPC, fmt.Errorf("loadi failed: address %d out of bounds", addr)
 		}
 		if uint32(addr) >= DeviceMemoryOffset && uint32(addr) < UserMemoryOffset {
@@ -941,14 +983,22 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 			return currentPC, fmt.Errorf("storei failed: %v", err)
 		}
 		if addr < 0 || int(addr)+4 > len(vm.memory) {
+			// Check if it's a device address (even if not in RAM)
+			if uint32(addr) >= DeviceMemoryOffset && uint32(addr) < UserMemoryOffset {
+				if err := vm.handleDeviceWrite(uint32(addr), value); err != nil {
+					return currentPC, fmt.Errorf("storei device write failed: %v", err)
+				}
+				return currentPC, nil
+			}
 			return currentPC, fmt.Errorf("storei failed: address %d out of bounds", addr)
 		}
 		if uint32(addr) >= DeviceMemoryOffset && uint32(addr) < UserMemoryOffset {
 			if err := vm.handleDeviceWrite(uint32(addr), value); err != nil {
 				return currentPC, fmt.Errorf("storei device write failed: %v", err)
 			}
+		} else {
+			binary.BigEndian.PutUint32(vm.memory[addr:addr+4], uint32(value))
 		}
-		binary.BigEndian.PutUint32(vm.memory[addr:addr+4], uint32(value))
 	default:
 		return currentPC, fmt.Errorf("unknown opcode 0x%02X at PC=%d", opcode, currentPC)
 	}
@@ -1035,91 +1085,58 @@ func (vm *VM) DebugInfo() string {
 
 // handleDeviceRead simulates reading from a device memory address.
 func (vm *VM) handleDeviceRead(address uint32) (int32, error) {
-	// Video Framebuffer read: data lives in vm.memory (written there by Store).
-	if address >= VideoFramebufferStart && address < VideoFramebufferEnd {
-		if int(address)+4 > len(vm.memory) {
-			return 0, fmt.Errorf("framebuffer read out of bounds at address %d", address)
+	// Vector read: check if reading from the base of a 16-byte port block
+	if address >= DeviceMemoryOffset && address < DeviceMemoryOffset+DeviceMemorySize {
+		offset := address - DeviceMemoryOffset
+		if offset%16 == 0 {
+			index := offset / 16
+			if index < uint32(len(vm.vectors)) {
+				val := int32(vm.vectors[index])
+				if vm.trace {
+					fmt.Fprintf(os.Stderr, "VM: Device Read: Vector %d read at 0x%04X = 0x%04X\n", index, address, val)
+				}
+				return val, nil
+			}
 		}
-		value := int32(binary.BigEndian.Uint32(vm.memory[address : address+4]))
-		if vm.trace {
-			fmt.Fprintf(os.Stderr, "VM: Device Read: Video Framebuffer read at %d = %d", address, value)
-		}
-		return value, nil
 	}
 
-	// Keyboard Status read:
-	if address == KeyboardStatusAddr {
-		var val int32 = 1 // default: simulate key always pressed
-		if vm.KeyboardHandler != nil {
-			val = vm.KeyboardHandler()
+	// Delegate to Bus if connected
+	if vm.bus != nil {
+		if (address >= DeviceMemoryOffset && address < DeviceMemoryOffset+DeviceMemorySize) ||
+			(address >= VideoFramebufferStart && address < VideoFramebufferEnd) {
+			return vm.bus.Read(address)
 		}
-		if vm.trace {
-			fmt.Fprintf(os.Stderr, "VM: Device Read: Keyboard Status read at %d = %d", address, val)
-		}
-		return val, nil
-	}
-
-	// Audio Control read: returns the last value written (stored in vm.memory).
-	if address == AudioControlAddr {
-		if int(address)+4 > len(vm.memory) {
-			return 0, fmt.Errorf("audio control read out of bounds at address %d", address)
-		}
-		value := int32(binary.BigEndian.Uint32(vm.memory[address : address+4]))
-		if vm.trace {
-			fmt.Fprintf(os.Stderr, "VM: Device Read: Audio Control read at %d = %d", address, value)
-		}
-		return value, nil
-	}
-
-	// RNG register read: apply Xorshift32 and return next value.
-	if address == RNGDataAddr {
-		x := vm.rngState
-		x ^= x << 13
-		x ^= x >> 17
-		x ^= x << 5
-		vm.rngState = x
-		return int32(x), nil
 	}
 
 	// Unhandled device address
-	return 0, fmt.Errorf("unhandled device read at address %d", address)
+	return 0, fmt.Errorf("unhandled device read at address %d (bus=%v)", address, vm.bus != nil)
 }
 
 // handleDeviceWrite simulates writing to a device memory address.
 func (vm *VM) handleDeviceWrite(address uint32, value int32) error {
-	// Video Framebuffer write:
-	if address >= VideoFramebufferStart && address < VideoFramebufferEnd {
-		// This simulates writing to the video memory. The 'value' is a 32-bit integer.
-		if vm.trace {
-			fmt.Fprintf(os.Stderr, "VM: Device Write: Video Framebuffer write at address %d with value %d (will be written to memory)", address, value)
+	// Vector write: check if writing to the base of a 16-byte port block
+	if address >= DeviceMemoryOffset && address < DeviceMemoryOffset+DeviceMemorySize {
+		offset := address - DeviceMemoryOffset
+		if offset%16 == 0 {
+			index := offset / 16
+			if index < uint32(len(vm.vectors)) {
+				vm.vectors[index] = uint32(value)
+				if vm.trace {
+					fmt.Fprintf(os.Stderr, "VM: Device Write: Vector %d set to 0x%04X at 0x%04X\n", index, value, address)
+				}
+				return nil
+			}
 		}
-		// Acknowledge the operation. The actual write to vm.memory happens in the Store method after this returns.
-		return nil
 	}
 
-	// Keyboard Control write (unsupported):
-	if address == KeyboardStatusAddr {
-		return fmt.Errorf("writing to keyboard status address %d is not supported", address)
-	}
-
-	// Audio Control write: trigger sound event.
-	if address == AudioControlAddr {
-		if vm.SoundHandler != nil {
-			vm.SoundHandler(value)
+	// Delegate to Bus if connected
+	if vm.bus != nil {
+		if (address >= DeviceMemoryOffset && address < DeviceMemoryOffset+DeviceMemorySize) ||
+			(address >= VideoFramebufferStart && address < VideoFramebufferEnd) {
+			return vm.bus.Write(address, value)
 		}
-		return nil
-	}
-
-	// RNG register write: seed the state.
-	if address == RNGDataAddr {
-		if value == 0 {
-			vm.rngState = 1 // Prevent state from becoming 0
-		} else {
-			vm.rngState = uint32(value)
-		}
-		return nil
 	}
 
 	// Unhandled device address
-	return fmt.Errorf("unhandled device write at address %d with value %d", address, value)
+	return fmt.Errorf("unhandled device write at address %d with value %d (bus=%v)", address, value, vm.bus != nil)
 }

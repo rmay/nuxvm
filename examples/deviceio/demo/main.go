@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rmay/nuxvm/pkg/system"
 	"github.com/rmay/nuxvm/pkg/vm"
 	"golang.org/x/term"
 )
@@ -118,7 +119,7 @@ func buildBounceProgram() []byte {
 	p(vm.OpYield)
 
 	// ── 6. Check keyboard; exit if pressed ───────────────────────────────────
-	p(vm.LoadInstruction(int32(vm.KeyboardStatusAddr))...)
+	p(vm.LoadInstruction(int32(vm.ControllerStatusAddr))...)
 	p(vm.PushInstruction(0)...)
 	p(vm.OpEq)
 	phExit := reserveJmp(vm.OpJz)
@@ -152,16 +153,7 @@ func main() {
 		}
 	}()
 
-	machine := vm.NewVM(buildBounceProgram())
-
-	machine.KeyboardHandler = func() int32 {
-		select {
-		case <-keysCh:
-			return 1
-		default:
-			return 0
-		}
-	}
+	machine := system.NewMachine(buildBounceProgram())
 
 	const fps = 15
 	frame := time.Duration(time.Second / fps)
@@ -170,12 +162,20 @@ func main() {
 	// replace every \n with \r\n throughout all output.
 	crlf := func(s string) string { return strings.ReplaceAll(s, "\n", "\r\n") }
 
-	machine.YieldHandler = func() {
-		fmt.Print("\033[H" +
-			crlf(vm.RenderFramebuffer(machine.Memory())) +
-			"\r\n  NUXVM device I/O demo \u2014 press any key to exit\r\n")
-		time.Sleep(frame)
-	}
+	// Poll for keys in a separate goroutine
+	go func() {
+		buf := make([]byte, 1)
+		for {
+			_, err := os.Stdin.Read(buf)
+			if err == nil {
+				machine.PushKey(int32(buf[0]))
+			}
+		}
+	}()
+
+	// We'll use a manual loop instead of machine.CPU.Run() to handle yielding ourselves
+	// Or we can use YieldHandler in CPU if we add it back, but CPU shouldn't have YieldHandler.
+	// Actually, system.Machine.Tick() is better.
 
 	// Hide the cursor while animating; restore it on exit.
 	fmt.Print("\033[?25l")
@@ -184,14 +184,27 @@ func main() {
 	// Clear the screen once and position the cursor at home.
 	fmt.Print("\033[2J\033[H")
 
-	if err := machine.Run(); err != nil {
-		term.Restore(fd, oldState)
-		fmt.Fprintf(os.Stderr, "\r\nVM error: %v\r\n", err)
-		os.Exit(1)
+	for {
+		running, err := machine.Tick()
+		if err != nil {
+			term.Restore(fd, oldState)
+			fmt.Fprintf(os.Stderr, "\r\nVM error: %v\r\n", err)
+			os.Exit(1)
+		}
+		
+		// After Tick (which stops on YIELD), we render
+		fmt.Print("\033[H" +
+			crlf(system.RenderFramebuffer(machine.System.Framebuffer())) +
+			"\r\n  NUXVM device I/O demo \u2014 press any key to exit\r\n")
+		
+		if !running {
+			break
+		}
+		time.Sleep(frame)
 	}
 
 	// Final render after halt.
 	fmt.Print("\033[H" +
-		crlf(vm.RenderFramebuffer(machine.Memory())) +
+		crlf(system.RenderFramebuffer(machine.System.Framebuffer())) +
 		"\r\n  Done.\r\n")
 }

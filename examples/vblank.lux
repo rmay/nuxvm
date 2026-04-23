@@ -1,0 +1,47 @@
+( === V-Blank Animation Example === )
+
+( Framebuffer base: 0x4000 = 16384 )
+( Screen Vector base: 0x3020 = 12320 )
+
+@cr 10 emit ;
+
+( State in RAM )
+( X position at address 0 )
+( Frame counter at address 4 )
+
+@on-vblank
+    ( 1. Erase old pixel )
+    0 LOADI ( Current X )
+    4 * 16384 + ( Address )
+    0 swap STOREI ( Store 0/Black )
+
+    ( 2. Update X )
+    0 LOADI 1 + ( Increment X )
+    64 MOD      ( Wrap around 64 pixels )
+    0 swap STOREI ( Save new X )
+
+    ( 3. Draw new pixel )
+    0 LOADI
+    4 * 16384 + ( Address )
+    16777215 swap STOREI ( Store 0xFFFFFF/White )
+
+    ( 4. Increment frame counter )
+    4 LOADI 1 + 4 swap STOREI
+
+    ( Debug output every 60 frames )
+    4 LOADI 60 MOD 0 = [
+        "Frame: " 4 LOADI . cr
+    ] ?
+;
+
+( Setup )
+0 0 STOREI ( X = 0 )
+0 4 STOREI ( Frame = 0 )
+
+( Set Screen Vector 2 )
+[ on-vblank ] 12320 STOREI
+
+"V-Blank animation started. Pixel should move across the screen." cr
+
+( Main loop )
+[ 1 ] [ YIELD ] |: drop

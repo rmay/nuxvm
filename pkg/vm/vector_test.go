@@ -1,16 +1,18 @@
 package vm
 
 import (
+	"fmt"
 	"testing"
 )
 
 func TestVectorAssignment(t *testing.T) {
 	vm := NewVM([]byte{})
+	vm.SetBus(&MockBus{})
 	
-	// Test setting Keyboard Vector (Port 0x3040, Index 4)
+	// Test setting Controller Vector (Port 0x3040, Index 4)
 	vectorAddr := uint32(0x6500)
-	// Writing to the base of the KeyboardPort (0x3040) should set vector 4.
-	err := vm.handleDeviceWrite(KeyboardPort, int32(vectorAddr)) 
+	// Writing to the base of the ControllerPort (0x3040) should set vector 4.
+	err := vm.handleDeviceWrite(ControllerPort, int32(vectorAddr)) 
 	if err != nil {
 		t.Fatalf("handleDeviceWrite for vector assignment failed: %v", err)
 	}
@@ -20,13 +22,16 @@ func TestVectorAssignment(t *testing.T) {
 	}
 
 	// Test writing to non-vector address within the same port block (should be handled by other device logic or error)
-	// e.g., KeyboardStatusAddr which is KeyboardPort + 4
-	err = vm.handleDeviceWrite(KeyboardStatusAddr, 123) // This should *not* set a vector
+	// e.g., ControllerStatusAddr which is ControllerPort + 4
+	vm.bus.(*MockBus).WriteFunc = func(addr uint32, val int32) error {
+		return fmt.Errorf("mock error")
+	}
+	err = vm.handleDeviceWrite(ControllerStatusAddr, 123) // This should *not* set a vector
 	if err == nil {
 		t.Error("Expected error for non-vector address within port block")
 	}
 	if vm.vectors[4] == uint32(123) { // Ensure vector wasn't overwritten
-		t.Errorf("Vector 4 should not have been set by writing to KeyboardStatusAddr")
+		t.Errorf("Vector 4 should not have been set by writing to ControllerStatusAddr")
 	}
 }
 
@@ -103,3 +108,4 @@ func TestDeviceReadVector(t *testing.T) {
 		t.Errorf("Expected vector address 0x%X, got 0x%X", vectorAddr, val)
 	}
 }
+
