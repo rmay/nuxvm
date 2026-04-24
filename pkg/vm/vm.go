@@ -17,22 +17,22 @@ const (
 	DeviceMemoryOffset = 0x3000 // Device ports start at 0x3000 (standardized)
 	DeviceMemorySize   = 0x1000 // 4KB for device ports (0x3000-0x3FFF)
 
-	// Video Framebuffer: 64x32 pixels, each pixel is a 32-bit color (0xRRGGBB).
-	// We'll move it to its own region (starting at 0x4000) to keep ports separate.
-	VideoBufferSize       = 64 * 32 * 4
+	// Video Framebuffer: Starting at 0x4000.
+	// We'll allow up to 256x256 pixels (256KB) for now.
 	VideoFramebufferStart = 0x4000
-	VideoFramebufferEnd   = VideoFramebufferStart + VideoBufferSize
+	VideoMaxBufferSize    = 256 * 256 * 4
+	VideoFramebufferEnd   = VideoFramebufferStart + VideoMaxBufferSize
 
-	// User memory starts after the video framebuffer
-	UserMemoryOffset = VideoFramebufferEnd
+	// User memory starts after the maximum possible video framebuffer
+	UserMemoryOffset = 0x44000 // 278528 decimal
 )
 
 // Device memory map constants
 const (
 	// Port offsets within the MMIO region (0x3000–0x3FFF)
-	SystemPort   = DeviceMemoryOffset + 0x0000 // 0x3000: System Control
-	ConsolePort  = DeviceMemoryOffset + 0x0010 // 0x3010: Standard I/O
-	ScreenPort   = DeviceMemoryOffset + 0x0020 // 0x3020: Graphics Control
+	SystemPort     = DeviceMemoryOffset + 0x0000 // 0x3000: System Control
+	ConsolePort    = DeviceMemoryOffset + 0x0010 // 0x3010: Standard I/O
+	ScreenPort     = DeviceMemoryOffset + 0x0020 // 0x3020: Graphics Control
 	AudioPort      = DeviceMemoryOffset + 0x0030 // 0x3030: Sound Synthesis
 	ControllerPort = DeviceMemoryOffset + 0x0040 // 0x3040: Input Controller
 	MousePort      = DeviceMemoryOffset + 0x0050 // 0x3050: Input Mouse
@@ -47,6 +47,10 @@ const (
 	AudioControlAddr     = AudioPort + 4
 	RNGDataAddr          = RNGPort + 4
 	DateTimeAddr         = DateTimePort + 4
+
+	// Graphics dimension registers
+	ScreenWidthAddr  = ScreenPort + 4
+	ScreenHeightAddr = ScreenPort + 8
 
 	// Next available device address (after RNG port).
 	FirstAvailableDeviceAddr = DeviceMemoryOffset + 0x0100

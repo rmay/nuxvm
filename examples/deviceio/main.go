@@ -152,11 +152,11 @@ func ex6_DeviceMemoryMap() {
 	fmt.Printf("  Reserved memory:     0x%04X–0x%04X (%d bytes)\n",
 		0, vm.ReservedMemorySize-1, vm.ReservedMemorySize)
 	fmt.Printf("  Video framebuffer:   0x%04X–0x%04X (%d bytes)\n",
-		vm.VideoFramebufferStart, vm.VideoFramebufferEnd-1, vm.VideoBufferSize)
+		vm.VideoFramebufferStart, vm.VideoFramebufferEnd-1, vm.VideoMaxBufferSize)
 	fmt.Printf("  Controller status:   0x%04X\n", vm.ControllerStatusAddr)
 	fmt.Printf("  Audio control:       0x%04X\n", vm.AudioControlAddr)
 	fmt.Printf("  User memory start:   0x%04X\n\n", vm.UserMemoryOffset)
-	}
+}
 
 // Example 7: Verify that writing outside the device region (to user memory) works normally.
 func ex7_NormalMemoryUnaffected() {

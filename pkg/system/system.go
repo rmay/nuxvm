@@ -17,6 +17,8 @@ type System struct {
 
 	// Hardware state
 	screenPixels []byte
+	screenWidth  int32
+	screenHeight int32
 	rngState     uint32
 	
 	// Controller/Mouse state
@@ -38,9 +40,26 @@ type System struct {
 
 func NewSystem() *System {
 	return &System{
-		screenPixels: make([]byte, vm.VideoBufferSize),
+		screenWidth:  80,
+		screenHeight: 80,
+		screenPixels: make([]byte, vm.VideoMaxBufferSize),
 		rngState:     uint32(time.Now().UnixNano()),
 	}
+}
+
+func (s *System) SetResolution(w, h int32) {
+	if w > 0 && h > 0 && w*h*4 <= int32(len(s.screenPixels)) {
+		s.screenWidth = w
+		s.screenHeight = h
+	}
+}
+
+func (s *System) ScreenWidth() int32 {
+	return s.screenWidth
+}
+
+func (s *System) ScreenHeight() int32 {
+	return s.screenHeight
 }
 
 // SetMemory provides the system with access to the VM's memory slice.
@@ -137,6 +156,14 @@ func (s *System) Read(address uint32) (int32, error) {
 		return int32(binary.BigEndian.Uint32(s.screenPixels[offset : offset+4])), nil
 	}
 
+	// Screen registers
+	if address == vm.ScreenWidthAddr {
+		return s.screenWidth, nil
+	}
+	if address == vm.ScreenHeightAddr {
+		return s.screenHeight, nil
+	}
+
 	// Controller registers:
 	if address == vm.ControllerStatusAddr {
 		var val int32 = 0
@@ -219,6 +246,16 @@ func (s *System) Write(address uint32, value int32) error {
 		return nil
 	}
 
+	// Screen dimensions (allow writing to resize)
+	if address == vm.ScreenWidthAddr {
+		s.SetResolution(value, s.screenHeight)
+		return nil
+	}
+	if address == vm.ScreenHeightAddr {
+		s.SetResolution(s.screenWidth, value)
+		return nil
+	}
+
 	// File registers:
 	if address == vm.FilePort+4 {
 		s.fileNamePtr = uint32(value)
@@ -281,7 +318,8 @@ func (s *System) SetMouse(x, y int32, button uint32) {
 }
 
 func (s *System) Framebuffer() []byte {
-	return s.screenPixels
+	size := s.screenWidth * s.screenHeight * 4
+	return s.screenPixels[:size]
 }
 
 func (s *System) DebugInfo() string {
@@ -303,6 +341,8 @@ func (s *System) MMIORegisters() []struct {
 		{"SYS_CTRL", 0},
 		{"CON_OUT", 0},
 		{"SCR_VEC", 0},
+		{"SCR_W", s.screenWidth},
+		{"SCR_H", s.screenHeight},
 		{"AUD_CTRL", 0},
 		{"CTRL_BTN", int32(s.controllerButton)},
 		{"CTRL_KEY", s.controllerKey},

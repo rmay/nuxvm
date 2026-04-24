@@ -23,8 +23,8 @@ MODULE SYSTEM
 MODULE SCREEN
 @addr   12320 ;
 @fb     16384 ;
-@width  64 ;
-@height 32 ;
+@width  addr 4 + LOADI ;
+@height addr 8 + LOADI ;
 
 @vector! addr STOREI ;
 
@@ -41,7 +41,7 @@ MODULE SCREEN
 @clear ( color -- )
     fb
     [ TWO-DUP STOREI 4 + ]
-    2048 #: 
+    width height * #: 
     TWO-DROP
 ;
 
