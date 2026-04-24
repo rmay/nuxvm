@@ -15,37 +15,37 @@ go run main.go vm_examples.go
 
 7 working example programs that demonstrate various algorithms and VM features:
 
-### ✅ Example 1: GCD (Greatest Common Divisor)
+### Example 1: GCD (Greatest Common Divisor)
 **Input:** 48, 18  
 **Output:** 6  
 **Demonstrates:** Loops, MOD operation, Euclidean algorithm
 
-### ✅ Example 2: Even/Odd Check
+### Example 2: Even/Odd Check
 **Input:** 42  
 **Output:** 0 (even)  
 **Demonstrates:** Conditional branching, modulus
 
-### ✅ Example 3: Absolute Value
+### Example 3: Absolute Value
 **Input:** -25  
 **Output:** 25  
 **Demonstrates:** Conditional execution, negate (PUSH 0; SWAP; SUB)
 
-### ✅ Example 4: Minimum of Two Numbers
+### Example 4: Minimum of Two Numbers
 **Input:** 34, 21  
 **Output:** 21  
 **Demonstrates:** Comparison, conditional selection
 
-### ✅ Example 5: Maximum of Two Numbers
+### Example 5: Maximum of Two Numbers
 **Input:** 15, 28  
 **Output:** 28  
 **Demonstrates:** Comparison, conditional selection
 
-### ✅ Example 6: Square a Number
+### Example 6: Square a Number
 **Input:** 12  
 **Output:** 144  
 **Demonstrates:** Stack duplication, multiplication
 
-### ✅ Example 7: Count Down
+### Example 7: Count Down
 **Input:** 10  
 **Output:** 10 9 8 7 6 5 4 3 2 1  
 **Demonstrates:** Loop iteration, decrement, multiple outputs
@@ -151,9 +151,19 @@ func myExample() {
 | 0x1D | YIELD     | Yield to host |
 | 0x1E | LOADI     | Indirect load (address from stack) |
 | 0x1F | STOREI    | Indirect store (address from stack) |
-
-> **Removed opcodes**: NEG, GT, JNZ no longer exist. Use `PUSH 0; SWAP; SUB` for
-> negate, `SWAP; LT` for greater-than, and `PUSH 0; EQ; JZ` for jump-if-nonzero.
+| 0x20 | SHR       | Logical right shift (unsigned, fills with 0s) |
+| 0x21 | SAR       | Arithmetic right shift (signed, sign-extends) |
+| 0x22 | JNZ       | Jump if non-zero (pops condition, inverse of JZ) |
+| 0x23 | NEG       | Negate (multiply by -1) |
+| 0x24 | GT        | Greater than |
+| 0x25 | NEQ       | Not equal |
+| 0x26 | LTE       | Less than or equal |
+| 0x27 | GTE       | Greater than or equal |
+| 0x28 | PICK      | Pop index n, copy nth stack element (0=top) to top |
+| 0x29 | DIVMOD    | Divide and modulus (pushes quotient, then remainder) |
+| 0x2A | ABS       | Absolute value |
+| 0x2B | MIN       | Minimum of two values |
+| 0x2C | MAX       | Maximum of two values |
 
 ## Stack Notation
 

@@ -31,8 +31,8 @@ IMPORT TEXT
       Host (cloister) reads SCR_W / SCR_H / TEXT attr back from the VM after
       boot runs and sizes its window accordingly.  -w / -h CLI flags override
       these values if supplied. )
-    256 SCREEN::width!
-    192 SCREEN::height!
+    640 SCREEN::width!
+    800 SCREEN::height!
     2   TEXT::cell-size!            ( 8x8 glyphs doubled = 16x16 cells )
     16777215 TEXT::color!           ( 0xFFFFFF white foreground )
 

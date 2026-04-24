@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// Opcode constants — 32 opcodes, 0x00–0x1F.
+// Opcode constants — 32 original opcodes (0x00–0x1F) + new opcodes (0x20+).
 const (
 	OpPush      = 0x00
 	OpPop       = 0x01
@@ -39,6 +39,22 @@ const (
 	OpYield     = 0x1D // Yield to host; triggers YieldHandler if set
 	OpLoadI     = 0x1E // Pop addr from stack, push memory[addr]
 	OpStoreI    = 0x1F // Pop addr from stack, pop value, store value at addr
+	// Tier 1 additions (0x20–0x23)
+	OpShr       = 0x20 // Logical right shift: [a, b] → [a >>> (b%32)]
+	OpSar       = 0x21 // Arithmetic right shift: [a, b] → [a >> (b%32)] with sign extension
+	OpJnz       = 0x22 // Jump if non-zero: [cond] → [], jump if cond != 0
+	OpNeg       = 0x23 // Negate: [a] → [-a]
+	// Tier 2 additions (0x24–0x28)
+	OpGt        = 0x24 // Greater than: [a, b] → [a > b ? 1 : 0]
+	OpNeq       = 0x25 // Not equal: [a, b] → [a != b ? 1 : 0]
+	OpLte       = 0x26 // Less than or equal: [a, b] → [a <= b ? 1 : 0]
+	OpGte       = 0x27 // Greater than or equal: [a, b] → [a >= b ? 1 : 0]
+	OpPick      = 0x28 // Pick: [... n] → [... stack[n]]; copies nth element (0=top) to top
+	// Tier 3 additions (0x29–0x2C)
+	OpDivmod    = 0x29 // Divide with modulus: [a, b] → [a/b, a%b]
+	OpAbs       = 0x2A // Absolute value: [a] → [|a|]
+	OpMin       = 0x2B // Minimum: [a, b] → [min(a, b)]
+	OpMax       = 0x2C // Maximum: [a, b] → [max(a, b)]
 )
 
 // OpcodeName returns the human-readable name for an opcode.
@@ -108,6 +124,32 @@ func OpcodeName(op byte) string {
 		return "LOADI"
 	case OpStoreI:
 		return "STOREI"
+	case OpShr:
+		return "SHR"
+	case OpSar:
+		return "SAR"
+	case OpJnz:
+		return "JNZ"
+	case OpNeg:
+		return "NEG"
+	case OpGt:
+		return "GT"
+	case OpNeq:
+		return "NEQ"
+	case OpLte:
+		return "LTE"
+	case OpGte:
+		return "GTE"
+	case OpPick:
+		return "PICK"
+	case OpDivmod:
+		return "DIVMOD"
+	case OpAbs:
+		return "ABS"
+	case OpMin:
+		return "MIN"
+	case OpMax:
+		return "MAX"
 	default:
 		return fmt.Sprintf("UNKNOWN(0x%02X)", op)
 	}

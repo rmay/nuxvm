@@ -1,6 +1,6 @@
 # NUX Opcode Reference
 
-Complete reference for all 32 opcodes in the NUX virtual machine.
+Complete reference for all opcodes in the NUX virtual machine (32 original opcodes 0x00–0x1F, plus expanded opcodes starting at 0x20).
 
 ## Stack Notation
 
@@ -41,6 +41,11 @@ Complete reference for all 32 opcodes in the NUX virtual machine.
 **Action**: `[a, b, c] → [b, c, a]`  
 **Description**: Rotate the top three values, moving third to top.
 
+#### 0x28 - PICK
+**Format**: `PICK` (1 byte)  
+**Action**: `[... stack[n] ... n] → [... stack[n] ... stack[n]]`  
+**Description**: Pop index n from top, then copy the nth element of stack (0=top) to the top. Useful for duplicating values at arbitrary depths without temporaries.
+
 ### Arithmetic Operations
 
 #### 0x06 - ADD
@@ -80,6 +85,32 @@ Complete reference for all 32 opcodes in the NUX virtual machine.
 **Action**: `[a] → [a - 1]`  
 **Description**: Decrement the top value by 1.
 
+#### 0x23 - NEG
+**Format**: `NEG` (1 byte)  
+**Action**: `[a] → [-a]`  
+**Description**: Negate the top value (multiply by -1). LUX word: `NEGATE`.
+
+#### 0x2A - ABS
+**Format**: `ABS` (1 byte)  
+**Action**: `[a] → [|a|]`  
+**Description**: Push the absolute value (magnitude) of the top element.
+
+#### 0x2B - MIN
+**Format**: `MIN` (1 byte)  
+**Action**: `[a, b] → [min(a, b)]`  
+**Description**: Pop two values, push the minimum (signed comparison).
+
+#### 0x2C - MAX
+**Format**: `MAX` (1 byte)  
+**Action**: `[a, b] → [max(a, b)]`  
+**Description**: Pop two values, push the maximum (signed comparison).
+
+#### 0x29 - DIVMOD
+**Format**: `DIVMOD` (1 byte)  
+**Action**: `[a, b] → [a / b, a % b]`  
+**Description**: Pop two values, compute integer division and modulus, push quotient then remainder. Avoid recomputing operands when both quotient and remainder are needed.  
+**Error**: Division by zero raises an error.
+
 ### Bitwise Operations
 
 #### 0x0D - AND
@@ -107,6 +138,16 @@ Complete reference for all 32 opcodes in the NUX virtual machine.
 **Action**: `[a, b] → [a << (b % 32)]`  
 **Description**: Shift second value left by top value (mod 32) bits.
 
+#### 0x20 - SHR
+**Format**: `SHR` (1 byte)  
+**Action**: `[a, b] → [a >>> (b % 32)]`  
+**Description**: Logical (unsigned) right shift — shifts second value right by top value (mod 32) bits, filling with zeros. LUX word: `RSHIFT`.
+
+#### 0x21 - SAR
+**Format**: `SAR` (1 byte)  
+**Action**: `[a, b] → [a >> (b % 32)]`  
+**Description**: Arithmetic (signed) right shift — shifts second value right by top value (mod 32) bits, with sign extension. LUX word: `ARSHIFT`.
+
 ### Comparison Operations
 
 #### 0x12 - EQ
@@ -119,8 +160,25 @@ Complete reference for all 32 opcodes in the NUX virtual machine.
 **Action**: `[a, b] → [a < b ? 1 : 0]`  
 **Description**: Push 1 if second < top (signed), 0 otherwise.
 
-> **Note**: There is no GT opcode. To test `a > b`, use `SWAP; LT`. The LUX compiler
-> handles this automatically when you write `>`.
+#### 0x24 - GT
+**Format**: `GT` (1 byte)  
+**Action**: `[a, b] → [a > b ? 1 : 0]`  
+**Description**: Push 1 if second > top (signed), 0 otherwise. LUX word: `>`.
+
+#### 0x25 - NEQ
+**Format**: `NEQ` (1 byte)  
+**Action**: `[a, b] → [a ≠ b ? 1 : 0]`  
+**Description**: Push 1 if values are not equal, 0 otherwise. LUX word: `!=`.
+
+#### 0x26 - LTE
+**Format**: `LTE` (1 byte)  
+**Action**: `[a, b] → [a ≤ b ? 1 : 0]`  
+**Description**: Push 1 if second ≤ top (signed), 0 otherwise. LUX word: `<=`.
+
+#### 0x27 - GTE
+**Format**: `GTE` (1 byte)  
+**Action**: `[a, b] → [a ≥ b ? 1 : 0]`  
+**Description**: Push 1 if second ≥ top (signed), 0 otherwise. LUX word: `>=`.
 
 ### Control Flow
 
@@ -139,8 +197,10 @@ Complete reference for all 32 opcodes in the NUX virtual machine.
 **Action**: `[cond] → []` (jump if cond == 0)  
 **Description**: Pop value, jump to address if it's zero.
 
-> **Note**: There is no JNZ opcode. To jump if non-zero, use `PUSH 0; EQ; JZ`. The LUX
-> compiler emits this sequence automatically.
+#### 0x22 - JNZ
+**Format**: `JNZ address` (5 bytes: opcode + 4-byte address)  
+**Action**: `[cond] → []` (jump if cond ≠ 0)  
+**Description**: Pop value, jump to address if it's non-zero (inverse of JZ).
 
 #### 0x17 - CALL
 **Format**: `CALL address` (5 bytes: opcode + 4-byte address)  
@@ -198,17 +258,17 @@ Complete reference for all 32 opcodes in the NUX virtual machine.
 **Action**: Pause and call host  
 **Description**: Yield execution to the host. Calls the VM's `YieldHandler` if one is set, allowing the host to render frames, sleep, handle input, etc. Execution resumes after the handler returns. Used for device I/O and cooperative multitasking.
 
-## Removed Opcodes
+## Restored Opcodes
 
-The following opcodes **no longer exist** and will cause an error if encountered:
+The following opcodes were previously removed but have been restored as proper bytecode instructions:
 
-| Former Name | Former Hex | Replacement sequence |
-|-------------|------------|----------------------|
-| NEG         | (was 0x0D) | `PUSH 0; SWAP; SUB`  |
-| GT          | (was 0x15) | `SWAP; LT`           |
-| JNZ         | (was 0x19) | `PUSH 0; EQ; JZ`     |
+| Name | Current Hex | LUX Word | Old expansion |
+|------|-------------|----------|----------------|
+| NEG  | 0x23        | `NEGATE` | (was `PUSH 0; SWAP; SUB`) |
+| GT   | 0x24        | `>`      | (was `SWAP; LT`) |
+| JNZ  | 0x22        | (direct) | (was `PUSH 0; EQ; JZ`) |
 
-The LUX compiler provides `NEGATE` and `>` words that expand to the replacement sequences automatically.
+The bytecode now includes native opcodes for these operations, eliminating the overhead of emulation sequences.
 
 ## Complete Opcode Table
 
@@ -246,6 +306,19 @@ The LUX compiler provides `NEGATE` and `>` words that expand to the replacement 
 | 0x1D | YIELD     | 1     | yield to host |
 | 0x1E | LOADI     | 1     | `[addr] → [mem[addr]]` |
 | 0x1F | STOREI    | 1     | `[addr, value] → []` |
+| 0x20 | SHR       | 1     | `[a, b] → [a>>>(b%32)]` |
+| 0x21 | SAR       | 1     | `[a, b] → [a>>(b%32)]` |
+| 0x22 | JNZ       | 5     | `[cond] → []`, jump if non-zero |
+| 0x23 | NEG       | 1     | `[a] → [-a]` |
+| 0x24 | GT        | 1     | `[a, b] → [a>b ? 1 : 0]` |
+| 0x25 | NEQ       | 1     | `[a, b] → [a!=b ? 1 : 0]` |
+| 0x26 | LTE       | 1     | `[a, b] → [a<=b ? 1 : 0]` |
+| 0x27 | GTE       | 1     | `[a, b] → [a>=b ? 1 : 0]` |
+| 0x28 | PICK      | 1     | `[...stack[n]... n] → [...]` |
+| 0x29 | DIVMOD    | 1     | `[a, b] → [a/b, a%b]` |
+| 0x2A | ABS       | 1     | `[a] → [|a|]` |
+| 0x2B | MIN       | 1     | `[a, b] → [min(a,b)]` |
+| 0x2C | MAX       | 1     | `[a, b] → [max(a,b)]` |
 
 ## Encoding
 

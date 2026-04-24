@@ -4,10 +4,10 @@
 @TWO-DUP ROLL ROLL ;
 @TWO-DROP DROP DROP ;
 
-@load-byte-0 drop 16777216 / ;
-@load-byte-1 drop 65536 / 255 AND ;
-@load-byte-2 drop 256 / 255 AND ;
-@load-byte-3 drop 255 AND ;
+@load-byte-0 dup 24 RSHIFT ;
+@load-byte-1 dup 16 RSHIFT 255 AND ;
+@load-byte-2 dup 8 RSHIFT 255 AND ;
+@load-byte-3 255 AND ;
 
 @load-byte-gt-1 ( val offset -- byte )
     dup 2 = [ load-byte-2 ] [ load-byte-3 ] ?:
@@ -222,7 +222,7 @@ MODULE WINDOW
 @scroll-y@  addr 4  + LOADI ;
 @scroll-y!  addr 4  + STOREI ;
 @content-h@ addr 8  + LOADI ;  ( read-only: sh - top-bar-height )
-@bar-height addr 12 + LOADI ;  ( read-only: 14 )
+@bar-height addr 12 + LOADI ;  ( read-only: 24 )
 
 ( --- Legacy Aliases --- )
 MODULE SYSTEM

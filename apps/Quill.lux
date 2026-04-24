@@ -1,0 +1,391 @@
+INCLUDE "lib/system.lux"
+IMPORT SYSTEM
+IMPORT SCREEN
+IMPORT CTRL
+IMPORT TEXT
+IMPORT FILE
+
+MODULE QUILL
+
+( --- Constants --- )
+@BUFFER_START 0x100000 ;
+@MAX_SIZE     0x10000  ; ( 64KB )
+@FILENAME_BUF 0x20000  ; ( 1KB for filename )
+@BOOT_FILENAME 0x1000  ; ( Passed from host )
+
+( --- State Variables --- )
+@STATE_BASE   0x30000  ;
+@cursor_pos   STATE_BASE ;
+@file_size    STATE_BASE 4 + ;
+@mode         STATE_BASE 8 + ; ( 0=Text, 1=Hex )
+@dirty        STATE_BASE 12 + ;
+
+@cursor@      cursor_pos LOADI ;
+@cursor!      cursor_pos STOREI ;
+@size@        file_size LOADI ;
+@size!        file_size STOREI ;
+@mode@        mode LOADI ;
+@mode!        mode STOREI ;
+@dirty@       dirty LOADI ;
+@dirty!       dirty STOREI ;
+
+( --- Byte I/O --- )
+
+@store-byte-0 ( byte base val -- )
+    0x00FFFFFF AND
+    swap rot 16777216 * ( shifted_byte )
+    OR swap STOREI
+;
+
+@store-byte-1 ( byte base val -- )
+    -16711681 AND ( 0xFF00FFFF )
+    swap rot 65536 *
+    OR swap STOREI
+;
+
+@store-byte-2 ( byte base val -- )
+    -65281 AND ( 0xFFFF00FF )
+    swap rot 256 *
+    OR swap STOREI
+;
+
+@store-byte-3-actual ( byte base val -- )
+    -256 AND ( 0xFFFFFF00 )
+    swap rot
+    OR swap STOREI
+;
+
+@store-byte-offset-3 ( byte base val offset -- )
+    drop store-byte-3-actual
+;
+
+@store-byte-offset-2 ( byte base val offset -- )
+    dup 2 = [ drop store-byte-2 ] [ store-byte-offset-3 ] ?:
+;
+
+@store-byte-offset-1 ( byte base val offset -- )
+    dup 1 = [ drop store-byte-1 ] [ store-byte-offset-2 ] ?:
+;
+
+@store-byte ( byte addr -- )
+    dup 4 / 4 *             ( byte addr base )
+    dup LOADI               ( byte addr base val )
+    rot 4 MOD               ( byte base val offset )
+    
+    dup 0 = [ drop store-byte-0 ] [ store-byte-offset-1 ] ?:
+;
+
+( --- UI Helpers --- )
+
+@print-hex-digit ( n -- )
+    15 AND
+    dup 10 < [ 48 + ] [ 87 + ] ?: TEXT::emit
+;
+
+@print-hex-byte ( n -- )
+    dup 16 / print-hex-digit
+    print-hex-digit
+;
+
+@print-hex-word ( n -- )
+    dup 16777216 / print-hex-byte
+    dup 65536 / print-hex-byte
+    dup 256 / print-hex-byte
+    print-hex-byte
+;
+
+@clear-screen
+    0 SCREEN::clear
+    0 0 TEXT::cursor!
+;
+
+@draw-status
+    0 784 TEXT::cursor!
+    "Mode: "
+    mode@ 0 = [ "Text" ] [ "Hex " ] ?:
+    " | File: " 
+    FILENAME_BUF load-byte 0 = [ "[No Name]" ] [ FILENAME_BUF ] ?:
+    dirty@ [ " *" ] [ "" ] ?:
+    " | Pos: " cursor@ .
+;
+
+( --- File Operations --- )
+
+@copy-filename-step ( dest src len -- dest src len bool )
+    dup 0 > [
+        swap ( dest len src )
+        dup load-byte ( dest len src byte )
+        rot roll roll ( len byte dest src )
+        roll store-byte
+        1 + swap 1 + swap 1 -
+        1
+    ] [ 0 ] ?:
+;
+
+@copy-filename ( src dest len -- )
+    swap rot ( dest src len )
+    [ copy-filename-step ] |:
+    TWO-DROP drop
+;
+
+@load-file ( ptr -- )
+    FILENAME_BUF 1024 copy-filename
+    
+    FILENAME_BUF FILE::name!
+    BUFFER_START FILE::buf!
+    MAX_SIZE FILE::read
+    size!
+    0 cursor!
+    0 dirty!
+;
+
+@save-file-with-name
+    FILENAME_BUF FILE::name!
+    BUFFER_START FILE::buf!
+    size@ FILE::write
+    drop
+    0 dirty!
+    "Saved." 10 emit
+;
+
+@save-file
+    FILENAME_BUF load-byte 0 = [
+        "untitled.txt" FILENAME_BUF 13 copy-filename
+    ] ?
+    save-file-with-name
+;
+
+( --- Text Mode Rendering --- )
+
+@set-cursor-color ( i -- )
+    cursor@ = [ 0xFF0000 TEXT::color! ] ?
+;
+
+@reset-cursor-color ( i -- )
+    cursor@ = [ 0xFFFFFF TEXT::color! ] ?
+;
+
+@draw-char ( i -- )
+    dup set-cursor-color
+    dup BUFFER_START + load-byte TEXT::emit
+    dup reset-cursor-color
+    drop
+;
+
+@draw-text-mode
+    0 ( index )
+    [ dup size@ < ] [
+        dup draw-char
+        1 +
+    ] |:
+    drop
+    
+    ( If cursor is at end )
+    cursor@ size@ = [
+        0xFF0000 TEXT::color!
+        95 TEXT::emit ( Underscore )
+        0xFFFFFF TEXT::color!
+    ] ?
+;
+
+( --- Hex Mode Rendering --- )
+
+@draw-hex-byte ( i -- )
+    dup set-cursor-color
+    dup BUFFER_START + load-byte print-hex-byte 32 TEXT::emit
+    dup reset-cursor-color
+    drop
+;
+
+@draw-hex-byte-or-space ( i -- )
+    dup size@ < [ draw-hex-byte ] [ drop "   " ] ?:
+;
+
+@draw-ascii-char-inner ( i -- )
+    dup set-cursor-color
+    dup BUFFER_START + load-byte
+    dup 32 < [ drop 46 ] ?
+    TEXT::emit
+    dup reset-cursor-color
+    drop
+;
+
+@draw-ascii-char ( i -- )
+    dup draw-ascii-char-inner
+;
+
+@draw-ascii-char-if-exists ( i -- )
+    dup size@ < [ draw-ascii-char ] [ drop ] ?:
+;
+
+@draw-16-hex-bytes ( start -- )
+    16 [
+        dup draw-hex-byte-or-space
+        1 +
+    ] 16 #:
+    drop
+;
+
+@draw-16-ascii-chars ( start -- )
+    16 [
+        dup draw-ascii-char-if-exists
+        1 +
+    ] 16 #:
+    drop
+;
+
+@draw-hex-mode
+    0 ( start offset )
+    [ dup size@ < ] [
+        dup print-hex-word ": "
+        ( Draw 16 bytes )
+        dup draw-16-hex-bytes
+        " | "
+        dup draw-16-ascii-chars
+        10 TEXT::emit
+        16 +
+    ] |:
+    drop
+;
+
+@refresh
+    clear-screen
+    mode@ 0 = [ draw-text-mode ] [ draw-hex-mode ] ?:
+    draw-status
+;
+
+( --- Input Handling --- )
+
+@insert-byte-shift-inner ( i -- )
+    dup cursor@ > [
+        dup 1 - BUFFER_START + load-byte
+        roll BUFFER_START + store-byte
+    ] ?
+;
+
+@insert-byte-shift ( -- )
+    size@ [
+        dup insert-byte-shift-inner
+        1 -
+    ] size@ cursor@ - #:
+    drop
+;
+
+@insert-byte-inner ( b -- )
+    size@ cursor@ > [ insert-byte-shift ] ?
+    BUFFER_START cursor@ + store-byte
+    size@ 1 + size!
+    cursor@ 1 + cursor!
+    1 dirty!
+;
+
+@insert-byte ( b -- )
+    size@ MAX_SIZE < [ insert-byte-inner ] [ drop ] ?:
+;
+
+@delete-byte-shift-inner ( i -- )
+    dup size@ < [
+        dup BUFFER_START + load-byte
+        roll 1 - BUFFER_START + store-byte
+    ] ?
+;
+
+@delete-byte-shift ( -- )
+    cursor@ [
+        dup delete-byte-shift-inner
+        1 +
+    ] size@ cursor@ - #:
+    drop
+;
+
+@delete-byte
+    cursor@ 0 > [
+        delete-byte-shift
+        size@ 1 - size!
+        cursor@ 1 - cursor!
+        1 dirty!
+    ] ?
+;
+
+@handle-tab   9 = [ mode@ 1 XOR mode! refresh ] ? ;
+@handle-bs    8 = [ delete-byte refresh ] ? ;
+@handle-cr   13 = [ 10 insert-byte refresh ] ? ;
+
+@handle-left-inner cursor@ 0 > [ cursor@ 1 - cursor! ] ? ;
+@handle-left 28 = [ handle-left-inner refresh ] ? ;
+
+@handle-right-inner cursor@ size@ < [ cursor@ 1 + cursor! ] ? ;
+@handle-right 29 = [ handle-right-inner refresh ] ? ;
+
+@handle-up-inner cursor@ 15 > [ cursor@ 16 - cursor! ] [ 0 cursor! ] ?: ;
+@handle-up   30 = [ handle-up-inner refresh ] ? ;
+
+@handle-down-inner ( -- )
+    cursor@ 16 +
+    dup size@ > [ drop size@ ] ?
+    cursor!
+;
+@handle-down 31 = [ handle-down-inner refresh ] ? ;
+
+@handle-save 19 = [ save-file refresh ] ? ;
+
+@handle-printable-char ( k -- )
+    dup 127 < [ insert-byte refresh ] [ drop ] ?:
+;
+
+@handle-printable ( k -- )
+    dup 31 > [ handle-printable-char ] [ drop ] ?:
+;
+
+@handle-key
+    CTRL::key@
+    dup 0 = [ drop ] [
+        dup handle-tab
+        dup handle-bs
+        dup handle-cr
+        dup handle-left
+        dup handle-right
+        dup handle-up
+        dup handle-down
+        dup handle-save
+        handle-printable
+    ] ?:
+;
+
+@vector-handler
+    [ ] CALL
+    handle-key
+;
+
+
+@keep-alive
+    YIELD
+    keep-alive
+;
+
+@start
+    640 SCREEN::width!
+    800 SCREEN::height!
+    16777215 TEXT::color!
+    2 TEXT::cell-size!
+    
+    0 mode!
+    0 size!
+    0 dirty!
+    0 cursor!
+    0 FILENAME_BUF store-byte
+
+    BOOT_FILENAME load-byte 0 > [
+        BOOT_FILENAME load-file
+    ] ?
+
+    [ vector-handler ] CTRL::vector!
+    
+    refresh
+    keep-alive
+;
+
+MODULE MAIN
+IMPORT QUILL
+QUILL::start
+HALT

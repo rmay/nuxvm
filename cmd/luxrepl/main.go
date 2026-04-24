@@ -52,7 +52,7 @@ func (r *REPL) Run() {
 
 func (r *REPL) printBanner() {
 	fmt.Println("╔═══════════════════════════════╗")
-	fmt.Println("║       LUX REPL 300K           ║")
+	fmt.Println("║       LUX REPL 280K           ║")
 	fmt.Println("║  Stack-based Language REPL    ║")
 	fmt.Println("╚═══════════════════════════════╝")
 	fmt.Println()

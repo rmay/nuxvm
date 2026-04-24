@@ -47,11 +47,11 @@ I picked Go over something like C because of:
 
 ## Overview
 
-**NUX** is a 32-opcode stack-based virtual machine with a simple instruction set, designed for learning and experimentation. It features:
+**NUX** is a 45-opcode stack-based virtual machine with a simple instruction set, designed for learning and experimentation. It features:
 
 - **32-bit integer stack** with overflow protection (8192 elements max)
 - **Separate return stack** for clean subroutine calls (1024 elements max)
-- **32 opcodes** covering stack ops, arithmetic, bitwise, comparisons, control flow, and I/O
+- **45 opcodes** covering stack ops, arithmetic, bitwise, comparisons, and control flow
 - **Big-endian bytecode** format
 - **Memory-mapped program and data space**
 
@@ -368,10 +368,23 @@ The compiler resolves words in this order:
 | 0x1D | YIELD     | --    | Yield to host (calls YieldHandler) |
 | 0x1E | LOADI     | `[addr] → [mem[addr]]` | Indirect load — pop address, push value |
 | 0x1F | STOREI    | `[addr value] → []` | Indirect store — pop address and value, store |
+| 0x20 | SHR       | `[a b] → [a>>>(b%32)]` | Logical right shift (unsigned, fills with 0s) |
+| 0x21 | SAR       | `[a b] → [a>>(b%32)]` | Arithmetic right shift (signed, sign-extends) |
+| 0x22 | JNZ       | `[cond] → []` | Jump if non-zero (pops condition, inverse of JZ) |
+| 0x23 | NEG       | `[a] → [-a]` | Negate (multiply by -1) |
+| 0x24 | GT        | `[a b] → [a>b ? 1 : 0]` | Greater than |
+| 0x25 | NEQ       | `[a b] → [a!=b ? 1 : 0]` | Not equal |
+| 0x26 | LTE       | `[a b] → [a<=b ? 1 : 0]` | Less than or equal |
+| 0x27 | GTE       | `[a b] → [a>=b ? 1 : 0]` | Greater than or equal |
+| 0x28 | PICK      | `[...n] → [...]` | Pop index n, copy nth stack element (0=top) to top |
+| 0x29 | DIVMOD    | `[a b] → [a/b a%b]` | Divide and modulus (pushes quotient, then remainder) |
+| 0x2A | ABS       | `[a] → [\|a\|]` | Absolute value |
+| 0x2B | MIN       | `[a b] → [min(a,b)]` | Minimum of two values |
+| 0x2C | MAX       | `[a b] → [max(a,b)]` | Maximum of two values |
 
-> **Removed opcodes from previous version**: NEG (replaced by `PUSH 0; SWAP; SUB`), GT (replaced by `SWAP; LT`),
-> JNZ (replaced by `PUSH 0; EQ; JZ`). The LUX compiler provides `NEGATE` and `>` words
-> that expand to these sequences automatically.
+You can see where I went back and added more op codes because while 32 opcodes, my original plan, was a good idea, it wasn't enough. It's never enough. Scope creep. But now I have it down. *Really*.
+
+Moving on.
 
 ### Bytecode Format
 
@@ -489,29 +502,7 @@ Compiles LUX source files to NUXVM bytecode:
 # Creates program.bin
 ```
 
-### 3. cloister - Graphical Emulator
-
-The flagship NUX environment with graphics, keyboard, and mouse support.
-
-```bash
-# Start with default boot shell
-./bin/cloister
-
-# Load a specific program
-./bin/cloister program.bin
-
-# Configure memory (default 32MB, max 128MB)
-./bin/cloister -mem 64 program.bin
-```
-
-**Features:**
-- 5-second "CLOISTER" boot screen
-- 64x32 color display
-- Mouse support with cursor
-- Keyboard input mapping
-- MMIO interface for all devices
-
-### 4. nux - NUXVM Console Runner
+### 3. nux - NUXVM Console Runner
 
 Executes NUXVM bytecode:
 
@@ -651,7 +642,7 @@ lux> .s
 nuxvm/
 ├── cmd/
 │   ├── nux/        - VM console runner
-│   ├── cloister/   - Graphical emulator
+│   ├── cloister/   - Graphical tiny os
 │   ├── luxc/       - LUX compiler
 │   └── luxrepl/    - Interactive REPL
 ├── lib/

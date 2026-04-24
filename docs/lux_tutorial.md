@@ -38,7 +38,7 @@ From the command line, enter
 
 ```
 ╔═══════════════════════════════╗
-║       LUX REPL 300K           ║
+║       LUX REPL 280K           ║
 ║  Stack-based Language REPL    ║
 ╚═══════════════════════════════╝
 
@@ -53,7 +53,7 @@ Back to the tutorial!
 
 From the `lux> ` prompt we are going to look at some basics.
 
-Lux is a stack-based language, a FILO ""First In, Last Out" stack.  We add things to the stack and can use operations or manipulate the stack itself.
+Lux is a stack-based language, a FILO "First In, Last Out" stack.  We add things to the stack and can use operations or manipulate the stack itself.
 
 
 ### Numbers

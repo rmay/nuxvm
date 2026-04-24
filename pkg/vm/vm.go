@@ -588,6 +588,191 @@ func (vm *VM) Gt() error {
 	return vm.Push(0)
 }
 
+// Shr logical right shift: shifts second value right by top value bits (unsigned semantics).
+func (vm *VM) Shr() error {
+	if len(vm.stack) < 2 {
+		return fmt.Errorf("stack underflow: need 2 values for SHR")
+	}
+	b, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	a, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	// Logical right shift: treat as uint32, shift, convert back to int32
+	ua := uint32(a)
+	return vm.Push(int32(ua >> uint32(b%32)))
+}
+
+// Sar arithmetic right shift: shifts second value right by top value bits (signed semantics).
+func (vm *VM) Sar() error {
+	if len(vm.stack) < 2 {
+		return fmt.Errorf("stack underflow: need 2 values for SAR")
+	}
+	b, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	a, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	// Arithmetic right shift: Go's >> on int32 already sign-extends
+	return vm.Push(a >> uint32(b%32))
+}
+
+// Neq checks if two values are not equal.
+func (vm *VM) Neq() error {
+	if len(vm.stack) < 2 {
+		return fmt.Errorf("stack underflow: need 2 values for NEQ")
+	}
+	b, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	a, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	if a != b {
+		return vm.Push(1)
+	}
+	return vm.Push(0)
+}
+
+// Lte checks if second value is less than or equal to top value.
+func (vm *VM) Lte() error {
+	if len(vm.stack) < 2 {
+		return fmt.Errorf("stack underflow: need 2 values for LTE")
+	}
+	b, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	a, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	if a <= b {
+		return vm.Push(1)
+	}
+	return vm.Push(0)
+}
+
+// Gte checks if second value is greater than or equal to top value.
+func (vm *VM) Gte() error {
+	if len(vm.stack) < 2 {
+		return fmt.Errorf("stack underflow: need 2 values for GTE")
+	}
+	b, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	a, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	if a >= b {
+		return vm.Push(1)
+	}
+	return vm.Push(0)
+}
+
+// Pick copies the nth stack element (0=top) to the top.
+func (vm *VM) Pick() error {
+	if len(vm.stack) < 1 {
+		return fmt.Errorf("stack underflow: need index for PICK")
+	}
+	n, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	if n < 0 || int(n) >= len(vm.stack) {
+		return fmt.Errorf("pick: index %d out of range (stack depth %d)", n, len(vm.stack))
+	}
+	// Stack is [... stack[n] ... top]; we want to copy stack[n] to top
+	val := vm.stack[len(vm.stack)-1-int(n)]
+	return vm.Push(val)
+}
+
+// Divmod performs division and modulo, pushing both quotient and remainder.
+func (vm *VM) Divmod() error {
+	if len(vm.stack) < 2 {
+		return fmt.Errorf("stack underflow: need 2 values for DIVMOD")
+	}
+	b, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	a, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	if b == 0 {
+		return fmt.Errorf("divmod: division by zero")
+	}
+	// Push quotient then remainder (so remainder ends up on top)
+	if err := vm.Push(a / b); err != nil {
+		return err
+	}
+	return vm.Push(a % b)
+}
+
+// Abs pushes the absolute value of the top element.
+func (vm *VM) Abs() error {
+	if len(vm.stack) < 1 {
+		return fmt.Errorf("stack underflow: need 1 value for ABS")
+	}
+	val, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	if val < 0 {
+		return vm.Push(-val)
+	}
+	return vm.Push(val)
+}
+
+// Min pushes the minimum of the top two values.
+func (vm *VM) Min() error {
+	if len(vm.stack) < 2 {
+		return fmt.Errorf("stack underflow: need 2 values for MIN")
+	}
+	b, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	a, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	if a < b {
+		return vm.Push(a)
+	}
+	return vm.Push(b)
+}
+
+// Max pushes the maximum of the top two values.
+func (vm *VM) Max() error {
+	if len(vm.stack) < 2 {
+		return fmt.Errorf("stack underflow: need 2 values for MAX")
+	}
+	b, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	a, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	if a > b {
+		return vm.Push(a)
+	}
+	return vm.Push(b)
+}
+
 // CallStack pops an address from stack and calls it (for quotations)
 func (vm *VM) CallStack() error {
 	if len(vm.stack) < 1 {
@@ -889,6 +1074,58 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 	case OpLt:
 		if err := vm.Lt(); err != nil {
 			return currentPC, fmt.Errorf("lt failed: %v", err)
+		}
+	case OpShr:
+		if err := vm.Shr(); err != nil {
+			return currentPC, fmt.Errorf("shr failed: %v", err)
+		}
+	case OpSar:
+		if err := vm.Sar(); err != nil {
+			return currentPC, fmt.Errorf("sar failed: %v", err)
+		}
+	case OpJnz:
+		if err := vm.Jnz(); err != nil {
+			return currentPC, fmt.Errorf("jnz failed: %v", err)
+		}
+	case OpNeg:
+		if err := vm.Neg(); err != nil {
+			return currentPC, fmt.Errorf("neg failed: %v", err)
+		}
+	case OpGt:
+		if err := vm.Gt(); err != nil {
+			return currentPC, fmt.Errorf("gt failed: %v", err)
+		}
+	case OpNeq:
+		if err := vm.Neq(); err != nil {
+			return currentPC, fmt.Errorf("neq failed: %v", err)
+		}
+	case OpLte:
+		if err := vm.Lte(); err != nil {
+			return currentPC, fmt.Errorf("lte failed: %v", err)
+		}
+	case OpGte:
+		if err := vm.Gte(); err != nil {
+			return currentPC, fmt.Errorf("gte failed: %v", err)
+		}
+	case OpPick:
+		if err := vm.Pick(); err != nil {
+			return currentPC, fmt.Errorf("pick failed: %v", err)
+		}
+	case OpDivmod:
+		if err := vm.Divmod(); err != nil {
+			return currentPC, fmt.Errorf("divmod failed: %v", err)
+		}
+	case OpAbs:
+		if err := vm.Abs(); err != nil {
+			return currentPC, fmt.Errorf("abs failed: %v", err)
+		}
+	case OpMin:
+		if err := vm.Min(); err != nil {
+			return currentPC, fmt.Errorf("min failed: %v", err)
+		}
+	case OpMax:
+		if err := vm.Max(); err != nil {
+			return currentPC, fmt.Errorf("max failed: %v", err)
 		}
 	case OpCallStack:
 		if len(vm.stack) < 1 {

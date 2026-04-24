@@ -5,16 +5,13 @@ import (
 	"fmt"
 	"image/color"
 	"os"
-	"strings"
 	"time"
 
-	"github.com/atotto/clipboard"
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/rmay/nuxvm/pkg/lux"
 	"github.com/rmay/nuxvm/pkg/system"
-	"github.com/rmay/nuxvm/pkg/vm"
 )
 
 var screenScale = 10
@@ -23,7 +20,7 @@ var screenScale = 10
 // without a positional argument. It's relative to cwd so editing lib/boot.lux
 // in the repo and re-running cloister picks up the change without a rebuild.
 const defaultBootPath = "lib/boot.lux"
-const topBarHeight = 14
+const topBarHeight = 24
 
 type Window struct {
 	id      int
@@ -31,32 +28,14 @@ type Window struct {
 	scrollY int32
 }
 
-type GraphicalREPL struct {
-	active   bool
-	wordDefs string   // accumulator of @word ... ; definitions prepended to each compile
-	input    string
-	log      []string
-	scrollOffset int  // offset into log for scrolling
-
-	// Line history for up/down navigation. `lines` holds every committed
-	// input; `lineIdx` is a cursor where `len(lines)` represents the draft
-	// slot (the in-progress typed text). `draft` stashes the user's typed
-	// text when they start browsing history so Down-arrow can restore it.
-	lines   []string
-	lineIdx int
-	draft   string
-}
-
 type Game struct {
-	machine      *system.Machine
-	showDebug    bool
-	bootTimer    int
-	mouseX       int
-	mouseY       int
-	replChan     chan int32
-	repl         *GraphicalREPL
-	windows      []Window
-	activeWinIdx int
+	machine     *system.Machine
+	showDebug   bool
+	bootTimer   int
+	mouseX      int
+	mouseY      int
+	windows     []*Window
+	showWinMenu bool
 }
 
 var font = map[rune][5]byte{
@@ -84,7 +63,7 @@ func drawText(screen *ebiten.Image, text string, x, y int, clr color.Color) {
 	}
 }
 
-func drawChicagoText(screen *ebiten.Image, text string, x, y int, clr color.Color) {
+func drawChicagoText(screen *ebiten.Image, text string, x, y, s int, clr color.Color) {
 	for i, r := range text {
 		if r < 128 {
 			glyph := system.Font[r]
@@ -108,124 +87,32 @@ func drawMouse(screen *ebiten.Image, x, y int) {
 	screen.Set(x, y, color.RGBA{0, 0, 0, 255})
 }
 
-// replHistoryUp moves one step back into the line history. The first up-press
-// while the draft is active stashes it so down-arrow can restore it.
-func (g *Game) replHistoryUp() {
-	r := g.repl
-	if len(r.lines) == 0 {
-		return
-	}
-	if r.lineIdx == len(r.lines) {
-		r.draft = r.input
-	}
-	if r.lineIdx > 0 {
-		r.lineIdx--
-		r.input = r.lines[r.lineIdx]
-	}
-}
-
-// replHistoryDown moves forward into history, or restores the stashed draft
-// once we step past the most recent entry.
-func (g *Game) replHistoryDown() {
-	r := g.repl
-	if r.lineIdx >= len(r.lines) {
-		return
-	}
-	r.lineIdx++
-	if r.lineIdx == len(r.lines) {
-		r.input = r.draft
-		r.draft = ""
-	} else {
-		r.input = r.lines[r.lineIdx]
-	}
-}
-
 func (g *Game) activeWindow() *Window {
-	if g.activeWinIdx < len(g.windows) {
-		return &g.windows[g.activeWinIdx]
+	if len(g.windows) > 0 {
+		return g.windows[0]
 	}
-	return &g.windows[0]
+	return nil
 }
 
-func (g *Game) executeREPL(line string) {
-	if line == "" {
-		return
-	}
-
-	switch line {
-	case "exit", "quit", "q":
-		os.Exit(0)
-	case "help", "?":
-		g.repl.log = append(g.repl.log, "═══ LUX REPL Commands ═══")
-		g.repl.log = append(g.repl.log, "  help, ?          - Show this help")
-		g.repl.log = append(g.repl.log, "  exit, quit, q    - Exit CLOISTER")
-		g.repl.log = append(g.repl.log, "  clear            - Clear terminal screen")
-		g.repl.log = append(g.repl.log, "  clearstack, cs   - Clear the stack")
-		g.repl.log = append(g.repl.log, "  stack, .s        - Show current stack")
-		g.repl.log = append(g.repl.log, "  drop             - Drop top stack value")
-		return
-	case "clearstack", "cs":
-		for {
-			if _, err := g.machine.CPU.Pop(); err != nil {
-				break
-			}
-		}
-		g.repl.log = append(g.repl.log, "  Stack cleared")
-		return
-	case "drop":
-		if _, err := g.machine.CPU.Pop(); err != nil {
-			g.repl.log = append(g.repl.log, "  Stack is empty")
-		} else {
-			stack := g.machine.CPU.Stack()
-			if len(stack) == 0 {
-				g.repl.log = append(g.repl.log, "  Stack: []")
-			} else {
-				g.repl.log = append(g.repl.log, fmt.Sprintf("  Stack: %v", stack))
-			}
-		}
-		return
-	case "stack", ".s":
-		stack := g.machine.CPU.Stack()
-		if len(stack) == 0 {
-			g.repl.log = append(g.repl.log, "  Stack: []")
-		} else {
-			g.repl.log = append(g.repl.log, fmt.Sprintf("  Stack: %v", stack))
-		}
-		return
-	}
-
-	// Handle word definitions
-	if strings.HasPrefix(line, "@") {
-		if !strings.HasSuffix(strings.TrimSpace(line), ";") {
-			g.repl.log = append(g.repl.log, "Error: Word definition must end with ';'")
-			return
-		}
-		g.repl.wordDefs += line + "\n"
-		g.repl.log = append(g.repl.log, "Defined word")
-		return
-	}
-
-	source := g.repl.wordDefs + line
-	bytecode, err := lux.Compile(source)
+func (g *Game) loadAndRun(filename string) {
+	bytecode, err := lux.LoadProgram(filename)
 	if err != nil {
-		g.repl.log = append(g.repl.log, fmt.Sprintf("Compile error: %v", err))
+		fmt.Sprintf("Error loading %s: %v", filename, err)
 		return
 	}
 
-	// Inject bytecode at UserMemoryStart
 	userMemStart := g.machine.CPU.UserMemoryStart()
 	mem := g.machine.CPU.Memory()
-	
+
 	if int(userMemStart)+len(bytecode) > len(mem) {
-		g.repl.log = append(g.repl.log, "Error: Bytecode too large for user memory")
+		fmt.Sprintf("Error: %s too large", filename)
 		return
 	}
-	
+
 	copy(mem[userMemStart:], bytecode)
-	
-	// Set vector 0 to start of user memory and trigger it
 	g.machine.CPU.WriteVector(0, userMemStart)
 	g.machine.CPU.TriggerVector(0)
+	fmt.Sprintf("Loaded and started %s", filename)
 }
 
 func (g *Game) Update() error {
@@ -242,134 +129,12 @@ func (g *Game) Update() error {
 
 	// Toggle between windows
 	if inpututil.IsKeyJustPressed(ebiten.KeyF2) {
-		if g.repl != nil {
-			// Toggle between VM (index 0) and REPL (index 1)
-			if g.activeWinIdx == 0 {
-				g.activeWinIdx = 1
-				g.repl.active = true
-			} else {
-				g.activeWinIdx = 0
-				g.repl.active = false
-			}
-		}
+
 	}
 
 	// Trigger V-Blank at the start of every frame
 	if err := g.machine.VBlank(); err != nil {
 		return err
-	}
-
-	// Handle REPL input
-	if g.repl != nil && g.repl.active {
-		chars := ebiten.AppendInputChars(nil)
-		for _, char := range chars {
-			if char >= 32 && char <= 126 {
-				// Typing escapes history-browse mode.
-				g.repl.lineIdx = len(g.repl.lines)
-				g.repl.draft = ""
-				g.repl.input += string(char)
-			}
-		}
-
-		if inpututil.IsKeyJustPressed(ebiten.KeyBackspace) {
-			if len(g.repl.input) > 0 {
-				g.repl.lineIdx = len(g.repl.lines)
-				g.repl.draft = ""
-				g.repl.input = g.repl.input[:len(g.repl.input)-1]
-			}
-		}
-
-		if (ebiten.IsKeyPressed(ebiten.KeyControl) || ebiten.IsKeyPressed(ebiten.KeyMeta)) && inpututil.IsKeyJustPressed(ebiten.KeyV) {
-			if text, err := clipboard.ReadAll(); err == nil && text != "" {
-				g.repl.lineIdx = len(g.repl.lines)
-				g.repl.draft = ""
-				g.repl.input += text
-			}
-		}
-
-		if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) {
-			g.replHistoryUp()
-		}
-		if inpututil.IsKeyJustPressed(ebiten.KeyArrowDown) {
-			g.replHistoryDown()
-		}
-
-		if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
-			line := strings.TrimSpace(g.repl.input)
-			if line != "" {
-				// Record the submitted line in history, skipping consecutive
-				// duplicates so the arrow keys move meaningfully.
-				if len(g.repl.lines) == 0 || g.repl.lines[len(g.repl.lines)-1] != line {
-					g.repl.lines = append(g.repl.lines, line)
-				}
-				g.repl.lineIdx = len(g.repl.lines)
-				g.repl.draft = ""
-
-				g.repl.log = append(g.repl.log, "lux> "+line)
-				if line == "clear" {
-					g.repl.log = []string{}
-				} else {
-					g.executeREPL(line)
-				}
-				g.repl.input = ""
-			}
-		}
-	} else {
-		// Handle Paste (Ctrl+V / Cmd+V)
-		if (ebiten.IsKeyPressed(ebiten.KeyControl) || ebiten.IsKeyPressed(ebiten.KeyMeta)) && inpututil.IsKeyJustPressed(ebiten.KeyV) {
-			if text, err := clipboard.ReadAll(); err == nil && text != "" {
-				for _, char := range text {
-					g.machine.PushKey(int32(char))
-				}
-			}
-		} else {
-			// Handle keyboard input for VM
-			chars := ebiten.AppendInputChars(nil)
-			for _, char := range chars {
-				g.machine.PushKey(int32(char))
-			}
-		}
-
-		// Handle some special keys
-		if inpututil.IsKeyJustPressed(ebiten.KeyBackspace) {
-			g.machine.PushKey(8)
-		}
-		if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
-			g.machine.PushKey(13)
-		}
-		if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
-			g.machine.PushKey(27)
-		}
-	}
-
-	// Handle scrolling (mouse wheel)
-	_, dy := ebiten.Wheel()
-	if dy != 0 {
-		win := g.activeWindow()
-		if g.repl != nil && g.repl.active {
-			// Scroll REPL log
-			g.repl.scrollOffset -= int(dy * 3)
-			if g.repl.scrollOffset < 0 {
-				g.repl.scrollOffset = 0
-			}
-			maxScroll := len(g.repl.log) - 15
-			if maxScroll < 0 {
-				maxScroll = 0
-			}
-			if g.repl.scrollOffset > maxScroll {
-				g.repl.scrollOffset = maxScroll
-			}
-		} else {
-			// Scroll VM window
-			win.scrollY -= int32(dy * 3)
-			if win.scrollY < 0 {
-				win.scrollY = 0
-			}
-			maxScroll := int32(topBarHeight)
-			if win.scrollY > maxScroll {
-				win.scrollY = maxScroll
-			}
-		}
 	}
 
 	// Handle mouse input
@@ -397,14 +162,19 @@ func (g *Game) Update() error {
 	if err != nil {
 		return err
 	}
-	if !running && (g.repl == nil || !g.repl.active) {
-		os.Exit(0)
+	// If VM halted, keep host running.
+	if !running {
+		g.machine.CPU.ClearYield()
 	}
 
 	return nil
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
+	// ... (window menu rendering)
+	if g.showWinMenu {
+		// Draw window list dropdown
+	}
 	// Get current dimensions from system
 	sw := int(g.machine.System.ScreenWidth())
 	sh := int(g.machine.System.ScreenHeight())
@@ -439,15 +209,15 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	// Draw Mac-style Top Bar
 	ebitenutil.DrawRect(screen, 0, 0, float64(sw), float64(topBarHeight), color.White)
 	ebitenutil.DrawLine(screen, 0, float64(topBarHeight), float64(sw), float64(topBarHeight), color.Black)
-	drawChicagoText(screen, "%", 4, 3, color.Black)
+	drawChicagoText(screen, "%", 4, 3, 2, color.Black) // Scale 2 for top bar
 
 	// Draw active window name in center
 	winName := win.name
 	nameX := (sw - len(winName)*8) / 2
-	drawChicagoText(screen, winName, nameX, 3, color.Black)
+	drawChicagoText(screen, winName, nameX, 3, 2, color.Black) // Scale 2 for top bar
 
 	timeStr := time.Now().Format("15:04")
-	drawChicagoText(screen, timeStr, sw-(len(timeStr)*8)-4, 3, color.Black)
+	drawChicagoText(screen, timeStr, sw-(len(timeStr)*8)-4, 3, 2, color.Black) // Scale 2 for top bar
 
 	// Draw mouse cursor (only in content area)
 	if g.mouseY >= topBarHeight {
@@ -474,26 +244,6 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		}
 
 		ebitenutil.DebugPrint(screen, msg)
-	}
-
-	if g.repl != nil && g.repl.active {
-		msg := ""
-		// Show log lines with scroll offset; show up to ~15 lines
-		maxLines := 15
-		startIdx := g.repl.scrollOffset
-		if len(g.repl.log) > maxLines {
-			if startIdx > len(g.repl.log)-maxLines {
-				startIdx = len(g.repl.log) - maxLines
-			}
-		}
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		for i := startIdx; i < len(g.repl.log) && i < startIdx+maxLines; i++ {
-			msg += g.repl.log[i] + "\n"
-		}
-		msg += "lux> " + g.repl.input + "_"
-		ebitenutil.DebugPrintAt(screen, msg, 2, topBarHeight+2)
 	}
 }
 
@@ -525,7 +275,6 @@ func (c *clipboardBus) Write(address uint32, value int32) error {
 			text = append(text, c.memory[ptr])
 			ptr++
 		}
-		clipboard.WriteAll(string(text))
 		return nil
 	}
 	return c.system.Write(address, value)
@@ -547,35 +296,8 @@ func main() {
 		fmt.Println("Memory size capped at 128MB")
 		*memFlag = 128
 	}
-	memSize := uint32(*memFlag) * 1024 * 1024
 
-	var program []byte
-	var err error
-	var replMode bool
-
-	if len(flag.Args()) < 1 {
-		replMode = true
-		// Try to load the default boot program; fall back to a no-op halt
-		// if it isn't next to us.
-		if src, readErr := os.ReadFile(defaultBootPath); readErr == nil {
-			program, err = lux.Compile(string(src))
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "compile %s: %v\n", defaultBootPath, err)
-				os.Exit(1)
-			}
-		} else {
-			program = []byte{vm.OpHalt}
-		}
-	} else {
-		filename := flag.Args()[0]
-		program, err = lux.LoadProgram(filename)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-	}
-
-	machine := system.NewMachine(program, memSize)
+	var machine *system.Machine
 
 	// Wrap the bus to intercept clipboard writes
 	bus := &clipboardBus{
@@ -583,19 +305,6 @@ func main() {
 		memory: machine.CPU.Memory(),
 	}
 	machine.CPU.SetBus(bus)
-
-	// Pin the File device's sandbox to the directory CLOISTER was launched
-	// from. Any attempt to read/write/stat/delete a path that escapes this
-	// root (via .., an absolute path, or a symlink) is rejected with -1.
-	cwd, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot determine launch directory: %v\n", err)
-		os.Exit(1)
-	}
-	if err := machine.SetSandboxRoot(cwd); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot pin sandbox root: %v\n", err)
-		os.Exit(1)
-	}
 
 	// Let the VM run up to its first YIELD / HALT so a program's startup
 	// code (e.g. boot.lux setting SCR_W / SCR_H / TEXT cell-size) has a
@@ -631,48 +340,12 @@ func main() {
 		screenScale = *scaleFlag
 	}
 
-	var repl *GraphicalREPL
-	if replMode {
-		repl = &GraphicalREPL{
-			active: true,
-			log:    []string{"LUX REPL Mode Active"},
-		}
-
-		var lineBuffer string
-		machine.CPU.OutputHandler = func(value int32, format int32) {
-			if format == 1 {
-				if value == '\n' {
-					if lineBuffer != "" {
-						repl.log = append(repl.log, lineBuffer)
-						lineBuffer = ""
-					}
-				} else {
-					lineBuffer += string(rune(value))
-				}
-			} else {
-				lineBuffer += fmt.Sprintf("%d ", value)
-			}
-			
-			// Flush the buffer if there's no newline after some output
-			if len(lineBuffer) > 0 && format != 1 {
-				repl.log = append(repl.log, lineBuffer)
-				lineBuffer = ""
-			} else if format == 1 && value != '\n' && len(lineBuffer) > 50 {
-				repl.log = append(repl.log, lineBuffer)
-				lineBuffer = ""
-			}
-		}
-	}
-
 	game := &Game{
 		machine:   machine,
-		bootTimer: 120,
-		repl:      repl,
-		windows: []Window{
+		bootTimer: 60,
+		windows: []*Window{
 			{id: 0, name: "VM", scrollY: 0},
-			{id: 1, name: "REPL", scrollY: 0},
 		},
-		activeWinIdx: 0,
 	}
 
 	windowWidth := sw * screenScale
@@ -681,7 +354,7 @@ func main() {
 	ebiten.SetWindowSize(windowWidth, windowHeight)
 	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeEnabled)
 	ebiten.SetWindowTitle("CLOISTER")
-	_ = replMode // kept for future REPL-specific tweaks
+
 	if err := ebiten.RunGame(game); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

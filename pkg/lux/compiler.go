@@ -31,9 +31,15 @@ var builtins = map[string]byte{
 	"XOR":    vm.OpXor,
 	"NOT":    vm.OpNot,
 	"LSHIFT": vm.OpShl,
+	"RSHIFT": vm.OpShr,
+	"ARSHIFT": vm.OpSar,
 	// Comparison
-	"=": vm.OpEq,
-	"<": vm.OpLt,
+	"=":   vm.OpEq,
+	"<":   vm.OpLt,
+	">":   vm.OpGt,
+	"!=":  vm.OpNeq,
+	"<=":  vm.OpLte,
+	">=":  vm.OpGte,
 	// Memory (indirect / dynamic address)
 	"LOADI":  vm.OpLoadI,
 	"STOREI": vm.OpStoreI,
@@ -41,6 +47,13 @@ var builtins = map[string]byte{
 	"EXIT":  vm.OpRet,
 	"HALT":  vm.OpHalt,
 	"YIELD": vm.OpYield,
+	// New Tier 1-3 opcodes
+	"NEGATE": vm.OpNeg,
+	"PICK":   vm.OpPick,
+	"DIVMOD": vm.OpDivmod,
+	"ABS":    vm.OpAbs,
+	"MIN":    vm.OpMin,
+	"MAX":    vm.OpMax,
 }
 
 // Control flow combinators

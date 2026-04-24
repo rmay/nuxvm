@@ -11,7 +11,7 @@ import (
 	"github.com/rmay/nuxvm/pkg/vm"
 )
 
-const topBarHeight = 14
+const topBarHeight = 24
 
 // Device port addresses (moved from vm.go to own device semantics)
 const (
@@ -113,12 +113,12 @@ type System struct {
 
 func NewSystem() *System {
 	s := &System{
-		screenWidth:  80,
-		screenHeight: 80,
+		screenWidth:  640,
+		screenHeight: 800,
 		screenPixels: make([]byte, vm.VideoMaxBufferSize),
 		rngState:     uint32(time.Now().UnixNano()),
 		text: textState{
-			scale: 1,
+			scale: 2,
 			color: 0xFFFFFF,
 		},
 	}
