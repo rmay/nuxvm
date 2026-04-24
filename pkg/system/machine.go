@@ -69,6 +69,13 @@ func (m *Machine) PushMouseButton(mask uint32) error {
 	return m.CPU.TriggerVector(5) // Mouse Vector
 }
 
+// SetSandboxRoot pins the File device's filesystem sandbox to dir. All File
+// device operations are resolved relative to this path and rejected if they
+// escape (via .., absolute paths, or symlinks).
+func (m *Machine) SetSandboxRoot(dir string) error {
+	return m.System.SetSandboxRoot(dir)
+}
+
 // VBlank triggers the screen vector (2). Called every frame.
 func (m *Machine) VBlank() error {
 	return m.CPU.TriggerVector(2) // Screen Vector

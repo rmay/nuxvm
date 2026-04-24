@@ -85,36 +85,63 @@ MODULE MOUSE
 
 ( --- FILE --- )
 
+( The File device is pinned to the directory CLOISTER was launched from.
+  Writing a name pointer closes any open handle and resets the cursor.
+  READ and WRITE both advance a persistent cursor, so large transfers can
+  be chunked across many calls. Returning 0 on READ means EOF or end of
+  directory listing; -1 means the op failed (e.g. path escaped sandbox). )
 MODULE FILE
 @addr 12384 ;
+
+( Command register layout, packed into the +12 STOREI value:
+    bits 31..24: command  (1=READ 2=WRITE 3=STAT 4=DELETE 5=SEEK)
+    bits 23..16: flags    (bit 0 = append mode for WRITE)
+    bits 15..0 : length   (buffer size for READ/WRITE/STAT) )
 
 @vector! addr STOREI ;
 @name!   ( ptr -- ) addr 4 + STOREI ;
 @buf!    ( ptr -- ) addr 8 + STOREI ;
 
 @read ( len -- res )
-    16777216 OR
+    16777216 OR            ( cmd 1 << 24 )
     addr 12 + STOREI
     addr 12 + LOADI
 ;
 
 @write ( len -- res )
-    33554432 OR
+    33554432 OR            ( cmd 2 << 24 )
+    addr 12 + STOREI
+    addr 12 + LOADI
+;
+
+@append! ( len -- res )
+    33619968 OR            ( cmd 2 << 24 | flags 1 << 16 )
     addr 12 + STOREI
     addr 12 + LOADI
 ;
 
 @size ( -- size )
-    50331648 
+    50331648               ( cmd 3 << 24 )
     addr 12 + STOREI
     addr 12 + LOADI
 ;
 
 @delete ( -- res )
-    67108864 
+    67108864               ( cmd 4 << 24 )
     addr 12 + STOREI
     addr 12 + LOADI
 ;
+
+@seek ( -- res )
+    83886080               ( cmd 5 << 24 )
+    addr 12 + STOREI
+    addr 12 + LOADI
+;
+
+( @list is a doc-alias for @read: when the current name is a directory, each
+  call writes one entry line "xxxx filename\n" into the buffer, where xxxx is
+  the 4-char hex size or "----" for sub-directories. Returns 0 at end. )
+@list ( len -- res ) read ;
 
 ( --- DATETIME --- )
 

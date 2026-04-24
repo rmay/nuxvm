@@ -347,6 +347,19 @@ func main() {
 	machine := system.NewMachine(program, memSize)
 	machine.System.SetResolution(int32(*widthFlag), int32(*heightFlag))
 
+	// Pin the File device's sandbox to the directory CLOISTER was launched
+	// from. Any attempt to read/write/stat/delete a path that escapes this
+	// root (via .., an absolute path, or a symlink) is rejected with -1.
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot determine launch directory: %v\n", err)
+		os.Exit(1)
+	}
+	if err := machine.SetSandboxRoot(cwd); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot pin sandbox root: %v\n", err)
+		os.Exit(1)
+	}
+
 	var repl *GraphicalREPL
 	if replMode {
 		repl = &GraphicalREPL{

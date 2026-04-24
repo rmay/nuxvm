@@ -4,11 +4,40 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/rmay/nuxvm/pkg/vm"
 )
+
+// fileState tracks an open file or directory for the File device.
+// The cursor persists across READ/WRITE operations so large transfers can be
+// chunked. Writing a new name pointer resets everything.
+type fileState struct {
+	name       string        // resolved absolute path, empty if none
+	readFile   *os.File      // lazy-opened on first READ
+	writeFile  *os.File      // lazy-opened on first WRITE
+	dir        []os.DirEntry // populated on first READ of a directory
+	dirIndex   int
+	readCursor int64
+	appendMode bool // set by the append flag on the first WRITE after a name!
+}
+
+func (f *fileState) close() {
+	if f.readFile != nil {
+		f.readFile.Close()
+		f.readFile = nil
+	}
+	if f.writeFile != nil {
+		f.writeFile.Close()
+		f.writeFile = nil
+	}
+	f.dir = nil
+	f.dirIndex = 0
+	f.readCursor = 0
+	f.appendMode = false
+}
 
 // System implements the vm.Bus interface and provides concrete hardware devices.
 type System struct {
@@ -20,7 +49,7 @@ type System struct {
 	screenWidth  int32
 	screenHeight int32
 	rngState     uint32
-	
+
 	// Controller/Mouse state
 	controllerButton uint32
 	controllerKey    int32
@@ -28,23 +57,93 @@ type System struct {
 	mouseY           int32
 	mouseButton      uint32
 
-	// File state
+	// File device state
+	sandboxRoot    string // canonical path; all file ops must stay within
 	fileNamePtr    uint32
 	fileBufferPtr  uint32
-	fileLength     uint32
 	lastFileResult int32
+	file           fileState
 
 	// Handlers for host integration
 	SoundHandler func(soundID int32)
 }
 
 func NewSystem() *System {
-	return &System{
+	s := &System{
 		screenWidth:  80,
 		screenHeight: 80,
 		screenPixels: make([]byte, vm.VideoMaxBufferSize),
 		rngState:     uint32(time.Now().UnixNano()),
 	}
+	// Default the sandbox root to the process cwd so tests and ad-hoc use
+	// keep working. cmd/cloister overrides this explicitly at startup.
+	if cwd, err := os.Getwd(); err == nil {
+		_ = s.SetSandboxRoot(cwd)
+	}
+	return s
+}
+
+// SetSandboxRoot pins the filesystem sandbox to dir. All subsequent file
+// operations are resolved relative to this path and rejected if they escape.
+// The stored root is canonical (symlinks resolved, absolute).
+func (s *System) SetSandboxRoot(dir string) error {
+	if dir == "" {
+		return fmt.Errorf("sandbox root cannot be empty")
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("sandbox root abs: %w", err)
+	}
+	// EvalSymlinks only works on existing paths; fall back to Abs if the
+	// root itself isn't resolvable (unusual, but don't block startup).
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+	s.sandboxRoot = filepath.Clean(abs)
+	s.file.close()
+	return nil
+}
+
+// SandboxRoot returns the canonical filesystem root the File device is pinned
+// to. Mainly useful for tests and diagnostics.
+func (s *System) SandboxRoot() string {
+	return s.sandboxRoot
+}
+
+// resolvePath turns a VM-supplied filename into a real path that is guaranteed
+// to live inside sandboxRoot. Returns ("", error) on any attempt to escape.
+func (s *System) resolvePath(name string) (string, error) {
+	if name == "" {
+		return "", fmt.Errorf("empty name")
+	}
+	if filepath.IsAbs(name) {
+		return "", fmt.Errorf("absolute path not allowed: %q", name)
+	}
+	if s.sandboxRoot == "" {
+		return "", fmt.Errorf("sandbox root not set")
+	}
+	joined := filepath.Clean(filepath.Join(s.sandboxRoot, name))
+	if !withinRoot(joined, s.sandboxRoot) {
+		return "", fmt.Errorf("path escapes sandbox: %q", name)
+	}
+	// If the path (or any ancestor) exists as a symlink, EvalSymlinks will
+	// follow it and we need to re-check containment.
+	if resolved, err := filepath.EvalSymlinks(joined); err == nil {
+		if !withinRoot(resolved, s.sandboxRoot) {
+			return "", fmt.Errorf("symlink escapes sandbox: %q", name)
+		}
+		return resolved, nil
+	}
+	return joined, nil
+}
+
+// withinRoot reports whether p is root itself or a descendant of root. The
+// trailing-separator guard stops "/tmp/rootX" from passing against "/tmp/root".
+func withinRoot(p, root string) bool {
+	if p == root {
+		return true
+	}
+	return strings.HasPrefix(p, root+string(filepath.Separator))
 }
 
 func (s *System) SetResolution(w, h int32) {
@@ -79,70 +178,230 @@ func (s *System) getCString(ptr uint32) string {
 	return string(res)
 }
 
-// handleFileCommand executes a file operation based on the command and length.
-func (s *System) handleFileCommand(cmd uint32, length uint32) {
-	filename := s.getCString(s.fileNamePtr)
-	if filename == "" {
-		s.lastFileResult = -1
+// File device command codes (high byte of the +12 register).
+const (
+	fileCmdRead   = 1
+	fileCmdWrite  = 2
+	fileCmdStat   = 3
+	fileCmdDelete = 4
+	fileCmdSeek   = 5
+)
+
+// handleFileCommand executes a File device operation. The 32-bit value written
+// to FilePort+12 is split into:
+//
+//	bits 31..24: command
+//	bits 23..16: flags (bit 0 = append)
+//	bits 15..0:  length
+func (s *System) handleFileCommand(cmd, flags, length uint32) {
+	// STAT / DELETE / SEEK don't need an open handle or an in-range buffer.
+	switch cmd {
+	case fileCmdStat:
+		s.fileStat(length)
+		return
+	case fileCmdDelete:
+		s.fileDelete()
+		return
+	case fileCmdSeek:
+		s.fileSeek()
 		return
 	}
 
-	// Security: for now, restrict to local directory and no parent-dir hopping
-	if strings.Contains(filename, "..") || strings.HasPrefix(filename, "/") {
+	path, err := s.resolvePath(s.getCString(s.fileNamePtr))
+	if err != nil {
 		s.lastFileResult = -1
 		return
 	}
 
 	switch cmd {
-	case 1: // Read
-		data, err := os.ReadFile(filename)
-		if err != nil {
-			s.lastFileResult = -1
-			return
-		}
-		toRead := uint32(len(data))
-		if length > 0 && length < toRead {
-			toRead = length
-		}
-		if s.fileBufferPtr > 0 && int(s.fileBufferPtr+toRead) <= len(s.memory) {
-			copy(s.memory[s.fileBufferPtr:], data[:toRead])
-			s.lastFileResult = int32(toRead)
-		} else {
-			s.lastFileResult = -1
-		}
-
-	case 2: // Write
-		if s.fileBufferPtr == 0 || int(s.fileBufferPtr+length) > len(s.memory) {
-			s.lastFileResult = -1
-			return
-		}
-		data := s.memory[s.fileBufferPtr : s.fileBufferPtr+length]
-		err := os.WriteFile(filename, data, 0644)
-		if err != nil {
-			s.lastFileResult = -1
-			return
-		}
-		s.lastFileResult = int32(length)
-
-	case 3: // Stat
-		info, err := os.Stat(filename)
-		if err != nil {
-			s.lastFileResult = -1
-			return
-		}
-		s.lastFileResult = int32(info.Size())
-
-	case 4: // Delete
-		err := os.Remove(filename)
-		if err != nil {
-			s.lastFileResult = -1
-			return
-		}
-		s.lastFileResult = 0
-
+	case fileCmdRead:
+		s.fileRead(path, length)
+	case fileCmdWrite:
+		s.fileWrite(path, flags, length)
 	default:
 		s.lastFileResult = -1
 	}
+}
+
+// fileRead reads up to length bytes from the cursor into buffer. For a
+// directory, emits one formatted entry per call.
+func (s *System) fileRead(path string, length uint32) {
+	if length == 0 {
+		s.lastFileResult = 0
+		return
+	}
+	if s.fileBufferPtr == 0 || uint64(s.fileBufferPtr)+uint64(length) > uint64(len(s.memory)) {
+		s.lastFileResult = -1
+		return
+	}
+
+	// If a writer is still open on this name, flush it so the reader sees
+	// everything that was written.
+	if s.file.writeFile != nil {
+		s.file.writeFile.Close()
+		s.file.writeFile = nil
+	}
+
+	// First op after a name! — decide whether this is a file or directory.
+	if s.file.readFile == nil && s.file.dir == nil {
+		info, err := os.Stat(path)
+		if err != nil {
+			s.lastFileResult = -1
+			return
+		}
+		if info.IsDir() {
+			entries, err := os.ReadDir(path)
+			if err != nil {
+				s.lastFileResult = -1
+				return
+			}
+			s.file.dir = entries
+			s.file.dirIndex = 0
+		} else {
+			f, err := os.Open(path)
+			if err != nil {
+				s.lastFileResult = -1
+				return
+			}
+			s.file.readFile = f
+		}
+	}
+
+	if s.file.dir != nil {
+		s.lastFileResult = s.readDirEntry(length)
+		return
+	}
+
+	buf := s.memory[s.fileBufferPtr : s.fileBufferPtr+length]
+	n, err := s.file.readFile.ReadAt(buf, s.file.readCursor)
+	s.file.readCursor += int64(n)
+	if err != nil && n == 0 {
+		// EOF with nothing read → 0. Any other error → -1.
+		if strings.Contains(err.Error(), "EOF") {
+			s.lastFileResult = 0
+			return
+		}
+		s.lastFileResult = -1
+		return
+	}
+	s.lastFileResult = int32(n)
+}
+
+// readDirEntry formats the next directory entry into the VM buffer. Returns
+// bytes written, or 0 at end of listing.
+func (s *System) readDirEntry(length uint32) int32 {
+	if s.file.dirIndex >= len(s.file.dir) {
+		return 0
+	}
+	entry := s.file.dir[s.file.dirIndex]
+	s.file.dirIndex++
+
+	detail := "----"
+	if !entry.IsDir() {
+		if info, err := entry.Info(); err == nil {
+			size := info.Size()
+			switch {
+			case size > 0xFFFF:
+				detail = "????"
+			default:
+				detail = fmt.Sprintf("%04x", size)
+			}
+		} else {
+			detail = "!!!!"
+		}
+	}
+	line := fmt.Sprintf("%s %s\n", detail, entry.Name())
+	lineBytes := []byte(line)
+	if uint32(len(lineBytes)) > length {
+		lineBytes = lineBytes[:length]
+	}
+	copy(s.memory[s.fileBufferPtr:], lineBytes)
+	return int32(len(lineBytes))
+}
+
+// fileWrite writes length bytes from buffer to the current file.
+func (s *System) fileWrite(path string, flags, length uint32) {
+	if length == 0 {
+		s.lastFileResult = 0
+		return
+	}
+	if s.fileBufferPtr == 0 || uint64(s.fileBufferPtr)+uint64(length) > uint64(len(s.memory)) {
+		s.lastFileResult = -1
+		return
+	}
+
+	if s.file.writeFile == nil {
+		mode := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+		if flags&1 != 0 {
+			mode = os.O_WRONLY | os.O_CREATE | os.O_APPEND
+			s.file.appendMode = true
+		}
+		f, err := os.OpenFile(path, mode, 0644)
+		if err != nil {
+			s.lastFileResult = -1
+			return
+		}
+		s.file.writeFile = f
+	}
+
+	data := s.memory[s.fileBufferPtr : s.fileBufferPtr+length]
+	n, err := s.file.writeFile.Write(data)
+	if err != nil {
+		s.lastFileResult = -1
+		return
+	}
+	s.lastFileResult = int32(n)
+}
+
+// fileStat returns the size of the named file, or -1 on error. If buffer is
+// non-zero, also writes a 4-char Varvara-style detail string there.
+func (s *System) fileStat(length uint32) {
+	path, err := s.resolvePath(s.getCString(s.fileNamePtr))
+	if err != nil {
+		s.lastFileResult = -1
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		s.lastFileResult = -1
+		return
+	}
+
+	if s.fileBufferPtr != 0 && length >= 4 && uint64(s.fileBufferPtr)+4 <= uint64(len(s.memory)) {
+		detail := "----"
+		if !info.IsDir() {
+			size := info.Size()
+			if size > 0xFFFF {
+				detail = "????"
+			} else {
+				detail = fmt.Sprintf("%04x", size)
+			}
+		}
+		copy(s.memory[s.fileBufferPtr:], []byte(detail))
+	}
+	s.lastFileResult = int32(info.Size())
+}
+
+// fileDelete removes the named file and resets state.
+func (s *System) fileDelete() {
+	path, err := s.resolvePath(s.getCString(s.fileNamePtr))
+	if err != nil {
+		s.lastFileResult = -1
+		return
+	}
+	s.file.close()
+	if err := os.Remove(path); err != nil {
+		s.lastFileResult = -1
+		return
+	}
+	s.file.name = ""
+	s.lastFileResult = 0
+}
+
+// fileSeek rewinds the read/write cursor to 0 and reopens handles lazily.
+func (s *System) fileSeek() {
+	s.file.close()
+	s.lastFileResult = 0
 }
 
 // Read implements vm.Bus.Read
@@ -258,7 +517,10 @@ func (s *System) Write(address uint32, value int32) error {
 
 	// File registers:
 	if address == vm.FilePort+4 {
+		// Writing a new filename pointer closes any open handle and clears
+		// cursor state, mirroring Varvara's File/name semantics.
 		s.fileNamePtr = uint32(value)
+		s.file.close()
 		return nil
 	}
 	if address == vm.FilePort+8 {
@@ -266,10 +528,13 @@ func (s *System) Write(address uint32, value int32) error {
 		return nil
 	}
 	if address == vm.FilePort+12 {
-		// Command in upper 8 bits, Length in lower 24 bits
+		// cmd   : bits 31..24
+		// flags : bits 23..16 (bit 0 = append)
+		// length: bits 15..0
 		cmd := uint32(value) >> 24
-		length := uint32(value) & 0xFFFFFF
-		s.handleFileCommand(cmd, length)
+		flags := (uint32(value) >> 16) & 0xFF
+		length := uint32(value) & 0xFFFF
+		s.handleFileCommand(cmd, flags, length)
 		return nil
 	}
 
@@ -323,10 +588,11 @@ func (s *System) Framebuffer() []byte {
 }
 
 func (s *System) DebugInfo() string {
-	return fmt.Sprintf("Controller: K=%d B=0x%X\nMouse: %d,%d B=0x%X\nFile: Ptr=0x%X Buf=0x%X Res=%d\nRNG: 0x%08X",
+	return fmt.Sprintf("Controller: K=%d B=0x%X\nMouse: %d,%d B=0x%X\nFile: Ptr=0x%X Buf=0x%X Res=%d Cur=%d\nSandbox: %s\nRNG: 0x%08X",
 		s.controllerKey, s.controllerButton,
 		s.mouseX, s.mouseY, s.mouseButton,
-		s.fileNamePtr, s.fileBufferPtr, s.lastFileResult,
+		s.fileNamePtr, s.fileBufferPtr, s.lastFileResult, s.file.readCursor,
+		s.sandboxRoot,
 		s.rngState)
 }
 
@@ -352,6 +618,7 @@ func (s *System) MMIORegisters() []struct {
 		{"FILE_PTR", int32(s.fileNamePtr)},
 		{"FILE_BUF", int32(s.fileBufferPtr)},
 		{"FILE_RES", s.lastFileResult},
+		{"FILE_CUR", int32(s.file.readCursor)},
 		{"RNG_DATA", int32(s.rngState)},
 	}
 }
