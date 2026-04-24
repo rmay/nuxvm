@@ -11,6 +11,39 @@ import (
 	"github.com/rmay/nuxvm/pkg/vm"
 )
 
+const topBarHeight = 14
+
+// Device port addresses (moved from vm.go to own device semantics)
+const (
+	screenPort     = vm.DeviceMemoryOffset + 0x0020
+	audioPort      = vm.DeviceMemoryOffset + 0x0030
+	controllerPort = vm.DeviceMemoryOffset + 0x0040
+	mousePort      = vm.DeviceMemoryOffset + 0x0050
+	filePort       = vm.DeviceMemoryOffset + 0x0060
+	dateTimePort   = vm.DeviceMemoryOffset + 0x0070
+	rngPort        = vm.DeviceMemoryOffset + 0x0080
+	textPort       = vm.DeviceMemoryOffset + 0x0090
+	windowPort     = vm.DeviceMemoryOffset + 0x00B0
+
+	controllerStatusAddr = controllerPort + 4
+	controllerButtonAddr = controllerPort + 8
+	controllerKeyAddr    = controllerPort + 12
+	audioControlAddr     = audioPort + 4
+	rngDataAddr          = rngPort + 4
+	dateTimeAddr         = dateTimePort + 4
+	screenWidthAddr      = screenPort + 4
+	screenHeightAddr     = screenPort + 8
+	textAttrAddr         = textPort + 4
+	textCursorAddr       = textPort + 8
+	textCharAddr         = textPort + 12
+
+	// Vector indices (exported for machine.go use)
+	ScreenVectorIdx     = (screenPort - vm.DeviceMemoryOffset) / 16     // 2
+	AudioVectorIdx      = (audioPort - vm.DeviceMemoryOffset) / 16      // 3
+	ControllerVectorIdx = (controllerPort - vm.DeviceMemoryOffset) / 16 // 4
+	MouseVectorIdx      = (mousePort - vm.DeviceMemoryOffset) / 16      // 5
+)
+
 // fileState tracks an open file or directory for the File device.
 // The cursor persists across READ/WRITE operations so large transfers can be
 // chunked. Writing a new name pointer resets everything.
@@ -64,6 +97,16 @@ type System struct {
 	lastFileResult int32
 	file           fileState
 
+	// Text device state
+	text textState
+
+	// Window state
+	windowScrollY int32
+
+	// Vector callbacks (wired by Machine layer)
+	getVector func(index int) uint32
+	setVector func(index int, addr uint32)
+
 	// Handlers for host integration
 	SoundHandler func(soundID int32)
 }
@@ -74,6 +117,10 @@ func NewSystem() *System {
 		screenHeight: 80,
 		screenPixels: make([]byte, vm.VideoMaxBufferSize),
 		rngState:     uint32(time.Now().UnixNano()),
+		text: textState{
+			scale: 1,
+			color: 0xFFFFFF,
+		},
 	}
 	// Default the sandbox root to the process cwd so tests and ad-hoc use
 	// keep working. cmd/cloister overrides this explicitly at startup.
@@ -81,6 +128,17 @@ func NewSystem() *System {
 		_ = s.SetSandboxRoot(cwd)
 	}
 	return s
+}
+
+// SetVectorCallbacks wires vector register read/write to the CPU (used by Machine).
+func (s *System) SetVectorCallbacks(get func(int) uint32, set func(int, uint32)) {
+	s.getVector = get
+	s.setVector = set
+}
+
+// TextScale returns the current text rendering scale.
+func (s *System) TextScale() int {
+	return int(s.text.scale)
 }
 
 // SetSandboxRoot pins the filesystem sandbox to dir. All subsequent file
@@ -406,6 +464,15 @@ func (s *System) fileSeek() {
 
 // Read implements vm.Bus.Read
 func (s *System) Read(address uint32) (int32, error) {
+	// Port vector registers (offset+0 of any 16-byte device block)
+	if address >= vm.DeviceMemoryOffset && address < vm.DeviceMemoryOffset+vm.DeviceMemorySize {
+		offset := address - vm.DeviceMemoryOffset
+		if offset%16 == 0 && s.getVector != nil {
+			index := int(offset / 16)
+			return int32(s.getVector(index)), nil
+		}
+	}
+
 	// Screen (Framebuffer)
 	if address >= vm.VideoFramebufferStart && address < vm.VideoFramebufferEnd {
 		offset := address - vm.VideoFramebufferStart
@@ -416,57 +483,57 @@ func (s *System) Read(address uint32) (int32, error) {
 	}
 
 	// Screen registers
-	if address == vm.ScreenWidthAddr {
+	if address == screenWidthAddr {
 		return s.screenWidth, nil
 	}
-	if address == vm.ScreenHeightAddr {
+	if address == screenHeightAddr {
 		return s.screenHeight, nil
 	}
 
 	// Controller registers:
-	if address == vm.ControllerStatusAddr {
+	if address == controllerStatusAddr {
 		var val int32 = 0
 		if s.controllerKey != 0 || s.controllerButton != 0 {
 			val = 1
 		}
 		return val, nil
 	}
-	if address == vm.ControllerButtonAddr {
+	if address == controllerButtonAddr {
 		return int32(s.controllerButton), nil
 	}
-	if address == vm.ControllerKeyAddr {
+	if address == controllerKeyAddr {
 		return s.controllerKey, nil
 	}
 
 	// Mouse registers:
-	if address == vm.MousePort+4 { // Mouse X
+	if address == mousePort+4 { // Mouse X
 		return s.mouseX, nil
 	}
-	if address == vm.MousePort+8 { // Mouse Y
+	if address == mousePort+8 { // Mouse Y
 		return s.mouseY, nil
 	}
-	if address == vm.MousePort+12 { // Mouse Buttons
+	if address == mousePort+12 { // Mouse Buttons
 		return int32(s.mouseButton), nil
 	}
 
 	// File registers:
-	if address == vm.FilePort+4 { // FileNamePtr
+	if address == filePort+4 { // FileNamePtr
 		return int32(s.fileNamePtr), nil
 	}
-	if address == vm.FilePort+8 { // FileBufferPtr
+	if address == filePort+8 { // FileBufferPtr
 		return int32(s.fileBufferPtr), nil
 	}
-	if address == vm.FilePort+12 { // Length / Result
+	if address == filePort+12 { // Length / Result
 		return s.lastFileResult, nil
 	}
 
 	// Audio Control read: (stubs for now, can be expanded to return last played)
-	if address == vm.AudioControlAddr {
+	if address == audioControlAddr {
 		return 0, nil
 	}
 
 	// RNG register read: apply Xorshift32
-	if address == vm.RNGDataAddr {
+	if address == rngDataAddr {
 		x := s.rngState
 		x ^= x << 13
 		x ^= x >> 17
@@ -475,19 +542,41 @@ func (s *System) Read(address uint32) (int32, error) {
 		return int32(x), nil
 	}
 
+	// Text device:
+	if address == textAttrAddr {
+		return int32(s.text.attrPacked()), nil
+	}
+	if address == textCursorAddr {
+		return int32(s.text.cursorPacked()), nil
+	}
+	if address == textCharAddr {
+		return int32(s.text.lastChar), nil
+	}
+
 	// DateTime register read:
-	if address == vm.DateTimeAddr { // 0x3074: Unix timestamp
+	if address == dateTimeAddr { // 0x3074: Unix timestamp
 		return int32(time.Now().Unix()), nil
 	}
-	if address == vm.DateTimePort+8 { // 0x3078: Packed Date (Year << 16 | Month << 8 | Day)
+	if address == dateTimePort+8 { // 0x3078: Packed Date (Year << 16 | Month << 8 | Day)
 		now := time.Now()
 		val := (int32(now.Year()) << 16) | (int32(now.Month()) << 8) | int32(now.Day())
 		return val, nil
 	}
-	if address == vm.DateTimePort+12 { // 0x307C: Packed Time (Hour << 16 | Minute << 8 | Second)
+	if address == dateTimePort+12 { // 0x307C: Packed Time (Hour << 16 | Minute << 8 | Second)
 		now := time.Now()
 		val := (int32(now.Hour()) << 16) | (int32(now.Minute()) << 8) | int32(now.Second())
 		return val, nil
+	}
+
+	// Window device:
+	if address == windowPort+4 { // scroll-y
+		return s.windowScrollY, nil
+	}
+	if address == windowPort+8 { // content-height
+		return s.screenHeight - topBarHeight, nil
+	}
+	if address == windowPort+12 { // top-bar-height
+		return topBarHeight, nil
 	}
 
 	return 0, fmt.Errorf("system: unhandled read at 0x%04X", address)
@@ -495,6 +584,16 @@ func (s *System) Read(address uint32) (int32, error) {
 
 // Write implements vm.Bus.Write
 func (s *System) Write(address uint32, value int32) error {
+	// Port vector registers (offset+0 of any 16-byte device block)
+	if address >= vm.DeviceMemoryOffset && address < vm.DeviceMemoryOffset+vm.DeviceMemorySize {
+		offset := address - vm.DeviceMemoryOffset
+		if offset%16 == 0 && s.setVector != nil {
+			index := int(offset / 16)
+			s.setVector(index, uint32(value))
+			return nil
+		}
+	}
+
 	// Screen (Framebuffer)
 	if address >= vm.VideoFramebufferStart && address < vm.VideoFramebufferEnd {
 		offset := address - vm.VideoFramebufferStart
@@ -506,28 +605,28 @@ func (s *System) Write(address uint32, value int32) error {
 	}
 
 	// Screen dimensions (allow writing to resize)
-	if address == vm.ScreenWidthAddr {
+	if address == screenWidthAddr {
 		s.SetResolution(value, s.screenHeight)
 		return nil
 	}
-	if address == vm.ScreenHeightAddr {
+	if address == screenHeightAddr {
 		s.SetResolution(s.screenWidth, value)
 		return nil
 	}
 
 	// File registers:
-	if address == vm.FilePort+4 {
+	if address == filePort+4 {
 		// Writing a new filename pointer closes any open handle and clears
 		// cursor state, mirroring Varvara's File/name semantics.
 		s.fileNamePtr = uint32(value)
 		s.file.close()
 		return nil
 	}
-	if address == vm.FilePort+8 {
+	if address == filePort+8 {
 		s.fileBufferPtr = uint32(value)
 		return nil
 	}
-	if address == vm.FilePort+12 {
+	if address == filePort+12 {
 		// cmd   : bits 31..24
 		// flags : bits 23..16 (bit 0 = append)
 		// length: bits 15..0
@@ -538,15 +637,36 @@ func (s *System) Write(address uint32, value int32) error {
 		return nil
 	}
 
-	// Controller/Mouse/DateTime (read-only)
-	if (address >= vm.ControllerPort && address < vm.ControllerPort+0x10) ||
-		(address >= vm.MousePort && address < vm.MousePort+0x10) ||
-		(address >= vm.DateTimePort && address < vm.DateTimePort+0x10) {
-		return fmt.Errorf("system: address 0x%04X is read-only", address)
+	// Text device:
+	if address == textAttrAddr {
+		s.text.setAttr(uint32(value))
+		return nil
+	}
+	if address == textCursorAddr {
+		s.text.setCursor(uint32(value))
+		return nil
+	}
+	if address == textCharAddr {
+		s.drawChar(byte(value & 0xFF))
+		return nil
+	}
+
+	// Window device:
+	if address == windowPort+4 { // scroll-y
+		s.windowScrollY = value
+		return nil
+	}
+
+	// Mouse and DateTime registers are read-only
+	if address == mousePort+4 || address == mousePort+8 || address == mousePort+12 {
+		return fmt.Errorf("system: mouse position/button registers are read-only")
+	}
+	if address == dateTimePort+4 || address == dateTimePort+8 || address == dateTimePort+12 {
+		return fmt.Errorf("system: datetime registers are read-only")
 	}
 
 	// Audio Control write
-	if address == vm.AudioControlAddr {
+	if address == audioControlAddr {
 		if s.SoundHandler != nil {
 			s.SoundHandler(value)
 		}
@@ -554,7 +674,7 @@ func (s *System) Write(address uint32, value int32) error {
 	}
 
 	// RNG register write: seed the state.
-	if address == vm.RNGDataAddr {
+	if address == rngDataAddr {
 		if value == 0 {
 			s.rngState = 1
 		} else {
@@ -619,6 +739,9 @@ func (s *System) MMIORegisters() []struct {
 		{"FILE_BUF", int32(s.fileBufferPtr)},
 		{"FILE_RES", s.lastFileResult},
 		{"FILE_CUR", int32(s.file.readCursor)},
+		{"TEXT_ATTR", int32(s.text.attrPacked())},
+		{"TEXT_CUR", int32(s.text.cursorPacked())},
+		{"TEXT_CHAR", int32(s.text.lastChar)},
 		{"RNG_DATA", int32(s.rngState)},
 	}
 }

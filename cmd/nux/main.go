@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/rmay/nuxvm/pkg/lux"
 	"github.com/rmay/nuxvm/pkg/vm"
 )
 
@@ -17,16 +18,16 @@ func main() {
 	flag.Parse()
 
 	if len(flag.Args()) < 1 {
-		fmt.Println("Usage: nux [options] <program.nux>")
+		fmt.Println("Usage: nux [options] <program.bin|program.lux>")
 		fmt.Println("\nOptions:")
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
 
 	filename := flag.Args()[0]
-	program, err := os.ReadFile(filename)
+	program, err := lux.LoadProgram(filename)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 

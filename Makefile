@@ -1,4 +1,7 @@
-.PHONY: build test clean install run examples
+.PHONY: all build test clean install run examples vmbuild cloisterbuild luxbuild replbuild buildall help
+
+# Default: build the full toolchain into bin/.
+all: buildall
 
 # Build the nux binary
 vmbuild:
@@ -65,6 +68,7 @@ check: fmt test
 # Help
 help:
 	@echo "Available targets:"
+	@echo "  all          - Build nux, cloister, luxc, luxrepl into bin/ (default)"
 	@echo "  vmbuild      - Build the nux binary"
 	@echo "  cloisterbuild - Build the CLOISTER graphical emulator"
 	@echo "  vmtest       - Run tests"

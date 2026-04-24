@@ -2,11 +2,12 @@ INCLUDE "lib/system.lux"
 IMPORT SYSTEM
 IMPORT SCREEN
 IMPORT CTRL
+IMPORT TEXT
 
 @on-key
     CTRL::key@
     dup 0 > [
-        "Key: " 
+        "Key: "
         dup .
         10 emit
         ( Change clear color based on key )
@@ -16,10 +17,28 @@ IMPORT CTRL
     ] ?:
 ;
 
+( Keep the VM alive between host frames: yield, then tail-call back.  We use
+  a recursive word rather than `[ 1 ] [ YIELD ] |:` because the while-loop
+  combinator currently mis-compiles a YIELD'd body — see the DUP stack
+  underflow reproduced by /tmp/while_test.lux. )
+@keep-alive
+    YIELD
+    keep-alive
+;
+
 @main
+    ( --- Startup display configuration ---
+      Host (cloister) reads SCR_W / SCR_H / TEXT attr back from the VM after
+      boot runs and sizes its window accordingly.  -w / -h CLI flags override
+      these values if supplied. )
+    256 SCREEN::width!
+    192 SCREEN::height!
+    2   TEXT::cell-size!            ( 8x8 glyphs doubled = 16x16 cells )
+    16777215 TEXT::color!           ( 0xFFFFFF white foreground )
+
     ( Clear to Cyan )
     65535 SCREEN::clear
-    
+
     ( Setup keyboard vector )
     [ on-key ] CTRL::vector!
 
@@ -27,11 +46,7 @@ IMPORT CTRL
     "Default Shell Active." 10 emit
     "32MB RAM Initialized." 10 emit
 
-    [ 1 ]
-    [
-        ( Just keep alive )
-        YIELD
-    ] |:
+    keep-alive
 ;
 
 main

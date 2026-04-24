@@ -1,37 +1,29 @@
 package vm
 
 import (
-	"fmt"
 	"testing"
 )
 
 func TestVectorAssignment(t *testing.T) {
 	vm := NewVM([]byte{})
-	vm.SetBus(&MockBus{})
-	
-	// Test setting Controller Vector (Port 0x3040, Index 4)
+
+	// Test direct SetVector/GetVector access (public API)
 	vectorAddr := uint32(0x6500)
-	// Writing to the base of the ControllerPort (0x3040) should set vector 4.
-	err := vm.handleDeviceWrite(ControllerPort, int32(vectorAddr)) 
-	if err != nil {
-		t.Fatalf("handleDeviceWrite for vector assignment failed: %v", err)
-	}
-	
-	if vm.vectors[4] != vectorAddr {
-		t.Errorf("Expected vector 4 to be 0x%04X, got 0x%04X", vectorAddr, vm.vectors[4])
+	vm.SetVector(4, vectorAddr)
+
+	if vm.GetVector(4) != vectorAddr {
+		t.Errorf("Expected vector 4 to be 0x%X, got 0x%X", vectorAddr, vm.GetVector(4))
 	}
 
-	// Test writing to non-vector address within the same port block (should be handled by other device logic or error)
-	// e.g., ControllerStatusAddr which is ControllerPort + 4
-	vm.bus.(*MockBus).WriteFunc = func(addr uint32, val int32) error {
-		return fmt.Errorf("mock error")
+	// Test out-of-bounds vector access
+	vm.SetVector(16, 0x5000) // Should be ignored
+	if vm.GetVector(16) != 0 {
+		t.Errorf("Expected out-of-bounds vector access to return 0")
 	}
-	err = vm.handleDeviceWrite(ControllerStatusAddr, 123) // This should *not* set a vector
-	if err == nil {
-		t.Error("Expected error for non-vector address within port block")
-	}
-	if vm.vectors[4] == uint32(123) { // Ensure vector wasn't overwritten
-		t.Errorf("Vector 4 should not have been set by writing to ControllerStatusAddr")
+
+	vm.SetVector(-1, 0x5000) // Should be ignored
+	if vm.GetVector(-1) != 0 {
+		t.Errorf("Expected negative vector index to return 0")
 	}
 }
 
@@ -97,15 +89,17 @@ func TestDeviceReadVector(t *testing.T) {
 	vm := NewVM([]byte{})
 	// Set a vector address
 	vectorAddr := uint32(0x5000)
-	vm.vectors[1] = vectorAddr // Setting vector for ConsolePort (index 1)
+	vm.SetVector(1, vectorAddr)
 
-	// Read the vector address from the ConsolePort base address
-	val, err := vm.handleDeviceRead(ConsolePort)
-	if err != nil {
-		t.Fatalf("handleDeviceRead for vector failed: %v", err)
-	}
-	if uint32(val) != vectorAddr {
+	// Read the vector address back using GetVector
+	val := vm.GetVector(1)
+	if val != vectorAddr {
 		t.Errorf("Expected vector address 0x%X, got 0x%X", vectorAddr, val)
+	}
+
+	// Test reading unset vector
+	if vm.GetVector(0) != 0 {
+		t.Errorf("Expected unset vector to be 0")
 	}
 }
 

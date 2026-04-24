@@ -19,8 +19,16 @@ func NewMachine(program []byte, memSize uint32, trace ...bool) *Machine {
 	}
 	sys := NewSystem()
 	sys.SetMemory(cpu.Memory())
+
+	// Wire vector callbacks: when Lux code writes to a vector register,
+	// the Bus calls back to set/get the vector in the CPU.
+	sys.SetVectorCallbacks(
+		func(index int) uint32 { return cpu.GetVector(index) },
+		func(index int, addr uint32) { cpu.SetVector(index, addr) },
+	)
+
 	cpu.SetBus(sys)
-	
+
 	return &Machine{
 		CPU:    cpu,
 		System: sys,
@@ -51,22 +59,22 @@ func (m *Machine) Tick() (bool, error) {
 
 func (m *Machine) PushKey(key int32) error {
 	m.System.SetKey(key)
-	return m.CPU.TriggerVector(4) // Controller Vector
+	return m.CPU.TriggerVector(ControllerVectorIdx)
 }
 
 func (m *Machine) PushButton(mask uint32) error {
 	m.System.SetButton(mask)
-	return m.CPU.TriggerVector(4) // Controller Vector
+	return m.CPU.TriggerVector(ControllerVectorIdx)
 }
 
 func (m *Machine) MoveMouse(x, y int32) error {
 	m.System.SetMouse(x, y, m.System.mouseButton)
-	return m.CPU.TriggerVector(5) // Mouse Vector
+	return m.CPU.TriggerVector(MouseVectorIdx)
 }
 
 func (m *Machine) PushMouseButton(mask uint32) error {
 	m.System.SetMouse(m.System.mouseX, m.System.mouseY, mask)
-	return m.CPU.TriggerVector(5) // Mouse Vector
+	return m.CPU.TriggerVector(MouseVectorIdx)
 }
 
 // SetSandboxRoot pins the File device's filesystem sandbox to dir. All File
@@ -76,13 +84,13 @@ func (m *Machine) SetSandboxRoot(dir string) error {
 	return m.System.SetSandboxRoot(dir)
 }
 
-// VBlank triggers the screen vector (2). Called every frame.
+// VBlank triggers the screen vector. Called every frame.
 func (m *Machine) VBlank() error {
-	return m.CPU.TriggerVector(2) // Screen Vector
+	return m.CPU.TriggerVector(ScreenVectorIdx)
 }
 
-// TriggerAudio triggers the audio vector (3).
+// TriggerAudio triggers the audio vector.
 func (m *Machine) TriggerAudio() error {
-	return m.CPU.TriggerVector(3) // Audio Vector
+	return m.CPU.TriggerVector(AudioVectorIdx)
 }
 

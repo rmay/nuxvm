@@ -21,7 +21,7 @@ func TestOSKeyboard(t *testing.T) {
 		[ on-key ] %d STOREI
 		0 ( Initial value for while loop )
 		[ 1 ] [ YIELD ] |:
-	`, vm.ControllerKeyAddr, vm.ControllerPort)
+	`, vm.DeviceMemoryOffset+0x0040+12, vm.DeviceMemoryOffset+0x0040)
 	program, err := lux.Compile(source)
 	if err != nil {
 		t.Fatalf("Failed to compile test program: %v", err)

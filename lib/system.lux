@@ -4,6 +4,28 @@
 @TWO-DUP ROLL ROLL ;
 @TWO-DROP DROP DROP ;
 
+@load-byte-0 drop 16777216 / ;
+@load-byte-1 drop 65536 / 255 AND ;
+@load-byte-2 drop 256 / 255 AND ;
+@load-byte-3 drop 255 AND ;
+
+@load-byte-gt-1 ( val offset -- byte )
+    dup 2 = [ load-byte-2 ] [ load-byte-3 ] ?:
+;
+
+@load-byte-gt-0 ( val offset -- byte )
+    dup 1 = [ load-byte-1 ] [ load-byte-gt-1 ] ?:
+;
+
+( Extract a single byte from memory. Addresses are byte-aligned, but LOADI fetches 32 bits. )
+@load-byte ( addr -- byte )
+    dup 4 / 4 * LOADI        ( -- addr aligned-val )
+    swap 4 MOD               ( -- aligned-val byte-offset )
+    dup 0 = [ load-byte-0 ] [ load-byte-gt-0 ] ?:
+;
+
+
+
 MODULE SYSTEM
 
 ( MMIO Base Addresses )
@@ -25,6 +47,9 @@ MODULE SCREEN
 @fb     16384 ;
 @width  addr 4 + LOADI ;
 @height addr 8 + LOADI ;
+
+@width!  ( w -- ) addr 4 + STOREI ;
+@height! ( h -- ) addr 8 + STOREI ;
 
 @vector! addr STOREI ;
 
@@ -82,6 +107,9 @@ MODULE MOUSE
 @x@ ( -- x ) addr 4 + LOADI ;
 @y@ ( -- y ) addr 8 + LOADI ;
 @btns@ ( -- mask ) addr 12 + LOADI ;
+@btn-left?   ( mask -- bool ) 1 AND ;
+@btn-right?  ( mask -- bool ) 2 AND 0 > ;
+@btn-middle? ( mask -- bool ) 4 AND 0 > ;
 
 ( --- FILE --- )
 
@@ -152,6 +180,50 @@ MODULE TIME
 @date@   ( -- year-month-day ) addr 8 + LOADI ;
 @time@   ( -- hour-min-sec ) addr 12 + LOADI ;
 
+( --- TEXT ---
+  Draws ASCII characters with a baked 8x8 font.  The attr register packs
+  scale (bits 31..24) and 24-bit RGB foreground color (bits 23..0).  The
+  cursor register packs cell-x (31..16) and cell-y (15..0).  Writing a byte
+  to the char register draws that glyph at the cursor and advances.  )
+MODULE TEXT
+@addr 12432 ;                  ( TextPort = 0x3090 )
+
+@vector!   addr STOREI ;
+@attr!     addr 4  + STOREI ;  ( scale<<24 | rgb )
+@cursor!   addr 8  + STOREI ;  ( x<<16 | y )
+@emit      addr 12 + STOREI ;  ( c -- )
+
+( Read-only accessors )
+@attr@     addr 4  + LOADI ;
+@cursor@   addr 8  + LOADI ;
+
+( Convenience: set just the cell scale while preserving color. )
+@cell-size! ( scale -- )
+    16777216 *                 ( scale << 24 )
+    attr@ 16777215 AND         ( current color, low 24 bits )
+    OR
+    attr!
+;
+
+( Convenience: set just the color while preserving scale.  The 0xFF000000
+  scale mask is expressed as NOT 0x00FFFFFF because Lux literals are signed
+  int32 and 0xFF000000 is out of range. )
+@color! ( rgb -- )
+    16777215 AND               ( mask to 24 bits )
+    attr@ 16777215 NOT AND     ( current scale byte in bits 31..24 )
+    OR
+    attr!
+;
+
+( --- WINDOW --- )
+
+MODULE WINDOW
+@addr 12464 ;                   ( WindowPort = 0x30B0 )
+@scroll-y@  addr 4  + LOADI ;
+@scroll-y!  addr 4  + STOREI ;
+@content-h@ addr 8  + LOADI ;  ( read-only: sh - top-bar-height )
+@bar-height addr 12 + LOADI ;  ( read-only: 14 )
+
 ( --- Legacy Aliases --- )
 MODULE SYSTEM
 @pixel!  SCREEN::pixel! ;
@@ -165,3 +237,23 @@ MODULE SYSTEM
 @file-write! FILE::write ;
 @file-size@  FILE::size ;
 @file-delete! FILE::delete ;
+
+@ls-loop
+    [ dup 0 > ] [
+        ROLL load-byte 1 emit
+        swap 1 + swap 1 -
+    ] |:
+    drop drop
+;
+
+@ls
+    ( Read directory listing into buffer at 8192 )
+    8192 FILE::buf!
+    8192 FILE::list
+    dup 0 > [
+        8192 swap
+        ls-loop
+    ] [
+        drop
+    ] ?:
+;

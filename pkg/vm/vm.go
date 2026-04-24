@@ -27,32 +27,20 @@ const (
 	UserMemoryOffset = 0x44000 // 278528 decimal
 )
 
-// Device memory map constants
+// Device memory configuration (device port logic moved to Bus layer)
+// Note: Device port SEMANTICS (vector handling) moved to system.Bus layer.
+// These constants remain for bytecode generation and testing.
 const (
-	// Port offsets within the MMIO region (0x3000–0x3FFF)
-	SystemPort     = DeviceMemoryOffset + 0x0000 // 0x3000: System Control
-	ConsolePort    = DeviceMemoryOffset + 0x0010 // 0x3010: Standard I/O
-	ScreenPort     = DeviceMemoryOffset + 0x0020 // 0x3020: Graphics Control
-	AudioPort      = DeviceMemoryOffset + 0x0030 // 0x3030: Sound Synthesis
-	ControllerPort = DeviceMemoryOffset + 0x0040 // 0x3040: Input Controller
-	MousePort      = DeviceMemoryOffset + 0x0050 // 0x3050: Input Mouse
-	FilePort       = DeviceMemoryOffset + 0x0060 // 0x3060: File System
-	DateTimePort   = DeviceMemoryOffset + 0x0070 // 0x3070: System Clock
-	RNGPort        = DeviceMemoryOffset + 0x0080 // 0x3080: Random Number Gen
+	// For compiler: RNG register address used by built-in RND word
+	RNGDataAddr = DeviceMemoryOffset + 0x0084 // 0x3084
 
-	// Standard Device Addresses (mapped to specific port indices)
+	// For tests: device address constants (used by tests, can be int32 or uint32 as needed)
+	ControllerPort       = DeviceMemoryOffset + 0x0040
 	ControllerStatusAddr = ControllerPort + 4
-	ControllerButtonAddr = ControllerPort + 8
-	ControllerKeyAddr    = ControllerPort + 12
+	AudioPort            = DeviceMemoryOffset + 0x0030
 	AudioControlAddr     = AudioPort + 4
-	RNGDataAddr          = RNGPort + 4
-	DateTimeAddr         = DateTimePort + 4
+	ConsolePort          = DeviceMemoryOffset + 0x0010
 
-	// Graphics dimension registers
-	ScreenWidthAddr  = ScreenPort + 4
-	ScreenHeightAddr = ScreenPort + 8
-
-	// Next available device address (after RNG port).
 	FirstAvailableDeviceAddr = DeviceMemoryOffset + 0x0100
 )
 
@@ -231,6 +219,21 @@ func (vm *VM) WriteVector(index int, address uint32) error {
 	}
 	vm.vectors[index] = address
 	return nil
+}
+
+// GetVector returns the address stored in a vector register.
+func (vm *VM) GetVector(index int) uint32 {
+	if index < 0 || index >= len(vm.vectors) {
+		return 0
+	}
+	return vm.vectors[index]
+}
+
+// SetVector sets a vector register (used by Bus callbacks).
+func (vm *VM) SetVector(index int, addr uint32) {
+	if index >= 0 && index < len(vm.vectors) {
+		vm.vectors[index] = addr
+	}
 }
 
 // TriggerVector jumps to the address stored in the specified vector.
@@ -983,26 +986,17 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		if err != nil {
 			return currentPC, fmt.Errorf("loadi failed: %v", err)
 		}
-		if addr < 0 || int(addr)+4 > len(vm.memory) {
-			// Check if it's a device address (even if not in vm.memory)
-			if uint32(addr) >= DeviceMemoryOffset && uint32(addr) < UserMemoryOffset {
-				val, err := vm.handleDeviceRead(uint32(addr))
-				if err != nil {
-					return currentPC, fmt.Errorf("loadi device read failed: %v", err)
-				}
-				vm.stack = append(vm.stack, val)
-				return currentPC, nil
-			}
-			return currentPC, fmt.Errorf("loadi failed: address %d out of bounds", addr)
-		}
-		if uint32(addr) >= DeviceMemoryOffset && uint32(addr) < UserMemoryOffset {
-			val, err := vm.handleDeviceRead(uint32(addr))
+		uaddr := uint32(addr)
+		if isDeviceAddr(uaddr) {
+			val, err := vm.handleDeviceRead(uaddr)
 			if err != nil {
 				return currentPC, fmt.Errorf("loadi device read failed: %v", err)
 			}
 			vm.stack = append(vm.stack, val)
-		} else {
+		} else if addr >= 0 && int(addr)+4 <= len(vm.memory) {
 			vm.stack = append(vm.stack, int32(binary.BigEndian.Uint32(vm.memory[addr:addr+4])))
+		} else {
+			return currentPC, fmt.Errorf("loadi failed: address %d out of bounds", addr)
 		}
 	case OpStoreI:
 		addr, err := vm.Pop()
@@ -1013,22 +1007,15 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		if err != nil {
 			return currentPC, fmt.Errorf("storei failed: %v", err)
 		}
-		if addr < 0 || int(addr)+4 > len(vm.memory) {
-			// Check if it's a device address (even if not in RAM)
-			if uint32(addr) >= DeviceMemoryOffset && uint32(addr) < UserMemoryOffset {
-				if err := vm.handleDeviceWrite(uint32(addr), value); err != nil {
-					return currentPC, fmt.Errorf("storei device write failed: %v", err)
-				}
-				return currentPC, nil
-			}
-			return currentPC, fmt.Errorf("storei failed: address %d out of bounds", addr)
-		}
-		if uint32(addr) >= DeviceMemoryOffset && uint32(addr) < UserMemoryOffset {
-			if err := vm.handleDeviceWrite(uint32(addr), value); err != nil {
+		uaddr := uint32(addr)
+		if isDeviceAddr(uaddr) {
+			if err := vm.handleDeviceWrite(uaddr, value); err != nil {
 				return currentPC, fmt.Errorf("storei device write failed: %v", err)
 			}
-		} else {
+		} else if addr >= 0 && int(addr)+4 <= len(vm.memory) {
 			binary.BigEndian.PutUint32(vm.memory[addr:addr+4], uint32(value))
+		} else {
+			return currentPC, fmt.Errorf("storei failed: address %d out of bounds", addr)
 		}
 	default:
 		return currentPC, fmt.Errorf("unknown opcode 0x%02X at PC=%d", opcode, currentPC)
@@ -1114,60 +1101,24 @@ func (vm *VM) DebugInfo() string {
 }
 
 
-// handleDeviceRead simulates reading from a device memory address.
-func (vm *VM) handleDeviceRead(address uint32) (int32, error) {
-	// Vector read: check if reading from the base of a 16-byte port block
-	if address >= DeviceMemoryOffset && address < DeviceMemoryOffset+DeviceMemorySize {
-		offset := address - DeviceMemoryOffset
-		if offset%16 == 0 {
-			index := offset / 16
-			if index < uint32(len(vm.vectors)) {
-				val := int32(vm.vectors[index])
-				if vm.trace {
-					fmt.Fprintf(os.Stderr, "VM: Device Read: Vector %d read at 0x%04X = 0x%04X\n", index, address, val)
-				}
-				return val, nil
-			}
-		}
-	}
-
-	// Delegate to Bus if connected
-	if vm.bus != nil {
-		if (address >= DeviceMemoryOffset && address < DeviceMemoryOffset+DeviceMemorySize) ||
-			(address >= VideoFramebufferStart && address < VideoFramebufferEnd) {
-			return vm.bus.Read(address)
-		}
-	}
-
-	// Unhandled device address
-	return 0, fmt.Errorf("unhandled device read at address %d (bus=%v)", address, vm.bus != nil)
+// isDeviceAddr checks if an address is in device memory or video framebuffer range.
+func isDeviceAddr(addr uint32) bool {
+	return (addr >= DeviceMemoryOffset && addr < DeviceMemoryOffset+DeviceMemorySize) ||
+		(addr >= VideoFramebufferStart && addr < VideoFramebufferEnd)
 }
 
-// handleDeviceWrite simulates writing to a device memory address.
-func (vm *VM) handleDeviceWrite(address uint32, value int32) error {
-	// Vector write: check if writing to the base of a 16-byte port block
-	if address >= DeviceMemoryOffset && address < DeviceMemoryOffset+DeviceMemorySize {
-		offset := address - DeviceMemoryOffset
-		if offset%16 == 0 {
-			index := offset / 16
-			if index < uint32(len(vm.vectors)) {
-				vm.vectors[index] = uint32(value)
-				if vm.trace {
-					fmt.Fprintf(os.Stderr, "VM: Device Write: Vector %d set to 0x%04X at 0x%04X\n", index, value, address)
-				}
-				return nil
-			}
-		}
-	}
-
-	// Delegate to Bus if connected
+// handleDeviceRead delegates device memory reads to the Bus.
+func (vm *VM) handleDeviceRead(address uint32) (int32, error) {
 	if vm.bus != nil {
-		if (address >= DeviceMemoryOffset && address < DeviceMemoryOffset+DeviceMemorySize) ||
-			(address >= VideoFramebufferStart && address < VideoFramebufferEnd) {
-			return vm.bus.Write(address, value)
-		}
+		return vm.bus.Read(address)
 	}
+	return 0, fmt.Errorf("no bus: device read at 0x%04X", address)
+}
 
-	// Unhandled device address
-	return fmt.Errorf("unhandled device write at address %d with value %d (bus=%v)", address, value, vm.bus != nil)
+// handleDeviceWrite delegates device memory writes to the Bus.
+func (vm *VM) handleDeviceWrite(address uint32, value int32) error {
+	if vm.bus != nil {
+		return vm.bus.Write(address, value)
+	}
+	return fmt.Errorf("no bus: device write at 0x%04X", address)
 }
