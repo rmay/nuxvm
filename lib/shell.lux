@@ -29,8 +29,8 @@ IMPORT TEXT
 @main
     ( --- Startup display configuration ---
       Host (cloister) reads SCR_W / SCR_H / TEXT attr back from the VM after
-      boot runs and sizes its window accordingly.  -w / -h CLI flags override
-      these values if supplied. )
+      shell startup runs and sizes its host window accordingly.  -w / -h CLI
+      flags override these values if supplied. )
     640 SCREEN::width!
     800 SCREEN::height!
     2   TEXT::cell-size!            ( 8x8 glyphs doubled = 16x16 cells )
@@ -42,8 +42,7 @@ IMPORT TEXT
     ( Setup keyboard vector )
     [ on-key ] CTRL::vector!
 
-    "CLOISTER Booted." 10 emit
-    "Default Shell Active." 10 emit
+    "CLOISTER Shell Ready." 10 emit
     "32MB RAM Initialized." 10 emit
 
     keep-alive

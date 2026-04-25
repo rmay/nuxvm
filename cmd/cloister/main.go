@@ -19,10 +19,12 @@ import (
 
 var screenScale = 10
 
-// defaultBootPath is the on-disk Lux program cloister loads when invoked
-// without a positional argument. It's relative to cwd so editing lib/boot.lux
-// in the repo and re-running cloister picks up the change without a rebuild.
-const defaultBootPath = "lib/boot.lux"
+// defaultShellPath is the on-disk Lux program cloister loads when invoked
+// without a positional argument. The shell stays alive forever, owns system
+// vectors, and acts as the substrate that user apps run on top of (System 6
+// Finder analog). It's relative to cwd so editing lib/shell.lux in the repo
+// and re-running cloister picks up the change without a rebuild.
+const defaultShellPath = "lib/shell.lux"
 const topBarHeight = 24
 
 type ShellMode int
@@ -30,33 +32,43 @@ type ShellMode int
 const (
 	ShellNormal ShellMode = iota
 	ShellAppleMenu
+	ShellApplications
 	ShellSettings
 	ShellWindowsList
 	ShellWindowRowMenu
 	ShellQuitConfirm
 )
 
+// Apple-menu geometry: kept as constants so handler hit-tests and the
+// drawing routine can't drift apart silently.
+const (
+	appleMenuItemCount = 4 // Applications, Settings, Current Windows, Quit
+	appleMenuWidth     = 140
+)
+
 type Game struct {
-	machine      *system.Machine
-	wm           *WindowManager
-	showDebug    bool
-	bootTimer    int
-	mouseX       int
-	mouseY       int
-	dragging     bool
-	dragWinID    system.WindowID
-	dragOffX     int
-	dragOffY     int
-	wasLeftDown  bool
-	clearColor   color.RGBA
-	textScale    int // 1-4
+	machine     *system.Machine
+	wm          *WindowManager
+	showDebug   bool
+	bootTimer   int
+	mouseX      int
+	mouseY      int
+	dragging    bool
+	dragWinID   system.WindowID
+	dragOffX    int
+	dragOffY    int
+	wasLeftDown bool
+	clearColor  color.RGBA
+	textScale   int // 1-4
+	bgPattern   int // 0=solid, 1=50% gray, 2=dots, 3=stripes
+	clockFormat int // 0=24h, 1=12h, 2=12h-AMPM
 
 	// Shell/menu state
 	shellMode        ShellMode
-	appleIdx         int // 0=Settings, 1=Windows, 2=Quit
-	settingsIdx      int // which setting row (0=scale, 1=debug, 2=color)
-	windowsIdx       int // which window in list
-	windowRowMenu    int // 0=Focus, 1=Close
+	appleIdx         int             // 0=Applications, 1=Settings, 2=Windows, 3=Quit
+	settingsIdx      int             // which setting row (0=scale, 1=debug, 2=color, 3=pattern, 4=clock)
+	windowsIdx       int             // which window in list
+	windowRowMenu    int             // 0=Focus, 1=Close
 	windowRowMenuWin system.WindowID // which window the row menu is over
 }
 
@@ -231,6 +243,75 @@ func drawChicagoText(screen *ebiten.Image, s string, x, y, scale int, clr color.
 	}
 }
 
+// clockFormatString maps a Game.clockFormat value to a Go time-format string.
+// Index 0 = 24h, 1 = 12h, 2 = 12h with AM/PM.
+func clockFormatString(idx int) string {
+	switch idx {
+	case 1:
+		return "3:04"
+	case 2:
+		return "3:04 PM"
+	default:
+		return "15:04"
+	}
+}
+
+func clockFormatLabel(idx int) string {
+	switch idx {
+	case 1:
+		return "12h"
+	case 2:
+		return "12h AM/PM"
+	default:
+		return "24h"
+	}
+}
+
+// 8x8 background pattern tiles. LSB-first per row, matching the existing
+// Chicago font convention (main.go drawChicagoText).
+var bgPatternTiles = [4][8]byte{
+	{}, // 0: solid (unused; pattern 0 short-circuits)
+	{0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55}, // 1: 50% gray dither
+	{0x00, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00}, // 2: sparse dots
+	{0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00}, // 3: horizontal stripes
+}
+
+func bgPatternLabel(idx int) string {
+	switch idx {
+	case 1:
+		return "Gray"
+	case 2:
+		return "Dots"
+	case 3:
+		return "Stripes"
+	default:
+		return "Solid"
+	}
+}
+
+// drawDesktopBackground paints the desktop area below the menubar. Pattern 0 is
+// just a solid fill; patterns 1-3 tile an 8x8 1-bit overlay (black) over the
+// solid color.
+func (g *Game) drawDesktopBackground(screen *ebiten.Image, sw, sh int) {
+	screen.Fill(g.clearColor)
+	if g.bgPattern <= 0 || g.bgPattern >= len(bgPatternTiles) {
+		return
+	}
+	tile := bgPatternTiles[g.bgPattern]
+	black := color.RGBA{0, 0, 0, 255}
+	for y := topBarHeight; y < sh; y++ {
+		row := tile[(y-topBarHeight)&7]
+		if row == 0 {
+			continue
+		}
+		for x := 0; x < sw; x++ {
+			if row&(1<<(x&7)) != 0 {
+				screen.Set(x, y, black)
+			}
+		}
+	}
+}
+
 func drawMouse(screen *ebiten.Image, x, y int) {
 	white := color.RGBA{255, 255, 255, 255}
 	screen.Set(x, y-1, white)
@@ -238,27 +319,6 @@ func drawMouse(screen *ebiten.Image, x, y int) {
 	screen.Set(x-1, y, white)
 	screen.Set(x+1, y, white)
 	screen.Set(x, y, color.RGBA{0, 0, 0, 255})
-}
-
-func (g *Game) loadAndRun(filename string) {
-	bytecode, err := lux.LoadProgram(filename)
-	if err != nil {
-		fmt.Sprintf("Error loading %s: %v", filename, err)
-		return
-	}
-
-	userMemStart := g.machine.CPU.UserMemoryStart()
-	mem := g.machine.CPU.Memory()
-
-	if int(userMemStart)+len(bytecode) > len(mem) {
-		fmt.Sprintf("Error: %s too large", filename)
-		return
-	}
-
-	copy(mem[userMemStart:], bytecode)
-	g.machine.CPU.WriteVector(0, userMemStart)
-	g.machine.CPU.TriggerVector(0)
-	fmt.Sprintf("Loaded and started %s", filename)
 }
 
 func (g *Game) Update() error {
@@ -275,7 +335,7 @@ func (g *Game) Update() error {
 
 	// Shell/menu input takes priority
 	if g.shellMode != ShellNormal {
-		g.handleShellInput()
+		g.handleShellInput(justPressed)
 		// Don't process window input while shell is active
 		return nil
 	}
@@ -438,8 +498,8 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		return
 	}
 
-	// Fill background with clear color
-	screen.Fill(g.clearColor)
+	// Fill background (solid color or patterned tile fill)
+	g.drawDesktopBackground(screen, sw, sh)
 
 	// Get all windows for sync but only render visible panes
 	windows := g.machine.System.Services.ListWindowsSorted()
@@ -476,13 +536,15 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	nameX := (sw - len(winName)*shellFontW) / 2
 	drawShellText(screen, winName, nameX, textY, color.Black)
 
-	timeStr := time.Now().Format("15:04")
+	timeStr := time.Now().Format(clockFormatString(g.clockFormat))
 	drawShellText(screen, timeStr, sw-len(timeStr)*shellFontW-4, textY, color.Black)
 
 	// Draw shell/modal overlays
 	switch g.shellMode {
 	case ShellAppleMenu:
 		g.drawAppleMenu(screen)
+	case ShellApplications:
+		g.drawApplicationsModal(screen)
 	case ShellSettings:
 		g.drawSettingsModal(screen)
 	case ShellWindowsList:
@@ -536,9 +598,9 @@ func (g *Game) drawWindowChrome(screen *ebiten.Image, win *system.Window, isActi
 	// Title bar fill
 	var titleClr color.RGBA
 	if isActive {
-		titleClr = color.RGBA{170, 170, 170, 255}  // medium gray
+		titleClr = color.RGBA{170, 170, 170, 255} // medium gray
 	} else {
-		titleClr = color.RGBA{210, 210, 210, 255}  // light gray
+		titleClr = color.RGBA{210, 210, 210, 255} // light gray
 	}
 	ebitenutil.DrawRect(screen, x, chromeTopY, w, chromeH, titleClr)
 
@@ -559,10 +621,8 @@ func (g *Game) drawWindowChrome(screen *ebiten.Image, win *system.Window, isActi
 
 // ============= Shell/Menu Input Handler =============
 
-func (g *Game) handleShellInput() {
+func (g *Game) handleShellInput(justPressed bool) {
 	mx, my := ebiten.CursorPosition()
-	leftDown := ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft)
-	justPressed := leftDown && !g.wasLeftDown
 
 	// Check for % glyph click to toggle/close menu
 	if justPressed && menubarHitTest(mx, my) {
@@ -583,65 +643,83 @@ func (g *Game) handleShellInput() {
 
 	switch g.shellMode {
 	case ShellAppleMenu:
-		g.handleAppleMenuInput()
+		g.handleAppleMenuInput(justPressed)
+	case ShellApplications:
+		g.handleApplicationsInput(justPressed, mx, my)
 	case ShellSettings:
 		g.handleSettingsInput()
 	case ShellWindowsList:
-		g.handleWindowsListInput()
+		g.handleWindowsListInput(justPressed)
 	case ShellWindowRowMenu:
-		g.handleWindowRowMenuInput()
+		g.handleWindowRowMenuInput(justPressed)
 	case ShellQuitConfirm:
-		g.handleQuitConfirmInput()
+		g.handleQuitConfirmInput(justPressed)
 	}
 }
 
-func (g *Game) handleAppleMenuInput() {
+func (g *Game) handleAppleMenuInput(justPressed bool) {
 	// Up/Down navigation
 	if inpututil.IsKeyJustPressed(ebiten.KeyUp) {
 		g.appleIdx--
 		if g.appleIdx < 0 {
-			g.appleIdx = 2
+			g.appleIdx = appleMenuItemCount - 1
 		}
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyDown) {
-		g.appleIdx = (g.appleIdx + 1) % 3
+		g.appleIdx = (g.appleIdx + 1) % appleMenuItemCount
+	}
+
+	selectIndex := func(i int) {
+		switch i {
+		case 0:
+			g.shellMode = ShellApplications
+		case 1:
+			g.shellMode = ShellSettings
+			g.settingsIdx = 0
+		case 2:
+			g.shellMode = ShellWindowsList
+			g.windowsIdx = 0
+		case 3:
+			g.shellMode = ShellQuitConfirm
+		}
 	}
 
 	// Enter to select
 	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
-		switch g.appleIdx {
-		case 0:
-			g.shellMode = ShellSettings
-			g.settingsIdx = 0
-		case 1:
-			g.shellMode = ShellWindowsList
-			g.windowsIdx = 0
-		case 2:
-			g.shellMode = ShellQuitConfirm
-		}
+		selectIndex(g.appleIdx)
+		return
 	}
 
 	// Mouse hover and click
 	mx, my := ebiten.CursorPosition()
 	appleX, appleY := 20, topBarHeight+10
 	itemHeight := 18
-	for i := 0; i < 3; i++ {
+	for i := 0; i < appleMenuItemCount; i++ {
 		itemY := appleY + i*itemHeight
-		if mx >= appleX && mx < appleX+100 && my >= itemY && my < itemY+itemHeight {
+		if mx >= appleX && mx < appleX+appleMenuWidth && my >= itemY && my < itemY+itemHeight {
 			g.appleIdx = i
-			if ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) && !g.wasLeftDown {
-				switch i {
-				case 0:
-					g.shellMode = ShellSettings
-					g.settingsIdx = 0
-				case 1:
-					g.shellMode = ShellWindowsList
-					g.windowsIdx = 0
-				case 2:
-					g.shellMode = ShellQuitConfirm
-				}
+			if justPressed {
+				selectIndex(i)
+				return
 			}
 		}
+	}
+}
+
+const settingsRowCount = 5
+
+// Row indices: 0=text scale, 1=debug, 2=color, 3=pattern, 4=clock.
+
+func cycleClearColor(c color.RGBA) color.RGBA {
+	switch {
+	case c.R == 255 && c.G == 255 && c.B == 255:
+		return color.RGBA{220, 220, 220, 255} // light gray
+	case c.R == 220 && c.G == 220 && c.B == 220:
+		return color.RGBA{173, 216, 230, 255} // light blue
+	case c.R == 173 && c.G == 216 && c.B == 230:
+		return color.RGBA{0, 0, 0, 255} // black
+	default:
+		return color.RGBA{255, 255, 255, 255} // white
 	}
 }
 
@@ -650,11 +728,11 @@ func (g *Game) handleSettingsInput() {
 	if inpututil.IsKeyJustPressed(ebiten.KeyUp) {
 		g.settingsIdx--
 		if g.settingsIdx < 0 {
-			g.settingsIdx = 2
+			g.settingsIdx = settingsRowCount - 1
 		}
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyDown) {
-		g.settingsIdx = (g.settingsIdx + 1) % 3
+		g.settingsIdx = (g.settingsIdx + 1) % settingsRowCount
 	}
 
 	// Left/Right to adjust settings
@@ -664,10 +742,16 @@ func (g *Game) handleSettingsInput() {
 			if g.textScale > 1 {
 				g.textScale--
 			}
-		case 1:
-			// debug toggle handled with space
-		case 2:
-			// color cycle - handled below
+		case 3:
+			g.bgPattern--
+			if g.bgPattern < 0 {
+				g.bgPattern = len(bgPatternTiles) - 1
+			}
+		case 4:
+			g.clockFormat--
+			if g.clockFormat < 0 {
+				g.clockFormat = 2
+			}
 		}
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyRight) {
@@ -676,6 +760,10 @@ func (g *Game) handleSettingsInput() {
 			if g.textScale < 4 {
 				g.textScale++
 			}
+		case 3:
+			g.bgPattern = (g.bgPattern + 1) % len(bgPatternTiles)
+		case 4:
+			g.clockFormat = (g.clockFormat + 1) % 3
 		}
 	}
 
@@ -686,29 +774,26 @@ func (g *Game) handleSettingsInput() {
 
 	// Enter to cycle through color presets
 	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) && g.settingsIdx == 2 {
-		cycleColor := func() {
-			if g.clearColor.R == 255 && g.clearColor.G == 255 && g.clearColor.B == 255 {
-				g.clearColor = color.RGBA{220, 220, 220, 255} // light gray
-			} else if g.clearColor.R == 220 && g.clearColor.G == 220 && g.clearColor.B == 220 {
-				g.clearColor = color.RGBA{173, 216, 230, 255} // light blue
-			} else if g.clearColor.R == 173 && g.clearColor.G == 216 && g.clearColor.B == 230 {
-				g.clearColor = color.RGBA{0, 0, 0, 255} // black
-			} else {
-				g.clearColor = color.RGBA{255, 255, 255, 255} // white
-			}
-		}
-		cycleColor()
+		g.clearColor = cycleClearColor(g.clearColor)
 	}
 
 	// Escape goes back to Apple menu
 	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
 		g.shellMode = ShellAppleMenu
-		g.appleIdx = 0
+		g.appleIdx = 1
 	}
 }
 
-func (g *Game) handleWindowsListInput() {
+func (g *Game) handleWindowsListInput(justPressed bool) {
 	wins := g.machine.Services().ListWindowsSorted()
+
+	// Escape goes back to Apple menu
+	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
+		g.shellMode = ShellAppleMenu
+		g.appleIdx = 2
+		return
+	}
+
 	if len(wins) == 0 {
 		return
 	}
@@ -729,6 +814,7 @@ func (g *Game) handleWindowsListInput() {
 		g.shellMode = ShellWindowRowMenu
 		g.windowRowMenu = 0
 		g.windowRowMenuWin = wins[g.windowsIdx].ID
+		return
 	}
 
 	// Mouse hover and click
@@ -739,22 +825,23 @@ func (g *Game) handleWindowsListInput() {
 		itemY := listY + i*rowHeight
 		if mx >= listX && mx < listX+200 && my >= itemY && my < itemY+rowHeight {
 			g.windowsIdx = i
-			if ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) && !g.wasLeftDown {
+			if justPressed {
 				g.shellMode = ShellWindowRowMenu
 				g.windowRowMenu = 0
 				g.windowRowMenuWin = win.ID
+				return
 			}
 		}
 	}
-
-	// Escape goes back to Apple menu
-	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
-		g.shellMode = ShellAppleMenu
-		g.appleIdx = 1
-	}
 }
 
-func (g *Game) handleWindowRowMenuInput() {
+func (g *Game) handleWindowRowMenuInput(justPressed bool) {
+	// Escape goes back to Windows list
+	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
+		g.shellMode = ShellWindowsList
+		return
+	}
+
 	// Left/Right or Up/Down to switch between Focus/Close
 	if inpututil.IsKeyJustPressed(ebiten.KeyLeft) || inpututil.IsKeyJustPressed(ebiten.KeyUp) {
 		g.windowRowMenu = 0
@@ -763,9 +850,8 @@ func (g *Game) handleWindowRowMenuInput() {
 		g.windowRowMenu = 1
 	}
 
-	// Enter to execute
-	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
-		switch g.windowRowMenu {
+	execute := func(i int) {
+		switch i {
 		case 0: // Focus
 			g.machine.Services().FocusWindow(g.windowRowMenuWin)
 			g.shellMode = ShellNormal
@@ -776,6 +862,12 @@ func (g *Game) handleWindowRowMenuInput() {
 		}
 	}
 
+	// Enter to execute
+	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
+		execute(g.windowRowMenu)
+		return
+	}
+
 	// Mouse hover and click
 	mx, my := ebiten.CursorPosition()
 	subX, subY := 260, topBarHeight+50+g.windowsIdx*20
@@ -784,27 +876,15 @@ func (g *Game) handleWindowRowMenuInput() {
 		x := subX + i*itemWidth
 		if mx >= x && mx < x+itemWidth && my >= subY && my < subY+20 {
 			g.windowRowMenu = i
-			if ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) && !g.wasLeftDown {
-				switch i {
-				case 0: // Focus
-					g.machine.Services().FocusWindow(g.windowRowMenuWin)
-					g.shellMode = ShellNormal
-				case 1: // Close
-					g.machine.Services().CloseWindow(g.windowRowMenuWin)
-					g.shellMode = ShellWindowsList
-					g.windowsIdx = 0
-				}
+			if justPressed {
+				execute(i)
+				return
 			}
 		}
 	}
-
-	// Escape goes back to Windows list
-	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
-		g.shellMode = ShellWindowsList
-	}
 }
 
-func (g *Game) handleQuitConfirmInput() {
+func (g *Game) handleQuitConfirmInput(justPressed bool) {
 	// Enter or Y to confirm quit
 	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) || inpututil.IsKeyJustPressed(ebiten.KeyY) {
 		os.Exit(0)
@@ -813,38 +893,40 @@ func (g *Game) handleQuitConfirmInput() {
 	// N or Escape to cancel
 	if inpututil.IsKeyJustPressed(ebiten.KeyN) || inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
 		g.shellMode = ShellAppleMenu
-		g.appleIdx = 2
+		g.appleIdx = 3
+		return
 	}
 
-	// Mouse click on Quit button
-	mx, my := ebiten.CursorPosition()
+	// The drawn modal is 240x120 centered (drawQuitConfirm); mirror that geometry
+	// so the hit rects don't drift if the layout changes in one place but not the other.
 	sw := int(g.machine.System.ScreenWidth())
 	sh := int(g.machine.System.ScreenHeight())
-	quitBtnX := (sw - 200) / 2
-	quitBtnY := (sh - 100) / 2 + 40
-	if mx >= quitBtnX && mx < quitBtnX+90 && my >= quitBtnY && my < quitBtnY+20 {
-		if ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) && !g.wasLeftDown {
-			os.Exit(0)
-		}
-	}
+	modalW, modalH := 240, 120
+	modalX := (sw - modalW) / 2
+	modalY := (sh - modalH) / 2
+	quitBtnX := modalX + 20
+	cancelBtnX := modalX + 130
+	btnY := modalY + 60
 
-	// Cancel button
-	cancelBtnX := quitBtnX + 100
-	if mx >= cancelBtnX && mx < cancelBtnX+90 && my >= quitBtnY && my < quitBtnY+20 {
-		if ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) && !g.wasLeftDown {
-			g.shellMode = ShellAppleMenu
-			g.appleIdx = 2
-		}
+	if !justPressed {
+		return
+	}
+	mx, my := ebiten.CursorPosition()
+	if mx >= quitBtnX && mx < quitBtnX+80 && my >= btnY && my < btnY+20 {
+		os.Exit(0)
+	}
+	if mx >= cancelBtnX && mx < cancelBtnX+80 && my >= btnY && my < btnY+20 {
+		g.shellMode = ShellAppleMenu
+		g.appleIdx = 3
 	}
 }
 
 // ============= Shell/Menu Rendering =============
 
 func (g *Game) drawAppleMenu(screen *ebiten.Image) {
-	items := []string{"Settings", "Current Windows", "Quit"}
+	items := []string{"Applications", "Settings", "Current Windows", "Quit"}
 	x, y := 20, topBarHeight+10
 	itemHeight := 18
-	itemWidth := 120
 
 	for i, item := range items {
 		itemY := y + i*itemHeight
@@ -854,9 +936,66 @@ func (g *Game) drawAppleMenu(screen *ebiten.Image) {
 			bgClr = color.RGBA{80, 80, 80, 255}
 			fgClr = color.White
 		}
-		ebitenutil.DrawRect(screen, float64(x), float64(itemY), float64(itemWidth), float64(itemHeight), bgClr)
-		strokeRect(screen, float32(x), float32(itemY), float32(itemWidth), float32(itemHeight), color.Black)
+		ebitenutil.DrawRect(screen, float64(x), float64(itemY), float64(appleMenuWidth), float64(itemHeight), bgClr)
+		strokeRect(screen, float32(x), float32(itemY), float32(appleMenuWidth), float32(itemHeight), color.Black)
 		drawShellText(screen, item, x+5, itemY+(itemHeight-shellFontH)/2, fgClr)
+	}
+}
+
+// applicationsModalGeom returns the modal frame plus its title-bar close-button
+// hit rect. Both the renderer and the input handler call this to stay in sync.
+func (g *Game) applicationsModalGeom() (modalX, modalY, modalW, modalH, closeX, closeY, closeSize int) {
+	sw := int(g.machine.System.ScreenWidth())
+	sh := int(g.machine.System.ScreenHeight())
+	modalW, modalH = 280, 140
+	modalX = (sw - modalW) / 2
+	modalY = (sh - modalH) / 2
+	closeSize = 12
+	closeX = modalX + modalW - closeSize - 6
+	closeY = modalY + 6
+	return
+}
+
+func (g *Game) drawApplicationsModal(screen *ebiten.Image) {
+	modalX, modalY, modalW, modalH, closeX, closeY, closeSize := g.applicationsModalGeom()
+
+	ebitenutil.DrawRect(screen, float64(modalX), float64(modalY), float64(modalW), float64(modalH), color.RGBA{200, 200, 200, 255})
+	strokeRect(screen, float32(modalX), float32(modalY), float32(modalW), float32(modalH), color.Black)
+
+	// Title bar (drawn underneath the close button).
+	titleH := 22
+	ebitenutil.DrawRect(screen, float64(modalX), float64(modalY), float64(modalW), float64(titleH), color.RGBA{170, 170, 170, 255})
+	ebitenutil.DrawLine(screen, float64(modalX), float64(modalY+titleH), float64(modalX+modalW), float64(modalY+titleH), color.Black)
+	drawShellText(screen, "Applications", modalX+8, modalY+(titleH-shellFontH)/2, color.Black)
+
+	// Close button (red square with × glyph).
+	ebitenutil.DrawRect(screen, float64(closeX), float64(closeY), float64(closeSize), float64(closeSize), color.RGBA{204, 51, 51, 255})
+	strokeRect(screen, float32(closeX), float32(closeY), float32(closeSize), float32(closeSize), color.Black)
+	drawShellText(screen, "x", closeX+3, closeY+(closeSize-shellFontH)/2, color.White)
+
+	// Body text centered in the remaining area.
+	body := "The Future isn't Now"
+	bodyX := modalX + (modalW-len(body)*shellFontW)/2
+	bodyY := modalY + titleH + (modalH-titleH-shellFontH)/2
+	drawShellText(screen, body, bodyX, bodyY, color.Black)
+}
+
+func (g *Game) handleApplicationsInput(justPressed bool, mx, my int) {
+	// Enter also dismisses (matches Esc / × behavior); Esc is handled by handleShellInput.
+	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
+		g.shellMode = ShellAppleMenu
+		g.appleIdx = 0
+		return
+	}
+
+	if !justPressed {
+		return
+	}
+
+	_, _, _, _, closeX, closeY, closeSize := g.applicationsModalGeom()
+	if mx >= closeX && mx < closeX+closeSize && my >= closeY && my < closeY+closeSize {
+		g.shellMode = ShellAppleMenu
+		g.appleIdx = 0
 	}
 }
 
@@ -864,7 +1003,7 @@ func (g *Game) drawSettingsModal(screen *ebiten.Image) {
 	sw := int(g.machine.System.ScreenWidth())
 	sh := int(g.machine.System.ScreenHeight())
 
-	modalW, modalH := 280, 160
+	modalW, modalH := 280, 220
 	modalX := (sw - modalW) / 2
 	modalY := (sh - modalH) / 2
 
@@ -874,23 +1013,43 @@ func (g *Game) drawSettingsModal(screen *ebiten.Image) {
 	drawShellText(screen, "Settings", modalX+10, modalY+10, color.Black)
 
 	rowY := modalY + 40
-	g.drawSettingsRow(screen, modalX+10, rowY, "Text Scale:", 0)
-	drawShellText(screen, "<", modalX+150, rowY+(20-shellFontH)/2, color.Black)
-	drawShellText(screen, string(rune('0'+byte(g.textScale))), modalX+165, rowY+(20-shellFontH)/2, color.Black)
-	drawShellText(screen, ">", modalX+180, rowY+(20-shellFontH)/2, color.Black)
+	rowH := 20
+	rowSpacing := 30
+	textY := rowY + (rowH-shellFontH)/2
 
-	rowY += 30
+	// Row 0: Text Scale
+	g.drawSettingsRow(screen, modalX+10, rowY, "Text Scale:", 0)
+	drawShellText(screen, "<", modalX+150, textY, color.Black)
+	drawShellText(screen, string(rune('0'+byte(g.textScale))), modalX+165, textY, color.Black)
+	drawShellText(screen, ">", modalX+180, textY, color.Black)
+
+	// Row 1: Debug
+	rowY += rowSpacing
+	textY = rowY + (rowH-shellFontH)/2
 	g.drawSettingsRow(screen, modalX+10, rowY, "Debug:", 1)
 	if g.showDebug {
-		drawShellText(screen, "ON", modalX+150, rowY+(20-shellFontH)/2, color.Black)
+		drawShellText(screen, "ON", modalX+150, textY, color.Black)
 	} else {
-		drawShellText(screen, "OFF", modalX+150, rowY+(20-shellFontH)/2, color.Black)
+		drawShellText(screen, "OFF", modalX+150, textY, color.Black)
 	}
 
-	rowY += 30
+	// Row 2: Color
+	rowY += rowSpacing
 	g.drawSettingsRow(screen, modalX+10, rowY, "Color:", 2)
 	ebitenutil.DrawRect(screen, float64(modalX+150), float64(rowY), 20, 16, g.clearColor)
 	strokeRect(screen, float32(modalX+150), float32(rowY), 20, 16, color.Black)
+
+	// Row 3: Pattern
+	rowY += rowSpacing
+	textY = rowY + (rowH-shellFontH)/2
+	g.drawSettingsRow(screen, modalX+10, rowY, "Pattern:", 3)
+	drawShellText(screen, bgPatternLabel(g.bgPattern), modalX+150, textY, color.Black)
+
+	// Row 4: Clock
+	rowY += rowSpacing
+	textY = rowY + (rowH-shellFontH)/2
+	g.drawSettingsRow(screen, modalX+10, rowY, "Clock:", 4)
+	drawShellText(screen, clockFormatLabel(g.clockFormat), modalX+150, textY, color.Black)
 }
 
 func (g *Game) drawSettingsRow(screen *ebiten.Image, x, y int, label string, idx int) {
@@ -1024,13 +1183,13 @@ func (c *clipboardBus) Write(address uint32, value int32) error {
 
 func main() {
 	memFlag := flag.Int("mem", 32, "VM memory size in megabytes (max 128)")
-	widthFlag := flag.Int("w", 0, "Screen width override (0 = defer to boot.lux)")
-	heightFlag := flag.Int("h", 0, "Screen height override (0 = defer to boot.lux)")
-	scaleFlag := flag.Int("scale", 0, "Window pixel scale override (0 = defer to boot.lux)")
+	widthFlag := flag.Int("w", 0, "Screen width override (0 = defer to shell.lux)")
+	heightFlag := flag.Int("h", 0, "Screen height override (0 = defer to shell.lux)")
+	scaleFlag := flag.Int("scale", 0, "Window pixel scale override (0 = defer to shell.lux)")
 	flag.Parse()
 
 	// Detect whether the user passed -w / -h / -scale explicitly, so those
-	// values override whatever boot.lux writes during its first tick.
+	// values override whatever shell.lux writes during its first tick.
 	explicit := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
 
@@ -1039,18 +1198,18 @@ func main() {
 		*memFlag = 128
 	}
 
-	// Load boot program
-	bootPath := defaultBootPath
+	// Load shell program
+	shellPath := defaultShellPath
 	if flag.NArg() > 0 {
-		bootPath = flag.Arg(0)
+		shellPath = flag.Arg(0)
 	}
-	bootBytecode, err := lux.LoadProgram(bootPath)
+	shellBytecode, err := lux.LoadProgram(shellPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading %s: %v\n", bootPath, err)
+		fmt.Fprintf(os.Stderr, "Error loading %s: %v\n", shellPath, err)
 		os.Exit(1)
 	}
 
-	machine := system.NewMachine(bootBytecode, uint32(*memFlag)*1024*1024)
+	machine := system.NewMachine(shellBytecode, uint32(*memFlag)*1024*1024)
 
 	// Set sandbox root to current working directory for file operations
 	cwd, err := os.Getwd()
@@ -1071,10 +1230,10 @@ func main() {
 	machine.CPU.SetBus(bus)
 
 	// Let the VM run up to its first YIELD / HALT so a program's startup
-	// code (e.g. boot.lux setting SCR_W / SCR_H / TEXT cell-size) has a
+	// code (e.g. shell.lux setting SCR_W / SCR_H / TEXT cell-size) has a
 	// chance to populate the MMIO registers before we size the host window.
 	if _, err := machine.Tick(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error during boot tick: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error during shell startup tick: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -1105,15 +1264,12 @@ func main() {
 	}
 
 	game := &Game{
-		machine:   machine,
-		wm:        NewWindowManager(machine.System.Services),
-		bootTimer: 60,
-		textScale: 1,
+		machine:    machine,
+		wm:         NewWindowManager(machine.System.Services),
+		bootTimer:  60,
+		textScale:  1,
 		clearColor: color.RGBA{255, 255, 255, 255}, // white
 	}
-
-	// Create default window via the service manager (ID for future use)
-	_, _ = machine.System.Services.CreateWindow("VM", int32(sw), int32(sh-topBarHeight))
 
 	windowWidth := sw * screenScale
 	windowHeight := sh * screenScale
