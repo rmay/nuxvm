@@ -3,6 +3,7 @@ package system
 import (
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 )
 
@@ -48,6 +49,7 @@ const (
 	InputMouseMove
 	InputMouseDown
 	InputMouseUp
+	InputResize
 )
 
 type InputEvent struct {
@@ -57,6 +59,9 @@ type InputEvent struct {
 	MouseY    int32
 	MouseBtn  uint32
 	Timestamp int64
+	WinID     WindowID // for resize events
+	ResizeW   int32    // for resize events
+	ResizeH   int32
 }
 
 type InputMsg struct {
@@ -114,6 +119,14 @@ type FileReply struct {
 	Info    map[string]interface{}
 }
 
+// ============= Layout System =============
+
+type Pane struct {
+	WinID  WindowID
+	X, Y   int32
+	W, H   int32
+}
+
 // ============= Service Manager =============
 
 type ServiceManager struct {
@@ -125,6 +138,9 @@ type ServiceManager struct {
 	windows    map[WindowID]*Window
 	nextWinID  WindowID
 	activeWinID WindowID
+
+	// Layout management
+	panes []Pane // list of visible window panes (typically 1 or 2)
 
 	// Input management
 	inputChan chan InputMsg
@@ -152,7 +168,7 @@ type OSFile struct {
 }
 
 func NewServiceManager() *ServiceManager {
-	return &ServiceManager{
+	sm := &ServiceManager{
 		windowChan: make(chan WindowMsg, 16),
 		windowReply: make(chan WindowReply, 16),
 		windows: make(map[WindowID]*Window),
@@ -170,7 +186,10 @@ func NewServiceManager() *ServiceManager {
 		fileReply: make(chan FileReply, 16),
 		openFiles: make(map[int32]*OSFile),
 		nextFileHandle: 1,
+
+		panes: make([]Pane, 0),
 	}
+	return sm
 }
 
 // ============= Service Channels =============
@@ -312,6 +331,8 @@ func (sm *ServiceManager) MoveWindow(winID WindowID, x, y int32) error {
 }
 
 func (sm *ServiceManager) GetActiveWindowID() WindowID {
+	sm.windowMu.RLock()
+	defer sm.windowMu.RUnlock()
 	return sm.activeWinID
 }
 
@@ -451,4 +472,140 @@ func (sm *ServiceManager) ListDirectory(path string) ([]string, error) {
 		names = append(names, entry.Name())
 	}
 	return names, nil
+}
+
+// FocusWindow sets active window and bumps its ZOrder to front.
+func (sm *ServiceManager) FocusWindow(id WindowID) {
+	sm.windowMu.Lock()
+	defer sm.windowMu.Unlock()
+	if win := sm.windows[id]; win != nil {
+		sm.activeWinID = id
+		win.ZOrder = sm.maxZOrder() + 1
+	}
+}
+
+// CycleWindows advances focus to the next window in ZOrder and returns its ID.
+func (sm *ServiceManager) CycleWindows() WindowID {
+	sm.windowMu.Lock()
+	defer sm.windowMu.Unlock()
+	if len(sm.windows) == 0 {
+		return 0
+	}
+	wins := make([]*Window, 0, len(sm.windows))
+	for _, w := range sm.windows {
+		wins = append(wins, w)
+	}
+	sort.Slice(wins, func(i, j int) bool { return wins[i].ZOrder < wins[j].ZOrder })
+	for i, w := range wins {
+		if w.ID == sm.activeWinID {
+			next := wins[(i+1)%len(wins)]
+			sm.activeWinID = next.ID
+			next.ZOrder = sm.maxZOrder() + 1
+			return next.ID
+		}
+	}
+	if len(wins) > 0 {
+		sm.activeWinID = wins[0].ID
+		return wins[0].ID
+	}
+	return 0
+}
+
+// DirectMoveWindow moves a window by ID without going through the channel goroutine.
+// Used for high-frequency drag operations.
+func (sm *ServiceManager) DirectMoveWindow(id WindowID, x, y int32) {
+	sm.windowMu.Lock()
+	defer sm.windowMu.Unlock()
+	if win := sm.windows[id]; win != nil {
+		win.X, win.Y = x, y
+	}
+}
+
+// GetWindowByID returns the window with the given ID, or nil if not found.
+func (sm *ServiceManager) GetWindowByID(id WindowID) *Window {
+	sm.windowMu.RLock()
+	defer sm.windowMu.RUnlock()
+	return sm.windows[id]
+}
+
+// ============= Layout Management =============
+
+// ListPanes returns a copy of the current pane list (must be called under lock).
+func (sm *ServiceManager) ListPanes() []Pane {
+	sm.windowMu.RLock()
+	defer sm.windowMu.RUnlock()
+	panes := make([]Pane, len(sm.panes))
+	copy(panes, sm.panes)
+	return panes
+}
+
+// LayoutSingle sets up a single full-screen pane for the given window ID.
+// contentX, contentY, contentW, contentH describe the area available for windows (below menubar, etc).
+func (sm *ServiceManager) LayoutSingle(winID WindowID, contentX, contentY, contentW, contentH int32) {
+	sm.windowMu.Lock()
+	defer sm.windowMu.Unlock()
+	sm.panes = []Pane{{WinID: winID, X: contentX, Y: contentY, W: contentW, H: contentH}}
+	sm.applyLayout()
+}
+
+// LayoutSplit splits the content area into two panes side-by-side (left/right) or top/bottom.
+// vertical=true means left/right split, vertical=false means top/bottom.
+func (sm *ServiceManager) LayoutSplit(leftID, rightID WindowID, contentX, contentY, contentW, contentH int32, vertical bool) {
+	sm.windowMu.Lock()
+	defer sm.windowMu.Unlock()
+	var panes []Pane
+	if vertical {
+		// Left/right split
+		half := contentW / 2
+		panes = []Pane{
+			{WinID: leftID, X: contentX, Y: contentY, W: half, H: contentH},
+			{WinID: rightID, X: contentX + half, Y: contentY, W: contentW - half, H: contentH},
+		}
+	} else {
+		// Top/bottom split
+		half := contentH / 2
+		panes = []Pane{
+			{WinID: leftID, X: contentX, Y: contentY, W: contentW, H: half},
+			{WinID: rightID, X: contentX, Y: contentY + half, W: contentW, H: contentH - half},
+		}
+	}
+	sm.panes = panes
+	sm.applyLayout()
+}
+
+// applyLayout updates each window in panes with its new position/size and emits resize events if needed.
+// Must be called under windowMu lock.
+func (sm *ServiceManager) applyLayout() {
+	for _, pane := range sm.panes {
+		if win := sm.windows[pane.WinID]; win != nil {
+			oldW, oldH := win.Width, win.Height
+			win.X, win.Y = pane.X, pane.Y
+			win.Width, win.Height = pane.W, pane.H
+			// Reallocate framebuffer if size changed
+			if oldW != pane.W || oldH != pane.H {
+				win.FrameBuf = make([]byte, pane.W*pane.H*4)
+				// Emit resize event
+				select {
+				case sm.inputQueue <- &InputEvent{
+					Type:    InputResize,
+					WinID:   pane.WinID,
+					ResizeW: pane.W,
+					ResizeH: pane.H,
+				}:
+				default:
+				}
+			}
+		}
+	}
+}
+
+// maxZOrder returns the highest Z-order among all windows. Must be called under lock.
+func (sm *ServiceManager) maxZOrder() int {
+	max := 0
+	for _, win := range sm.windows {
+		if win.ZOrder > max {
+			max = win.ZOrder
+		}
+	}
+	return max
 }

@@ -57,8 +57,8 @@ func (t *textState) setCursor(v uint32) {
 	t.cursorY = uint16(v & 0xFFFF)
 }
 
-// drawChar renders one ASCII glyph into screenPixels. Cursor advances;
-// newline/carriage-return are honoured. Non-printable codes are dropped.
+// drawChar renders one ASCII glyph into the active window's framebuffer.
+// Cursor advances; newline/carriage-return are honoured. Non-printable codes are dropped.
 func (s *System) drawChar(c byte) {
 	s.text.lastChar = c
 
@@ -83,8 +83,8 @@ func (s *System) drawChar(c byte) {
 	cellPx := 8 * scale
 	originX := int(s.text.cursorX) * cellPx
 	originY := int(s.text.cursorY) * cellPx
-	sw := int(s.screenWidth)
-	sh := int(s.screenHeight)
+	sw := int(s.getScreenWidth())
+	sh := int(s.getScreenHeight())
 
 	// If the cell is completely off-screen, drop it but still advance the
 	// cursor so the caller's bookkeeping stays consistent.
@@ -96,6 +96,12 @@ func (s *System) drawChar(c byte) {
 	r := byte(s.text.color >> 16)
 	g := byte(s.text.color >> 8)
 	b := byte(s.text.color)
+
+	fb := s.getActiveFramebuffer()
+	if fb == nil {
+		s.advanceCursor()
+		return
+	}
 
 	for row := 0; row < 8; row++ {
 		bits := glyph[row]
@@ -119,13 +125,13 @@ func (s *System) drawChar(c byte) {
 						continue
 					}
 					offset := (y*sw + x) * 4
-					if offset+4 > len(s.screenPixels) {
+					if offset+4 > len(fb) {
 						continue
 					}
-					s.screenPixels[offset] = r
-					s.screenPixels[offset+1] = g
-					s.screenPixels[offset+2] = b
-					s.screenPixels[offset+3] = 0xFF
+					fb[offset] = r
+					fb[offset+1] = g
+					fb[offset+2] = b
+					fb[offset+3] = 0xFF
 				}
 			}
 		}
@@ -143,7 +149,7 @@ func (s *System) advanceCursor() {
 		scale = 1
 	}
 	cellPx := 8 * scale
-	cols := int(s.screenWidth) / cellPx
+	cols := int(s.getScreenWidth()) / cellPx
 	if cols < 1 {
 		cols = 1
 	}

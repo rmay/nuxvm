@@ -53,6 +53,26 @@ func TestTriggerVector(t *testing.T) {
 	}
 }
 
+func TestTriggerVectorPushesReturnAddr(t *testing.T) {
+	// Vector triggers should behave like a CALL: push the interrupted PC so the
+	// handler's RET resumes where the VM was. Without this, vector handlers
+	// (compiled with implicit RET) underflow the return stack.
+	vm := NewVM([]byte{OpHalt})
+	vm.vectors[4] = vm.UserMemoryStart()
+	vm.pc = 0x1234
+	prevDepth := len(vm.returnStack)
+
+	if err := vm.TriggerVector(4); err != nil {
+		t.Fatalf("TriggerVector failed: %v", err)
+	}
+	if len(vm.returnStack) != prevDepth+1 {
+		t.Fatalf("expected return stack depth %d, got %d", prevDepth+1, len(vm.returnStack))
+	}
+	if got := vm.returnStack[len(vm.returnStack)-1]; got != 0x1234 {
+		t.Errorf("expected pushed return addr 0x1234, got 0x%X", got)
+	}
+}
+
 func TestTriggerVectorEdgeCases(t *testing.T) {
 	vm := NewVM([]byte{OpHalt}) // Minimal program
 	

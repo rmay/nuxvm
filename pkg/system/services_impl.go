@@ -50,11 +50,8 @@ func (sm *ServiceManager) handleWindowMessage(msg WindowMsg) WindowReply {
 	case "close":
 		winID := msg.WinID
 		delete(sm.windows, winID)
-		if sm.activeWinID == winID && len(sm.windows) > 0 {
-			for id := range sm.windows {
-				sm.activeWinID = id
-				break
-			}
+		if sm.activeWinID == winID {
+			sm.activeWinID = sm.pickBestActive()
 		}
 		return WindowReply{Success: true}
 
@@ -75,6 +72,16 @@ func (sm *ServiceManager) handleWindowMessage(msg WindowMsg) WindowReply {
 
 	case "focus":
 		sm.activeWinID = msg.WinID
+		if win := sm.windows[msg.WinID]; win != nil {
+			win.ZOrder = sm.maxZOrder() + 1
+		}
+		return WindowReply{Success: true}
+
+	case "raise":
+		if win := sm.windows[msg.WinID]; win != nil {
+			win.ZOrder = sm.maxZOrder() + 1
+			sm.activeWinID = msg.WinID
+		}
 		return WindowReply{Success: true}
 
 	case "get_size":
@@ -244,4 +251,21 @@ func (sm *ServiceManager) StartAllServices() {
 	sm.StartInputManager()
 	sm.StartSoundServer()
 	sm.StartFileSystemManager()
+}
+
+// Helper methods for window management (called while lock is already held)
+
+// pickBestActive selects the window with the highest ZOrder to be the new active window.
+// Returns 0 if there are no windows.
+func (sm *ServiceManager) pickBestActive() WindowID {
+	if len(sm.windows) == 0 {
+		return 0
+	}
+	var best *Window
+	for _, w := range sm.windows {
+		if best == nil || w.ZOrder > best.ZOrder {
+			best = w
+		}
+	}
+	return best.ID
 }

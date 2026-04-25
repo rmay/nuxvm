@@ -65,6 +65,7 @@ const (
 	SCIPlaySound      = 14
 	SCIYield          = 15
 	SCIGetPID         = 16
+	SCIGetActiveWin   = 17
 )
 
 // fileState tracks an open file or directory for the File device.

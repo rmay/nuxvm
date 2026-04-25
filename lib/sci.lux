@@ -24,6 +24,7 @@
 14 CONSTANT SCI-PLAY-SOUND
 15 CONSTANT SCI-YIELD
 16 CONSTANT SCI-GET-PID
+17 CONSTANT SCI-GET-ACTIVE-WIN
 
 ( Helper: Execute an SCI command )
 : SCI-EXEC ( cmd arg1 arg2 -- result )
@@ -134,4 +135,18 @@
 )
 : GET-PID ( -- pid )
     SCI-GET-PID 0 0 SCI-EXEC
+;
+
+( DrawText: ( win-id text-ptr -- status )
+  Draws null-terminated text into a window.
+)
+: DRAW-TEXT ( win-id text-ptr -- status )
+    SCI-DRAW-TEXT ROT SCI-EXEC
+;
+
+( GetActiveWin: ( -- win-id )
+  Returns the ID of the currently active window.
+)
+: GET-ACTIVE-WIN ( -- win-id )
+    SCI-GET-ACTIVE-WIN 0 0 SCI-EXEC
 ;

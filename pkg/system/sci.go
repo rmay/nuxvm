@@ -21,6 +21,8 @@ func (s *System) handleSCICommand() {
 		s.handleSCIMoveWin(arg1, arg2)
 	case SCIDrawRect:
 		s.handleSCIDrawRect(arg1, arg2)
+	case SCIDrawText:
+		s.handleSCIDrawText(arg1, arg2)
 	case SCISetPixel:
 		s.handleSCISetPixel(arg1, arg2)
 	case SCIGetWinSize:
@@ -51,6 +53,8 @@ func (s *System) handleSCICommand() {
 		s.handleSCIYield()
 	case SCIGetPID:
 		s.handleSCIGetPID()
+	case SCIGetActiveWin:
+		s.handleSCIGetActiveWin()
 	}
 }
 
@@ -110,27 +114,16 @@ func (s *System) handleSCICloseWin(winID int32) {
 
 	s.Services.windowMu.Lock()
 	delete(s.Services.windows, WindowID(winID))
+	if s.Services.activeWinID == WindowID(winID) {
+		s.Services.activeWinID = s.Services.pickBestActive()
+	}
 	s.Services.windowMu.Unlock()
 	s.sciResult = 0
 }
 
-// handleSCIMoveWin(winID, position)
-// position: x in upper 16 bits, y in lower 16 bits
+// handleSCIMoveWin(winID, position) -> status
+// With layout-driven sizing, this is now a no-op. Apps cannot move windows.
 func (s *System) handleSCIMoveWin(winID int32, position int32) {
-	if s.Services == nil {
-		s.sciResult = -1
-		return
-	}
-
-	x := position >> 16
-	y := position & 0xFFFF
-
-	s.Services.windowMu.Lock()
-	if win := s.Services.windows[WindowID(winID)]; win != nil {
-		win.X = x
-		win.Y = y
-	}
-	s.Services.windowMu.Unlock()
 	s.sciResult = 0
 }
 
@@ -200,8 +193,9 @@ func (s *System) handleSCIFocusWin(winID int32) {
 	}
 
 	s.Services.windowMu.Lock()
-	if _, exists := s.Services.windows[WindowID(winID)]; exists {
+	if win, exists := s.Services.windows[WindowID(winID)]; exists {
 		s.Services.activeWinID = WindowID(winID)
+		win.ZOrder = s.Services.maxZOrder() + 1
 		s.sciResult = 0
 	} else {
 		s.sciResult = -1
@@ -304,4 +298,109 @@ func (s *System) handleSCIYield() {
 func (s *System) handleSCIGetPID() {
 	// For now, return a fixed PID of 1 (single process)
 	s.sciResult = 1
+}
+
+// cstring reads a null-terminated string from memory starting at ptr
+func (s *System) cstring(ptr uint32) string {
+	var result string
+	if ptr >= 0 && int(ptr) < len(s.memory) {
+		for i := int(ptr); i < len(s.memory) && s.memory[i] != 0; i++ {
+			result += string(s.memory[i])
+		}
+	}
+	return result
+}
+
+// handleSCIDrawText(winID, textPtr) renders null-terminated text into a window's framebuffer
+func (s *System) handleSCIDrawText(winID int32, textPtr int32) {
+	if s.Services == nil {
+		s.sciResult = -1
+		return
+	}
+
+	win := s.Services.GetWindowByID(WindowID(winID))
+	if win == nil {
+		s.sciResult = -1
+		return
+	}
+
+	text := s.cstring(uint32(textPtr))
+	for _, c := range []byte(text) {
+		s.drawCharToWindow(win, c)
+	}
+	s.sciResult = 0
+}
+
+// drawCharToWindow renders a character into a window's framebuffer at the current cursor position
+func (s *System) drawCharToWindow(win *Window, c byte) {
+	if c == '\n' {
+		s.text.cursorX = 0
+		s.text.cursorY++
+		return
+	}
+	if c == '\r' {
+		s.text.cursorX = 0
+		return
+	}
+	if c < 0x20 || c > 0x7E {
+		return
+	}
+
+	glyph := Font[c]
+	x := int(s.text.cursorX) * 6
+	y := int(s.text.cursorY) * 8
+
+	// Bounds check: stay within window framebuffer
+	if x+6 >= int(win.Width) || y+8 >= int(win.Height) {
+		s.advanceCursorInWindow(win)
+		return
+	}
+
+	// Draw character glyph into window framebuffer (6px wide x 8px tall, black text)
+	for row := 0; row < 8; row++ {
+		bits := glyph[row]
+		if bits == 0 {
+			continue
+		}
+		for col := 0; col < 8; col++ {
+			if (bits & (1 << col)) == 0 {
+				continue
+			}
+			px := x + col
+			py := y + row
+			if px < int(win.Width) && py < int(win.Height) {
+				offset := (py*int(win.Width) + px) * 4
+				if offset+4 <= len(win.FrameBuf) {
+					win.FrameBuf[offset] = 0     // R
+					win.FrameBuf[offset+1] = 0   // G
+					win.FrameBuf[offset+2] = 0   // B
+					win.FrameBuf[offset+3] = 255 // A
+				}
+			}
+		}
+	}
+
+	s.advanceCursorInWindow(win)
+}
+
+// advanceCursorInWindow moves cursor one cell right, wrapping at window edge
+func (s *System) advanceCursorInWindow(win *Window) {
+	charsPerRow := int(win.Width) / 6
+	if charsPerRow < 1 {
+		charsPerRow = 1
+	}
+	s.text.cursorX++
+	if int(s.text.cursorX) >= charsPerRow {
+		s.text.cursorX = 0
+		s.text.cursorY++
+	}
+}
+
+// handleSCIGetActiveWin() -> active window ID
+func (s *System) handleSCIGetActiveWin() {
+	if s.Services == nil {
+		s.sciResult = 0
+		return
+	}
+	s.sciResult = int32(s.Services.GetActiveWindowID())
 }
