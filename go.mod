@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/atotto/clipboard v0.1.4
 	github.com/hajimehoshi/ebiten/v2 v2.9.9
+	golang.org/x/image v0.31.0
 	golang.org/x/term v0.42.0
 )
 
