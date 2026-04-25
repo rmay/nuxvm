@@ -18,9 +18,9 @@ const (
 	DeviceMemorySize   = 0x1000 // 4KB for device ports (0x3000-0x3FFF)
 
 	// Video Framebuffer: Starting at 0x4000.
-	// We'll allow up to 256x256 pixels (256KB) for now.
+	// Support up to 1280x1024 pixels (~5MB).
 	VideoFramebufferStart = 0x4000
-	VideoMaxBufferSize    = 256 * 256 * 4
+	VideoMaxBufferSize    = 1280 * 1024 * 4
 	VideoFramebufferEnd   = VideoFramebufferStart + VideoMaxBufferSize
 
 	// User memory starts after the maximum possible video framebuffer

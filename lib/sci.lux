@@ -1,0 +1,137 @@
+( System Call Interface (SCI) Word Definitions )
+( These words interface with the OS services through MMIO ports )
+
+( SCI Port Addresses )
+0x30C0 CONSTANT SCI-PORT
+0x30C4 CONSTANT SCI-CMD
+0x30C8 CONSTANT SCI-ARG1
+0x30CC CONSTANT SCI-ARG2
+
+( SCI Command Codes )
+1 CONSTANT SCI-CREATE-WIN
+2 CONSTANT SCI-CLOSE-WIN
+3 CONSTANT SCI-MOVE-WIN
+4 CONSTANT SCI-DRAW-RECT
+5 CONSTANT SCI-DRAW-TEXT
+6 CONSTANT SCI-SET-PIXEL
+7 CONSTANT SCI-GET-WIN-SIZE
+8 CONSTANT SCI-FOCUS-WIN
+9 CONSTANT SCI-POLL-EVENT
+10 CONSTANT SCI-OPEN-FILE
+11 CONSTANT SCI-READ-FILE
+12 CONSTANT SCI-WRITE-FILE
+13 CONSTANT SCI-CLOSE-FILE
+14 CONSTANT SCI-PLAY-SOUND
+15 CONSTANT SCI-YIELD
+16 CONSTANT SCI-GET-PID
+
+( Helper: Execute an SCI command )
+: SCI-EXEC ( cmd arg1 arg2 -- result )
+    SCI-ARG2 !
+    SCI-ARG1 !
+    SCI-CMD !
+    SCI-PORT @
+;
+
+( Window Management Words )
+
+( CreateWin: ( name-ptr size -- win-id )
+  Creates a new window with the given name string pointer and optional size.
+  size format: width (upper 16 bits) | height (lower 16 bits)
+)
+: CREATE-WIN ( name-ptr size -- win-id )
+    SCI-CREATE-WIN ROT SCI-EXEC
+;
+
+( CloseWin: ( win-id -- status )
+  Closes the window with the given ID.
+)
+: CLOSE-WIN ( win-id -- status )
+    SCI-CLOSE-WIN SWAP 0 SCI-EXEC
+;
+
+( MoveWin: ( win-id position -- status )
+  Moves a window to a new position.
+  position format: x (upper 16 bits) | y (lower 16 bits)
+)
+: MOVE-WIN ( win-id position -- status )
+    SCI-MOVE-WIN ROT SCI-EXEC
+;
+
+( GetWinSize: ( win-id -- size )
+  Returns the size of a window.
+  size format: width (upper 16 bits) | height (lower 16 bits)
+)
+: GET-WIN-SIZE ( win-id -- size )
+    SCI-GET-WIN-SIZE SWAP 0 SCI-EXEC
+;
+
+( FocusWin: ( win-id -- status )
+  Sets the active window (brings to focus).
+)
+: FOCUS-WIN ( win-id -- status )
+    SCI-FOCUS-WIN SWAP 0 SCI-EXEC
+;
+
+( SetPixel: ( win-id pixel-data color -- status )
+  Sets a pixel in the window.
+  pixel-data format: x (lower 16 bits) | y (upper 16 bits)
+  color format: 0xRRGGBB
+)
+: SET-PIXEL ( win-id pixel-data color -- status )
+    SCI-ARG2 !
+    SCI-ARG1 !
+    SCI-SET-PIXEL ROT SCI-EXEC
+;
+
+( Input Words )
+
+( PollEvent: ( -- event )
+  Returns the next input event or 0 if none available.
+  event format: type (upper 8 bits) | data (lower 24 bits)
+)
+: POLL-EVENT ( -- event )
+    SCI-POLL-EVENT 0 0 SCI-EXEC
+;
+
+( File I/O Words )
+
+( OpenFile: ( path-ptr -- file-handle )
+  Opens a file at the given path (null-terminated string pointer).
+  Returns file handle or -1 on error.
+)
+: OPEN-FILE ( path-ptr -- handle )
+    SCI-OPEN-FILE SWAP 0 SCI-EXEC
+;
+
+( CloseFile: ( handle -- status )
+  Closes an open file.
+)
+: CLOSE-FILE ( handle -- status )
+    SCI-CLOSE-FILE SWAP 0 SCI-EXEC
+;
+
+( Sound Words )
+
+( PlaySound: ( sound-id -- status )
+  Plays a sound effect with the given ID.
+)
+: PLAY-SOUND ( sound-id -- status )
+    SCI-PLAY-SOUND SWAP 0 SCI-EXEC
+;
+
+( Process Control Words )
+
+( Yield: ( -- status )
+  Voluntarily yields CPU time to the host.
+)
+: YIELD ( -- status )
+    SCI-YIELD 0 0 SCI-EXEC
+;
+
+( GetPID: ( -- pid )
+  Returns the current process ID.
+)
+: GET-PID ( -- pid )
+    SCI-GET-PID 0 0 SCI-EXEC
+;

@@ -24,6 +24,7 @@ const (
 	rngPort        = vm.DeviceMemoryOffset + 0x0080
 	textPort       = vm.DeviceMemoryOffset + 0x0090
 	windowPort     = vm.DeviceMemoryOffset + 0x00B0
+	sciPort        = vm.DeviceMemoryOffset + 0x00C0
 
 	controllerStatusAddr = controllerPort + 4
 	controllerButtonAddr = controllerPort + 8
@@ -36,12 +37,34 @@ const (
 	textAttrAddr         = textPort + 4
 	textCursorAddr       = textPort + 8
 	textCharAddr         = textPort + 12
+	sciCommandAddr       = sciPort + 4
+	sciArg1Addr          = sciPort + 8
+	sciArg2Addr          = sciPort + 12
 
 	// Vector indices (exported for machine.go use)
 	ScreenVectorIdx     = (screenPort - vm.DeviceMemoryOffset) / 16     // 2
 	AudioVectorIdx      = (audioPort - vm.DeviceMemoryOffset) / 16      // 3
 	ControllerVectorIdx = (controllerPort - vm.DeviceMemoryOffset) / 16 // 4
 	MouseVectorIdx      = (mousePort - vm.DeviceMemoryOffset) / 16      // 5
+	SCIVectorIdx        = (sciPort - vm.DeviceMemoryOffset) / 16         // 6
+
+	// SCI Command codes
+	SCICreateWin      = 1
+	SCICloseWin       = 2
+	SCIMoveWin        = 3
+	SCIDrawRect       = 4
+	SCIDrawText       = 5
+	SCISetPixel       = 6
+	SCIGetWinSize     = 7
+	SCIFocusWin       = 8
+	SCIPollEvent      = 9
+	SCIOpenFile       = 10
+	SCIReadFile       = 11
+	SCIWriteFile      = 12
+	SCICloseFile      = 13
+	SCIPlaySound      = 14
+	SCIYield          = 15
+	SCIGetPID         = 16
 )
 
 // fileState tracks an open file or directory for the File device.
@@ -103,24 +126,34 @@ type System struct {
 	// Window state
 	windowScrollY int32
 
+	// SCI (System Call Interface) state
+	sciCommand int32
+	sciArg1    int32
+	sciArg2    int32
+	sciResult  int32
+
 	// Vector callbacks (wired by Machine layer)
 	getVector func(index int) uint32
 	setVector func(index int, addr uint32)
 
 	// Handlers for host integration
 	SoundHandler func(soundID int32)
+
+	// OS Services (goroutine-based)
+	Services *ServiceManager
 }
 
 func NewSystem() *System {
 	s := &System{
-		screenWidth:  640,
-		screenHeight: 800,
+		screenWidth:  800,
+		screenHeight: 600,
 		screenPixels: make([]byte, vm.VideoMaxBufferSize),
 		rngState:     uint32(time.Now().UnixNano()),
 		text: textState{
 			scale: 2,
 			color: 0xFFFFFF,
 		},
+		Services: NewServiceManager(),
 	}
 	// Default the sandbox root to the process cwd so tests and ad-hoc use
 	// keep working. cmd/cloister overrides this explicitly at startup.
@@ -204,19 +237,59 @@ func withinRoot(p, root string) bool {
 	return strings.HasPrefix(p, root+string(filepath.Separator))
 }
 
-func (s *System) SetResolution(w, h int32) {
-	if w > 0 && h > 0 && w*h*4 <= int32(len(s.screenPixels)) {
-		s.screenWidth = w
-		s.screenHeight = h
+// getActiveFramebuffer returns the framebuffer of the active window.
+// If the service manager is not initialized or has no active window, falls back to screenPixels.
+func (s *System) getActiveFramebuffer() []byte {
+	if s.Services != nil {
+		fb := s.Services.GetActiveWindowFramebuf()
+		if fb != nil {
+			return fb
+		}
 	}
+	return s.screenPixels
 }
 
-func (s *System) ScreenWidth() int32 {
+// getScreenWidth returns the width of the active window, or the global screen width if no service.
+func (s *System) getScreenWidth() int32 {
+	if s.Services != nil {
+		if win := s.Services.GetActiveWindow(); win != nil {
+			return win.Width
+		}
+	}
 	return s.screenWidth
 }
 
-func (s *System) ScreenHeight() int32 {
+// getScreenHeight returns the height of the active window, or the global screen height if no service.
+func (s *System) getScreenHeight() int32 {
+	if s.Services != nil {
+		if win := s.Services.GetActiveWindow(); win != nil {
+			return win.Height
+		}
+	}
 	return s.screenHeight
+}
+
+// setResolution updates both global resolution and active window size.
+func (s *System) setResolution(w, h int32) {
+	if w > 0 && h > 0 && w*h*4 <= int32(len(s.screenPixels)) {
+		s.screenWidth = w
+		s.screenHeight = h
+		if s.Services != nil {
+			s.Services.ResizeActiveWindow(w, h)
+		}
+	}
+}
+
+func (s *System) SetResolution(w, h int32) {
+	s.setResolution(w, h)
+}
+
+func (s *System) ScreenWidth() int32 {
+	return s.getScreenWidth()
+}
+
+func (s *System) ScreenHeight() int32 {
+	return s.getScreenHeight()
 }
 
 // SetMemory provides the system with access to the VM's memory slice.
@@ -476,10 +549,12 @@ func (s *System) Read(address uint32) (int32, error) {
 	// Screen (Framebuffer)
 	if address >= vm.VideoFramebufferStart && address < vm.VideoFramebufferEnd {
 		offset := address - vm.VideoFramebufferStart
-		if offset+4 > uint32(len(s.screenPixels)) {
+		// Read from active window's framebuffer
+		fb := s.getActiveFramebuffer()
+		if fb == nil || offset+4 > uint32(len(fb)) {
 			return 0, fmt.Errorf("framebuffer read out of bounds")
 		}
-		return int32(binary.BigEndian.Uint32(s.screenPixels[offset : offset+4])), nil
+		return int32(binary.BigEndian.Uint32(fb[offset : offset+4])), nil
 	}
 
 	// Screen registers
@@ -579,6 +654,20 @@ func (s *System) Read(address uint32) (int32, error) {
 		return topBarHeight, nil
 	}
 
+	// SCI (System Call Interface) device:
+	if address == sciPort { // Vector address (result from last SCI call)
+		return s.sciResult, nil
+	}
+	if address == sciCommandAddr {
+		return s.sciCommand, nil
+	}
+	if address == sciArg1Addr {
+		return s.sciArg1, nil
+	}
+	if address == sciArg2Addr {
+		return s.sciArg2, nil
+	}
+
 	return 0, fmt.Errorf("system: unhandled read at 0x%04X", address)
 }
 
@@ -597,20 +686,22 @@ func (s *System) Write(address uint32, value int32) error {
 	// Screen (Framebuffer)
 	if address >= vm.VideoFramebufferStart && address < vm.VideoFramebufferEnd {
 		offset := address - vm.VideoFramebufferStart
-		if offset+4 > uint32(len(s.screenPixels)) {
+		// Write to active window's framebuffer
+		fb := s.getActiveFramebuffer()
+		if fb == nil || offset+4 > uint32(len(fb)) {
 			return fmt.Errorf("framebuffer write out of bounds")
 		}
-		binary.BigEndian.PutUint32(s.screenPixels[offset:offset+4], uint32(value))
+		binary.BigEndian.PutUint32(fb[offset:offset+4], uint32(value))
 		return nil
 	}
 
 	// Screen dimensions (allow writing to resize)
 	if address == screenWidthAddr {
-		s.SetResolution(value, s.screenHeight)
+		s.setResolution(value, s.getScreenHeight())
 		return nil
 	}
 	if address == screenHeightAddr {
-		s.SetResolution(s.screenWidth, value)
+		s.setResolution(s.getScreenWidth(), value)
 		return nil
 	}
 
@@ -683,6 +774,22 @@ func (s *System) Write(address uint32, value int32) error {
 		return nil
 	}
 
+	// SCI (System Call Interface) device:
+	if address == sciCommandAddr {
+		s.sciCommand = value
+		return nil
+	}
+	if address == sciArg1Addr {
+		s.sciArg1 = value
+		return nil
+	}
+	if address == sciArg2Addr {
+		s.sciArg2 = value
+		// Trigger SCI command handler when arg2 is written
+		s.handleSCICommand()
+		return nil
+	}
+
 	return fmt.Errorf("system: unhandled write at 0x%04X", address)
 }
 
@@ -702,9 +809,19 @@ func (s *System) SetMouse(x, y int32, button uint32) {
 	s.mouseButton = button
 }
 
+func (s *System) MouseButton() uint32 {
+	return s.mouseButton
+}
+
 func (s *System) Framebuffer() []byte {
-	size := s.screenWidth * s.screenHeight * 4
-	return s.screenPixels[:size]
+	fb := s.getActiveFramebuffer()
+	w := s.getScreenWidth()
+	h := s.getScreenHeight()
+	size := w * h * 4
+	if size > int32(len(fb)) {
+		size = int32(len(fb))
+	}
+	return fb[:size]
 }
 
 func (s *System) DebugInfo() string {

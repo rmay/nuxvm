@@ -1,0 +1,88 @@
+( SCI (System Call Interface) Test Program )
+( Demonstrates window creation, input polling, and basic drawing )
+
+INCLUDE lib/sci.lux
+
+( Test memory area for strings )
+0x0100 CONSTANT TEST-STR
+
+( Initialize a test string at memory )
+: SET-STRING ( str addr -- )
+    { buffer } DUP -> buffer
+    STR-LEN 0 ?DO
+        BUFFER I [] ADDR STR ADDR I [] ->+ DUP !
+    LOOP
+    ADDR STR LEN ADDR + !  ( null-terminate )
+;
+
+( Main test program )
+: MAIN
+    " === SCI Test Program ===" CR
+
+    ( Test 1: Create a window )
+    " [1] Creating window..." CR
+    0x0100 0x0100 800 600 CREATE-WIN -> win-id
+    DUP -1 = IF
+        " ERROR: Failed to create window" CR HALT
+    THEN
+    " Created window with ID: " . win-id . CR
+
+    ( Test 2: Get window size )
+    " [2] Getting window size..." CR
+    win-id GET-WIN-SIZE -> size
+    " Window size: " . size . CR
+
+    ( Test 3: Draw some pixels )
+    " [3] Drawing pixels..." CR
+    win-id 100 100 0xFF0000 SET-PIXEL  ( red pixel at 100,100 )
+    win-id 200 200 0x00FF00 SET-PIXEL  ( green pixel at 200,200 )
+    win-id 300 300 0x0000FF SET-PIXEL  ( blue pixel at 300,300 )
+    " Drew 3 colored pixels" CR
+
+    ( Test 4: Poll for events )
+    " [4] Polling for input events..." CR
+    10 0 ?DO
+        POLL-EVENT -> event
+        event 0 = IF
+            " No event" CR
+        ELSE
+            " Got event: " . event . CR
+        THEN
+        YIELD DROP
+    LOOP
+
+    ( Test 5: Move window )
+    " [5] Moving window..." CR
+    win-id 50 75 MOVE-WIN -> status
+    " Move status: " . status . CR
+
+    ( Test 6: Focus window )
+    " [6] Focusing window..." CR
+    win-id FOCUS-WIN -> status
+    " Focus status: " . status . CR
+
+    ( Test 7: Get PID )
+    " [7] Getting process ID..." CR
+    GET-PID -> pid
+    " Process ID: " . pid . CR
+
+    ( Test 8: Play sound )
+    " [8] Playing sound..." CR
+    440 PLAY-SOUND DROP  ( A4 note )
+    " Played 440 Hz tone" CR
+
+    ( Test 9: File operations )
+    " [9] Testing file operations..." CR
+    ( Note: file operations may not be fully implemented yet )
+    " [SKIP] File operations not fully implemented in this test" CR
+
+    ( Test 10: Close window )
+    " [10] Closing window..." CR
+    win-id CLOSE-WIN -> status
+    " Close status: " . status . CR
+
+    " === All Tests Complete ===" CR
+;
+
+( Entry point )
+MAIN HALT

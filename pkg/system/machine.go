@@ -29,6 +29,23 @@ func NewMachine(program []byte, memSize uint32, trace ...bool) *Machine {
 
 	cpu.SetBus(sys)
 
+	// Start all OS service goroutines
+	sys.Services.StartAllServices()
+
+	// Wire sandbox resolver for file operations
+	sys.Services.SetSandboxResolver(sys.resolvePath)
+
+	// Wire audio playback through the SoundServer service
+	sys.SoundHandler = func(soundID int32) {
+		// Non-blocking send to sound server
+		select {
+		case sys.Services.soundChan <- SoundMsg{Command: "play_sound", SoundID: soundID}:
+			// Don't wait for reply to avoid blocking the VM
+		default:
+			// SoundServer busy or not running, drop event
+		}
+	}
+
 	return &Machine{
 		CPU:    cpu,
 		System: sys,
@@ -92,5 +109,36 @@ func (m *Machine) VBlank() error {
 // TriggerAudio triggers the audio vector.
 func (m *Machine) TriggerAudio() error {
 	return m.CPU.TriggerVector(AudioVectorIdx)
+}
+
+// Services returns the OS service manager for IPC.
+func (m *Machine) Services() *ServiceManager {
+	return m.System.Services
+}
+
+// DrainInputEvents polls and dispatches all pending input events to the VM.
+// Called each frame before machine.Tick() to feed buffered input to the VM.
+func (m *Machine) DrainInputEvents() {
+	for {
+		evt := m.System.Services.PollEvent()
+		if evt == nil {
+			break
+		}
+
+		switch evt.Type {
+		case InputKeyDown:
+			m.System.SetKey(evt.KeyCode)
+			_ = m.CPU.TriggerVector(ControllerVectorIdx)
+		case InputKeyUp:
+			m.System.SetKey(0) // clear key on release
+			_ = m.CPU.TriggerVector(ControllerVectorIdx)
+		case InputMouseMove:
+			m.System.SetMouse(evt.MouseX, evt.MouseY, m.System.MouseButton())
+			_ = m.CPU.TriggerVector(MouseVectorIdx)
+		case InputMouseDown, InputMouseUp:
+			m.System.SetMouse(evt.MouseX, evt.MouseY, evt.MouseBtn)
+			_ = m.CPU.TriggerVector(MouseVectorIdx)
+		}
+	}
 }
 

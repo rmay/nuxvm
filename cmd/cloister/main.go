@@ -22,20 +22,102 @@ var screenScale = 10
 const defaultBootPath = "lib/boot.lux"
 const topBarHeight = 24
 
-type Window struct {
-	id      int
-	name    string
-	scrollY int32
+type Game struct {
+	machine   *system.Machine
+	showDebug bool
+	bootTimer int
+	mouseX    int
+	mouseY    int
 }
 
-type Game struct {
-	machine     *system.Machine
-	showDebug   bool
-	bootTimer   int
-	mouseX      int
-	mouseY      int
-	windows     []*Window
-	showWinMenu bool
+// luxKeyCodeFromEbiten maps ebiten key codes to Lux key codes (ASCII where applicable)
+func luxKeyCodeFromEbiten(k ebiten.Key) int32 {
+	switch k {
+	case ebiten.KeyA:
+		return 97 // 'a'
+	case ebiten.KeyB:
+		return 98
+	case ebiten.KeyC:
+		return 99
+	case ebiten.KeyD:
+		return 100
+	case ebiten.KeyE:
+		return 101
+	case ebiten.KeyF:
+		return 102
+	case ebiten.KeyG:
+		return 103
+	case ebiten.KeyH:
+		return 104
+	case ebiten.KeyI:
+		return 105
+	case ebiten.KeyJ:
+		return 106
+	case ebiten.KeyK:
+		return 107
+	case ebiten.KeyL:
+		return 108
+	case ebiten.KeyM:
+		return 109
+	case ebiten.KeyN:
+		return 110
+	case ebiten.KeyO:
+		return 111
+	case ebiten.KeyP:
+		return 112
+	case ebiten.KeyQ:
+		return 113
+	case ebiten.KeyR:
+		return 114
+	case ebiten.KeyS:
+		return 115
+	case ebiten.KeyT:
+		return 116
+	case ebiten.KeyU:
+		return 117
+	case ebiten.KeyV:
+		return 118
+	case ebiten.KeyW:
+		return 119
+	case ebiten.KeyX:
+		return 120
+	case ebiten.KeyY:
+		return 121
+	case ebiten.KeyZ:
+		return 122
+	case ebiten.Key0:
+		return 48
+	case ebiten.Key1:
+		return 49
+	case ebiten.Key2:
+		return 50
+	case ebiten.Key3:
+		return 51
+	case ebiten.Key4:
+		return 52
+	case ebiten.Key5:
+		return 53
+	case ebiten.Key6:
+		return 54
+	case ebiten.Key7:
+		return 55
+	case ebiten.Key8:
+		return 56
+	case ebiten.Key9:
+		return 57
+	case ebiten.KeySpace:
+		return 32
+	case ebiten.KeyEnter:
+		return 13
+	case ebiten.KeyBackspace:
+		return 8
+	case ebiten.KeyTab:
+		return 9
+	case ebiten.KeyEscape:
+		return 27
+	default:
+		return 0 // Unmapped
+	}
 }
 
 var font = map[rune][5]byte{
@@ -63,17 +145,36 @@ func drawText(screen *ebiten.Image, text string, x, y int, clr color.Color) {
 	}
 }
 
-func drawChicagoText(screen *ebiten.Image, text string, x, y, s int, clr color.Color) {
-	for i, r := range text {
-		if r < 128 {
+func drawChicagoText(screen *ebiten.Image, text string, x, y, scale int, clr color.Color) {
+	if scale <= 0 {
+		scale = 1
+	}
+	charX := x
+	for _, r := range text {
+		if r < 128 && r >= 0x20 { // Printable ASCII range
 			glyph := system.Font[r]
+			// Each row of the glyph is a byte where each bit represents a pixel
+			// Bits are LSB-first: bit 0 is leftmost pixel, bit 7 is rightmost pixel
 			for row := 0; row < 8; row++ {
+				bits := glyph[row]
 				for col := 0; col < 8; col++ {
-					if glyph[row]&(1<<col) != 0 {
-						screen.Set(x+i*8+col, y+row, clr)
+					// Check if this pixel is lit (LSB-first)
+					if (bits & (1 << col)) != 0 {
+						// Draw a scale×scale block for this pixel
+						for dy := 0; dy < scale; dy++ {
+							for dx := 0; dx < scale; dx++ {
+								px := charX + col*scale + dx
+								py := y + row*scale + dy
+								if px >= 0 && py >= 0 { // Basic bounds check
+									screen.Set(px, py, clr)
+								}
+							}
+						}
 					}
 				}
 			}
+			// Advance to next character position
+			charX += 8 * scale
 		}
 	}
 }
@@ -85,13 +186,6 @@ func drawMouse(screen *ebiten.Image, x, y int) {
 	screen.Set(x-1, y, white)
 	screen.Set(x+1, y, white)
 	screen.Set(x, y, color.RGBA{0, 0, 0, 255})
-}
-
-func (g *Game) activeWindow() *Window {
-	if len(g.windows) > 0 {
-		return g.windows[0]
-	}
-	return nil
 }
 
 func (g *Game) loadAndRun(filename string) {
@@ -132,12 +226,22 @@ func (g *Game) Update() error {
 
 	}
 
-	// Trigger V-Blank at the start of every frame
-	if err := g.machine.VBlank(); err != nil {
-		return err
+	// Queue keyboard input through the service manager
+	for _, k := range inpututil.AppendJustPressedKeys(nil) {
+		// Simple key code mapping: for now, map keys to ASCII for basic testing
+		keyCode := luxKeyCodeFromEbiten(k)
+		if keyCode > 0 {
+			g.machine.Services().QueueKeyDown(keyCode)
+		}
+	}
+	for _, k := range inpututil.AppendJustReleasedKeys(nil) {
+		keyCode := luxKeyCodeFromEbiten(k)
+		if keyCode > 0 {
+			g.machine.Services().QueueKeyUp(keyCode)
+		}
 	}
 
-	// Handle mouse input
+	// Queue mouse input through the service manager
 	mx, my := ebiten.CursorPosition()
 	g.mouseX, g.mouseY = mx, my
 	var mBtn uint32
@@ -154,8 +258,18 @@ func (g *Game) Update() error {
 	if adjustedY < 0 {
 		adjustedY = 0
 	}
-	g.machine.MoveMouse(int32(mx), int32(adjustedY))
-	g.machine.PushMouseButton(mBtn)
+
+	// Queue mouse input through the service manager
+	g.machine.Services().QueueMouseMove(int32(mx), int32(adjustedY))
+	g.machine.Services().QueueMouseButton(int32(mx), int32(adjustedY), mBtn, mBtn != 0)
+
+	// Drain all pending input events and dispatch to VM
+	g.machine.DrainInputEvents()
+
+	// Trigger V-Blank at the start of every frame
+	if err := g.machine.VBlank(); err != nil {
+		return err
+	}
 
 	// Tick the machine (runs until YIELD or HALT)
 	running, err := g.machine.Tick()
@@ -171,10 +285,6 @@ func (g *Game) Update() error {
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
-	// ... (window menu rendering)
-	if g.showWinMenu {
-		// Draw window list dropdown
-	}
 	// Get current dimensions from system
 	sw := int(g.machine.System.ScreenWidth())
 	sh := int(g.machine.System.ScreenHeight())
@@ -186,38 +296,54 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		return
 	}
 
-	// Draw the framebuffer in content area (offset by topBarHeight)
-	fb := g.machine.System.Framebuffer()
-	win := g.activeWindow()
-	contentHeight := sh - topBarHeight
-	for y := 0; y < contentHeight; y++ {
-		srcY := y + int(win.scrollY)
-		if srcY >= sh {
-			break
+	// Draw all visible windows in Z-order (service manager provides sorted list)
+	windows := g.machine.System.Services.ListWindowsSorted()
+	for _, win := range windows {
+		if !win.Visible {
+			continue
 		}
-		for x := 0; x < sw; x++ {
-			offset := (srcY*sw + x) * 4
-			if offset+4 <= len(fb) {
-				r := fb[offset]
-				green := fb[offset+1]
-				b := fb[offset+2]
-				screen.Set(x, y+topBarHeight, color.RGBA{r, green, b, 255})
+		// Draw window framebuffer at (win.X, win.Y+topBarHeight)
+		// Clipped to screen bounds
+		for y := 0; y < int(win.Height) && int(win.Y)+y+topBarHeight < sh; y++ {
+			srcY := y + int(win.ScrollY)
+			if srcY >= int(win.Height) {
+				break
+			}
+			screenY := int(win.Y) + y + topBarHeight
+			if screenY < topBarHeight {
+				continue
+			}
+
+			for x := 0; x < int(win.Width) && int(win.X)+x < sw; x++ {
+				screenX := int(win.X) + x
+				offset := (srcY*int(win.Width) + x) * 4
+				if offset+4 <= len(win.FrameBuf) {
+					r := win.FrameBuf[offset]
+					green := win.FrameBuf[offset+1]
+					b := win.FrameBuf[offset+2]
+					screen.Set(screenX, screenY, color.RGBA{r, green, b, 255})
+				}
 			}
 		}
 	}
 
-	// Draw Mac-style Top Bar
+	// Draw Mac-style Top Bar (white background with black text)
 	ebitenutil.DrawRect(screen, 0, 0, float64(sw), float64(topBarHeight), color.White)
 	ebitenutil.DrawLine(screen, 0, float64(topBarHeight), float64(sw), float64(topBarHeight), color.Black)
-	drawChicagoText(screen, "%", 4, 3, 2, color.Black) // Scale 2 for top bar
+	drawChicagoText(screen, "%", 4, 2, 2, color.Black) // Scale 2 for top bar, moved up by 1px
 
 	// Draw active window name in center
-	winName := win.name
-	nameX := (sw - len(winName)*8) / 2
-	drawChicagoText(screen, winName, nameX, 3, 2, color.Black) // Scale 2 for top bar
+	winName := g.machine.System.Services.ActiveWindowName()
+	if winName == "" {
+		winName = "VM"
+	}
+	// With scale=2, each character is 16 pixels wide (8*2)
+	nameX := (sw - len(winName)*16) / 2
+	drawChicagoText(screen, winName, nameX, 2, 2, color.Black) // Scale 2 for top bar, moved up by 1px
 
 	timeStr := time.Now().Format("15:04")
-	drawChicagoText(screen, timeStr, sw-(len(timeStr)*8)-4, 3, 2, color.Black) // Scale 2 for top bar
+	// Position time at right side with proper spacing
+	drawChicagoText(screen, timeStr, sw-(len(timeStr)*16)-4, 2, 2, color.Black) // Scale 2 for top bar, moved up by 1px
 
 	// Draw mouse cursor (only in content area)
 	if g.mouseY >= topBarHeight {
@@ -248,11 +374,28 @@ func (g *Game) Draw(screen *ebiten.Image) {
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
+	// Enforce minimum window size of 800x600
+	minWidth := 800
+	minHeight := 600
+	if outsideWidth < minWidth {
+		outsideWidth = minWidth
+	}
+	if outsideHeight < minHeight {
+		outsideHeight = minHeight
+	}
+
 	// If the user resized the window, we update the internal resolution.
 	// We scale down the outside dimensions by screenScale to get logical pixels.
 	w := outsideWidth / screenScale
 	h := outsideHeight / screenScale
 	if w > 0 && h > 0 {
+		// Enforce minimum internal resolution as well
+		if w < 100 {
+			w = 100
+		}
+		if h < 75 {
+			h = 75
+		}
 		g.machine.System.SetResolution(int32(w), int32(h))
 	}
 	return int(g.machine.System.ScreenWidth()), int(g.machine.System.ScreenHeight())
@@ -297,7 +440,29 @@ func main() {
 		*memFlag = 128
 	}
 
-	var machine *system.Machine
+	// Load boot program
+	bootPath := defaultBootPath
+	if flag.NArg() > 0 {
+		bootPath = flag.Arg(0)
+	}
+	bootBytecode, err := lux.LoadProgram(bootPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading %s: %v\n", bootPath, err)
+		os.Exit(1)
+	}
+
+	machine := system.NewMachine(bootBytecode, uint32(*memFlag)*1024*1024)
+
+	// Set sandbox root to current working directory for file operations
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error getting working directory: %v\n", err)
+		os.Exit(1)
+	}
+	if err := machine.System.SetSandboxRoot(cwd); err != nil {
+		fmt.Fprintf(os.Stderr, "Error setting sandbox root: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Wrap the bus to intercept clipboard writes
 	bus := &clipboardBus{
@@ -343,13 +508,21 @@ func main() {
 	game := &Game{
 		machine:   machine,
 		bootTimer: 60,
-		windows: []*Window{
-			{id: 0, name: "VM", scrollY: 0},
-		},
 	}
+
+	// Create default window via the service manager (ID for future use)
+	_, _ = machine.System.Services.CreateWindow("VM", int32(sw), int32(sh-topBarHeight))
 
 	windowWidth := sw * screenScale
 	windowHeight := sh * screenScale
+
+	// Enforce minimum window size of 800x600
+	if windowWidth < 800 {
+		windowWidth = 800
+	}
+	if windowHeight < 600 {
+		windowHeight = 600
+	}
 
 	ebiten.SetWindowSize(windowWidth, windowHeight)
 	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeEnabled)
