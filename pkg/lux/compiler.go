@@ -10,6 +10,12 @@ import (
 )
 
 // Built-in words map to opcodes
+// textCharRegAddr is the MMIO address of the TEXT device's char register
+// (0x3090 + 12 = 0x309C). Writing a byte here draws that glyph at the current
+// text cursor and advances the cursor — see pkg/system/text.go drawChar.
+// T"..." string literals compile to per-char STOREI to this address.
+const textCharRegAddr = 0x309C
+
 var builtins = map[string]byte{
 	// Stack operations
 	"DUP":  vm.OpDup,
@@ -483,6 +489,14 @@ func (c *Compiler) compileToken(token Token) error {
 			c.emit(vm.EncodeInt32(1)...)
 			c.emit(vm.OpOut)
 		}
+	case TokenTextString:
+		for _, ch := range token.Value {
+			c.emit(vm.OpPush)
+			c.emit(vm.EncodeInt32(int32(ch))...)
+			c.emit(vm.OpPush)
+			c.emit(vm.EncodeInt32(textCharRegAddr)...)
+			c.emit(vm.OpStoreI)
+		}
 	case TokenWord:
 		wordName := strings.ToUpper(token.Value)
 		if c.trace {
@@ -743,6 +757,16 @@ func (c *Compiler) compileQuotationInDefinition(currentWordName string, currentW
 				}
 				c.advance()
 
+			case TokenTextString:
+				for _, ch := range token.Value {
+					quot.Code = append(quot.Code, vm.OpPush)
+					quot.Code = append(quot.Code, vm.EncodeInt32(int32(ch))...)
+					quot.Code = append(quot.Code, vm.OpPush)
+					quot.Code = append(quot.Code, vm.EncodeInt32(textCharRegAddr)...)
+					quot.Code = append(quot.Code, vm.OpStoreI)
+				}
+				c.advance()
+
 			default:
 				return fmt.Errorf("invalid token %v in quotation at line %d", token.Type, token.Line)
 			}
@@ -944,6 +968,16 @@ func (c *Compiler) compileQuotation() error {
 					quot.Code = append(quot.Code, vm.OpPush)
 					quot.Code = append(quot.Code, vm.EncodeInt32(1)...)
 					quot.Code = append(quot.Code, vm.OpOut)
+				}
+				c.advance()
+
+			case TokenTextString:
+				for _, ch := range token.Value {
+					quot.Code = append(quot.Code, vm.OpPush)
+					quot.Code = append(quot.Code, vm.EncodeInt32(int32(ch))...)
+					quot.Code = append(quot.Code, vm.OpPush)
+					quot.Code = append(quot.Code, vm.EncodeInt32(textCharRegAddr)...)
+					quot.Code = append(quot.Code, vm.OpStoreI)
 				}
 				c.advance()
 

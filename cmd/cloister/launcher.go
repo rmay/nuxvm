@@ -1,19 +1,25 @@
 package main
 
 import (
+	"fmt"
 	"image/color"
+	"os"
 
 	"github.com/rmay/nuxvm/pkg/system"
 )
 
-// appEntry is one row in the Applications launcher. Hardcoded for now.
+// appEntry is one row in the Applications launcher. Either luxPath OR launch
+// is set: luxPath entries are loaded as a fresh VM via launchLuxApp; launch
+// entries dispatch into a host-side Go callback (e.g. the embedded Shell).
 type appEntry struct {
-	name   string
-	launch func(g *Game)
+	name    string
+	luxPath string
+	launch  func(g *Game)
 }
 
 var appCatalog = []appEntry{
 	{name: "Shell", launch: func(g *Game) { g.openShellApp() }},
+	{name: "Our Father", luxPath: "apps/our-father.lux"},
 }
 
 // openLauncher creates (or focuses) the Applications window. The window fills
@@ -72,14 +78,21 @@ func launcherEntryRect(i int) rect {
 
 // handleLauncherClick is called when the user clicks inside the launcher
 // window's content area. localX/localY are window-local. Selecting an app
-// closes the launcher and dispatches to the entry's launch fn.
+// closes the launcher and dispatches to the entry — either its host-side
+// callback or the Lux loader.
 func (g *Game) handleLauncherClick(localX, localY int32) {
 	for i, entry := range appCatalog {
 		r := launcherEntryRect(i)
 		if int(localX) >= r.x && int(localX) < r.x+r.w &&
 			int(localY) >= r.y && int(localY) < r.y+r.h {
 			g.closeLauncher()
-			entry.launch(g)
+			if entry.luxPath != "" {
+				if err := g.launchLuxApp(entry.name, entry.luxPath); err != nil {
+					fmt.Fprintf(os.Stderr, "launch %s: %v\n", entry.name, err)
+				}
+			} else if entry.launch != nil {
+				entry.launch(g)
+			}
 			return
 		}
 	}

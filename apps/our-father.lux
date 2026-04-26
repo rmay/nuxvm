@@ -1,0 +1,91 @@
+( Our Father — a two-pane prayer viewer.
+  Left pane: English. Right pane: Latin. )
+
+INCLUDE "lib/system.lux"
+IMPORT TEXT
+IMPORT SCREEN
+
+MODULE OURFATHER
+
+( CURSOR ( x y -- ): set the text cursor by column and row.
+  The TEXT cursor MMIO encodes column in the high 16 bits and row in the
+  low 16 bits, so we shift x up by 65536 (= 1<<16) and OR-add y. )
+@CURSOR
+    swap 65536 * +
+    TEXT::cursor!
+;
+
+( English column starts at cell 0; lines no wider than ~30 cells. )
+@DRAW-ENGLISH
+    0  0 CURSOR  T"Our Father, who art in heaven,"
+    0  1 CURSOR  T"hallowed be thy name; thy"
+    0  2 CURSOR  T"kingdom come; thy will be done"
+    0  3 CURSOR  T"on earth as it is in heaven."
+
+    0  5 CURSOR  T"Give us this day our daily"
+    0  6 CURSOR  T"bread; and forgive us our"
+    0  7 CURSOR  T"trespasses as we forgive those"
+    0  8 CURSOR  T"who trespass against us; and"
+    0  9 CURSOR  T"lead us not into temptation,"
+    0 10 CURSOR  T"but deliver us from evil."
+
+    0 12 CURSOR  T"Amen."
+;
+
+( Latin column starts at cell 41 (one cell of gutter past the divider). )
+@DRAW-LATIN
+    41  0 CURSOR  T"PATER NOSTER, qui es in caelis,"
+    41  1 CURSOR  T"sanctificetur nomen tuum."
+    41  2 CURSOR  T"Adveniat regnum tuum. Fiat"
+    41  3 CURSOR  T"voluntas tua, sicut in caelo"
+    41  4 CURSOR  T"et in terra."
+
+    41  6 CURSOR  T"Panem nostrum quotidianum da"
+    41  7 CURSOR  T"nobis hodie, et dimitte nobis"
+    41  8 CURSOR  T"debita nostra sicut et nos"
+    41  9 CURSOR  T"dimittimus debitoribus nostris."
+    41 10 CURSOR  T"Et ne nos inducas in"
+    41 11 CURSOR  T"tentationem, sed libera nos a"
+    41 12 CURSOR  T"malo."
+
+    41 14 CURSOR  T"Amen."
+;
+
+( Vertical separator at pixel x=320, y=0..755.
+  Body keeps y on the stack, dup's it for the pixel write, increments. )
+@DRAW-DIVIDER
+    0
+    [ dup 756 < ] [
+        dup
+        0 320 ROT
+        SCREEN::pixel!
+        1 +
+    ] |:
+    drop
+;
+
+( Idle: yield once per host frame so the window stays composited but the
+  prayer text isn't repainted. )
+@keep-alive
+    YIELD
+    keep-alive
+;
+
+@start
+    640 SCREEN::width!
+    756 SCREEN::height!
+    1 TEXT::cell-size!     ( 8x8 glyphs )
+    1 TEXT::color!         ( white foreground )
+    -1 SCREEN::clear       ( white, alpha = 255 )
+
+    DRAW-ENGLISH
+    DRAW-LATIN
+    DRAW-DIVIDER
+
+    keep-alive
+;
+
+MODULE MAIN
+IMPORT OURFATHER
+OURFATHER::start
+HALT

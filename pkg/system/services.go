@@ -474,6 +474,16 @@ func (sm *ServiceManager) ListDirectory(path string) ([]string, error) {
 	return names, nil
 }
 
+// SetRenderTarget directly sets the active window ID without changing ZOrder
+// or moving user focus. Used by host-side multi-VM scheduling to redirect
+// screen/text writes to a specific VM's owned window during its tick. The
+// scheduler must restore the previous value afterwards.
+func (sm *ServiceManager) SetRenderTarget(id WindowID) {
+	sm.windowMu.Lock()
+	sm.activeWinID = id
+	sm.windowMu.Unlock()
+}
+
 // FocusWindow sets active window and bumps its ZOrder to front.
 func (sm *ServiceManager) FocusWindow(id WindowID) {
 	sm.windowMu.Lock()

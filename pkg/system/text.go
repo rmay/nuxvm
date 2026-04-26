@@ -161,26 +161,51 @@ func (s *System) advanceCursor() {
 }
 
 // Font is a compact 8x8 bitmap font covering printable ASCII (0x20–0x7E).
+// Codepoints below 0x20 (control chars) are left zeroed.
 var Font [128][8]byte
+
+// chicago.png is laid out as a 16-column grid of 8x8 cells. Cell (0,0) holds
+// 0x20 (space), so the printable ASCII range 0x20–0x7F fills the top 6 rows
+// (96 glyphs). Cells past row 6 are extras (high-ASCII / Mac Roman) and
+// currently unused — we just don't load them.
+const fontFirstCodepoint = 0x20
+const fontGridCols = 16
+const fontCellSize = 8
+
+// fontIsLitPixel returns whether (x,y) in the chicago.png is a "lit" (foreground)
+// pixel. The PNG uses three palette colors: a pale background, a dark green
+// foreground, and bright magenta gutters / unused regions. Pixels are lit
+// iff red < ~half — that selects only the dark-green glyph color and rejects
+// both the pale BG and the magenta gutter.
+func fontIsLitPixel(r, g, b uint32) bool {
+	return r < 0x8000 && g > 0x4000 && b < 0x8000
+}
 
 func init() {
 	img, err := png.Decode(bytes.NewReader(chicagoPNG))
 	if err != nil {
 		panic("failed to decode chicago.png: " + err.Error())
 	}
-	
-	for i := 0; i < 128; i++ {
-		cellX := (i % 16) * 8
-		cellY := (i / 16) * 8
-		for row := 0; row < 8; row++ {
+
+	bounds := img.Bounds()
+	maxIdx := (bounds.Dy() / fontCellSize) * fontGridCols // total cells in the sheet
+
+	for codepoint := fontFirstCodepoint; codepoint < 0x80; codepoint++ {
+		idx := codepoint - fontFirstCodepoint
+		if idx >= maxIdx {
+			break
+		}
+		cellX := (idx % fontGridCols) * fontCellSize
+		cellY := (idx / fontGridCols) * fontCellSize
+		for row := 0; row < fontCellSize; row++ {
 			var rowByte byte
-			for col := 0; col < 8; col++ {
-				r, _, _, _ := img.At(cellX+col, cellY+row).RGBA()
-				if r > 0x7FFF {
-					rowByte |= (1 << col)
+			for col := 0; col < fontCellSize; col++ {
+				r, g, b, _ := img.At(cellX+col, cellY+row).RGBA()
+				if fontIsLitPixel(r, g, b) {
+					rowByte |= 1 << col
 				}
 			}
-			Font[i][row] = rowByte
+			Font[codepoint][row] = rowByte
 		}
 	}
 }

@@ -52,6 +52,43 @@ func NewMachine(program []byte, memSize uint32, trace ...bool) *Machine {
 	}
 }
 
+// NewMachineSharedServices builds a Machine that shares a ServiceManager
+// (window list, layout, input queue, sandbox resolver) with an already-running
+// Machine. Used by the Cloister launcher to spawn additional Lux programs in
+// their own VM while keeping a single window manager.
+//
+// The new Machine has its own CPU, memory, text/screen state, and vectors —
+// only Services is shared. Services goroutines are NOT restarted; the caller
+// must have already started them on the shared instance.
+func NewMachineSharedServices(program []byte, memSize uint32, services *ServiceManager, trace ...bool) *Machine {
+	var cpu *vm.VM
+	if memSize > 0 {
+		cpu = vm.NewVMWithMemorySize(program, memSize, trace...)
+	} else {
+		cpu = vm.NewVM(program, trace...)
+	}
+	sys := NewSystem()
+	// Drop the auto-created Services in favor of the shared one. The discarded
+	// Services has unstarted goroutine channels; they're GC'd when this scope
+	// exits.
+	sys.Services = services
+	sys.SetMemory(cpu.Memory())
+	sys.SetVectorCallbacks(
+		func(index int) uint32 { return cpu.GetVector(index) },
+		func(index int, addr uint32) { cpu.SetVector(index, addr) },
+	)
+	cpu.SetBus(sys)
+
+	sys.SoundHandler = func(soundID int32) {
+		select {
+		case sys.Services.soundChan <- SoundMsg{Command: "play_sound", SoundID: soundID}:
+		default:
+		}
+	}
+
+	return &Machine{CPU: cpu, System: sys}
+}
+
 // Tick executes the CPU until it yields or halts.
 // It returns whether the CPU is still running.
 func (m *Machine) Tick() (bool, error) {

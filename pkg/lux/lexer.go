@@ -19,6 +19,7 @@ const (
 	TokenSemicolon                  // ;
 	TokenComment                    // ( ... )
 	TokenString                     // "chars"
+	TokenTextString                 // T"chars" — emits each char to the TEXT char register (12444) instead of OUT 1
 	TokenLBracket                   // [ - start quotation
 	TokenRBracket                   // ] - end quotation
 	TokenEOF                        // End of file
@@ -115,6 +116,17 @@ func (l *Lexer) NextToken() (Token, error) {
 			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading string\n")
 		}
 		return l.readString()
+	case ch == 'T' && l.pos+1 < len(l.input) && l.input[l.pos+1] == '"':
+		if l.trace {
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading T-string\n")
+		}
+		l.advance() // skip T; readString consumes the surrounding quotes
+		tok, err := l.readString()
+		if err != nil {
+			return tok, err
+		}
+		tok.Type = TokenTextString
+		return tok, nil
 	case ch == '@':
 		if l.trace {
 			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading @\n")

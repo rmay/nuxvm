@@ -37,12 +37,18 @@ cloisterinstall:
 vmexamples:
 	cd examples && go run examples.go
 
+# Build the converter
+pngtocff:
+	go build -o bin/png2cff ./cmd/png2cff
+
+
 buildall:
 	mkdir -p bin
 	go build -o bin/nux ./cmd/nux
 	go build -o bin/cloister ./cmd/cloister
-	go build -o bin/luxc cmd/luxc/main.go
-	go build -o bin/luxrepl cmd/luxrepl/main.go
+	go build -o bin/luxc ./cmd/luxc
+	go build -o bin/luxrepl ./cmd/luxrepl
+	go build -o bin/png2cff ./cmd/png2cff
 
 luxbuild:
 	go build -o bin/luxc cmd/luxc/main.go

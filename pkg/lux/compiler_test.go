@@ -198,6 +198,35 @@ func TestCompileMultipleStrings(t *testing.T) {
 	}
 }
 
+func TestCompileTextStringEmitsToTextRegister(t *testing.T) {
+	// T"Hi" compiles to: prelude OpJmp+addr(5) | per-char [PUSH ch | PUSH 0x309C | STOREI](11) | trailing jmp+halt(6).
+	bytecode, err := Compile(`T"Hi"`)
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	const preludeLen = 5
+	const perChar = 11
+	if len(bytecode) < preludeLen+2*perChar {
+		t.Fatalf("bytecode too short (%d) to hold T\"Hi\" emit sequence", len(bytecode))
+	}
+	// First emitted char: bytes [preludeLen..preludeLen+perChar).
+	for i, ch := range "Hi" {
+		off := preludeLen + i*perChar
+		val := uint32(bytecode[off+1])<<24 | uint32(bytecode[off+2])<<16 | uint32(bytecode[off+3])<<8 | uint32(bytecode[off+4])
+		if int32(val) != ch {
+			t.Errorf("char %d: expected pushed value %d (%q), got %d", i, ch, ch, val)
+		}
+		addr := uint32(bytecode[off+6])<<24 | uint32(bytecode[off+7])<<16 | uint32(bytecode[off+8])<<8 | uint32(bytecode[off+9])
+		if addr != textCharRegAddr {
+			t.Errorf("char %d: expected addr 0x%X, got 0x%X", i, textCharRegAddr, addr)
+		}
+		// Last byte of the per-char emit is OpStoreI (0x1F).
+		if bytecode[off+10] != 0x1F {
+			t.Errorf("char %d: expected OpStoreI (0x1F) at offset %d, got 0x%02x", i, off+10, bytecode[off+10])
+		}
+	}
+}
+
 // ==========================================
 // STACK OPERATIONS
 // ==========================================

@@ -68,6 +68,8 @@ type Game struct {
 	launcherWinID system.WindowID // 0 if launcher is not open
 	shellApp      *ShellApp       // singleton; nil until first launch
 
+	apps []*LuxApp // .lux programs launched from the Applications launcher; each owns its own VM and window
+
 	// Restart-OS support: when set, top of next Update rebuilds the machine
 	// from shellPath and resets WM/launcher/shell state. Cloister keeps running.
 	restartRequested bool
@@ -469,6 +471,8 @@ func (g *Game) Update() error {
 			case HitZoneCloseButton:
 				if hit.WinID == g.launcherWinID {
 					g.closeLauncher()
+				} else if g.closeLuxApp(hit.WinID) {
+					// closeLuxApp handled cleanup
 				} else {
 					if g.shellApp != nil && hit.WinID == g.shellApp.winID {
 						g.shellApp = nil
@@ -537,6 +541,11 @@ func (g *Game) Update() error {
 
 	// Mark active window dirty so next Draw() uploads the framebuffer
 	g.wm.MarkDirty(g.machine.Services().GetActiveWindowID())
+
+	// Tick every spawned Lux app under its own render target. Each app's
+	// machine writes to its own window's framebuffer; the helper handles
+	// the activeWinID save/restore.
+	g.tickLuxApps()
 
 	// Ensure panes are initialized: if panes is empty but we have windows, set up a single pane for the active window
 	panes := g.machine.Services().ListPanes()
@@ -1378,6 +1387,7 @@ func (g *Game) restartMachine() error {
 	g.wm = NewWindowManager(machine.System.Services)
 	g.launcherWinID = 0
 	g.shellApp = nil
+	g.apps = nil
 	g.shellMode = ShellNormal
 	g.bootTimer = 60
 	return nil
