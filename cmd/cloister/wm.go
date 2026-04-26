@@ -10,9 +10,11 @@ const (
 	WinChromeHeight  = 20 // title bar height per window
 	WinBorderWidth   = 1  // 1px border all sides
 	WinCloseBtnX     = 10 // close button center X offset from window left
-	WinCloseBtnY     = 10 // close button center Y offset from chrome top
-	WinCloseBtnR     = 5  // close button hit-test radius
-	WinCloseBtnSize  = 8  // close button drawn size (square)
+	WinPrevBtnX      = 24 // previous-window button center X offset
+	WinNextBtnX      = 38 // next-window button center X offset
+	WinCloseBtnY     = 10 // chrome-button center Y offset from chrome top
+	WinCloseBtnR     = 5  // chrome-button hit-test radius
+	WinCloseBtnSize  = 8  // chrome-button drawn size (square)
 	WinScrollbarSize = 15 // vertical and horizontal scrollbar thickness
 	WinScrollArrowH  = 15 // height of the up/down arrow buttons
 	WinScrollLineStep = 16 // pixels per arrow click
@@ -24,6 +26,8 @@ const (
 	HitZoneNone HitZone = iota
 	HitZoneTitleBar
 	HitZoneCloseButton
+	HitZonePrevButton
+	HitZoneNextButton
 	HitZoneContent
 	HitZoneScrollUp
 	HitZoneScrollDown
@@ -117,9 +121,11 @@ func (wm *WindowManager) HitTest(x, y, topBarH int, windows []*system.Window) Hi
 			continue
 		}
 
-		// Compute full frame rectangle (includes chrome and border)
+		// Compute full frame rectangle (includes chrome and border).
+		// Convention (matches drawWindowChrome): chrome top in screen
+		// coords is win.Y + topBarH, content top is win.Y + topBarH + WinChromeHeight.
 		frameX := int(win.X) - WinBorderWidth
-		frameY := int(win.Y) + topBarH - WinChromeHeight - WinBorderWidth
+		frameY := int(win.Y) + topBarH - WinBorderWidth
 		frameW := int(win.Width) + 2*WinBorderWidth
 		frameH := int(win.Height) + WinChromeHeight + 2*WinBorderWidth
 
@@ -129,17 +135,27 @@ func (wm *WindowManager) HitTest(x, y, topBarH int, windows []*system.Window) Hi
 		}
 
 		// We hit this window. Determine which zone.
-		// Close button hit-test
-		btnCenterX := int(win.X) + WinCloseBtnX
-		btnCenterY := int(win.Y) + topBarH - WinChromeHeight + WinCloseBtnY
-		dx := x - btnCenterX
+		// Chrome button hit-tests (close, prev, next) — all share Y and radius.
+		btnCenterY := int(win.Y) + topBarH + WinCloseBtnY
 		dy := y - btnCenterY
-		if dx*dx+dy*dy <= WinCloseBtnR*WinCloseBtnR {
-			return HitResult{WinID: win.ID, Zone: HitZoneCloseButton}
+		if dy*dy <= WinCloseBtnR*WinCloseBtnR {
+			for _, b := range [...]struct {
+				cx   int
+				zone HitZone
+			}{
+				{int(win.X) + WinCloseBtnX, HitZoneCloseButton},
+				{int(win.X) + WinPrevBtnX, HitZonePrevButton},
+				{int(win.X) + WinNextBtnX, HitZoneNextButton},
+			} {
+				dx := x - b.cx
+				if dx*dx+dy*dy <= WinCloseBtnR*WinCloseBtnR {
+					return HitResult{WinID: win.ID, Zone: b.zone}
+				}
+			}
 		}
 
 		// Title bar check
-		if y >= int(win.Y)+topBarH-WinChromeHeight && y < int(win.Y)+topBarH {
+		if y >= int(win.Y)+topBarH && y < int(win.Y)+topBarH+WinChromeHeight {
 			return HitResult{WinID: win.ID, Zone: HitZoneTitleBar}
 		}
 

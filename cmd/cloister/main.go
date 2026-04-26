@@ -402,7 +402,7 @@ func (g *Game) Update() error {
 
 	// Cycle through windows
 	if inpututil.IsKeyJustPressed(ebiten.KeyF2) {
-		g.machine.Services().CycleWindows()
+		g.cycleFocus(+1)
 	}
 
 	// Queue keyboard input — when a Shell window is active, the host eats every
@@ -461,7 +461,7 @@ func (g *Game) Update() error {
 		if justPressed {
 			switch hit.Zone {
 			case HitZoneTitleBar:
-				g.machine.Services().FocusWindow(hit.WinID)
+				g.focusAndShow(hit.WinID)
 				if win := g.machine.System.Services.GetWindowByID(hit.WinID); win != nil {
 					g.dragging = true
 					g.dragWinID = hit.WinID
@@ -469,16 +469,11 @@ func (g *Game) Update() error {
 					g.dragOffY = my - topBarHeight - int(win.Y)
 				}
 			case HitZoneCloseButton:
-				if hit.WinID == g.launcherWinID {
-					g.closeLauncher()
-				} else if g.closeLuxApp(hit.WinID) {
-					// closeLuxApp handled cleanup
-				} else {
-					if g.shellApp != nil && hit.WinID == g.shellApp.winID {
-						g.shellApp = nil
-					}
-					g.machine.Services().CloseWindow(hit.WinID)
-				}
+				g.closeWindowByID(hit.WinID)
+			case HitZonePrevButton:
+				g.cycleFocus(-1)
+			case HitZoneNextButton:
+				g.cycleFocus(+1)
 			case HitZoneScrollUp:
 				g.adjustScroll(hit.WinID, -WinScrollLineStep)
 			case HitZoneScrollDown:
@@ -486,7 +481,7 @@ func (g *Game) Update() error {
 			case HitZoneScrollTrack, HitZoneGrowBox:
 				// no-op in v1 — track click could page later, grow box could resize
 			case HitZoneContent:
-				g.machine.Services().FocusWindow(hit.WinID)
+				g.focusAndShow(hit.WinID)
 				if hit.WinID == g.launcherWinID {
 					g.handleLauncherClick(int32(hit.LocalX), int32(hit.LocalY))
 				} else if g.shellApp != nil && hit.WinID == g.shellApp.winID {
@@ -604,7 +599,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		if win == nil {
 			continue
 		}
-		// Draw window chrome (title bar, border, close button)
+		// Draw window chrome (title bar, border, close/prev/next buttons)
 		g.drawWindowChrome(screen, win, win.ID == activeID)
 		// Draw window content from cached image
 		if img := g.wm.ContentImage(win.ID); img != nil {
@@ -612,6 +607,9 @@ func (g *Game) Draw(screen *ebiten.Image) {
 			op.GeoM.Translate(float64(win.X), float64(int(win.Y)+topBarHeight+WinChromeHeight))
 			screen.DrawImage(img, op)
 		}
+		// Scrollbars paint *after* the framebuffer so the gutter is visible
+		// (otherwise the per-window content image overdraws it).
+		g.drawWindowScrollbars(screen, win)
 	}
 
 	// Draw Mac-style top menubar
@@ -695,11 +693,25 @@ func (g *Game) drawWindowChrome(screen *ebiten.Image, win *system.Window, isActi
 	}
 	ebitenutil.DrawRect(screen, x, chromeTopY, w, chromeH, titleClr)
 
-	// Close button (red square with darker border)
-	btnX := x + float64(WinCloseBtnX) - float64(WinCloseBtnSize)/2
+	// Close button (red square with darker border).
 	btnY := chromeTopY + float64(WinCloseBtnY) - float64(WinCloseBtnSize)/2
-	ebitenutil.DrawRect(screen, btnX, btnY, float64(WinCloseBtnSize), float64(WinCloseBtnSize), color.RGBA{204, 51, 51, 255})
-	ebitenutil.DrawRect(screen, btnX+1, btnY+1, float64(WinCloseBtnSize-2), float64(WinCloseBtnSize-2), color.RGBA{170, 0, 0, 255})
+	closeX := x + float64(WinCloseBtnX) - float64(WinCloseBtnSize)/2
+	ebitenutil.DrawRect(screen, closeX, btnY, float64(WinCloseBtnSize), float64(WinCloseBtnSize), color.RGBA{204, 51, 51, 255})
+	ebitenutil.DrawRect(screen, closeX+1, btnY+1, float64(WinCloseBtnSize-2), float64(WinCloseBtnSize-2), color.RGBA{170, 0, 0, 255})
+
+	// Prev / Next window buttons — same 8x8 footprint, gray with a < / > glyph.
+	for _, b := range [...]struct {
+		cx    int
+		label string
+	}{
+		{WinPrevBtnX, "<"},
+		{WinNextBtnX, ">"},
+	} {
+		bx := x + float64(b.cx) - float64(WinCloseBtnSize)/2
+		ebitenutil.DrawRect(screen, bx, btnY, float64(WinCloseBtnSize), float64(WinCloseBtnSize), color.RGBA{170, 170, 170, 255})
+		ebitenutil.DrawRect(screen, bx+1, btnY+1, float64(WinCloseBtnSize-2), float64(WinCloseBtnSize-2), color.RGBA{220, 220, 220, 255})
+		drawShellText(screen, b.label, int(bx)+1, int(btnY)-2, color.Black)
+	}
 
 	// Window title centered in chrome
 	nameX := int(x) + (int(w)-len(win.Name)*shellFontW)/2
@@ -708,10 +720,6 @@ func (g *Game) drawWindowChrome(screen *ebiten.Image, win *system.Window, isActi
 
 	// Horizontal line separating chrome from content
 	ebitenutil.DrawLine(screen, x, chromeTopY+chromeH, x+w, chromeTopY+chromeH, color.RGBA{0, 0, 0, 255})
-
-	// Mac/SE-style scrollbars and grow box. Always shown — bars are part of
-	// the chrome whether or not content overflows.
-	g.drawWindowScrollbars(screen, win)
 }
 
 // drawWindowScrollbars paints the right-edge vertical track + arrows, the
@@ -1113,10 +1121,10 @@ func (g *Game) handleWindowRowMenuInput(justPressed bool) {
 	execute := func(i int) {
 		switch i {
 		case 0: // Focus
-			g.machine.Services().FocusWindow(g.windowRowMenuWin)
+			g.focusAndShow(g.windowRowMenuWin)
 			g.shellMode = ShellNormal
 		case 1: // Close
-			g.machine.Services().CloseWindow(g.windowRowMenuWin)
+			g.closeWindowByID(g.windowRowMenuWin)
 			g.shellMode = ShellWindowsList
 			g.windowsIdx = 0
 		}
@@ -1360,6 +1368,68 @@ func (g *Game) adjustScroll(id system.WindowID, delta int32) {
 		win.ScrollY = 0
 	}
 	g.wm.MarkDirty(id)
+}
+
+// focusAndShow moves user focus to winID and, if the window isn't already a
+// visible pane, replaces the layout with a single full-screen pane on it.
+// This is the only correct way to "switch to" a window — bare FocusWindow
+// only bumps Z-order, which the pane-driven Draw loop ignores.
+func (g *Game) focusAndShow(winID system.WindowID) {
+	sm := g.machine.Services()
+	if sm.GetWindowByID(winID) == nil {
+		return
+	}
+	sm.FocusWindow(winID)
+	for _, p := range sm.ListPanes() {
+		if p.WinID == winID {
+			return
+		}
+	}
+	sw := g.machine.System.ScreenWidth()
+	sh := g.machine.System.ScreenHeight()
+	contentH := sh - int32(topBarHeight) - int32(WinChromeHeight)
+	if contentH < 100 {
+		contentH = 100
+	}
+	sm.LayoutSingle(winID, 0, 0, sw, contentH)
+}
+
+// cycleFocus advances focus by dir steps through the Z-ordered window list
+// (dir=+1 = next, -1 = previous), wrapping at the ends, and shows the result.
+func (g *Game) cycleFocus(dir int) {
+	wins := g.machine.Services().ListWindowsSorted()
+	n := len(wins)
+	if n == 0 {
+		return
+	}
+	active := g.machine.Services().GetActiveWindowID()
+	idx := 0
+	for i, w := range wins {
+		if w.ID == active {
+			idx = i
+			break
+		}
+	}
+	next := wins[((idx+dir)%n+n)%n]
+	g.focusAndShow(next.ID)
+}
+
+// closeWindowByID closes whichever kind of window winID belongs to (launcher,
+// Lux app, shell, or a plain VM-owned window) and tears down the matching
+// host-side state. Used by both the chrome close button and the Apple-menu
+// Close action so they can't drift apart.
+func (g *Game) closeWindowByID(winID system.WindowID) {
+	if winID == g.launcherWinID {
+		g.closeLauncher()
+		return
+	}
+	if g.closeLuxApp(winID) {
+		return
+	}
+	if g.shellApp != nil && winID == g.shellApp.winID {
+		g.shellApp = nil
+	}
+	g.machine.Services().CloseWindow(winID)
 }
 
 // restartMachine reloads the shell program and rebuilds the VM/window state.
