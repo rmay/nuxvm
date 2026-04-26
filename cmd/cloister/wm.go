@@ -7,12 +7,15 @@ import (
 
 // Window chrome geometry constants
 const (
-	WinChromeHeight = 20   // title bar height per window
-	WinBorderWidth  = 1    // 1px border all sides
-	WinCloseBtnX    = 10   // close button center X offset from window left
-	WinCloseBtnY    = 10   // close button center Y offset from chrome top
-	WinCloseBtnR    = 5    // close button hit-test radius
-	WinCloseBtnSize = 8    // close button drawn size (square)
+	WinChromeHeight  = 20 // title bar height per window
+	WinBorderWidth   = 1  // 1px border all sides
+	WinCloseBtnX     = 10 // close button center X offset from window left
+	WinCloseBtnY     = 10 // close button center Y offset from chrome top
+	WinCloseBtnR     = 5  // close button hit-test radius
+	WinCloseBtnSize  = 8  // close button drawn size (square)
+	WinScrollbarSize = 15 // vertical and horizontal scrollbar thickness
+	WinScrollArrowH  = 15 // height of the up/down arrow buttons
+	WinScrollLineStep = 16 // pixels per arrow click
 )
 
 type HitZone int
@@ -22,6 +25,10 @@ const (
 	HitZoneTitleBar
 	HitZoneCloseButton
 	HitZoneContent
+	HitZoneScrollUp
+	HitZoneScrollDown
+	HitZoneScrollTrack // vertical track (between arrows)
+	HitZoneGrowBox
 )
 
 type HitResult struct {
@@ -136,9 +143,34 @@ func (wm *WindowManager) HitTest(x, y, topBarH int, windows []*system.Window) Hi
 			return HitResult{WinID: win.ID, Zone: HitZoneTitleBar}
 		}
 
-		// Content area
+		// Window-local coordinates inside the content area (chrome already excluded)
 		localX := x - int(win.X)
 		localY := y - (int(win.Y) + topBarH + WinChromeHeight)
+		contentW := int(win.Width)
+		contentH := int(win.Height)
+
+		// Bottom-right grow box (visual only in v1)
+		if localX >= contentW-WinScrollbarSize && localY >= contentH-WinScrollbarSize {
+			return HitResult{WinID: win.ID, Zone: HitZoneGrowBox}
+		}
+
+		// Vertical scrollbar (right gutter, excluding the grow corner)
+		if localX >= contentW-WinScrollbarSize {
+			if localY < WinScrollArrowH {
+				return HitResult{WinID: win.ID, Zone: HitZoneScrollUp}
+			}
+			if localY >= contentH-WinScrollbarSize-WinScrollArrowH {
+				return HitResult{WinID: win.ID, Zone: HitZoneScrollDown}
+			}
+			return HitResult{WinID: win.ID, Zone: HitZoneScrollTrack}
+		}
+
+		// Horizontal scrollbar (bottom gutter, excluding the grow corner) —
+		// purely decorative in v1; treated as a no-op zone by mapping to track.
+		if localY >= contentH-WinScrollbarSize {
+			return HitResult{WinID: win.ID, Zone: HitZoneScrollTrack}
+		}
+
 		return HitResult{WinID: win.ID, Zone: HitZoneContent, LocalX: localX, LocalY: localY}
 	}
 

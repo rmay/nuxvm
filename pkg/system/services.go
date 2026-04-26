@@ -539,6 +539,16 @@ func (sm *ServiceManager) ListPanes() []Pane {
 	return panes
 }
 
+// ClearPanes drops all panes. The Update loop's auto-recovery code will
+// re-layout to LayoutSingle(activeWindow) on the next frame. Useful when a
+// pane's window was just closed and the layout should fall back to whatever
+// the new active window is.
+func (sm *ServiceManager) ClearPanes() {
+	sm.windowMu.Lock()
+	defer sm.windowMu.Unlock()
+	sm.panes = sm.panes[:0]
+}
+
 // LayoutSingle sets up a single full-screen pane for the given window ID.
 // contentX, contentY, contentW, contentH describe the area available for windows (below menubar, etc).
 func (sm *ServiceManager) LayoutSingle(winID WindowID, contentX, contentY, contentW, contentH int32) {
