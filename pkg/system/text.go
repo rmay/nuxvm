@@ -162,7 +162,7 @@ func (s *System) advanceCursor() {
 
 // Font is a compact 8x8 bitmap font covering printable ASCII (0x20–0x7E).
 // Codepoints below 0x20 (control chars) are left zeroed.
-var Font [128][8]byte
+var Font [256][8]byte
 
 // chicago.png is laid out as a 16-column grid of 8x8 cells. Cell (0,0) holds
 // 0x20 (space), so the printable ASCII range 0x20–0x7F fills the top 6 rows
@@ -190,7 +190,7 @@ func init() {
 	bounds := img.Bounds()
 	maxIdx := (bounds.Dy() / fontCellSize) * fontGridCols // total cells in the sheet
 
-	for codepoint := fontFirstCodepoint; codepoint < 0x80; codepoint++ {
+	for codepoint := fontFirstCodepoint; codepoint < 0x100; codepoint++ {
 		idx := codepoint - fontFirstCodepoint
 		if idx >= maxIdx {
 			break

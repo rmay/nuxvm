@@ -100,7 +100,7 @@ MODULE QUILL
 ;
 
 @draw-status
-    0 784 TEXT::cursor!
+    0 392 TEXT::cursor!
     "Mode: "
     mode@ 0 = [ "Text" ] [ "Hex " ] ?:
     " | File: " 

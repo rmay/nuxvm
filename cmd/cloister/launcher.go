@@ -5,6 +5,8 @@ import (
 	"image/color"
 	"os"
 
+	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/rmay/nuxvm/pkg/system"
 )
 
@@ -35,7 +37,7 @@ func (g *Game) openLauncher() {
 
 	sw := int32(g.machine.System.ScreenWidth())
 	sh := int32(g.machine.System.ScreenHeight())
-	contentH := sh - int32(topBarHeight) - int32(WinChromeHeight)
+	contentH := sh - int32(TopBarHeight)
 	if contentH < 100 {
 		contentH = 100
 	}
@@ -57,16 +59,19 @@ func (g *Game) closeLauncher() {
 	g.launcherWinID = 0
 }
 
-// drawLauncherContent paints the launcher's window framebuffer with a row of
+// drawLauncherContent paints the launcher's content image with a row of
 // app entries. Each entry is a clickable rect — the hit rects come from
 // launcherEntryRect so renderer and input handler can't drift.
-func (g *Game) drawLauncherContent(win *system.Window) {
-	clearWindow(win, color.RGBA{240, 240, 240, 255})
+func (g *Game) drawLauncherContent(win *system.WindowRecord, img *ebiten.Image) {
+	if img == nil {
+		return
+	}
+	img.Fill(color.RGBA{240, 240, 240, 255})
 	for i := range appCatalog {
 		r := launcherEntryRect(i)
-		fillRectInWindow(win, r, color.RGBA{200, 200, 200, 255})
-		strokeRectInWindow(win, r, color.RGBA{0, 0, 0, 255})
-		drawChicagoTextInWindow(win, appCatalog[i].name, r.x+10, r.y+10, 2, color.RGBA{0, 0, 0, 255})
+		ebitenutil.DrawRect(img, float64(r.x), float64(r.y), float64(r.w), float64(r.h), color.RGBA{200, 200, 200, 255})
+		strokeRect(img, float32(r.x), float32(r.y), float32(r.w), float32(r.h), color.RGBA{0, 0, 0, 255})
+		drawSystemFontText(img, appCatalog[i].name, r.x+10, r.y+10, 2, color.RGBA{0, 0, 0, 255})
 	}
 }
 
@@ -94,73 +99,6 @@ func (g *Game) handleLauncherClick(localX, localY int32) {
 				entry.launch(g)
 			}
 			return
-		}
-	}
-}
-
-// ---- Window-framebuffer drawing helpers (RGBA, LSB-first to match Chicago font) ----
-
-func setPixelInWindow(win *system.Window, x, y int, c color.RGBA) {
-	if x < 0 || y < 0 || x >= int(win.Width) || y >= int(win.Height) {
-		return
-	}
-	off := (y*int(win.Width) + x) * 4
-	win.FrameBuf[off+0] = c.R
-	win.FrameBuf[off+1] = c.G
-	win.FrameBuf[off+2] = c.B
-	win.FrameBuf[off+3] = c.A
-}
-
-func clearWindow(win *system.Window, c color.RGBA) {
-	for y := 0; y < int(win.Height); y++ {
-		for x := 0; x < int(win.Width); x++ {
-			setPixelInWindow(win, x, y, c)
-		}
-	}
-}
-
-func fillRectInWindow(win *system.Window, r rect, c color.RGBA) {
-	for y := r.y; y < r.y+r.h; y++ {
-		for x := r.x; x < r.x+r.w; x++ {
-			setPixelInWindow(win, x, y, c)
-		}
-	}
-}
-
-func strokeRectInWindow(win *system.Window, r rect, c color.RGBA) {
-	for x := r.x; x < r.x+r.w; x++ {
-		setPixelInWindow(win, x, r.y, c)
-		setPixelInWindow(win, x, r.y+r.h-1, c)
-	}
-	for y := r.y; y < r.y+r.h; y++ {
-		setPixelInWindow(win, r.x, y, c)
-		setPixelInWindow(win, r.x+r.w-1, y, c)
-	}
-}
-
-// drawChicagoTextInWindow renders ASCII text into a window framebuffer using
-// the same 8x8 Chicago glyphs the host uses for menus.
-func drawChicagoTextInWindow(win *system.Window, s string, x, y, scale int, c color.RGBA) {
-	if scale <= 0 {
-		scale = 1
-	}
-	charX := x
-	for _, r := range s {
-		if r >= 0x20 && r < 128 {
-			glyph := system.Font[r]
-			for row := 0; row < 8; row++ {
-				bits := glyph[row]
-				for col := 0; col < 8; col++ {
-					if bits&(1<<col) != 0 {
-						for dy := 0; dy < scale; dy++ {
-							for dx := 0; dx < scale; dx++ {
-								setPixelInWindow(win, charX+col*scale+dx, y+row*scale+dy, c)
-							}
-						}
-					}
-				}
-			}
-			charX += 8 * scale
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"image/color"
 	"strings"
 
+	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/rmay/nuxvm/pkg/luxrepl"
 	"github.com/rmay/nuxvm/pkg/system"
 )
@@ -17,6 +18,8 @@ type ShellApp struct {
 	scrollback []string // recent rendered lines (top-down, oldest first)
 	inputLine  string   // current line being typed
 	prompt     string
+	history    []string
+	historyIdx int // -1 if not navigating history
 }
 
 const shellMaxScrollback = 500
@@ -27,7 +30,7 @@ func (g *Game) openShellApp() {
 		if g.machine.Services().GetWindowByID(g.shellApp.winID) != nil {
 			g.machine.Services().FocusWindow(g.shellApp.winID)
 			g.machine.Services().LayoutSingle(g.shellApp.winID,
-				0, 0, g.machine.System.ScreenWidth(), g.machine.System.ScreenHeight()-int32(topBarHeight)-int32(WinChromeHeight))
+				0, 0, g.machine.System.ScreenWidth(), g.machine.System.ScreenHeight()-int32(TopBarHeight))
 			return
 		}
 		g.shellApp = nil
@@ -35,7 +38,7 @@ func (g *Game) openShellApp() {
 
 	sw := g.machine.System.ScreenWidth()
 	sh := g.machine.System.ScreenHeight()
-	contentH := sh - int32(topBarHeight) - int32(WinChromeHeight)
+	contentH := sh - int32(TopBarHeight)
 	if contentH < 100 {
 		contentH = 100
 	}
@@ -59,6 +62,7 @@ func (sa *ShellApp) handleChar(ch rune) {
 		return
 	}
 	sa.inputLine += string(ch)
+	sa.historyIdx = -1
 }
 
 // handleBackspace trims the last rune from the input buffer.
@@ -68,6 +72,34 @@ func (sa *ShellApp) handleBackspace() {
 	}
 	r := []rune(sa.inputLine)
 	sa.inputLine = string(r[:len(r)-1])
+	sa.historyIdx = -1
+}
+
+// handleUp navigates to the previous history entry.
+func (sa *ShellApp) handleUp() {
+	if len(sa.history) == 0 {
+		return
+	}
+	if sa.historyIdx == -1 {
+		sa.historyIdx = len(sa.history) - 1
+	} else if sa.historyIdx > 0 {
+		sa.historyIdx--
+	}
+	sa.inputLine = sa.history[sa.historyIdx]
+}
+
+// handleDown navigates to the next history entry.
+func (sa *ShellApp) handleDown() {
+	if sa.historyIdx == -1 {
+		return
+	}
+	if sa.historyIdx < len(sa.history)-1 {
+		sa.historyIdx++
+		sa.inputLine = sa.history[sa.historyIdx]
+	} else {
+		sa.historyIdx = -1
+		sa.inputLine = ""
+	}
 }
 
 // handleEnter commits the current input line. Host words are intercepted and
@@ -75,7 +107,19 @@ func (sa *ShellApp) handleBackspace() {
 func (sa *ShellApp) handleEnter(g *Game) {
 	line := sa.inputLine
 	sa.inputLine = ""
+	sa.historyIdx = -1
+	if strings.TrimSpace(line) != "" {
+		sa.history = append(sa.history, line)
+		if len(sa.history) > 100 {
+			sa.history = sa.history[1:]
+		}
+	}
 	sa.appendOutput(sa.prompt + line + "\n")
+
+	// Auto-scroll to bottom
+	if win := g.machine.Services().GetWindowByID(sa.winID); win != nil {
+		win.ScrollY = 0
+	}
 
 	if sa.handleHostWord(g, line) {
 		return
@@ -109,42 +153,47 @@ func (sa *ShellApp) appendOutput(s string) {
 }
 
 // drawShellContent renders the scrollback + prompt + input cursor into the
-// shell window's framebuffer. Content area is shrunk by WinScrollbarSize on
-// the right and bottom so it doesn't draw under the scrollbar gutters.
-func (g *Game) drawShellContent(win *system.Window) {
-	if g.shellApp == nil {
+// shell window's content image.
+func (g *Game) drawShellContent(win *system.WindowRecord, img *ebiten.Image) {
+	if g.shellApp == nil || img == nil {
 		return
 	}
-	clearWindow(win, color.RGBA{0, 0, 0, 255})
+	img.Fill(color.RGBA{0, 0, 0, 255})
 	fg := color.RGBA{255, 255, 255, 255}
-	const lineH = 10 // Chicago 8 + 2 leading
-	innerH := int(win.Height) - WinScrollbarSize
-	maxLines := innerH / lineH
-	if maxLines < 1 {
-		maxLines = 1
-	}
-
+	const lineH = 15
+	
+	// Inner height available for text (excluding scrollbars)
+	innerH := int(win.ContRgn.Height()) - system.WinScrollbarSize
+	
 	display := append([]string{}, g.shellApp.scrollback...)
 	display = append(display, g.shellApp.prompt+g.shellApp.inputLine+"_")
 
-	// ScrollY is interpreted as a backwards offset in lines (positive ScrollY
-	// shows older content). 0 = bottom (most recent).
-	scrollLines := int(win.ScrollY) / lineH
-	if scrollLines < 0 {
-		scrollLines = 0
+	// Total virtual height
+	totalH := int32(len(display) * lineH)
+	win.ContentHeight = totalH
+
+	// ScrollY=0 is bottom.
+	// If totalH <= innerH, we just draw from top (y=2).
+	if totalH <= int32(innerH) {
+		for i, line := range display {
+			drawSystemFontText(img, line, 4, i*lineH+2, 1, fg)
+		}
+		return
 	}
-	end := len(display) - scrollLines
-	if end < 1 {
-		end = 1
-	}
-	start := end - maxLines
-	if start < 0 {
-		start = 0
-	}
-	y := 4
-	for i := start; i < end; i++ {
-		drawChicagoTextInWindow(win, display[i], 4, y, 1, fg)
-		y += lineH
+
+	// If totalH > innerH, viewport is [totalH - innerH - ScrollY, totalH - ScrollY]
+	viewBottom := int(totalH) - int(win.ScrollY)
+	viewTop := viewBottom - innerH
+
+	for i, line := range display {
+		lineY := i * lineH
+		if lineY+lineH > viewTop && lineY < viewBottom {
+			drawY := lineY - viewTop
+			// Don't draw if the baseline+descent would go into the scrollbar gutter
+			if drawY < innerH {
+				drawSystemFontText(img, line, 4, drawY, 1, fg)
+			}
+		}
 	}
 }
 
@@ -154,7 +203,7 @@ func (g *Game) drawShellContent(win *system.Window) {
 func (g *Game) makePane() {
 	sw := g.machine.System.ScreenWidth()
 	sh := g.machine.System.ScreenHeight()
-	contentH := sh - int32(topBarHeight) - int32(WinChromeHeight)
+	contentH := sh - int32(TopBarHeight)
 	if contentH < 100 {
 		contentH = 100
 	}

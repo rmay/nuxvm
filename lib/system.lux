@@ -223,6 +223,8 @@ MODULE WINDOW
 @scroll-y!  addr 4  + STOREI ;
 @content-h@ addr 8  + LOADI ;  ( read-only: sh - top-bar-height )
 @bar-height addr 12 + LOADI ;  ( read-only: 24 )
+@total-h@   addr 16 + LOADI ;  ( total virtual height )
+@total-h!   addr 16 + STOREI ;
 
 ( --- Legacy Aliases --- )
 MODULE SYSTEM

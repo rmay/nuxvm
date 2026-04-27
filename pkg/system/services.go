@@ -27,16 +27,40 @@ type WindowReply struct {
 	Success bool
 }
 
-type Window struct {
-	ID       WindowID
-	Name     string
-	X, Y     int32
-	Width    int32
-	Height   int32
-	Visible  bool
-	ZOrder   int // higher = on top
-	ScrollY  int32
-	FrameBuf []byte
+// Window chrome geometry constants (moved from wm.go)
+const (
+	TopBarHeight     = 24
+	WinChromeHeight  = 20 // title bar height per window
+	WinBorderWidth   = 1  // 1px border all sides
+	WindowInset      = 4  // standard inset for windows from edges
+	WinScrollbarSize = 15 // vertical and horizontal scrollbar thickness
+)
+
+type rect struct {
+	Left, Top, Right, Bottom int32
+}
+
+func (r rect) Width() int32  { return r.Right - r.Left }
+func (r rect) Height() int32 { return r.Bottom - r.Top }
+
+type GrafPort struct {
+	PortRect rect
+	VisRgn   rect // for simplicity, using rect as region
+	ClipRgn  rect
+}
+
+type WindowRecord struct {
+	ID            WindowID
+	Name          string
+	Port          GrafPort
+	StrucRgn      rect // full window (includes chrome)
+	ContRgn       rect // content area
+	UpdateRgn     rect // area needing redraw
+	Visible       bool
+	ZOrder        int
+	ScrollY       int32
+	ContentHeight int32
+	FrameBuf      []byte
 }
 
 // ============= Input Manager =============
@@ -135,7 +159,7 @@ type ServiceManager struct {
 	// Window management
 	windowChan chan WindowMsg
 	windowReply chan WindowReply
-	windows    map[WindowID]*Window
+	windows    map[WindowID]*WindowRecord
 	nextWinID  WindowID
 	activeWinID WindowID
 
@@ -171,7 +195,7 @@ func NewServiceManager() *ServiceManager {
 	sm := &ServiceManager{
 		windowChan: make(chan WindowMsg, 16),
 		windowReply: make(chan WindowReply, 16),
-		windows: make(map[WindowID]*Window),
+		windows: make(map[WindowID]*WindowRecord),
 		nextWinID: 1,
 		activeWinID: 1,
 
@@ -196,7 +220,7 @@ func NewServiceManager() *ServiceManager {
 
 // ============= Thread-Safe Accessors =============
 
-func (sm *ServiceManager) GetActiveWindow() *Window {
+func (sm *ServiceManager) GetActiveWindow() *WindowRecord {
 	sm.windowMu.RLock()
 	defer sm.windowMu.RUnlock()
 	return sm.windows[sm.activeWinID]
@@ -237,10 +261,10 @@ func (sm *ServiceManager) SetActiveWindowScrollY(y int32) {
 	}
 }
 
-func (sm *ServiceManager) ListWindowsSorted() []*Window {
+func (sm *ServiceManager) ListWindowsSorted() []*WindowRecord {
 	sm.windowMu.RLock()
 	defer sm.windowMu.RUnlock()
-	windows := make([]*Window, 0, len(sm.windows))
+	windows := make([]*WindowRecord, 0, len(sm.windows))
 	for _, win := range sm.windows {
 		if win.Visible {
 			windows = append(windows, win)
@@ -261,8 +285,16 @@ func (sm *ServiceManager) ResizeActiveWindow(w, h int32) {
 	sm.windowMu.Lock()
 	defer sm.windowMu.Unlock()
 	if win := sm.windows[sm.activeWinID]; win != nil {
-		win.Width = w
-		win.Height = h
+		win.Port.PortRect = rect{0, 0, w, h}
+		win.Port.ClipRgn = win.Port.PortRect
+		// Regions are global; for now assume it stays where it is
+		win.ContRgn = rect{win.ContRgn.Left, win.ContRgn.Top, win.ContRgn.Left + w, win.ContRgn.Top + h}
+		win.StrucRgn = rect{
+			win.ContRgn.Left - WinBorderWidth,
+			win.ContRgn.Top - WinChromeHeight - WinBorderWidth,
+			win.ContRgn.Right + WinBorderWidth,
+			win.ContRgn.Bottom + WinBorderWidth,
+		}
 		win.FrameBuf = make([]byte, w*h*4)
 	}
 }
@@ -501,7 +533,7 @@ func (sm *ServiceManager) CycleWindows() WindowID {
 	if len(sm.windows) == 0 {
 		return 0
 	}
-	wins := make([]*Window, 0, len(sm.windows))
+	wins := make([]*WindowRecord, 0, len(sm.windows))
 	for _, w := range sm.windows {
 		wins = append(wins, w)
 	}
@@ -527,12 +559,20 @@ func (sm *ServiceManager) DirectMoveWindow(id WindowID, x, y int32) {
 	sm.windowMu.Lock()
 	defer sm.windowMu.Unlock()
 	if win := sm.windows[id]; win != nil {
-		win.X, win.Y = x, y
+		w := win.ContRgn.Width()
+		h := win.ContRgn.Height()
+		win.ContRgn = rect{x, y + WinChromeHeight + TopBarHeight, x + w, y + WinChromeHeight + TopBarHeight + h}
+		win.StrucRgn = rect{
+			win.ContRgn.Left - WinBorderWidth,
+			win.ContRgn.Top - WinChromeHeight - WinBorderWidth,
+			win.ContRgn.Right + WinBorderWidth,
+			win.ContRgn.Bottom + WinBorderWidth,
+		}
 	}
 }
 
 // GetWindowByID returns the window with the given ID, or nil if not found.
-func (sm *ServiceManager) GetWindowByID(id WindowID) *Window {
+func (sm *ServiceManager) GetWindowByID(id WindowID) *WindowRecord {
 	sm.windowMu.RLock()
 	defer sm.windowMu.RUnlock()
 	return sm.windows[id]
@@ -568,25 +608,25 @@ func (sm *ServiceManager) LayoutSingle(winID WindowID, contentX, contentY, conte
 	sm.applyLayout()
 }
 
-// LayoutSplit splits the content area into two panes side-by-side (left/right) or top/bottom.
-// vertical=true means left/right split, vertical=false means top/bottom.
-func (sm *ServiceManager) LayoutSplit(leftID, rightID WindowID, contentX, contentY, contentW, contentH int32, vertical bool) {
+// LayoutSplit splits the content area into two panes side-by-side (Left/Right) or Top/Bottom.
+// vertical=true means Left/Right split, vertical=false means Top/Bottom.
+func (sm *ServiceManager) LayoutSplit(LeftID, RightID WindowID, contentX, contentY, contentW, contentH int32, vertical bool) {
 	sm.windowMu.Lock()
 	defer sm.windowMu.Unlock()
 	var panes []Pane
 	if vertical {
-		// Left/right split
+		// Left/Right split
 		half := contentW / 2
 		panes = []Pane{
-			{WinID: leftID, X: contentX, Y: contentY, W: half, H: contentH},
-			{WinID: rightID, X: contentX + half, Y: contentY, W: contentW - half, H: contentH},
+			{WinID: LeftID, X: contentX, Y: contentY, W: half, H: contentH},
+			{WinID: RightID, X: contentX + half, Y: contentY, W: contentW - half, H: contentH},
 		}
 	} else {
-		// Top/bottom split
+		// Top/Bottom split
 		half := contentH / 2
 		panes = []Pane{
-			{WinID: leftID, X: contentX, Y: contentY, W: contentW, H: half},
-			{WinID: rightID, X: contentX, Y: contentY + half, W: contentW, H: contentH - half},
+			{WinID: LeftID, X: contentX, Y: contentY, W: contentW, H: half},
+			{WinID: RightID, X: contentX, Y: contentY + half, W: contentW, H: contentH - half},
 		}
 	}
 	sm.panes = panes
@@ -598,19 +638,39 @@ func (sm *ServiceManager) LayoutSplit(leftID, rightID WindowID, contentX, conten
 func (sm *ServiceManager) applyLayout() {
 	for _, pane := range sm.panes {
 		if win := sm.windows[pane.WinID]; win != nil {
-			oldW, oldH := win.Width, win.Height
-			win.X, win.Y = pane.X, pane.Y
-			win.Width, win.Height = pane.W, pane.H
+			oldW := win.ContRgn.Width()
+			oldH := win.ContRgn.Height()
+
+			// pane.X, pane.Y are relative to the desktop area (below menubar)
+			// and they represent the Top-Left of the window structure (including chrome).
+			win.ContRgn = rect{
+				pane.X + WinBorderWidth,
+				pane.Y + TopBarHeight + WinChromeHeight + WinBorderWidth,
+				pane.X + pane.W - WinBorderWidth,
+				pane.Y + pane.H + TopBarHeight - WinBorderWidth,
+			}
+			win.StrucRgn = rect{
+				pane.X,
+				pane.Y + TopBarHeight,
+				pane.X + pane.W,
+				pane.Y + pane.H + TopBarHeight,
+			}
+			win.Port.PortRect = rect{0, 0, win.ContRgn.Width(), win.ContRgn.Height()}
+			win.Port.ClipRgn = win.Port.PortRect
+
+			newW := win.ContRgn.Width()
+			newH := win.ContRgn.Height()
+
 			// Reallocate framebuffer if size changed
-			if oldW != pane.W || oldH != pane.H {
-				win.FrameBuf = make([]byte, pane.W*pane.H*4)
+			if oldW != newW || oldH != newH {
+				win.FrameBuf = make([]byte, newW*newH*4)
 				// Emit resize event
 				select {
 				case sm.inputQueue <- &InputEvent{
 					Type:    InputResize,
 					WinID:   pane.WinID,
-					ResizeW: pane.W,
-					ResizeH: pane.H,
+					ResizeW: newW,
+					ResizeH: newH,
 				}:
 				default:
 				}

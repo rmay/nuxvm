@@ -27,15 +27,29 @@ func (sm *ServiceManager) handleWindowMessage(msg WindowMsg) WindowReply {
 		width := msg.Data["width"].(int32)
 		height := msg.Data["height"].(int32)
 
-		win := &Window{
-			ID:       winID,
-			Name:     name,
-			Width:    width,
-			Height:   height,
-			Visible:  true,
-			ZOrder:   len(sm.windows),
-			ScrollY:  0,
-			FrameBuf: make([]byte, width*height*4),
+		win := &WindowRecord{
+			ID:      winID,
+			Name:    name,
+			Visible: true,
+			ZOrder:  len(sm.windows),
+			ScrollY: 0,
+			ContRgn: rect{
+				WinBorderWidth,
+				TopBarHeight + WinChromeHeight + WinBorderWidth,
+				width - WinBorderWidth,
+				TopBarHeight + height - WinBorderWidth,
+			},
+			StrucRgn: rect{
+				0,
+				TopBarHeight,
+				width,
+				TopBarHeight + height,
+			},
+			FrameBuf: make([]byte, (width-2*WinBorderWidth)*(height-WinChromeHeight-2*WinBorderWidth)*4),
+		}
+		win.Port = GrafPort{
+			PortRect: rect{0, 0, win.ContRgn.Width(), win.ContRgn.Height()},
+			ClipRgn:  rect{0, 0, win.ContRgn.Width(), win.ContRgn.Height()},
 		}
 		sm.windows[winID] = win
 		if sm.activeWinID == 0 {
@@ -58,8 +72,22 @@ func (sm *ServiceManager) handleWindowMessage(msg WindowMsg) WindowReply {
 	case "move":
 		win := sm.windows[msg.WinID]
 		if win != nil {
-			win.X = msg.Data["x"].(int32)
-			win.Y = msg.Data["y"].(int32)
+			x := msg.Data["x"].(int32)
+			y := msg.Data["y"].(int32)
+			w := win.ContRgn.Width()
+			h := win.ContRgn.Height()
+			win.ContRgn = rect{
+				x + WinBorderWidth,
+				y + TopBarHeight + WinChromeHeight + WinBorderWidth,
+				x + w + WinBorderWidth,
+				y + TopBarHeight + WinChromeHeight + WinBorderWidth + h,
+			}
+			win.StrucRgn = rect{
+				x,
+				y + TopBarHeight,
+				x + win.ContRgn.Width() + 2*WinBorderWidth,
+				y + TopBarHeight + win.ContRgn.Height() + WinChromeHeight + 2*WinBorderWidth,
+			}
 		}
 		return WindowReply{Success: true}
 
@@ -90,8 +118,8 @@ func (sm *ServiceManager) handleWindowMessage(msg WindowMsg) WindowReply {
 			return WindowReply{
 				Success: true,
 				Data: map[string]interface{}{
-					"width":  win.Width,
-					"height": win.Height,
+					"width":  win.ContRgn.Width(),
+					"height": win.ContRgn.Height(),
 				},
 			}
 		}
@@ -261,11 +289,14 @@ func (sm *ServiceManager) pickBestActive() WindowID {
 	if len(sm.windows) == 0 {
 		return 0
 	}
-	var best *Window
+	var best *WindowRecord
 	for _, w := range sm.windows {
 		if best == nil || w.ZOrder > best.ZOrder {
 			best = w
 		}
+	}
+	if best == nil {
+		return 0
 	}
 	return best.ID
 }

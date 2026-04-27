@@ -11,9 +11,6 @@ import (
 	"github.com/rmay/nuxvm/pkg/vm"
 )
 
-const topBarHeight = 24
-
-// Device port addresses (moved from vm.go to own device semantics)
 const (
 	screenPort     = vm.DeviceMemoryOffset + 0x0020
 	audioPort      = vm.DeviceMemoryOffset + 0x0030
@@ -254,7 +251,7 @@ func (s *System) getActiveFramebuffer() []byte {
 func (s *System) getScreenWidth() int32 {
 	if s.Services != nil {
 		if win := s.Services.GetActiveWindow(); win != nil {
-			return win.Width
+			return win.Port.PortRect.Width()
 		}
 	}
 	return s.screenWidth
@@ -264,20 +261,31 @@ func (s *System) getScreenWidth() int32 {
 func (s *System) getScreenHeight() int32 {
 	if s.Services != nil {
 		if win := s.Services.GetActiveWindow(); win != nil {
-			return win.Height
+			return win.Port.PortRect.Height()
 		}
 	}
 	return s.screenHeight
 }
 
-// setResolution updates both global resolution and active window size.
+// setResolution updates the active window size (if running under a WM),
+// or the global resolution if running standalone. Called by VM port writes.
 func (s *System) setResolution(w, h int32) {
-	if w > 0 && h > 0 && w*h*4 <= int32(len(s.screenPixels)) {
-		s.screenWidth = w
-		s.screenHeight = h
+	if w > 0 && h > 0 {
 		if s.Services != nil {
 			s.Services.ResizeActiveWindow(w, h)
+		} else if w*h*4 <= int32(len(s.screenPixels)) {
+			s.screenWidth = w
+			s.screenHeight = h
 		}
+	}
+}
+
+// SetOSResolution updates the global OS screen dimensions.
+// Called by the host application (e.g. Cloister's Layout method).
+func (s *System) SetOSResolution(w, h int32) {
+	if w > 0 && h > 0 {
+		s.screenWidth = w
+		s.screenHeight = h
 	}
 }
 
@@ -286,11 +294,11 @@ func (s *System) SetResolution(w, h int32) {
 }
 
 func (s *System) ScreenWidth() int32 {
-	return s.getScreenWidth()
+	return s.screenWidth
 }
 
 func (s *System) ScreenHeight() int32 {
-	return s.getScreenHeight()
+	return s.screenHeight
 }
 
 // SetMemory provides the system with access to the VM's memory slice.
@@ -646,13 +654,26 @@ func (s *System) Read(address uint32) (int32, error) {
 
 	// Window device:
 	if address == windowPort+4 { // scroll-y
+		if s.Services != nil {
+			if win := s.Services.GetActiveWindow(); win != nil {
+				return win.ScrollY, nil
+			}
+		}
 		return s.windowScrollY, nil
 	}
-	if address == windowPort+8 { // content-height
-		return s.screenHeight - topBarHeight, nil
+	if address == windowPort+8 { // content-height (visible area)
+		return s.screenHeight - TopBarHeight, nil
 	}
 	if address == windowPort+12 { // top-bar-height
-		return topBarHeight, nil
+		return TopBarHeight, nil
+	}
+	if address == windowPort+16 { // total-content-h
+		if s.Services != nil {
+			if win := s.Services.GetActiveWindow(); win != nil {
+				return win.ContentHeight, nil
+			}
+		}
+		return 0, nil
 	}
 
 	// SCI (System Call Interface) device:
@@ -745,7 +766,22 @@ func (s *System) Write(address uint32, value int32) error {
 
 	// Window device:
 	if address == windowPort+4 { // scroll-y
+		if s.Services != nil {
+			if win := s.Services.GetActiveWindow(); win != nil {
+				win.ScrollY = value
+				return nil
+			}
+		}
 		s.windowScrollY = value
+		return nil
+	}
+	if address == windowPort+16 { // total-content-h
+		if s.Services != nil {
+			if win := s.Services.GetActiveWindow(); win != nil {
+				win.ContentHeight = value
+				return nil
+			}
+		}
 		return nil
 	}
 

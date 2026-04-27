@@ -69,12 +69,7 @@ func (s *System) handleSCICreateWin(namePtr int32, size int32) {
 	}
 
 	// Extract null-terminated name from memory
-	var name string
-	if namePtr >= 0 && int(namePtr) < len(s.memory) {
-		for i := int(namePtr); i < len(s.memory) && s.memory[i] != 0; i++ {
-			name += string(s.memory[i])
-		}
-	}
+	name := s.cstring(uint32(namePtr))
 
 	// Create window with default dimensions (800x600 or size parameter)
 	width := int32(800)
@@ -84,23 +79,11 @@ func (s *System) handleSCICreateWin(namePtr int32, size int32) {
 		height = size & 0xFFFF
 	}
 
-	s.Services.windowMu.Lock()
-	winID := s.Services.nextWinID
-	s.Services.nextWinID++
-	win := &Window{
-		ID:       winID,
-		Name:     name,
-		X:        0,
-		Y:        0,
-		Width:    width,
-		Height:   height,
-		Visible:  true,
-		ZOrder:   len(s.Services.windows),
-		FrameBuf: make([]byte, width*height*4),
+	winID, err := s.Services.CreateWindow(name, width, height)
+	if err != nil {
+		s.sciResult = -1
+		return
 	}
-	s.Services.windows[winID] = win
-	s.Services.activeWinID = winID
-	s.Services.windowMu.Unlock()
 
 	s.sciResult = int32(winID)
 }
@@ -141,10 +124,7 @@ func (s *System) handleSCISetPixel(winID int32, pixelData int32) {
 		return
 	}
 
-	s.Services.windowMu.RLock()
-	win := s.Services.windows[WindowID(winID)]
-	s.Services.windowMu.RUnlock()
-
+	win := s.Services.GetWindowByID(WindowID(winID))
 	if win == nil {
 		s.sciResult = -1
 		return
@@ -154,8 +134,11 @@ func (s *System) handleSCISetPixel(winID int32, pixelData int32) {
 	y := (pixelData >> 16) & 0xFFFF
 	color := s.sciArg2
 
-	if x >= 0 && x < win.Width && y >= 0 && y < win.Height {
-		offset := (int(y)*int(win.Width) + int(x)) * 4
+	winW := win.ContRgn.Width()
+	winH := win.ContRgn.Height()
+
+	if x >= 0 && x < winW && y >= 0 && y < winH {
+		offset := (int(y)*int(winW) + int(x)) * 4
 		if offset+4 <= len(win.FrameBuf) {
 			win.FrameBuf[offset] = byte((color >> 16) & 0xFF)     // R
 			win.FrameBuf[offset+1] = byte((color >> 8) & 0xFF)    // G
@@ -173,16 +156,13 @@ func (s *System) handleSCIGetWinSize(winID int32) {
 		return
 	}
 
-	s.Services.windowMu.RLock()
-	win := s.Services.windows[WindowID(winID)]
-	s.Services.windowMu.RUnlock()
-
+	win := s.Services.GetWindowByID(WindowID(winID))
 	if win == nil {
 		s.sciResult = 0
 		return
 	}
 
-	s.sciResult = (win.Width << 16) | win.Height
+	s.sciResult = (win.ContRgn.Width() << 16) | win.ContRgn.Height()
 }
 
 // handleSCIFocusWin(winID) -> status
@@ -332,26 +312,17 @@ func (s *System) handleSCIDrawText(winID int32, textPtr int32) {
 }
 
 // drawCharToWindow renders a character into a window's framebuffer at the current cursor position
-func (s *System) drawCharToWindow(win *Window, c byte) {
-	if c == '\n' {
-		s.text.cursorX = 0
-		s.text.cursorY++
-		return
-	}
-	if c == '\r' {
-		s.text.cursorX = 0
-		return
-	}
-	if c < 0x20 || c > 0x7E {
-		return
-	}
-
+func (s *System) drawCharToWindow(win *WindowRecord, c byte) {
+	// ...
 	glyph := Font[c]
 	x := int(s.text.cursorX) * 6
 	y := int(s.text.cursorY) * 8
 
+	winW := win.ContRgn.Width()
+	winH := win.ContRgn.Height()
+
 	// Bounds check: stay within window framebuffer
-	if x+6 >= int(win.Width) || y+8 >= int(win.Height) {
+	if x+6 >= int(winW) || y+8 >= int(winH) {
 		s.advanceCursorInWindow(win)
 		return
 	}
@@ -368,8 +339,8 @@ func (s *System) drawCharToWindow(win *Window, c byte) {
 			}
 			px := x + col
 			py := y + row
-			if px < int(win.Width) && py < int(win.Height) {
-				offset := (py*int(win.Width) + px) * 4
+			if px < int(winW) && py < int(winH) {
+				offset := (py*int(winW) + px) * 4
 				if offset+4 <= len(win.FrameBuf) {
 					win.FrameBuf[offset] = 0     // R
 					win.FrameBuf[offset+1] = 0   // G
@@ -384,8 +355,9 @@ func (s *System) drawCharToWindow(win *Window, c byte) {
 }
 
 // advanceCursorInWindow moves cursor one cell right, wrapping at window edge
-func (s *System) advanceCursorInWindow(win *Window) {
-	charsPerRow := int(win.Width) / 6
+func (s *System) advanceCursorInWindow(win *WindowRecord) {
+	winW := win.ContRgn.Width()
+	charsPerRow := int(winW) / 6
 	if charsPerRow < 1 {
 		charsPerRow = 1
 	}

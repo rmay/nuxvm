@@ -7,16 +7,13 @@ import (
 
 // Window chrome geometry constants
 const (
-	WinChromeHeight  = 20 // title bar height per window
-	WinBorderWidth   = 1  // 1px border all sides
-	WinCloseBtnX     = 10 // close button center X offset from window left
-	WinPrevBtnX      = 24 // previous-window button center X offset
-	WinNextBtnX      = 38 // next-window button center X offset
-	WinCloseBtnY     = 10 // chrome-button center Y offset from chrome top
-	WinCloseBtnR     = 5  // chrome-button hit-test radius
-	WinCloseBtnSize  = 8  // chrome-button drawn size (square)
-	WinScrollbarSize = 15 // vertical and horizontal scrollbar thickness
-	WinScrollArrowH  = 15 // height of the up/down arrow buttons
+	WinCloseBtnX      = 10 // close button center X offset from window Left
+	WinPrevBtnX       = 24 // previous-window button center X offset
+	WinNextBtnX       = 38 // next-window button center X offset
+	WinCloseBtnY      = 10 // chrome-button center Y offset from chrome Top
+	WinCloseBtnR      = 5  // chrome-button hit-test radius
+	WinCloseBtnSize   = 8  // chrome-button drawn size (square)
+	WinScrollArrowH   = 15 // height of the up/down arrow buttons
 	WinScrollLineStep = 16 // pixels per arrow click
 )
 
@@ -60,7 +57,7 @@ func NewWindowManager(sm *system.ServiceManager) *WindowManager {
 // - GC entries for closed windows
 // - Allocate/resize images for new/resized windows
 // - Upload dirty FrameBufs via WritePixels
-func (wm *WindowManager) SyncImages(windows []*system.Window) {
+func (wm *WindowManager) SyncImages(windows []*system.WindowRecord) {
 	// Build set of current window IDs
 	currentIDs := make(map[system.WindowID]bool)
 	for _, win := range windows {
@@ -83,10 +80,10 @@ func (wm *WindowManager) SyncImages(windows []*system.Window) {
 
 		// Check if image exists and size matches
 		img := wm.images[win.ID]
-		needsResize := img == nil || img.Bounds().Dx() != int(win.Width) || img.Bounds().Dy() != int(win.Height)
+		needsResize := img == nil || img.Bounds().Dx() != int(win.Port.PortRect.Width()) || img.Bounds().Dy() != int(win.Port.PortRect.Height())
 
 		if needsResize {
-			wm.images[win.ID] = ebiten.NewImage(int(win.Width), int(win.Height))
+			wm.images[win.ID] = ebiten.NewImage(int(win.Port.PortRect.Width()), int(win.Port.PortRect.Height()))
 			wm.dirty[win.ID] = true
 		}
 
@@ -111,79 +108,70 @@ func (wm *WindowManager) ContentImage(id system.WindowID) *ebiten.Image {
 }
 
 // HitTest determines which window zone (if any) contains the screen point (x, y).
-// topBarH is the global menu bar height (24px) that's already consumed.
+// TopBarH is the global menu bar height (24px) that's already consumed.
 // windows must be in ascending Z-order (back to front); hit test walks in reverse.
-func (wm *WindowManager) HitTest(x, y, topBarH int, windows []*system.Window) HitResult {
-	// Iterate in reverse Z-order (highest ZOrder = topmost = first to hit)
+func (wm *WindowManager) HitTest(x, y, TopBarH int, windows []*system.WindowRecord) HitResult {
+	// Iterate in reverse Z-order (highest ZOrder = Topmost = first to hit)
 	for i := len(windows) - 1; i >= 0; i-- {
 		win := windows[i]
 		if !win.Visible {
 			continue
 		}
 
-		// Compute full frame rectangle (includes chrome and border).
-		// Convention (matches drawWindowChrome): chrome top in screen
-		// coords is win.Y + topBarH, content top is win.Y + topBarH + WinChromeHeight.
-		frameX := int(win.X) - WinBorderWidth
-		frameY := int(win.Y) + topBarH - WinBorderWidth
-		frameW := int(win.Width) + 2*WinBorderWidth
-		frameH := int(win.Height) + WinChromeHeight + 2*WinBorderWidth
-
-		// Check if (x, y) is inside the frame
-		if x < frameX || x >= frameX+frameW || y < frameY || y >= frameY+frameH {
+		// Check if (x, y) is inside the structural region (full window frame)
+		if x < int(win.StrucRgn.Left) || x >= int(win.StrucRgn.Right) || y < int(win.StrucRgn.Top) || y >= int(win.StrucRgn.Bottom) {
 			continue
 		}
 
 		// We hit this window. Determine which zone.
-		// Chrome button hit-tests (close, prev, next) — all share Y and radius.
-		btnCenterY := int(win.Y) + topBarH + WinCloseBtnY
-		dy := y - btnCenterY
-		if dy*dy <= WinCloseBtnR*WinCloseBtnR {
-			for _, b := range [...]struct {
-				cx   int
-				zone HitZone
-			}{
-				{int(win.X) + WinCloseBtnX, HitZoneCloseButton},
-				{int(win.X) + WinPrevBtnX, HitZonePrevButton},
-				{int(win.X) + WinNextBtnX, HitZoneNextButton},
-			} {
-				dx := x - b.cx
-				if dx*dx+dy*dy <= WinCloseBtnR*WinCloseBtnR {
-					return HitResult{WinID: win.ID, Zone: b.zone}
+		
+		// Title bar check
+		if y < int(win.ContRgn.Top) {
+			// Chrome button hit-tests (close, prev, next) — all share Y and radius.
+			btnCenterY := int(win.StrucRgn.Top) + WinCloseBtnY + system.WinBorderWidth
+			dy := y - btnCenterY
+			if dy*dy <= WinCloseBtnR*WinCloseBtnR {
+				for _, b := range [...]struct {
+					cx   int
+					zone HitZone
+				}{
+					{int(win.StrucRgn.Left) + WinCloseBtnX + system.WinBorderWidth, HitZoneCloseButton},
+					{int(win.StrucRgn.Left) + WinPrevBtnX + system.WinBorderWidth, HitZonePrevButton},
+					{int(win.StrucRgn.Left) + WinNextBtnX + system.WinBorderWidth, HitZoneNextButton},
+				} {
+					dx := x - b.cx
+					if dx*dx+dy*dy <= WinCloseBtnR*WinCloseBtnR {
+						return HitResult{WinID: win.ID, Zone: b.zone}
+					}
 				}
 			}
-		}
-
-		// Title bar check
-		if y >= int(win.Y)+topBarH && y < int(win.Y)+topBarH+WinChromeHeight {
 			return HitResult{WinID: win.ID, Zone: HitZoneTitleBar}
 		}
 
-		// Window-local coordinates inside the content area (chrome already excluded)
-		localX := x - int(win.X)
-		localY := y - (int(win.Y) + topBarH + WinChromeHeight)
-		contentW := int(win.Width)
-		contentH := int(win.Height)
+		// Window-local coordinates inside the content area
+		localX := x - int(win.ContRgn.Left)
+		localY := y - int(win.ContRgn.Top)
+		contentW := int(win.ContRgn.Width())
+		contentH := int(win.ContRgn.Height())
 
-		// Bottom-right grow box (visual only in v1)
-		if localX >= contentW-WinScrollbarSize && localY >= contentH-WinScrollbarSize {
+		// Bottom-Right grow box (visual only in v1)
+		if localX >= contentW-system.WinScrollbarSize && localY >= contentH-system.WinScrollbarSize {
 			return HitResult{WinID: win.ID, Zone: HitZoneGrowBox}
 		}
 
-		// Vertical scrollbar (right gutter, excluding the grow corner)
-		if localX >= contentW-WinScrollbarSize {
+		// Vertical scrollbar (Right gutter, excluding the grow corner)
+		if localX >= contentW-system.WinScrollbarSize {
 			if localY < WinScrollArrowH {
 				return HitResult{WinID: win.ID, Zone: HitZoneScrollUp}
 			}
-			if localY >= contentH-WinScrollbarSize-WinScrollArrowH {
+			if localY >= contentH-system.WinScrollbarSize-WinScrollArrowH {
 				return HitResult{WinID: win.ID, Zone: HitZoneScrollDown}
 			}
 			return HitResult{WinID: win.ID, Zone: HitZoneScrollTrack}
 		}
 
-		// Horizontal scrollbar (bottom gutter, excluding the grow corner) —
-		// purely decorative in v1; treated as a no-op zone by mapping to track.
-		if localY >= contentH-WinScrollbarSize {
+		// Horizontal scrollbar (Bottom gutter, excluding the grow corner)
+		if localY >= contentH-system.WinScrollbarSize {
 			return HitResult{WinID: win.ID, Zone: HitZoneScrollTrack}
 		}
 

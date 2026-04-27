@@ -32,7 +32,7 @@ func (g *Game) launchLuxApp(name, luxPath string) error {
 
 	sw := g.machine.System.ScreenWidth()
 	sh := g.machine.System.ScreenHeight()
-	contentH := sh - int32(topBarHeight) - int32(WinChromeHeight)
+	contentH := sh - int32(TopBarHeight)
 	if contentH < 100 {
 		contentH = 100
 	}
