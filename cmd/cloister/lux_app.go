@@ -45,6 +45,12 @@ func (g *Game) launchLuxApp(name, luxPath string) error {
 
 	appMachine := system.NewMachineSharedServices(bytecode, g.memSize, services)
 
+	// Lay out and focus the window BEFORE the boot tick so the window is
+	// already at its final size when the app paints — otherwise a later
+	// applyLayout would reallocate the framebuffer and wipe the boot draw.
+	services.FocusWindow(winID)
+	services.LayoutSingle(winID, 0, 0, sw, contentH)
+
 	// Boot tick under the app's own render target so any startup paints land
 	// in its window. Restore the previous target afterwards so subsequent
 	// shell ticks don't accidentally inherit it.
@@ -63,9 +69,6 @@ func (g *Game) launchLuxApp(name, luxPath string) error {
 		machine: appMachine,
 		winID:   winID,
 	})
-
-	services.FocusWindow(winID)
-	services.LayoutSingle(winID, 0, 0, sw, contentH)
 	return nil
 }
 

@@ -561,23 +561,30 @@ func (s *System) Read(address uint32) (int32, error) {
 		}
 	}
 
-	// Screen (Framebuffer)
+	// Screen (Framebuffer) — out-of-bounds reads silently return 0
+	// (QuickDraw GrafPort/ClipRgn semantics: pixels outside the port
+	// don't exist). Erroring would cause the CPU step to fault, which
+	// in turn aborts any in-flight screen-vector handler before its
+	// terminating OpRet — leaking a TriggerVector-pushed PC onto the
+	// return stack and overflowing it after ~1024 frames.
 	if address >= vm.VideoFramebufferStart && address < vm.VideoFramebufferEnd {
 		offset := address - vm.VideoFramebufferStart
-		// Read from active window's framebuffer
 		fb := s.getActiveFramebuffer()
 		if fb == nil || offset+4 > uint32(len(fb)) {
-			return 0, fmt.Errorf("framebuffer read out of bounds")
+			return 0, nil
 		}
 		return int32(binary.BigEndian.Uint32(fb[offset : offset+4])), nil
 	}
 
-	// Screen registers
+	// Screen registers — return the active window's content size when
+	// running under a WM, so per-pixel address math (width*y+x) targets
+	// the right framebuffer. Falls back to the global screen size in
+	// standalone mode.
 	if address == screenWidthAddr {
-		return s.screenWidth, nil
+		return s.getScreenWidth(), nil
 	}
 	if address == screenHeightAddr {
-		return s.screenHeight, nil
+		return s.getScreenHeight(), nil
 	}
 
 	// Controller registers:
@@ -740,13 +747,15 @@ func (s *System) Write(address uint32, value int32) error {
 		}
 	}
 
-	// Screen (Framebuffer)
+	// Screen (Framebuffer) — out-of-bounds writes silently no-op
+	// (QuickDraw GrafPort/ClipRgn semantics). See the matching read
+	// branch for the full reasoning; the short version is that an
+	// error here cascades into return-stack overflow.
 	if address >= vm.VideoFramebufferStart && address < vm.VideoFramebufferEnd {
 		offset := address - vm.VideoFramebufferStart
-		// Write to active window's framebuffer
 		fb := s.getActiveFramebuffer()
 		if fb == nil || offset+4 > uint32(len(fb)) {
-			return fmt.Errorf("framebuffer write out of bounds")
+			return nil
 		}
 		binary.BigEndian.PutUint32(fb[offset:offset+4], uint32(value))
 		return nil

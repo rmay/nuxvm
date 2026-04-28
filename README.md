@@ -42,6 +42,7 @@ I picked Go over something like C because of:
 - [Examples](#examples)
 - [Module System](#module-system)
 - [Development](#development)
+- [The Why](#the-why)
 
 ---
 
@@ -722,6 +723,44 @@ Contributions welcome! Areas for improvement:
 - Stack operations are very fast
 - Subroutine calls use return stack (efficient)
 - Suitable for educational purposes and small programs
+
+---
+
+# The Why
+
+Okay, this is all great and all, but why?
+
+
+## Computer stewardship
+
+**Credo:**
+- God owns all; we are entrusted with His creation.
+- Build not for the current cycle but with an eye toward the future.
+- Utilize resources wisely.
+- Accept limits.
+- Minimize friction.
+- Reuse when prudent.
+- Purchase within your means.
+- Do things with humility and wonder.
+
+
+I started NUXVM as a side project: I wanted to explore small stack-based virtual machines and improve my skills in Go.
+
+Since I had no real destination, scope creep became my lodestone. Because I kept thinking it would be neat to add different features, I started leveraging LLMs to try out different approaches and implementations. The project grew. 
+
+I was slowly building a tiny computer. I leaned into it and kept going. It became a learning experience for me as I tried out different concepts, and seeing how some decisions played out, forcing me to rethink some assumptions. I’m drawing heavily on the Mac/SE System OS era for inspiration.
+
+As I progressed while building this, something was tugging at me: the why of it all. It wasn’t just an experiment run wild, I was making specific choices to constrain and expand the system—dual stacks to handle instructions and returns to keep the surface small, while audio and video expand to help people feel the system.
+
+People should be able to understand their tools, as deeply as they choose to dive into the mechanisms. Something that can be understood can be owned in different ways than mere possession. The project is something you can download and own completely. It’s small enough to run on modest hardware while being big enough for your creativity. 
+
+Despite all of the modern world’s hustle and bustle—or maybe because of it all—I’m a medievalist at heart and soul. I like to build things, categorize, and think giving glory to God is right and just. The modern world is endlessly fascinating and distracting. This is, too, but it exists under your care.
+
+This project grew from that spirit, and I drew upon inspiration from many different sources, modern and ancient, from cathedrals to Smalltalk/Lisp/Forth to agriculture—and many, many points between.
+
+As such, this project is very much experimental as it should be. This isn’t a building, but a personal garden, and gardens are always undergoing growth, replanting, fallow periods, death, and rebirth.
+
+I’m not standing against the world, against tides and trends, opposing this philosophy or the other. I am, however, sharing something small that I have enjoyed making and I hope you do, too.
 
 ---
 

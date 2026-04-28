@@ -1,22 +1,28 @@
 INCLUDE "lib/system.lux"
+INCLUDE "lib/delineatiofenestra.lux"
 IMPORT SYSTEM
 IMPORT SCREEN
 IMPORT TEXT
 IMPORT FILE
 IMPORT CTRL
+IMPORT DELINEATIOFENESTRA AS DF
 
 MODULE ILLUMINATOR
 
 ( --- Aliases --- )
 @OVER ROLL ;
 
-( --- Constants --- )
-@WIDTH_TABLE  0x100000 ; ( 256 bytes )
-@GLYPH_DATA   0x100100 ; ( Rest of the file )
-@FILENAME_BUF 0x110000 ;
+( --- Constants ---
+  All buffers must live ABOVE the framebuffer-routed range
+  (0x4000..0x504000). Otherwise STOREI/LOADI to these addresses gets
+  redirected to the active window's framebuffer instead of VM memory,
+  and the font data we just loaded reads back as pixel garbage. )
+@WIDTH_TABLE  0x600000 ; ( 256 bytes )
+@GLYPH_DATA   0x600100 ; ( Rest of the file )
+@FILENAME_BUF 0x610000 ;
 
 ( --- State --- )
-@STATE_BASE   0x120000 ;
+@STATE_BASE   0x620000 ;
 @data_size    STATE_BASE ;
 
 @size@        data_size LOADI ;
@@ -58,7 +64,7 @@ MODULE ILLUMINATOR
         3 PICK ( color )
         6 PICK 2 PICK + ( x+dx )
         6 PICK ( y )
-        SCREEN::pixel!
+        DF::pixel
     ] ?
     drop drop drop drop drop drop
 ;
@@ -105,7 +111,7 @@ MODULE ILLUMINATOR
         ( cp x y w ptr row )
         4 PICK ( x )
         4 PICK 2 PICK + ( y+row )
-        0xFFFFFF ( color )
+        -1 ( color: 0xFFFFFFFF, opaque white )
         4 PICK 4 PICK + load-byte ( ptr+row )
         RENDER-BYTE
         1 +
@@ -136,10 +142,13 @@ MODULE ILLUMINATOR
 ;
 
 @load-data
+    ( FILE::read length is packed into the low 16 bits of the command
+      register, so 65536 wraps to 0 and reads nothing. The chicago font
+      data is well under 32KB, so one 32768-byte read covers it. )
     SET-FILENAME
     FILENAME_BUF FILE::name!
     WIDTH_TABLE FILE::buf!
-    65536 FILE::read
+    32768 FILE::read
     size!
 ;
 
@@ -148,14 +157,18 @@ MODULE ILLUMINATOR
     keep-alive
 ;
 
-@start
-    640 SCREEN::width!
-    640 SCREEN::height!
-    0 SCREEN::clear
-
-    load-data
+( Repaint everything from scratch. Installed as the screen vector so
+  the OS gets a fresh frame whenever it asks for one. The font data
+  was loaded once at boot in @start. )
+@DRAW-ALL
+    DF::use-window
+    0 DF::clear-screen
     DRAW-GRID
+;
 
+@start
+    load-data
+    [ DRAW-ALL ] SCREEN::vector!
     keep-alive
 ;
 

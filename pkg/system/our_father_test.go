@@ -46,10 +46,14 @@ func TestOurFatherAppRendersToWindow(t *testing.T) {
 
 	// Stand up a host-style ServiceManager via a stub shell machine. The
 	// shell here doesn't run anything — it just owns the running services.
-	shell := system.NewMachine([]byte{0x1C}, 4*1024*1024) // 0x1C = OpHalt
+	shell := system.NewMachine([]byte{0x1C}, 16*1024*1024) // 0x1C = OpHalt
 	services := shell.Services()
 
-	winID, err := services.CreateWindow("Our Father", 640, 756)
+	// CreateWindow allocates a content framebuffer of
+	// (w-2*border) x (h-chrome-2*border) pixels, so size the window so
+	// the prayer's 640x756 layout fits exactly.
+	const winW, winH = 640 + 2*system.WinBorderWidth, 756 + system.WinChromeHeight + 2*system.WinBorderWidth
+	winID, err := services.CreateWindow("Our Father", winW, winH)
 	if err != nil {
 		t.Fatalf("create window: %v", err)
 	}
@@ -57,13 +61,23 @@ func TestOurFatherAppRendersToWindow(t *testing.T) {
 		t.Fatalf("CreateWindow returned 0")
 	}
 
-	app := system.NewMachineSharedServices(bytecode, 4*1024*1024, services)
+	app := system.NewMachineSharedServices(bytecode, 16*1024*1024, services)
 
 	saved := services.GetActiveWindowID()
 	services.SetRenderTarget(winID)
+	// Boot tick installs the screen vector, then yields in keep-alive.
 	if _, err := app.Tick(); err != nil {
 		services.SetRenderTarget(saved)
 		t.Fatalf("app boot tick: %v", err)
+	}
+	// VBlank fires the installed screen vector; next Tick runs DRAW-ALL.
+	if err := app.VBlank(); err != nil {
+		services.SetRenderTarget(saved)
+		t.Fatalf("app VBlank: %v", err)
+	}
+	if _, err := app.Tick(); err != nil {
+		services.SetRenderTarget(saved)
+		t.Fatalf("app draw tick: %v", err)
 	}
 	services.SetRenderTarget(saved)
 

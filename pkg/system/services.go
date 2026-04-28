@@ -289,6 +289,9 @@ func (sm *ServiceManager) ResizeActiveWindow(w, h int32) {
 	sm.windowMu.Lock()
 	defer sm.windowMu.Unlock()
 	if win := sm.windows[sm.activeWinID]; win != nil {
+		if win.Port.PortRect.Width() == w && win.Port.PortRect.Height() == h {
+			return
+		}
 		win.Port.PortRect = rect{0, 0, w, h}
 		win.Port.ClipRgn = win.Port.PortRect
 		// Regions are global; for now assume it stays where it is
