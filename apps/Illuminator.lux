@@ -1,0 +1,165 @@
+INCLUDE "lib/system.lux"
+IMPORT SYSTEM
+IMPORT SCREEN
+IMPORT TEXT
+IMPORT FILE
+IMPORT CTRL
+
+MODULE ILLUMINATOR
+
+( --- Aliases --- )
+@OVER ROLL ;
+
+( --- Constants --- )
+@WIDTH_TABLE  0x100000 ; ( 256 bytes )
+@GLYPH_DATA   0x100100 ; ( Rest of the file )
+@FILENAME_BUF 0x110000 ;
+
+( --- State --- )
+@STATE_BASE   0x120000 ;
+@data_size    STATE_BASE ;
+
+@size@        data_size LOADI ;
+@size!        data_size STOREI ;
+
+( --- Utils --- )
+
+@SET-FILENAME
+    112 FILENAME_BUF 0 + store-byte ( p )
+    107 FILENAME_BUF 1 + store-byte ( k )
+    103 FILENAME_BUF 2 + store-byte ( g )
+    47  FILENAME_BUF 3 + store-byte ( / )
+    115 FILENAME_BUF 4 + store-byte ( s )
+    121 FILENAME_BUF 5 + store-byte ( y )
+    115 FILENAME_BUF 6 + store-byte ( s )
+    116 FILENAME_BUF 7 + store-byte ( t )
+    101 FILENAME_BUF 8 + store-byte ( e )
+    109 FILENAME_BUF 9 + store-byte ( m )
+    47  FILENAME_BUF 10 + store-byte ( / )
+    99  FILENAME_BUF 11 + store-byte ( c )
+    104 FILENAME_BUF 12 + store-byte ( h )
+    105 FILENAME_BUF 13 + store-byte ( i )
+    99  FILENAME_BUF 14 + store-byte ( c )
+    97  FILENAME_BUF 15 + store-byte ( a )
+    103 FILENAME_BUF 16 + store-byte ( g )
+    111 FILENAME_BUF 17 + store-byte ( o )
+    46  FILENAME_BUF 18 + store-byte ( . )
+    99  FILENAME_BUF 19 + store-byte ( c )
+    102 FILENAME_BUF 20 + store-byte ( f )
+    102 FILENAME_BUF 21 + store-byte ( f )
+    0   FILENAME_BUF 22 + store-byte ( null )
+;
+
+( --- Rendering --- )
+
+@RENDER-BIT ( x y color byte bit-mask dx -- )
+    ( Indices: dx=0 bit-mask=1 byte=2 color=3 y=4 x=5 )
+    2 PICK 2 PICK AND 0 > [
+        3 PICK ( color )
+        6 PICK 2 PICK + ( x+dx )
+        6 PICK ( y )
+        SCREEN::pixel!
+    ] ?
+    drop drop drop drop drop drop
+;
+
+@RENDER-BYTE ( x y color byte -- )
+    ( MSB-first. Pass copies of x,y,color,byte to each RENDER-BIT )
+    ( Duplicating 4 items: use 3 PICK four times )
+    3 PICK 3 PICK 3 PICK 3 PICK 0x80 0 RENDER-BIT
+    3 PICK 3 PICK 3 PICK 3 PICK 0x40 1 RENDER-BIT
+    3 PICK 3 PICK 3 PICK 3 PICK 0x20 2 RENDER-BIT
+    3 PICK 3 PICK 3 PICK 3 PICK 0x10 3 RENDER-BIT
+    3 PICK 3 PICK 3 PICK 3 PICK 0x08 4 RENDER-BIT
+    3 PICK 3 PICK 3 PICK 3 PICK 0x04 5 RENDER-BIT
+    3 PICK 3 PICK 3 PICK 3 PICK 0x02 6 RENDER-BIT
+    3 PICK 3 PICK 3 PICK 3 PICK 0x01 7 RENDER-BIT
+    drop drop drop drop
+;
+
+@GET-GLYPH-SIZE ( width -- size )
+    dup 0 > [
+        7 + 8 / 8 *
+    ] [
+        drop 0
+    ] ?:
+;
+
+@FIND-GLYPH-PTR ( codepoint -- ptr )
+    GLYPH_DATA
+    0 ( counter )
+    [ 3 PICK < ] [
+        ( ptr counter )
+        dup WIDTH_TABLE + load-byte ( ptr counter width )
+        GET-GLYPH-SIZE ( ptr counter size )
+        ROT + SWAP ( ptr+size counter )
+        1 +
+    ] |:
+    drop ( counter )
+    swap drop ( ptr )
+;
+
+@DRAW-GLYPH-ROWS ( cp x y w ptr -- )
+    0 ( row )
+    [ 8 < ] [
+        ( cp x y w ptr row )
+        4 PICK ( x )
+        4 PICK 2 PICK + ( y+row )
+        0xFFFFFF ( color )
+        4 PICK 4 PICK + load-byte ( ptr+row )
+        RENDER-BYTE
+        1 +
+    ] |:
+    drop drop drop drop drop drop
+;
+
+@DRAW-GLYPH ( codepoint x y -- )
+    ( Find width )
+    WIDTH_TABLE 3 PICK + load-byte ( cp x y w )
+    dup 0 = [ drop drop drop drop ] [
+        ( cp x y w )
+        3 PICK FIND-GLYPH-PTR ( cp x y w ptr )
+        DRAW-GLYPH-ROWS
+    ] ?:
+;
+
+@DRAW-GRID
+    0 ( codepoint )
+    [ 256 < ] [
+        dup dup dup ( cp cp cp cp )
+        16 MOD 38 * 10 + ( cp cp cp x )
+        swap 16 / 38 * 10 + ( cp cp x y )
+        DRAW-GLYPH
+        1 +
+    ] |:
+    drop
+;
+
+@load-data
+    SET-FILENAME
+    FILENAME_BUF FILE::name!
+    WIDTH_TABLE FILE::buf!
+    65536 FILE::read
+    size!
+;
+
+@keep-alive
+    YIELD
+    keep-alive
+;
+
+@start
+    640 SCREEN::width!
+    640 SCREEN::height!
+    0 SCREEN::clear
+
+    load-data
+    DRAW-GRID
+
+    keep-alive
+;
+
+MODULE MAIN
+IMPORT ILLUMINATOR
+ILLUMINATOR::start
+HALT

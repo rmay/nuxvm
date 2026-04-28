@@ -271,11 +271,14 @@ func (s *System) getScreenHeight() int32 {
 // or the global resolution if running standalone. Called by VM port writes.
 func (s *System) setResolution(w, h int32) {
 	if w > 0 && h > 0 {
+		s.screenWidth = w
+		s.screenHeight = h
 		if s.Services != nil {
 			s.Services.ResizeActiveWindow(w, h)
 		} else if w*h*4 <= int32(len(s.screenPixels)) {
-			s.screenWidth = w
-			s.screenHeight = h
+			// In standalone mode, we already updated s.screenWidth/Height above.
+			// No extra work needed here unless we wanted to resize s.screenPixels,
+			// but it's already max-sized at VideoMaxBufferSize.
 		}
 	}
 }
@@ -286,6 +289,9 @@ func (s *System) SetOSResolution(w, h int32) {
 	if w > 0 && h > 0 {
 		s.screenWidth = w
 		s.screenHeight = h
+		if s.Services != nil {
+			s.Services.SetScreenSize(w, h)
+		}
 	}
 }
 
@@ -661,19 +667,48 @@ func (s *System) Read(address uint32) (int32, error) {
 		}
 		return s.windowScrollY, nil
 	}
-	if address == windowPort+8 { // content-height (visible area)
+	if address == windowPort+8 { // scroll-x
+		if s.Services != nil {
+			if win := s.Services.GetActiveWindow(); win != nil {
+				return win.ScrollX, nil
+			}
+		}
+		return 0, nil
+	}
+	if address == windowPort+12 { // visible-width
+		if s.Services != nil {
+			if win := s.Services.GetActiveWindow(); win != nil {
+				return win.ContRgn.Width(), nil
+			}
+		}
+		return s.screenWidth, nil
+	}
+	if address == windowPort+16 { // visible-height
+		if s.Services != nil {
+			if win := s.Services.GetActiveWindow(); win != nil {
+				return win.ContRgn.Height(), nil
+			}
+		}
 		return s.screenHeight - TopBarHeight, nil
 	}
-	if address == windowPort+12 { // top-bar-height
-		return TopBarHeight, nil
+	if address == windowPort+20 { // total-width
+		if s.Services != nil {
+			if win := s.Services.GetActiveWindow(); win != nil {
+				return win.ContentWidth, nil
+			}
+		}
+		return 0, nil
 	}
-	if address == windowPort+16 { // total-content-h
+	if address == windowPort+24 { // total-height
 		if s.Services != nil {
 			if win := s.Services.GetActiveWindow(); win != nil {
 				return win.ContentHeight, nil
 			}
 		}
 		return 0, nil
+	}
+	if address == windowPort+28 { // bar-height
+		return TopBarHeight, nil
 	}
 
 	// SCI (System Call Interface) device:
@@ -775,7 +810,25 @@ func (s *System) Write(address uint32, value int32) error {
 		s.windowScrollY = value
 		return nil
 	}
-	if address == windowPort+16 { // total-content-h
+	if address == windowPort+8 { // scroll-x
+		if s.Services != nil {
+			if win := s.Services.GetActiveWindow(); win != nil {
+				win.ScrollX = value
+				return nil
+			}
+		}
+		return nil
+	}
+	if address == windowPort+20 { // total-width
+		if s.Services != nil {
+			if win := s.Services.GetActiveWindow(); win != nil {
+				win.ContentWidth = value
+				return nil
+			}
+		}
+		return nil
+	}
+	if address == windowPort+24 { // total-height
 		if s.Services != nil {
 			if win := s.Services.GetActiveWindow(); win != nil {
 				win.ContentHeight = value

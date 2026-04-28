@@ -29,6 +29,9 @@ const (
 	HitZoneScrollUp
 	HitZoneScrollDown
 	HitZoneScrollTrack // vertical track (between arrows)
+	HitZoneScrollLeft
+	HitZoneScrollRight
+	HitZoneScrollTrackH // horizontal track
 	HitZoneGrowBox
 )
 
@@ -172,7 +175,13 @@ func (wm *WindowManager) HitTest(x, y, TopBarH int, windows []*system.WindowReco
 
 		// Horizontal scrollbar (Bottom gutter, excluding the grow corner)
 		if localY >= contentH-system.WinScrollbarSize {
-			return HitResult{WinID: win.ID, Zone: HitZoneScrollTrack}
+			if localX < WinScrollArrowH {
+				return HitResult{WinID: win.ID, Zone: HitZoneScrollLeft}
+			}
+			if localX >= contentW-system.WinScrollbarSize-WinScrollArrowH {
+				return HitResult{WinID: win.ID, Zone: HitZoneScrollRight}
+			}
+			return HitResult{WinID: win.ID, Zone: HitZoneScrollTrackH}
 		}
 
 		return HitResult{WinID: win.ID, Zone: HitZoneContent, LocalX: localX, LocalY: localY}

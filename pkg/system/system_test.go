@@ -490,6 +490,61 @@ func TestTextNewlineResetsColumn(t *testing.T) {
 		t.Errorf("cursor after newline: got 0x%X, want row 1 col 0", cur)
 	}
 }
+func TestWindowMMIO(t *testing.T) {
+	sys := NewSystem()
+	sys.SetOSResolution(800, 600)
+	sys.Services.StartAllServices()
+
+	// Test default values without WM
+	scrollY, _ := sys.Read(windowPort + 4)
+	if scrollY != 0 {
+		t.Errorf("Expected scrollY 0, got %d", scrollY)
+	}
+
+	visibleH, _ := sys.Read(windowPort + 16)
+	if visibleH != 600-TopBarHeight {
+		t.Errorf("Expected visibleH %d, got %d", 600-TopBarHeight, visibleH)
+	}
+
+	// Test with WM and an active window
+	sm := sys.Services
+	winID, err := sm.CreateWindow("Test", 400, 300)
+	if err != nil {
+		t.Fatalf("CreateWindow failed: %v", err)
+	}
+	sm.FocusWindow(winID)
+	// Layout the window so ContRgn is set
+	sm.LayoutSingle(winID, 0, 0, 800, 600-TopBarHeight)
+
+	// Test ScrollX/Y Read/Write
+	sys.Write(windowPort+4, 100) // ScrollY
+	sys.Write(windowPort+8, 50)  // ScrollX
+
+	sy, _ := sys.Read(windowPort + 4)
+	sx, _ := sys.Read(windowPort + 8)
+	if sy != 100 || sx != 50 {
+		t.Errorf("Expected scroll 100,50, got %d,%d", sy, sx)
+	}
+
+	// Test TotalWidth/Height Read/Write
+	sys.Write(windowPort+20, 1000) // TotalW
+	sys.Write(windowPort+24, 2000) // TotalH
+
+	tw, _ := sys.Read(windowPort + 20)
+	th, _ := sys.Read(windowPort + 24)
+	if tw != 1000 || th != 2000 {
+		t.Errorf("Expected total size 1000x2000, got %dx%d", tw, th)
+	}
+
+	// Test Visible Width/Height (should match ContRgn)
+	vw, _ := sys.Read(windowPort + 12)
+	vh, _ := sys.Read(windowPort + 16)
+
+	win := sm.GetWindowByID(winID)
+	if vw != win.ContRgn.Width() || vh != win.ContRgn.Height() {
+		t.Errorf("Expected visible size %dx%d, got %dx%d", win.ContRgn.Width(), win.ContRgn.Height(), vw, vh)
+	}
+}
 
 // TestFileStatDetail verifies the 4-char detail string is written into the
 // buffer when STAT is called with enough room.

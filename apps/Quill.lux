@@ -29,52 +29,6 @@ MODULE QUILL
 @dirty@       dirty LOADI ;
 @dirty!       dirty STOREI ;
 
-( --- Byte I/O --- )
-
-@store-byte-0 ( byte base val -- )
-    0x00FFFFFF AND
-    swap rot 16777216 * ( shifted_byte )
-    OR swap STOREI
-;
-
-@store-byte-1 ( byte base val -- )
-    -16711681 AND ( 0xFF00FFFF )
-    swap rot 65536 *
-    OR swap STOREI
-;
-
-@store-byte-2 ( byte base val -- )
-    -65281 AND ( 0xFFFF00FF )
-    swap rot 256 *
-    OR swap STOREI
-;
-
-@store-byte-3-actual ( byte base val -- )
-    -256 AND ( 0xFFFFFF00 )
-    swap rot
-    OR swap STOREI
-;
-
-@store-byte-offset-3 ( byte base val offset -- )
-    drop store-byte-3-actual
-;
-
-@store-byte-offset-2 ( byte base val offset -- )
-    dup 2 = [ drop store-byte-2 ] [ store-byte-offset-3 ] ?:
-;
-
-@store-byte-offset-1 ( byte base val offset -- )
-    dup 1 = [ drop store-byte-1 ] [ store-byte-offset-2 ] ?:
-;
-
-@store-byte ( byte addr -- )
-    dup 4 / 4 *             ( byte addr base )
-    dup LOADI               ( byte addr base val )
-    rot 4 MOD               ( byte base val offset )
-    
-    dup 0 = [ drop store-byte-0 ] [ store-byte-offset-1 ] ?:
-;
-
 ( --- UI Helpers --- )
 
 @print-hex-digit ( n -- )
@@ -100,7 +54,7 @@ MODULE QUILL
 ;
 
 @draw-status
-    0 392 TEXT::cursor!
+    0 48 TEXT::cursor!
     "Mode: "
     mode@ 0 = [ "Text" ] [ "Hex " ] ?:
     " | File: " 

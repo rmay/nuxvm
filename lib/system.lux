@@ -4,10 +4,11 @@
 @TWO-DUP ROLL ROLL ;
 @TWO-DROP DROP DROP ;
 
-@load-byte-0 dup 24 RSHIFT ;
-@load-byte-1 dup 16 RSHIFT 255 AND ;
-@load-byte-2 dup 8 RSHIFT 255 AND ;
-@load-byte-3 255 AND ;
+( Each takes ( val offset -- byte ); offset is unused but on stack from caller. )
+@load-byte-0 drop 24 RSHIFT ;
+@load-byte-1 drop 16 RSHIFT 255 AND ;
+@load-byte-2 drop 8 RSHIFT 255 AND ;
+@load-byte-3 drop 255 AND ;
 
 @load-byte-gt-1 ( val offset -- byte )
     dup 2 = [ load-byte-2 ] [ load-byte-3 ] ?:
@@ -22,6 +23,56 @@
     dup 4 / 4 * LOADI        ( -- addr aligned-val )
     swap 4 MOD               ( -- aligned-val byte-offset )
     dup 0 = [ load-byte-0 ] [ load-byte-gt-0 ] ?:
+;
+
+( --- Byte Storage --- )
+
+@store-byte-0 ( byte base val -- )
+    0x00FFFFFF AND ( byte base masked-val )
+    rot 16777216 * ( base masked-val shifted-byte )
+    OR ( base combined-val )
+    swap STOREI
+;
+
+@store-byte-1 ( byte base val -- )
+    -16711681 AND ( 0xFF00FFFF )
+    rot 65536 *
+    OR
+    swap STOREI
+;
+
+@store-byte-2 ( byte base val -- )
+    -65281 AND ( 0xFFFF00FF )
+    rot 256 *
+    OR
+    swap STOREI
+;
+
+@store-byte-3-actual ( byte base val -- )
+    -256 AND ( 0xFFFFFF00 )
+    rot
+    OR
+    swap STOREI
+;
+
+@store-byte-offset-3 ( byte base val offset -- )
+    drop store-byte-3-actual
+;
+
+@store-byte-offset-2 ( byte base val offset -- )
+    dup 2 = [ drop store-byte-2 ] [ store-byte-offset-3 ] ?:
+;
+
+@store-byte-offset-1 ( byte base val offset -- )
+    dup 1 = [ drop store-byte-1 ] [ store-byte-offset-2 ] ?:
+;
+
+@store-byte ( byte addr -- )
+    dup 4 / 4 *             ( byte addr base )
+    dup LOADI               ( byte addr base val )
+    rot 4 MOD               ( byte base val offset )
+    
+    dup 0 = [ drop store-byte-0 ] [ store-byte-offset-1 ] ?:
 ;
 
 
@@ -221,10 +272,15 @@ MODULE WINDOW
 @addr 12464 ;                   ( WindowPort = 0x30B0 )
 @scroll-y@  addr 4  + LOADI ;
 @scroll-y!  addr 4  + STOREI ;
-@content-h@ addr 8  + LOADI ;  ( read-only: sh - top-bar-height )
-@bar-height addr 12 + LOADI ;  ( read-only: 24 )
-@total-h@   addr 16 + LOADI ;  ( total virtual height )
-@total-h!   addr 16 + STOREI ;
+@scroll-x@  addr 8  + LOADI ;
+@scroll-x!  addr 8  + STOREI ;
+@visible-w@ addr 12 + LOADI ;  ( read-only )
+@visible-h@ addr 16 + LOADI ;  ( read-only )
+@total-w@   addr 20 + LOADI ;
+@total-w!   addr 20 + STOREI ;
+@total-h@   addr 24 + LOADI ;
+@total-h!   addr 24 + STOREI ;
+@bar-height addr 28 + LOADI ;  ( read-only: 24 )
 
 ( --- Legacy Aliases --- )
 MODULE SYSTEM

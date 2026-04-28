@@ -58,7 +58,9 @@ type WindowRecord struct {
 	UpdateRgn     rect // area needing redraw
 	Visible       bool
 	ZOrder        int
+	ScrollX       int32
 	ScrollY       int32
+	ContentWidth  int32
 	ContentHeight int32
 	FrameBuf      []byte
 }
@@ -183,6 +185,8 @@ type ServiceManager struct {
 
 	// Sandbox enforcement (file device)
 	sandboxResolver func(string) (string, error)
+
+	screenWidth, screenHeight int32
 }
 
 type OSFile struct {
@@ -297,6 +301,13 @@ func (sm *ServiceManager) ResizeActiveWindow(w, h int32) {
 		}
 		win.FrameBuf = make([]byte, w*h*4)
 	}
+}
+
+func (sm *ServiceManager) SetScreenSize(w, h int32) {
+	sm.windowMu.Lock()
+	sm.screenWidth = w
+	sm.screenHeight = h
+	sm.windowMu.Unlock()
 }
 
 // GetWindowChannel returns the window management request channel
@@ -561,12 +572,34 @@ func (sm *ServiceManager) DirectMoveWindow(id WindowID, x, y int32) {
 	if win := sm.windows[id]; win != nil {
 		w := win.ContRgn.Width()
 		h := win.ContRgn.Height()
-		win.ContRgn = rect{x, y + WinChromeHeight + TopBarHeight, x + w, y + WinChromeHeight + TopBarHeight + h}
+
+		// Clamp window structure to screen boundaries.
+		// Allow some overlap on Left/Right/Bottom, but keep title bar on screen.
+		minY := int32(0)
+		maxY := sm.screenHeight - TopBarHeight - WinChromeHeight
+		if y < minY {
+			y = minY
+		}
+		if y > maxY {
+			y = maxY
+		}
+
+		// Keep at least some of the window on screen horizontally
+		minX := -w + 20
+		maxX := sm.screenWidth - 20
+		if x < minX {
+			x = minX
+		}
+		if x > maxX {
+			x = maxX
+		}
+
+		win.ContRgn = rect{x + WinBorderWidth, y + WinChromeHeight + TopBarHeight + WinBorderWidth, x + w + WinBorderWidth, y + WinChromeHeight + TopBarHeight + h + WinBorderWidth}
 		win.StrucRgn = rect{
-			win.ContRgn.Left - WinBorderWidth,
-			win.ContRgn.Top - WinChromeHeight - WinBorderWidth,
-			win.ContRgn.Right + WinBorderWidth,
-			win.ContRgn.Bottom + WinBorderWidth,
+			x,
+			y + TopBarHeight,
+			x + w + 2*WinBorderWidth,
+			y + h + WinChromeHeight + TopBarHeight + 2*WinBorderWidth,
 		}
 	}
 }

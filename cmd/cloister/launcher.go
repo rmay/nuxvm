@@ -22,6 +22,8 @@ type appEntry struct {
 var appCatalog = []appEntry{
 	{name: "Shell", launch: func(g *Game) { g.openShellApp() }},
 	{name: "Our Father", luxPath: "apps/our-father.lux"},
+	{name: "Illuminator", luxPath: "apps/Illuminator.lux"},
+	{name: "Quill", luxPath: "apps/Quill.lux"},
 }
 
 // openLauncher creates (or focuses) the Applications window. The window fills
