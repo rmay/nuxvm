@@ -15,42 +15,42 @@ MODULE OURFATHER
 ( Lines are pane-local cell coords; DF translates by the pane's
   origin (in cells) before writing TEXT::cursor!. )
 @DRAW-ENGLISH
-    0  0 DF::move-to  T"Our Father, who art in"
-    0  1 DF::move-to  T"heaven, hallowed be thy"
-    0  2 DF::move-to  T"name; thy kingdom come;"
-    0  3 DF::move-to  T"thy will be done on"
-    0  4 DF::move-to  T"earth as it is in heaven."
+    2  0 DF::move-to  T"Our Father, who art in"
+    2  1 DF::move-to  T"heaven, hallowed be thy"
+    2  2 DF::move-to  T"name; thy kingdom come;"
+    2  3 DF::move-to  T"thy will be done on"
+    2  4 DF::move-to  T"earth as it is in heaven."
 
-    0  6 DF::move-to  T"Give us this day our"
-    0  7 DF::move-to  T"daily bread; and forgive"
-    0  8 DF::move-to  T"us our trespasses as we"
-    0  9 DF::move-to  T"forgive those who trespass"
-    0 10 DF::move-to  T"against us; and lead us"
-    0 11 DF::move-to  T"not into temptation, but"
-    0 12 DF::move-to  T"deliver us from evil."
+    2  6 DF::move-to  T"Give us this day our"
+    2  7 DF::move-to  T"daily bread; and forgive"
+    2  8 DF::move-to  T"us our trespasses as we"
+    2  9 DF::move-to  T"forgive those who trespass"
+    2 10 DF::move-to  T"against us; and lead us"
+    2 11 DF::move-to  T"not into temptation, but"
+    2 12 DF::move-to  T"deliver us from evil."
 
-    0 14 DF::move-to  T"Amen."
+    2 14 DF::move-to  T"Amen."
 ;
 
 @DRAW-LATIN
-    0  0 DF::move-to  T"PATER NOSTER, qui es in"
-    0  1 DF::move-to  T"caelis, sanctificetur"
-    0  2 DF::move-to  T"nomen tuum. Adveniat"
-    0  3 DF::move-to  T"regnum tuum. Fiat"
-    0  4 DF::move-to  T"voluntas tua, sicut in"
-    0  5 DF::move-to  T"caelo et in terra."
+    5  0 DF::move-to  T"PATER NOSTER, qui es in"
+    5  1 DF::move-to  T"caelis, sanctificetur"
+    5  2 DF::move-to  T"nomen tuum. Adveniat"
+    5  3 DF::move-to  T"regnum tuum. Fiat"
+    5  4 DF::move-to  T"voluntas tua, sicut in"
+    5  5 DF::move-to  T"caelo et in terra."
 
-    0  7 DF::move-to  T"Panem nostrum quotidianum"
-    0  8 DF::move-to  T"da nobis hodie, et dimitte"
-    0  9 DF::move-to  T"nobis debita nostra sicut"
-    0 10 DF::move-to  T"et nos dimittimus"
-    0 11 DF::move-to  T"debitoribus nostris."
+    5  7 DF::move-to  T"Panem nostrum quotidianum"
+    5  8 DF::move-to  T"da nobis hodie, et dimitte"
+    5  9 DF::move-to  T"nobis debita nostra sicut"
+    5 10 DF::move-to  T"et nos dimittimus"
+    5 11 DF::move-to  T"debitoribus nostris."
 
-    0 13 DF::move-to  T"Et ne nos inducas in"
-    0 14 DF::move-to  T"tentationem, sed libera"
-    0 15 DF::move-to  T"nos a malo."
+    5 13 DF::move-to  T"Et ne nos inducas in"
+    5 14 DF::move-to  T"tentationem, sed libera"
+    5 15 DF::move-to  T"nos a malo."
 
-    0 17 DF::move-to  T"Amen."
+    5 17 DF::move-to  T"Amen."
 ;
 
 ( Repaint everything from scratch. Installed as the screen vector so

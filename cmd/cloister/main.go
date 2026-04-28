@@ -1313,7 +1313,7 @@ func (g *Game) handleQuitConfirmInput(justPressed bool) {
 
 func (g *Game) drawAppleMenu(screen *ebiten.Image) {
 	items := []string{"Applications", "Settings", "Current Windows", "Quit"}
-	x, y := 20, TopBarHeight+10
+	x, y := 5, TopBarHeight
 	itemHeight := 18
 
 	for i, item := range items {
@@ -1441,7 +1441,7 @@ func (g *Game) drawWindowsModal(screen *ebiten.Image) {
 		}
 		ebitenutil.DrawRect(screen, float64(modalX+10), float64(rowY), float64(modalW-20), 20, bgClr)
 
-		label := fmt.Sprintf("%s (%d)", win.Name, win.ID)
+		label := fmt.Sprintf("%s", win.Name)
 		drawShellText(screen, label, modalX+15, rowY+(20-shellFontH)/2, fgClr)
 	}
 }
