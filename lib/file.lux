@@ -1,0 +1,50 @@
+( === FILE OPERATIONS LIBRARY === )
+
+INCLUDE "lib/system.lux"
+IMPORT FILE
+
+MODULE FILES
+IMPORT FILE
+
+( @load    ( name-ptr buf-ptr max -- read-len )
+  Load a file. Sets FILE name/buf, calls read, returns length. )
+@load ( name-ptr buf-ptr max -- len )
+    FILE::name!
+    FILE::buf!
+    FILE::read
+;
+
+( @save    ( name-ptr buf-ptr len -- res )
+  Write to a file. Sets FILE name/buf, calls write, returns result. )
+@save ( name-ptr buf-ptr len -- res )
+    FILE::name!
+    FILE::buf!
+    FILE::write
+;
+
+( @exists? ( name-ptr -- bool )
+  Check if file exists. Returns >= 0 (true) or < 0 (false). )
+@exists? ( name-ptr -- bool )
+    FILE::name!
+    FILE::size
+    dup 0 >=
+;
+
+
+( @dir-each ( name-ptr line-buf max quot -- )
+  List directory. Sets name and line-buf, loops reading entries, calls
+  quotation with ( line-ptr line-len -- ) for each. Quotation can DROP DROP
+  to skip processing. Loop ends when read returns 0. )
+@dir-each ( name-ptr line-buf max quot -- )
+    rot FILE::name!        ( line-buf max quot )
+    swap FILE::buf!        ( max quot )
+    [ dup FILE::list dup 0 > ] [
+        ( max quot len )
+        rot               ( quot len max )
+        rot               ( len max quot )
+        rot               ( max quot len )
+        2 PICK 2 PICK CALL ( max quot len )
+        drop              ( max quot )
+    ] |:
+    drop drop
+;

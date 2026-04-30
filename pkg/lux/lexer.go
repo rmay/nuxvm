@@ -13,16 +13,17 @@ import (
 type TokenType int
 
 const (
-	TokenNumber    TokenType = iota // 42, -17, 0xFF
-	TokenWord                       // +, DUP, square, MATH::SQUARE
-	TokenAtSign                     // @
-	TokenSemicolon                  // ;
-	TokenComment                    // ( ... )
-	TokenString                     // "chars"
-	TokenTextString                 // T"chars" — emits each char to the TEXT char register (12444) instead of OUT 1
-	TokenLBracket                   // [ - start quotation
-	TokenRBracket                   // ] - end quotation
-	TokenEOF                        // End of file
+	TokenNumber     TokenType = iota // 42, -17, 0xFF
+	TokenWord                        // +, DUP, square, MATH::SQUARE
+	TokenAtSign                      // @
+	TokenSemicolon                   // ;
+	TokenComment                     // ( ... )
+	TokenString                      // "chars"
+	TokenTextString                  // T"chars" — emits each char to the TEXT char register (12444) instead of OUT 1
+	TokenFileString                  // F"path" — emits string bytes to heap at compile-time, pushes address
+	TokenLBracket                    // [ - start quotation
+	TokenRBracket                    // ] - end quotation
+	TokenEOF                         // End of file
 )
 
 // Token represents a single lexical element
@@ -126,6 +127,17 @@ func (l *Lexer) NextToken() (Token, error) {
 			return tok, err
 		}
 		tok.Type = TokenTextString
+		return tok, nil
+	case ch == 'F' && l.pos+1 < len(l.input) && l.input[l.pos+1] == '"':
+		if l.trace {
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading F-string\n")
+		}
+		l.advance() // skip F; readString consumes the surrounding quotes
+		tok, err := l.readString()
+		if err != nil {
+			return tok, err
+		}
+		tok.Type = TokenFileString
 		return tok, nil
 	case ch == '@':
 		if l.trace {

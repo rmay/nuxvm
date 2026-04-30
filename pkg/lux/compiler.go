@@ -14,7 +14,9 @@ import (
 // (0x3090 + 12 = 0x309C). Writing a byte here draws that glyph at the current
 // text cursor and advances the cursor — see pkg/system/text.go drawChar.
 // T"..." string literals compile to per-char STOREI to this address.
+// F"..." string literals are compiled to heap at compile time and push the address.
 const textCharRegAddr = 0x309C
+const fileStringHeapBase = 0x614000
 
 var builtins = map[string]byte{
 	// Stack operations
@@ -115,6 +117,7 @@ type Compiler struct {
 	imports        map[string]string
 	baseAddr       int32                 // Added for address calculations
 	tempAlloc      int32                 // Added for temporary memory allocation in reserved area
+	nextStringHeap int32                 // Heap allocator for F"..." literals
 	unresolved     []UnresolvedReference // Track words to resolve after definitions
 	unresolvedJmps []UnresolvedJmp       // To handle recursion
 	includeDepth   int                   // To prevent infinite INCLUDE recursion
@@ -144,6 +147,7 @@ func Compile(source string, trace ...bool) ([]byte, error) {
 		imports:        make(map[string]string),
 		baseAddr:       int32(vm.UserMemoryOffset),
 		tempAlloc:      0,
+		nextStringHeap: fileStringHeapBase,
 		unresolved:     []UnresolvedReference{},
 		unresolvedJmps: []UnresolvedJmp{},
 		trace:          traceEnabled,
@@ -497,6 +501,8 @@ func (c *Compiler) compileToken(token Token) error {
 			c.emit(vm.EncodeInt32(textCharRegAddr)...)
 			c.emit(vm.OpStoreI)
 		}
+	case TokenFileString:
+		c.emitFileString(token.Value)
 	case TokenWord:
 		wordName := strings.ToUpper(token.Value)
 		if c.trace {
@@ -767,6 +773,10 @@ func (c *Compiler) compileQuotationInDefinition(currentWordName string, currentW
 				}
 				c.advance()
 
+			case TokenFileString:
+				c.emitFileStringIntoQuot(quot, token.Value)
+				c.advance()
+
 			default:
 				return fmt.Errorf("invalid token %v in quotation at line %d", token.Type, token.Line)
 			}
@@ -979,6 +989,10 @@ func (c *Compiler) compileQuotation() error {
 					quot.Code = append(quot.Code, vm.EncodeInt32(textCharRegAddr)...)
 					quot.Code = append(quot.Code, vm.OpStoreI)
 				}
+				c.advance()
+
+			case TokenFileString:
+				c.emitFileStringIntoQuot(quot, token.Value)
 				c.advance()
 
 			default:
@@ -1398,4 +1412,62 @@ func (c *Compiler) allocTemp(size int32) (int32, error) {
 		return 0, fmt.Errorf("reserved memory overflow: exceeded %d bytes", vm.ReservedMemorySize)
 	}
 	return addr, nil
+}
+
+// emitFileString compiles F"..." literal: allocate heap space, write NUL-terminated
+// string bytes in 4-byte chunks, and push the resulting address.
+func (c *Compiler) emitFileString(s string) {
+	addr := c.nextStringHeap
+	aligned := ((int32(len(s)) + 1) + 3) & ^3
+	c.nextStringHeap += aligned
+
+	// Emit STOREI ops for each aligned 4-byte chunk
+	for chunkIdx := int32(0); chunkIdx*4 < aligned; chunkIdx++ {
+		// Read up to 4 bytes, starting at position chunkIdx*4
+		var chunk int32
+		for i := 0; i < 4; i++ {
+			pos := chunkIdx*4 + int32(i)
+			var b byte
+			if pos < int32(len(s)) {
+				b = s[pos]
+			}
+			// Build chunk as big-endian int32: first byte is high byte
+			chunk = (chunk << 8) | int32(b)
+		}
+		c.emit(vm.OpPush)
+		c.emit(vm.EncodeInt32(chunk)...)
+		c.emit(vm.OpPush)
+		c.emit(vm.EncodeInt32(addr + chunkIdx*4)...)
+		c.emit(vm.OpStoreI)
+	}
+
+	c.emit(vm.OpPush)
+	c.emit(vm.EncodeInt32(addr)...)
+}
+
+// emitFileStringIntoQuot is the quotation counterpart.
+func (c *Compiler) emitFileStringIntoQuot(quot *Quotation, s string) {
+	addr := c.nextStringHeap
+	aligned := ((int32(len(s)) + 1) + 3) & ^3
+	c.nextStringHeap += aligned
+
+	for chunkIdx := int32(0); chunkIdx*4 < aligned; chunkIdx++ {
+		var chunk int32
+		for i := 0; i < 4; i++ {
+			pos := chunkIdx*4 + int32(i)
+			var b byte
+			if pos < int32(len(s)) {
+				b = s[pos]
+			}
+			chunk = (chunk << 8) | int32(b)
+		}
+		quot.Code = append(quot.Code, vm.OpPush)
+		quot.Code = append(quot.Code, vm.EncodeInt32(chunk)...)
+		quot.Code = append(quot.Code, vm.OpPush)
+		quot.Code = append(quot.Code, vm.EncodeInt32(addr+chunkIdx*4)...)
+		quot.Code = append(quot.Code, vm.OpStoreI)
+	}
+
+	quot.Code = append(quot.Code, vm.OpPush)
+	quot.Code = append(quot.Code, vm.EncodeInt32(addr)...)
 }

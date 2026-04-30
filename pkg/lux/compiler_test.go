@@ -227,6 +227,30 @@ func TestCompileTextStringEmitsToTextRegister(t *testing.T) {
 	}
 }
 
+func TestCompileFileStringPushesAddress(t *testing.T) {
+	bytecode, err := Compile(`F"abc"`)
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	machine := vm.NewVMWithMemorySize(bytecode, 0x620000)
+	if err := machine.Run(); err != nil {
+		t.Fatalf("Runtime error: %v", err)
+	}
+	stack := machine.Stack()
+	if len(stack) != 1 {
+		t.Fatalf("Expected 1 item on stack, got %d", len(stack))
+	}
+	addr := int(stack[0])
+	mem := machine.Memory()
+	a := mem[addr]
+	b := mem[addr+1]
+	c := mem[addr+2]
+	d := mem[addr+3]
+	if a != 'a' || b != 'b' || c != 'c' || d != 0 {
+		t.Errorf("Expected memory at addr to be 'abc\\0', got [%c %c %c %c]", a, b, c, d)
+	}
+}
+
 // ==========================================
 // STACK OPERATIONS
 // ==========================================

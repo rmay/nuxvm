@@ -1,8 +1,10 @@
 INCLUDE "lib/system.lux"
+INCLUDE "lib/file.lux"
 IMPORT SYSTEM
 IMPORT SCREEN
 IMPORT CTRL
 IMPORT TEXT
+IMPORT FILES
 
 @on-key
     CTRL::key@

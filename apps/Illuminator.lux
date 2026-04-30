@@ -1,9 +1,11 @@
 INCLUDE "lib/system.lux"
+INCLUDE "lib/file.lux"
 INCLUDE "lib/delineatiofenestra.lux"
 IMPORT SYSTEM
 IMPORT SCREEN
 IMPORT TEXT
 IMPORT FILE
+IMPORT FILES
 IMPORT CTRL
 IMPORT DELINEATIOFENESTRA AS DF
 
@@ -24,37 +26,20 @@ MODULE ILLUMINATOR
 ( --- State --- )
 @STATE_BASE   0x620000 ;
 @data_size    STATE_BASE ;
+@mode         STATE_BASE 4 + ;
+@picker_sel   STATE_BASE 8 + ;
 
 @size@        data_size LOADI ;
 @size!        data_size STOREI ;
+@mode@        mode LOADI ;
+@mode!        mode STOREI ;
+@picker_sel@  picker_sel LOADI ;
+@picker_sel!  picker_sel STOREI ;
 
-( --- Utils --- )
+( --- Picker buffers --- )
+@PICKER_BUF   0x618000 ; ( directory listing line buffer )
+@ENTRIES_BUF  0x619000 ; ( parsed filenames, up to 64 entries @ 64 bytes each )
 
-@SET-FILENAME
-    112 FILENAME_BUF 0 + store-byte ( p )
-    107 FILENAME_BUF 1 + store-byte ( k )
-    103 FILENAME_BUF 2 + store-byte ( g )
-    47  FILENAME_BUF 3 + store-byte ( / )
-    115 FILENAME_BUF 4 + store-byte ( s )
-    121 FILENAME_BUF 5 + store-byte ( y )
-    115 FILENAME_BUF 6 + store-byte ( s )
-    116 FILENAME_BUF 7 + store-byte ( t )
-    101 FILENAME_BUF 8 + store-byte ( e )
-    109 FILENAME_BUF 9 + store-byte ( m )
-    47  FILENAME_BUF 10 + store-byte ( / )
-    99  FILENAME_BUF 11 + store-byte ( c )
-    104 FILENAME_BUF 12 + store-byte ( h )
-    105 FILENAME_BUF 13 + store-byte ( i )
-    99  FILENAME_BUF 14 + store-byte ( c )
-    97  FILENAME_BUF 15 + store-byte ( a )
-    103 FILENAME_BUF 16 + store-byte ( g )
-    111 FILENAME_BUF 17 + store-byte ( o )
-    46  FILENAME_BUF 18 + store-byte ( . )
-    99  FILENAME_BUF 19 + store-byte ( c )
-    102 FILENAME_BUF 20 + store-byte ( f )
-    102 FILENAME_BUF 21 + store-byte ( f )
-    0   FILENAME_BUF 22 + store-byte ( null )
-;
 
 ( --- Rendering --- )
 
@@ -145,8 +130,7 @@ MODULE ILLUMINATOR
     ( FILE::read length is packed into the low 16 bits of the command
       register, so 65536 wraps to 0 and reads nothing. The chicago font
       data is well under 32KB, so one 32768-byte read covers it. )
-    SET-FILENAME
-    FILENAME_BUF FILE::name!
+    F"pkg/system/chicago.cff" FILE::name!
     WIDTH_TABLE FILE::buf!
     32768 FILE::read
     size!
@@ -157,18 +141,37 @@ MODULE ILLUMINATOR
     keep-alive
 ;
 
-( Repaint everything from scratch. Installed as the screen vector so
-  the OS gets a fresh frame whenever it asks for one. The font data
-  was loaded once at boot in @start. )
+@handle-up-arrow
+    picker_sel@ dup 0 > [ 1 - picker_sel! ] [ drop ] ?:
+;
+
+@on-key
+    CTRL::key@
+    dup 111 = [ drop 0 picker_sel! 1 mode! ] ?
+    dup 17 = [ drop handle-up-arrow ] ?
+    dup 18 = [ drop picker_sel@ 1 + picker_sel! ] ?
+    dup 13 = [ drop 0 mode! ] ?
+    dup 27 = [ drop 0 mode! ] ?
+    drop
+;
+
 @DRAW-ALL
     DF::use-window
     0 DF::clear-screen
-    DRAW-GRID
+    mode@ 0 = [ DRAW-GRID ] ?
+    mode@ 1 = [
+        ( picker mode - draw file list )
+        TEXT::color! 16777215
+        0 TEXT::cursor!
+        T"File Picker (O to exit)"
+    ] ?
 ;
 
 @start
     load-data
+    0 mode!
     [ DRAW-ALL ] SCREEN::vector!
+    [ on-key ] CTRL::vector!
     keep-alive
 ;
 
