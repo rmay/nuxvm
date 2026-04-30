@@ -1,0 +1,27 @@
+( --- CONTROLLER --- )
+
+MODULE CTRL
+@addr 0x10040 ;
+
+@vector! addr STOREI ;
+
+@key@ ( -- key )
+    addr 12 + LOADI
+;
+
+@buttons@ ( -- mask )
+    addr 8 + LOADI
+;
+
+( --- MOUSE --- )
+
+MODULE MOUSE
+@addr 0x10050 ;
+
+@vector! addr STOREI ;
+@x@ ( -- x ) addr 4 + LOADI ;
+@y@ ( -- y ) addr 8 + LOADI ;
+@btns@ ( -- mask ) addr 12 + LOADI ;
+@btn-left?   ( mask -- bool ) 1 AND ;
+@btn-right?  ( mask -- bool ) 2 AND 0 > ;
+@btn-middle? ( mask -- bool ) 4 AND 0 > ;

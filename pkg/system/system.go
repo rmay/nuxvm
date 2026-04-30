@@ -22,6 +22,7 @@ const (
 	textPort       = vm.DeviceMemoryOffset + 0x0090
 	windowPort     = vm.DeviceMemoryOffset + 0x00B0
 	sciPort        = vm.DeviceMemoryOffset + 0x00C0
+	menuPort       = vm.DeviceMemoryOffset + 0x00D0
 
 	controllerStatusAddr = controllerPort + 4
 	controllerButtonAddr = controllerPort + 8
@@ -44,6 +45,7 @@ const (
 	ControllerVectorIdx = (controllerPort - vm.DeviceMemoryOffset) / 16 // 4
 	MouseVectorIdx      = (mousePort - vm.DeviceMemoryOffset) / 16      // 5
 	SCIVectorIdx        = (sciPort - vm.DeviceMemoryOffset) / 16         // 6
+	MenuVectorIdx       = (menuPort - vm.DeviceMemoryOffset) / 16        // 7
 
 	// SCI Command codes
 	SCICreateWin      = 1
@@ -732,6 +734,14 @@ func (s *System) Read(address uint32) (int32, error) {
 		return s.sciArg2, nil
 	}
 
+	// MENU device: (menuPort+0) returns current menu vector
+	if address == menuPort {
+		if s.getVector != nil {
+			return int32(s.getVector(MenuVectorIdx)), nil
+		}
+		return 0, nil
+	}
+
 	return 0, fmt.Errorf("system: unhandled read at 0x%04X", address)
 }
 
@@ -886,6 +896,17 @@ func (s *System) Write(address uint32, value int32) error {
 		s.sciArg2 = value
 		// Trigger SCI command handler when arg2 is written
 		s.handleSCICommand()
+		return nil
+	}
+
+	// MENU device: (menuPort+4) sets the menu table pointer for the active window
+	if address == menuPort+4 {
+		if s.Services != nil {
+			if win := s.Services.GetActiveWindow(); win != nil {
+				s.Services.SetWindowMenu(s.Services.GetActiveWindowID(), uint32(value))
+				return nil
+			}
+		}
 		return nil
 	}
 

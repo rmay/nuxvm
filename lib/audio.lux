@@ -1,0 +1,12 @@
+( --- AUDIO --- )
+
+MODULE AUDIO
+@addr 0x10030 ;
+
+@vector! addr STOREI ;
+
+@play ( id -- )
+    addr 4 + STOREI
+;
+
+@stop 0 play ;

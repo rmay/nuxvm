@@ -1,44 +1,91 @@
 ( === FILE OPERATIONS LIBRARY === )
 
-INCLUDE "lib/system.lux"
-IMPORT FILE
+INCLUDE "lib/core.lux"
 
-MODULE FILES
-IMPORT FILE
+MODULE FILE
+@addr 0x10060 ;
+
+( Command register layout, packed into the +12 STOREI value:
+    bits 31..24: command  (1=READ 2=WRITE 3=STAT 4=DELETE 5=SEEK)
+    bits 23..16: flags    (bit 0 = append mode for WRITE)
+    bits 15..0 : length   (buffer size for READ/WRITE/STAT) )
+
+@vector! addr STOREI ;
+@name!   ( ptr -- ) addr 4 + STOREI ;
+@buf!    ( ptr -- ) addr 8 + STOREI ;
+
+@read ( len -- res )
+    16777216 OR            ( cmd 1 << 24 )
+    addr 12 + STOREI
+    addr 12 + LOADI
+;
+
+@write ( len -- res )
+    33554432 OR            ( cmd 2 << 24 )
+    addr 12 + STOREI
+    addr 12 + LOADI
+;
+
+@append! ( len -- res )
+    33619968 OR            ( cmd 2 << 24 | flags 1 << 16 )
+    addr 12 + STOREI
+    addr 12 + LOADI
+;
+
+@size ( -- size )
+    50331648               ( cmd 3 << 24 )
+    addr 12 + STOREI
+    addr 12 + LOADI
+;
+
+@delete ( -- res )
+    67108864               ( cmd 4 << 24 )
+    addr 12 + STOREI
+    addr 12 + LOADI
+;
+
+@seek ( -- res )
+    83886080               ( cmd 5 << 24 )
+    addr 12 + STOREI
+    addr 12 + LOADI
+;
+
+@list ( len -- res ) read ;
+
+( --- High-level words --- )
 
 ( @load    ( name-ptr buf-ptr max -- read-len )
   Load a file. Sets FILE name/buf, calls read, returns length. )
 @load ( name-ptr buf-ptr max -- len )
-    FILE::name!
-    FILE::buf!
-    FILE::read
+    name!
+    buf!
+    read
 ;
 
 ( @save    ( name-ptr buf-ptr len -- res )
   Write to a file. Sets FILE name/buf, calls write, returns result. )
 @save ( name-ptr buf-ptr len -- res )
-    FILE::name!
-    FILE::buf!
-    FILE::write
+    name!
+    buf!
+    write
 ;
 
 ( @exists? ( name-ptr -- bool )
   Check if file exists. Returns >= 0 (true) or < 0 (false). )
 @exists? ( name-ptr -- bool )
-    FILE::name!
-    FILE::size
+    name!
+    size
     dup 0 >=
 ;
-
 
 ( @dir-each ( name-ptr line-buf max quot -- )
   List directory. Sets name and line-buf, loops reading entries, calls
   quotation with ( line-ptr line-len -- ) for each. Quotation can DROP DROP
   to skip processing. Loop ends when read returns 0. )
 @dir-each ( name-ptr line-buf max quot -- )
-    rot FILE::name!        ( line-buf max quot )
-    swap FILE::buf!        ( max quot )
-    [ dup FILE::list dup 0 > ] [
+    rot name!              ( line-buf max quot )
+    swap buf!              ( max quot )
+    [ dup list dup 0 > ] [
         ( max quot len )
         rot               ( quot len max )
         rot               ( len max quot )

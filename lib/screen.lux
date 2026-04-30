@@ -1,0 +1,29 @@
+( --- SCREEN --- )
+
+MODULE SCREEN
+@addr   0x10020 ;
+@fb     0x11000 ;
+@width  addr 4 + LOADI ;
+@height addr 8 + LOADI ;
+
+@width!  ( w -- ) addr 4 + STOREI ;
+@height! ( h -- ) addr 8 + STOREI ;
+
+@vector! addr STOREI ;
+
+@pixel! ( color x y -- )
+    width * + 4 * fb +
+    STOREI
+;
+
+@pixel-get ( x y -- color )
+    width * + 4 * fb +
+    LOADI
+;
+
+@clear ( color -- )
+    fb
+    [ TWO-DUP STOREI 4 + ]
+    width height * #: 
+    TWO-DROP
+;

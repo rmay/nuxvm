@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"image/color"
@@ -92,6 +93,10 @@ type Game struct {
 
 	screenWidth  int
 	screenHeight int
+
+	// Open menu state (for app window menus)
+	openMenuWinID system.WindowID // 0 if no menu is open
+	openMenuIdx   int              // which menu item is hovered (-1 if none)
 }
 
 // luxKeyCodeFromEbiten maps ebiten key codes to Lux key codes (ASCII where applicable)
@@ -285,6 +290,81 @@ func bgPatternLabel(idx int) string {
 	}
 }
 
+// luxAppForWinID finds the LuxApp whose window matches winID, or nil.
+func (g *Game) luxAppForWinID(winID system.WindowID) *LuxApp {
+	for _, app := range g.apps {
+		if app.winID == winID {
+			return app
+		}
+	}
+	return nil
+}
+
+// getCStringFromMem reads a NUL-terminated F-string from the VM's big-endian memory.
+// Returns "" if ptr is 0 or out of bounds.
+func getCStringFromMem(mem []byte, ptr uint32) string {
+	if ptr == 0 || ptr >= uint32(len(mem)) {
+		return ""
+	}
+	end := ptr
+	for end < uint32(len(mem)) && mem[end] != 0 {
+		end++
+	}
+	return string(mem[ptr:end])
+}
+
+// MenuItem represents one menu item read from VM memory
+type MenuItem struct {
+	KeyChar  int32
+	TextPtr  uint32
+	Callback uint32
+	Text     string
+}
+
+// readMenuFromMem reads a menu table from VM memory at tablePtr.
+// Returns (title, items) or ("", nil) if invalid.
+func readMenuFromMem(mem []byte, tablePtr uint32) (string, []MenuItem) {
+	const (
+		headerSize = 12
+		entrySize  = 16
+		maxItems   = 8
+	)
+
+	if tablePtr+headerSize > uint32(len(mem)) {
+		return "", nil
+	}
+
+	titlePtr := binary.BigEndian.Uint32(mem[tablePtr:])
+	itemCount := binary.BigEndian.Uint32(mem[tablePtr+4:])
+
+	if itemCount > maxItems {
+		itemCount = maxItems
+	}
+
+	title := getCStringFromMem(mem, titlePtr)
+	items := make([]MenuItem, itemCount)
+
+	for i := uint32(0); i < itemCount; i++ {
+		itemAddr := tablePtr + headerSize + i*entrySize
+		if itemAddr+entrySize > uint32(len(mem)) {
+			break
+		}
+
+		keyChar := int32(binary.BigEndian.Uint32(mem[itemAddr:]))
+		textPtr := binary.BigEndian.Uint32(mem[itemAddr+4:])
+		callback := binary.BigEndian.Uint32(mem[itemAddr+8:])
+
+		items[i] = MenuItem{
+			KeyChar:  keyChar,
+			TextPtr:  textPtr,
+			Callback: callback,
+			Text:     getCStringFromMem(mem, textPtr),
+		}
+	}
+
+	return title, items
+}
+
 // drawDeskTopBackground paints the deskTop area below the menubar. Pattern 0 is
 // just a solid fill; patterns 1-3 tile an 8x8 1-bit overlay (black) over the
 // solid color.
@@ -415,16 +495,31 @@ func (g *Game) Update() error {
 			}
 			g.wm.MarkDirty(g.shellApp.winID)
 		} else {
+			// Route keyboard input to focused window's machine
+			activeWinID := g.machine.Services().GetActiveWindowID()
+			var targetMachine *system.Machine
+			if app := g.luxAppForWinID(activeWinID); app != nil {
+				targetMachine = app.machine
+			} else {
+				targetMachine = g.machine
+			}
+
 			for _, k := range inpututil.AppendJustPressedKeys(nil) {
 				keyCode := luxKeyCodeFromEbiten(k)
 				if keyCode > 0 {
-					g.machine.Services().QueueKeyDown(keyCode)
+					targetMachine.QueueKeyDown(keyCode)
 				}
 			}
 			for _, k := range inpututil.AppendJustReleasedKeys(nil) {
 				keyCode := luxKeyCodeFromEbiten(k)
 				if keyCode > 0 {
-					g.machine.Services().QueueKeyUp(keyCode)
+					if targetMachine == g.machine {
+						// Shell still uses old Services queue
+						g.machine.Services().QueueKeyUp(keyCode)
+					} else {
+						// For now, LuxApp doesn't need key up events
+						_ = keyCode
+					}
 				}
 			}
 		}
@@ -509,12 +604,6 @@ func (g *Game) Update() error {
 			switch hit.Zone {
 			case HitZoneTitleBar:
 				g.focusAndShow(hit.WinID)
-				if win := g.machine.System.Services.GetWindowByID(hit.WinID); win != nil {
-					g.dragging = true
-					g.dragWinID = hit.WinID
-					g.dragOffX = mx - int(win.StrucRgn.Left)
-					g.dragOffY = my - int(win.StrucRgn.Top)
-				}
 			case HitZoneCloseButton:
 				g.closeWindowByID(hit.WinID)
 			case HitZonePrevButton:
@@ -551,22 +640,85 @@ func (g *Game) Update() error {
 				}
 			case HitZoneGrowBox:
 				// no-op in v1
+			case HitZoneMenuBar:
+				// Handle menu item selection if menu is already open
+				if g.openMenuWinID == hit.WinID && g.openMenuIdx >= 0 {
+					if win := g.machine.Services().GetWindowByID(hit.WinID); win != nil {
+						if app := g.luxAppForWinID(hit.WinID); app != nil {
+							mem := app.machine.CPU.Memory()
+							_, items := readMenuFromMem(mem, win.MenuTablePtr)
+							if g.openMenuIdx < len(items) {
+								item := items[g.openMenuIdx]
+								// Push callback address onto stack and trigger MENU vector
+								app.machine.CPU.Push(int32(item.Callback))
+								app.machine.CPU.TriggerVector(system.MenuVectorIdx)
+								g.openMenuWinID = 0
+								g.openMenuIdx = -1
+								g.wm.MarkDirty(hit.WinID)
+							}
+						}
+					}
+				} else {
+					// Open the menu dropdown
+					g.focusAndShow(hit.WinID)
+					if app := g.luxAppForWinID(hit.WinID); app != nil {
+						g.openMenuWinID = hit.WinID
+						g.openMenuIdx = -1 // Will be set by hover
+						// TODO: determine which item was clicked based on hit.LocalX
+						// For now, just open at position 0
+						if win := g.machine.Services().GetWindowByID(hit.WinID); win != nil {
+							mem := app.machine.CPU.Memory()
+							_, items := readMenuFromMem(mem, win.MenuTablePtr)
+							if len(items) > 0 {
+								g.openMenuIdx = 0
+							}
+						}
+					}
+				}
 			case HitZoneContent:
+				// Close any open menu first
+				if g.openMenuWinID != 0 {
+					g.openMenuWinID = 0
+					g.openMenuIdx = -1
+				}
 				g.focusAndShow(hit.WinID)
 				if hit.WinID == g.launcherWinID {
 					g.handleLauncherClick(int32(hit.LocalX), int32(hit.LocalY))
 				} else if g.shellApp != nil && hit.WinID == g.shellApp.winID {
 					// Shell windows are host-rendered; don't forward clicks
 					// into the VM input queue.
+				} else if app := g.luxAppForWinID(hit.WinID); app != nil {
+					app.machine.QueueMouseButton(int32(hit.LocalX), int32(hit.LocalY), 1, true)
 				} else {
 					g.machine.Services().QueueMouseButton(int32(hit.LocalX), int32(hit.LocalY), 1, true)
+				}
+			}
+		} else if g.openMenuWinID != 0 && hit.WinID == g.openMenuWinID && hit.Zone != HitZoneContent {
+			// Track hover over open menu dropdown
+			if win := g.machine.Services().GetWindowByID(g.openMenuWinID); win != nil {
+				if app := g.luxAppForWinID(g.openMenuWinID); app != nil {
+					mem := app.machine.CPU.Memory()
+					_, items := readMenuFromMem(mem, win.MenuTablePtr)
+
+					// Calculate which item is under the mouse
+					dropY := int(win.ContRgn.Top)
+					itemIdx := (my - dropY - 2) / 16
+					if itemIdx < 0 || itemIdx >= len(items) {
+						g.openMenuIdx = -1
+					} else {
+						g.openMenuIdx = itemIdx
+					}
 				}
 			}
 		} else if hit.Zone == HitZoneContent {
 			// Mouse move within content area of hit window
 			activeID := g.machine.Services().GetActiveWindowID()
 			if hit.WinID == activeID {
-				g.machine.Services().QueueMouseMove(int32(hit.LocalX), int32(hit.LocalY))
+				if app := g.luxAppForWinID(hit.WinID); app != nil {
+					app.machine.QueueMouseMove(int32(hit.LocalX), int32(hit.LocalY))
+				} else {
+					g.machine.Services().QueueMouseMove(int32(hit.LocalX), int32(hit.LocalY))
+				}
 			}
 		}
 	}
@@ -684,6 +836,10 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		}
 		// Draw window chrome (title bar, border, close/prev/next buttons)
 		g.drawWindowChrome(screen, win, win.ID == activeID)
+		// Draw window menu bar (if present)
+		if app := g.luxAppForWinID(win.ID); app != nil && win.MenuTablePtr != 0 {
+			g.drawWindowMenuBar(screen, win, app)
+		}
 		// Draw window content from cached image
 		if img := g.wm.ContentImage(win.ID); img != nil {
 			op := &ebiten.DrawImageOptions{}
@@ -693,6 +849,10 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		// Scrollbars paint *after* the framebuffer so the gutter is visible
 		// (otherwise the per-window content image overdraws it).
 		g.drawWindowScrollbars(screen, win)
+		// Draw open menu dropdown (if one is open on this window)
+		if app := g.luxAppForWinID(win.ID); app != nil && g.openMenuWinID == win.ID {
+			g.drawOpenMenuDropdown(screen, win, app)
+		}
 	}
 
 	// Draw Mac-style Top menubar
@@ -753,6 +913,95 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		// Draw debug info with system font
 		ebitenutil.DrawRect(screen, 0, TopBarHeight, 250, 400, color.RGBA{0, 0, 0, 180})
 		drawSystemFontText(screen, msg, 4, TopBarHeight+4, 1, color.White)
+	}
+}
+
+func (g *Game) drawWindowMenuBar(screen *ebiten.Image, win *system.WindowRecord, app *LuxApp) {
+	if win.MenuTablePtr == 0 || app == nil {
+		return
+	}
+
+	mem := app.machine.CPU.Memory()
+	title, items := readMenuFromMem(mem, win.MenuTablePtr)
+
+	if title == "" || len(items) == 0 {
+		return
+	}
+
+	// Menu bar is at cont.Top - WinMenuBarHeight, extends to cont.Top
+	menuBarY := int(win.ContRgn.Top) - system.WinMenuBarHeight
+	menuBarX := int(win.ContRgn.Left)
+	menuBarW := int(win.ContRgn.Width())
+
+	// Draw bar background (light gray)
+	ebitenutil.DrawRect(screen, float64(menuBarX), float64(menuBarY),
+		float64(menuBarW), float64(system.WinMenuBarHeight), color.RGBA{200, 200, 200, 255})
+
+	// Draw bar border (black line at bottom)
+	ebitenutil.DrawLine(screen, float64(menuBarX), float64(menuBarY+system.WinMenuBarHeight-1),
+		float64(menuBarX+menuBarW), float64(menuBarY+system.WinMenuBarHeight-1), color.Black)
+
+	// Draw menu title on the left
+	titleX := menuBarX + 4
+	titleY := menuBarY + (system.WinMenuBarHeight-shellFontH)/2
+	drawShellText(screen, title, titleX, titleY, color.Black)
+
+	// Draw items horizontally spaced
+	itemX := titleX + measureSystemFontText(title, 1) + 20
+	for i, item := range items {
+		if itemX >= menuBarX+menuBarW-50 {
+			break
+		}
+		itemW := measureSystemFontText(item.Text, 1) + 8
+
+		// Highlight if hovering and menu is open
+		if g.openMenuWinID == win.ID && g.openMenuIdx == i {
+			ebitenutil.DrawRect(screen, float64(itemX-2), float64(titleY-1),
+				float64(itemW), float64(shellFontH+2), color.RGBA{100, 100, 100, 255})
+			drawShellText(screen, item.Text, itemX, titleY, color.White)
+		} else {
+			drawShellText(screen, item.Text, itemX, titleY, color.Black)
+		}
+
+		itemX += itemW + 8
+	}
+}
+
+func (g *Game) drawOpenMenuDropdown(screen *ebiten.Image, win *system.WindowRecord, app *LuxApp) {
+	if g.openMenuWinID != win.ID || app == nil {
+		return
+	}
+
+	mem := app.machine.CPU.Memory()
+	_, items := readMenuFromMem(mem, win.MenuTablePtr)
+
+	if len(items) == 0 {
+		return
+	}
+
+	// Dropdown box: white background with black border, items spaced vertically
+	dropX := int(win.ContRgn.Left) + 4
+	dropY := int(win.ContRgn.Top)
+	dropW := 150
+	dropH := len(items)*16 + 4
+
+	ebitenutil.DrawRect(screen, float64(dropX), float64(dropY),
+		float64(dropW), float64(dropH), color.White)
+	strokeRect(screen, float32(dropX), float32(dropY), float32(dropW), float32(dropH), color.Black)
+
+	// Draw items
+	for i, item := range items {
+		itemY := dropY + 2 + i*16
+		itemH := 14
+
+		// Hover highlight
+		if i == g.openMenuIdx {
+			ebitenutil.DrawRect(screen, float64(dropX), float64(itemY),
+				float64(dropW), float64(itemH),
+				color.RGBA{100, 149, 237, 255}) // cornflower blue
+		}
+
+		drawShellText(screen, item.Text, dropX+4, itemY, color.Black)
 	}
 }
 

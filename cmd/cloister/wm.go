@@ -33,6 +33,7 @@ const (
 	HitZoneScrollRight
 	HitZoneScrollTrackH // horizontal track
 	HitZoneGrowBox
+	HitZoneMenuBar
 )
 
 type HitResult struct {
@@ -127,7 +128,13 @@ func (wm *WindowManager) HitTest(x, y, TopBarH int, windows []*system.WindowReco
 		}
 
 		// We hit this window. Determine which zone.
-		
+
+		// Menu bar check (if window has a menu, menu bar sits below title bar)
+		menuBarTop := int(win.ContRgn.Top) - system.WinMenuBarHeight
+		if win.MenuTablePtr != 0 && y >= menuBarTop && y < int(win.ContRgn.Top) {
+			return HitResult{WinID: win.ID, Zone: HitZoneMenuBar}
+		}
+
 		// Title bar check
 		if y < int(win.ContRgn.Top) {
 			// Chrome button hit-tests (close, prev, next) — all share Y and radius.

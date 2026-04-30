@@ -469,12 +469,13 @@ func ParseNumber(token Token) (int32, error) {
 
 	// Handle hexadecimal
 	if strings.HasPrefix(token.Value, "0x") || strings.HasPrefix(token.Value, "0X") {
-		val, err := strconv.ParseInt(token.Value[2:], 16, 32)
+		// Use ParseUint to allow values like 0xFF00FFFF which exceed int32 but fit in uint32
+		val, err := strconv.ParseUint(token.Value[2:], 16, 32)
 		if err != nil {
 			return 0, fmt.Errorf("invalid hex number '%s' at line %d: %v",
 				token.Value, token.Line, err)
 		}
-		return int32(val), nil
+		return int32(uint32(val)), nil
 	}
 
 	// Handle decimal

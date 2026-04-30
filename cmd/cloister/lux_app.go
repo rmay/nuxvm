@@ -86,6 +86,7 @@ func (g *Game) tickLuxApps() {
 			continue
 		}
 		services.SetRenderTarget(app.winID)
+		app.machine.DrainInputEvents()
 		_ = app.machine.VBlank()
 		running, err := app.machine.Tick()
 		if err != nil {

@@ -1,0 +1,8 @@
+( --- DATETIME --- )
+
+MODULE TIME
+@addr 0x10070 ;
+
+@unix@   ( -- ts ) addr 4 + LOADI ;
+@date@   ( -- year-month-day ) addr 8 + LOADI ;
+@time@   ( -- hour-min-sec ) addr 12 + LOADI ;

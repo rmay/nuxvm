@@ -1,33 +1,36 @@
 INCLUDE "lib/system.lux"
 INCLUDE "lib/file.lux"
+INCLUDE "lib/menu.lux"
 INCLUDE "lib/delineatiofenestra.lux"
 IMPORT SYSTEM
 IMPORT SCREEN
 IMPORT TEXT
 IMPORT FILE
-IMPORT FILES
+IMPORT MENU
 IMPORT CTRL
 IMPORT DELINEATIOFENESTRA AS DF
 
 MODULE ILLUMINATOR
 
 ( --- Aliases --- )
-@OVER ROLL ;
+@OVER 1 PICK ;
 
 ( --- Constants ---
-  All buffers must live ABOVE the framebuffer-routed range
-  (0x4000..0x504000). Otherwise STOREI/LOADI to these addresses gets
-  redirected to the active window's framebuffer instead of VM memory,
-  and the font data we just loaded reads back as pixel garbage. )
-@WIDTH_TABLE  0x600000 ; ( 256 bytes )
-@GLYPH_DATA   0x600100 ; ( Rest of the file )
-@FILENAME_BUF 0x610000 ;
+  All buffers must live ABOVE the framebuffer-routed range.
+  Framebuf end is approx 0x511000.
+  0x800000 is safe. )
+@WIDTH_TABLE  0x800000 ; ( 256 bytes )
+@GLYPH_DATA   0x800100 ; ( Rest of the file )
+@FILENAME_BUF 0x810000 ;
 
 ( --- State --- )
-@STATE_BASE   0x620000 ;
+@STATE_BASE   0x820000 ;
 @data_size    STATE_BASE ;
 @mode         STATE_BASE 4 + ;
 @picker_sel   STATE_BASE 8 + ;
+
+( --- Menu Table --- )
+@ILLUM_MENU   0x840000 ;
 
 @size@        data_size LOADI ;
 @size!        data_size STOREI ;
@@ -37,16 +40,16 @@ MODULE ILLUMINATOR
 @picker_sel!  picker_sel STOREI ;
 
 ( --- Picker buffers --- )
-@PICKER_BUF   0x618000 ; ( directory listing line buffer )
-@ENTRIES_BUF  0x619000 ; ( parsed filenames, up to 64 entries @ 64 bytes each )
+@PICKER_BUF   0x818000 ; ( directory listing line buffer )
+@ENTRIES_BUF  0x819000 ; ( parsed filenames, up to 64 entries @ 64 bytes each )
 
 
 ( --- Rendering --- )
 
-@RENDER-BIT ( x y color byte bit-mask dx -- )
-    ( Indices: dx=0 bit-mask=1 byte=2 color=3 y=4 x=5 )
-    2 PICK 2 PICK AND 0 > [
-        3 PICK ( color )
+@RENDER-BIT ( x y color byte bit dx -- )
+    ( dx bit byte color y x )
+    2 PICK 3 PICK AND 0 > [
+        4 PICK ( color )
         6 PICK 2 PICK + ( x+dx )
         6 PICK ( y )
         DF::pixel
@@ -55,8 +58,7 @@ MODULE ILLUMINATOR
 ;
 
 @RENDER-BYTE ( x y color byte -- )
-    ( MSB-first. Pass copies of x,y,color,byte to each RENDER-BIT )
-    ( Duplicating 4 items: use 3 PICK four times )
+    ( x y color byte )
     3 PICK 3 PICK 3 PICK 3 PICK 0x80 0 RENDER-BIT
     3 PICK 3 PICK 3 PICK 3 PICK 0x40 1 RENDER-BIT
     3 PICK 3 PICK 3 PICK 3 PICK 0x20 2 RENDER-BIT
@@ -68,68 +70,55 @@ MODULE ILLUMINATOR
     drop drop drop drop
 ;
 
-@GET-GLYPH-SIZE ( width -- size )
+@DRAW-GLYPH-ROW ( x y ptr row -- )
+    ( x y ptr row )
+    dup 2 PICK + load-byte ( x y ptr row byte )
+    4 PICK ( x )
+    5 PICK 3 PICK + ( y+row )
+    0xFFFFFF ( color )
+    ROT ( x y ptr row x y' color byte )
+    RENDER-BYTE
+;
+
+@DRAW-GLYPH-ROWS ( x y ptr -- )
+    [ DRAW-GLYPH-ROW ] 8 #:
+    drop drop drop
+;
+
+@DRAW-ONE-GLYPH ( ptr cp -- )
+    ( ptr cp )
+    dup 16 MOD 38 * 10 + ( ptr cp x )
+    OVER 16 / 38 * 10 + ( ptr cp x y )
+    ( ptr cp x y )
+    4 PICK ( ptr cp x y ptr )
+    DRAW-GLYPH-ROWS
+    drop drop ( pop x y )
+;
+
+@DRAW-GRID-BODY ( ptr cp width -- ptr' cp )
     dup 0 > [
-        7 + 8 / 8 *
+        ( ptr cp width )
+        7 + 8 / 8 * ( ptr cp size )
+        ROT ROT ( size ptr cp )
+        TWO-DUP DRAW-ONE-GLYPH ( size ptr cp )
+        ROT + ( cp ptr' )
+        swap ( ptr' cp )
     ] [
-        drop 0
-    ] ?:
-;
-
-@FIND-GLYPH-PTR ( codepoint -- ptr )
-    GLYPH_DATA
-    0 ( counter )
-    [ 3 PICK < ] [
-        ( ptr counter )
-        dup WIDTH_TABLE + load-byte ( ptr counter width )
-        GET-GLYPH-SIZE ( ptr counter size )
-        ROT + SWAP ( ptr+size counter )
-        1 +
-    ] |:
-    drop ( counter )
-    swap drop ( ptr )
-;
-
-@DRAW-GLYPH-ROWS ( cp x y w ptr -- )
-    0 ( row )
-    [ 8 < ] [
-        ( cp x y w ptr row )
-        4 PICK ( x )
-        4 PICK 2 PICK + ( y+row )
-        -1 ( color: 0xFFFFFFFF, opaque white )
-        4 PICK 4 PICK + load-byte ( ptr+row )
-        RENDER-BYTE
-        1 +
-    ] |:
-    drop drop drop drop drop drop
-;
-
-@DRAW-GLYPH ( codepoint x y -- )
-    ( Find width )
-    WIDTH_TABLE 3 PICK + load-byte ( cp x y w )
-    dup 0 = [ drop drop drop drop ] [
-        ( cp x y w )
-        3 PICK FIND-GLYPH-PTR ( cp x y w ptr )
-        DRAW-GLYPH-ROWS
+        drop ( ptr cp )
     ] ?:
 ;
 
 @DRAW-GRID
-    0 ( codepoint )
-    [ 256 < ] [
-        dup dup dup ( cp cp cp cp )
-        16 MOD 38 * 10 + ( cp cp cp x )
-        swap 16 / 38 * 10 + ( cp cp x y )
-        DRAW-GLYPH
+    GLYPH_DATA 0 ( ptr cp )
+    [ dup 256 < ] [
+        dup WIDTH_TABLE + load-byte ( ptr cp width )
+        DRAW-GRID-BODY
         1 +
     ] |:
-    drop
+    drop drop
 ;
 
 @load-data
-    ( FILE::read length is packed into the low 16 bits of the command
-      register, so 65536 wraps to 0 and reads nothing. The chicago font
-      data is well under 32KB, so one 32768-byte read covers it. )
     F"pkg/system/chicago.cff" FILE::name!
     WIDTH_TABLE FILE::buf!
     32768 FILE::read
@@ -139,6 +128,10 @@ MODULE ILLUMINATOR
 @keep-alive
     YIELD
     keep-alive
+;
+
+@handle-menu-select ( callback -- )
+    CALL
 ;
 
 @handle-up-arrow
@@ -158,6 +151,10 @@ MODULE ILLUMINATOR
 @DRAW-ALL
     DF::use-window
     0 DF::clear-screen
+    
+    ( Debug pixel )
+    0xFFFFFF 0 0 SCREEN::pixel!
+
     mode@ 0 = [ DRAW-GRID ] ?
     mode@ 1 = [
         ( picker mode - draw file list )
@@ -170,6 +167,13 @@ MODULE ILLUMINATOR
 @start
     load-data
     0 mode!
+
+    ( Register menu with Cloister )
+    F"File" ILLUM_MENU MENU::init!
+    111 F"Open" [ 0 picker_sel! 1 mode! ] ILLUM_MENU MENU::add!
+    ILLUM_MENU MENU::register!
+    [ handle-menu-select ] MENU::vector!
+
     [ DRAW-ALL ] SCREEN::vector!
     [ on-key ] CTRL::vector!
     keep-alive

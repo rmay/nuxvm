@@ -23,7 +23,7 @@ MODULE DELINEATIOFENESTRA
 
 ( --- Pane state --- )
 
-@PANE-BASE 0x700000 ;
+@PANE-BASE 0x850000 ;
 
 @pane-x@   PANE-BASE       LOADI ;
 @pane-y@   PANE-BASE  4 +  LOADI ;

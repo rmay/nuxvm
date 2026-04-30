@@ -1,0 +1,53 @@
+INCLUDE "lib/system.lux"
+@OVER 1 PICK ;
+
+@WIDTH_TABLE  0x800000 ;
+@GLYPH_DATA   0x800100 ;
+
+@DRAW-GLYPH-ROW ( x y ptr row -- )
+    drop drop drop drop
+;
+
+@DRAW-GLYPH-ROWS ( x y ptr -- )
+    [ DRAW-GLYPH-ROW ] 8 #:
+    drop drop drop
+;
+
+@DRAW-ONE-GLYPH ( ptr cp -- )
+    ( ptr cp )
+    "CP:" OVER . " PTR:" OVER . 10 emit
+    drop drop
+;
+
+@DRAW-GRID-BODY ( ptr cp width -- ptr' cp )
+    dup 0 > [
+        ( ptr cp width )
+        7 + 8 / 8 * ( ptr cp size )
+        ROT ROT ( size ptr cp )
+        TWO-DUP DRAW-ONE-GLYPH ( size ptr cp )
+        ROT ROT ( ptr cp size )
+        ROT + swap ( ptr' cp )
+    ] [
+        drop ( ptr cp )
+    ] ?:
+;
+
+@DRAW-GRID-RECURSE ( ptr cp -- )
+    dup 256 < [
+        ( ptr cp )
+        dup WIDTH_TABLE + load-byte ( ptr cp width )
+        DRAW-GRID-BODY ( ptr' cp )
+        1 + DRAW-GRID-RECURSE
+    ] [
+        drop drop
+    ] ?:
+;
+
+@main
+    ( fake data )
+    10 0x800000 store-byte ( width 10 for CP 0 )
+    GLYPH_DATA 0 DRAW-GRID-RECURSE
+    HALT
+;
+
+main

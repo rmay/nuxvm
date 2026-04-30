@@ -1,0 +1,27 @@
+INCLUDE "lib/system.lux"
+INCLUDE "lib/delineatiofenestra.lux"
+IMPORT SYSTEM
+IMPORT SCREEN
+IMPORT DELINEATIOFENESTRA AS DF
+
+@main
+    ( Set window size shadow )
+    640 SCREEN::width!
+    640 SCREEN::height!
+    
+    DF::use-window
+    
+    "Pane-W: " DF::pane-w@ . 10 emit
+    "Pane-H: " DF::pane-h@ . 10 emit
+    
+    0xFFFFFF 10 10 DF::pixel
+    
+    ( Check if SCREEN::pixel! was called )
+    ( nux doesn't have a screen, but we can't easily check from here )
+    ( but we can check if it crashed )
+    
+    "DF Test Done." 10 emit
+    HALT
+;
+
+main

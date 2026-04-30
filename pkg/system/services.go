@@ -29,11 +29,12 @@ type WindowReply struct {
 
 // Window chrome geometry constants (moved from wm.go)
 const (
-	TopBarHeight     = 24
-	WinChromeHeight  = 20 // title bar height per window
-	WinBorderWidth   = 1  // 1px border all sides
-	WindowInset      = 4  // standard inset for windows from edges
-	WinScrollbarSize = 15 // vertical and horizontal scrollbar thickness
+	TopBarHeight      = 24
+	WinChromeHeight   = 20 // title bar height per window
+	WinMenuBarHeight  = 18 // menu bar height (if present)
+	WinBorderWidth    = 1  // 1px border all sides
+	WindowInset       = 4  // standard inset for windows from edges
+	WinScrollbarSize  = 15 // vertical and horizontal scrollbar thickness
 )
 
 type rect struct {
@@ -63,6 +64,7 @@ type WindowRecord struct {
 	ContentWidth  int32
 	ContentHeight int32
 	FrameBuf      []byte
+	MenuTablePtr  uint32 // pointer to menu table in VM memory (0 = no menu)
 }
 
 // ============= Input Manager =============
@@ -237,6 +239,31 @@ func (sm *ServiceManager) GetActiveWindowFramebuf() []byte {
 		return win.FrameBuf
 	}
 	return nil
+}
+
+// SetWindowMenu sets the menu table pointer for a window and adjusts its content rect.
+// tablePtr=0 removes the menu.
+func (sm *ServiceManager) SetWindowMenu(winID WindowID, tablePtr uint32) {
+	sm.windowMu.Lock()
+	defer sm.windowMu.Unlock()
+	win := sm.windows[winID]
+	if win == nil {
+		return
+	}
+
+	hasMenuBefore := win.MenuTablePtr != 0
+	hasMenuAfter := tablePtr != 0
+
+	win.MenuTablePtr = tablePtr
+
+	// Adjust content rect if menu state changed
+	if hasMenuBefore && !hasMenuAfter {
+		// Removing menu: shift content up
+		win.ContRgn.Top -= WinMenuBarHeight
+	} else if !hasMenuBefore && hasMenuAfter {
+		// Adding menu: shift content down
+		win.ContRgn.Top += WinMenuBarHeight
+	}
 }
 
 func (sm *ServiceManager) ActiveWindowName() string {

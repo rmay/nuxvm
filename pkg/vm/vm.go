@@ -13,18 +13,18 @@ const MaxReturnStackSize = 1024
 
 // Memory layout constants
 const (
-	ReservedMemorySize = 0x1000 // 4KB (0x0000-0x0FFF)
-	DeviceMemoryOffset = 0x3000 // Device ports start at 0x3000 (standardized)
-	DeviceMemorySize   = 0x1000 // 4KB for device ports (0x3000-0x3FFF)
+	ReservedMemorySize = 0x4000 // 16KB (0x0000-0x3FFF)
+	DeviceMemoryOffset = 0x10000 // Device ports start at 0x10000
+	DeviceMemorySize   = 0x1000 // 4KB for device ports (0x10000-0x10FFF)
 
-	// Video Framebuffer: Starting at 0x4000.
+	// Video Framebuffer: Starting at 0x11000.
 	// Support up to 1280x1024 pixels (~5MB).
-	VideoFramebufferStart = 0x4000
+	VideoFramebufferStart = 0x11000
 	VideoMaxBufferSize    = 1280 * 1024 * 4
 	VideoFramebufferEnd   = VideoFramebufferStart + VideoMaxBufferSize
 
 	// User memory starts after the maximum possible video framebuffer
-	UserMemoryOffset = 0x44000 // 278528 decimal
+	UserMemoryOffset = 0x600000 // 6MB decimal
 )
 
 // Device memory configuration (device port logic moved to Bus layer)

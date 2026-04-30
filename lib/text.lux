@@ -1,0 +1,26 @@
+( --- TEXT --- )
+
+MODULE TEXT
+@addr 0x10090 ;
+
+@vector!   addr STOREI ;
+@attr!     addr 4  + STOREI ;
+@cursor!   addr 8  + STOREI ;
+@emit      addr 12 + STOREI ;
+
+@attr@     addr 4  + LOADI ;
+@cursor@   addr 8  + LOADI ;
+
+@cell-size! ( scale -- )
+    16777216 *
+    attr@ 16777215 AND
+    OR
+    attr!
+;
+
+@color! ( rgb -- )
+    16777215 AND
+    attr@ 16777215 NOT AND
+    OR
+    attr!
+;

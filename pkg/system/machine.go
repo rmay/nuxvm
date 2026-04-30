@@ -6,8 +6,9 @@ import (
 
 // Machine represents the complete virtual computer (VM + Hardware).
 type Machine struct {
-	CPU    *vm.VM
-	System *System
+	CPU       *vm.VM
+	System    *System
+	inputQueue chan InputEvent // Per-machine input queue (buffered, cap 64)
 }
 
 func NewMachine(program []byte, memSize uint32, trace ...bool) *Machine {
@@ -47,8 +48,9 @@ func NewMachine(program []byte, memSize uint32, trace ...bool) *Machine {
 	}
 
 	return &Machine{
-		CPU:    cpu,
-		System: sys,
+		CPU:        cpu,
+		System:     sys,
+		inputQueue: make(chan InputEvent, 64),
 	}
 }
 
@@ -86,7 +88,11 @@ func NewMachineSharedServices(program []byte, memSize uint32, services *ServiceM
 		}
 	}
 
-	return &Machine{CPU: cpu, System: sys}
+	return &Machine{
+		CPU:        cpu,
+		System:     sys,
+		inputQueue: make(chan InputEvent, 64),
+	}
 }
 
 // Tick executes the CPU until it yields or halts.
@@ -153,11 +159,47 @@ func (m *Machine) Services() *ServiceManager {
 	return m.System.Services
 }
 
+// QueueKeyDown queues a keyboard event for this machine.
+func (m *Machine) QueueKeyDown(keyCode int32) {
+	select {
+	case m.inputQueue <- InputEvent{Type: InputKeyDown, KeyCode: keyCode}:
+	default:
+		// queue full, drop event
+	}
+}
+
+// QueueMouseButton queues a mouse button event for this machine.
+func (m *Machine) QueueMouseButton(x, y int32, btn uint32, down bool) {
+	evtType := InputMouseUp
+	if down {
+		evtType = InputMouseDown
+	}
+	select {
+	case m.inputQueue <- InputEvent{Type: evtType, MouseX: x, MouseY: y, MouseBtn: btn}:
+	default:
+	}
+}
+
+// QueueMouseMove queues a mouse move event for this machine.
+func (m *Machine) QueueMouseMove(x, y int32) {
+	select {
+	case m.inputQueue <- InputEvent{Type: InputMouseMove, MouseX: x, MouseY: y}:
+	default:
+	}
+}
+
 // DrainInputEvents polls and dispatches all pending input events to the VM.
 // Called each frame before machine.Tick() to feed buffered input to the VM.
 func (m *Machine) DrainInputEvents() {
 	for {
-		evt := m.System.Services.PollEvent()
+		var evt *InputEvent
+		select {
+		case e := <-m.inputQueue:
+			evt = &e
+		default:
+			return
+		}
+
 		if evt == nil {
 			break
 		}

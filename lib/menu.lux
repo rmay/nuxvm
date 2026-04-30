@@ -1,0 +1,57 @@
+( === MENU SYSTEM LIBRARY === )
+
+INCLUDE "lib/core.lux"
+
+MODULE MENU
+@addr 0x100D0 ;                  ( MenuPort = 0x30D0 )
+
+@vector!   addr STOREI ;
+@register! addr 4 + STOREI ;
+
+( Menu memory layout:
+  base+0:   title_ptr  (int32, F-string addr, can be 0)
+  base+4:   item_count (int32, starts 0)
+  base+8:   reserved   (int32)
+  base+12 + i*16:
+    +0:  key_char   (int32, ASCII shortcut key)
+    +4:  text_ptr   (int32, F-string addr)
+    +8:  callback   (int32, code addr)
+    +12: reserved   (int32)
+
+  Max 8 items per menu. Total: 12 + 8*16 = 140 bytes per menu.
+)
+
+@ENTRY-SIZE  16 ;
+@HEADER-SIZE 12 ;
+@MAX-ITEMS   8 ;
+
+@init! ( title-ptr base -- )
+    dup rot swap STOREI            ( write title_ptr at base+0 )
+    dup 4 + 0 swap STOREI          ( write item_count=0 at base+4 )
+    8 + 0 swap STOREI              ( write reserved=0 at base+8 )
+;
+
+@add! ( key-char text-ptr callback base -- )
+    dup 4 + LOADI                  ( key text cb base count )
+    dup MAX-ITEMS < [
+        ENTRY-SIZE *               ( key text cb base count*16 )
+        ROLL HEADER-SIZE +         ( key text cb base count*16 base+12 )
+        +                          ( key text cb base item-addr )
+
+        ( store callback at item+8: ROT brings cb to top, ROLL dups item-addr )
+        ROT ROLL 8 + STOREI        ( key text base item-addr )
+
+        ( store text_ptr at item+4 )
+        ROT ROLL 4 + STOREI        ( key base item-addr )
+
+        ( store key_char at item+0 )
+        ROT ROLL STOREI            ( base item-addr )
+        DROP                       ( base )
+
+        ( increment item_count at base+4 )
+        dup 4 + dup LOADI 1 + swap STOREI
+        DROP
+    ] [
+        DROP DROP DROP DROP DROP
+    ] ?:
+;
