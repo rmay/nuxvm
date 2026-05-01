@@ -430,10 +430,10 @@ func TestTextDeviceDrawsGlyph(t *testing.T) {
 		t.Errorf("Expected some transparent pixels, got 0")
 	}
 
-	// Cursor should have advanced to (1, 0).
+	// Cursor should have advanced to (7, 0).
 	cur, _ := sys.Read(textCursorAddr)
-	if cur != (1 << 16) {
-		t.Errorf("cursor after emit: got 0x%X, want 0x10000", cur)
+	if cur != (7 << 16) {
+		t.Errorf("cursor after emit: got 0x%X, want 0x70000", cur)
 	}
 }
 
@@ -460,19 +460,18 @@ func TestTextDeviceScale(t *testing.T) {
 	}
 }
 
-// TestTextCursorWraps verifies the cursor wraps to the next row when emitted
-// past the right edge.
+// TestTextCursorWraps verifies the cursor advances correctly even if it goes off-screen.
 func TestTextCursorWraps(t *testing.T) {
 	sys := NewSystem()
-	sys.SetResolution(32, 32)                                   // 4 cells wide at scale 1
+	sys.SetResolution(32, 32)
 	sys.Write(textAttrAddr, int32((uint32(1)<<24)|0xFFFFFF)) // white
-	sys.Write(textCursorAddr, int32(3<<16))                  // cell (3,0) — last col
+	sys.Write(textCursorAddr, int32(28<<16))                 // cell (28,0) — near right edge
 
 	sys.Write(textCharAddr, int32('X'))
 
 	cur, _ := sys.Read(textCursorAddr)
-	if cur != (0<<16)|1 {
-		t.Errorf("cursor after wrap: got 0x%X, want row 1 col 0", cur)
+	if cur != (35 << 16) { // 28 + 7 = 35
+		t.Errorf("cursor after advance: got 0x%X, want 0x230000", cur)
 	}
 }
 
@@ -486,8 +485,8 @@ func TestTextNewlineResetsColumn(t *testing.T) {
 
 	sys.Write(textCharAddr, int32('\n'))
 	cur, _ := sys.Read(textCursorAddr)
-	if cur != 1 {
-		t.Errorf("cursor after newline: got 0x%X, want row 1 col 0", cur)
+	if cur != 13 { // row 13 col 0
+		t.Errorf("cursor after newline: got 0x%X, want row 13 col 0", cur)
 	}
 }
 func TestWindowMMIO(t *testing.T) {

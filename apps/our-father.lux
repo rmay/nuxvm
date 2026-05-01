@@ -12,45 +12,44 @@ IMPORT DELINEATIOFENESTRA AS DF
 
 MODULE OURFATHER
 
-( Lines are pane-local cell coords; DF translates by the pane's
-  origin (in cells) before writing TEXT::cursor!. )
+( Lines are pane-local pixel coords. )
 @DRAW-ENGLISH
-    2  0 DF::move-to  T"Our Father, who art in"
-    2  1 DF::move-to  T"heaven, hallowed be thy"
-    2  2 DF::move-to  T"name; thy kingdom come;"
-    2  3 DF::move-to  T"thy will be done on"
-    2  4 DF::move-to  T"earth as it is in heaven."
+    10   0 DF::move-to  T"Our Father, who art in"
+    10  13 DF::move-to  T"heaven, hallowed be thy"
+    10  26 DF::move-to  T"name; thy kingdom come;"
+    10  39 DF::move-to  T"thy will be done on"
+    10  52 DF::move-to  T"earth as it is in heaven."
 
-    2  6 DF::move-to  T"Give us this day our"
-    2  7 DF::move-to  T"daily bread; and forgive"
-    2  8 DF::move-to  T"us our trespasses as we"
-    2  9 DF::move-to  T"forgive those who trespass"
-    2 10 DF::move-to  T"against us; and lead us"
-    2 11 DF::move-to  T"not into temptation, but"
-    2 12 DF::move-to  T"deliver us from evil."
+    10  78 DF::move-to  T"Give us this day our"
+    10  91 DF::move-to  T"daily bread; and forgive"
+    10 104 DF::move-to  T"us our trespasses as we"
+    10 117 DF::move-to  T"forgive those who trespass"
+    10 130 DF::move-to  T"against us; and lead us"
+    10 143 DF::move-to  T"not into temptation, but"
+    10 156 DF::move-to  T"deliver us from evil."
 
-    2 14 DF::move-to  T"Amen."
+    10 182 DF::move-to  T"Amen."
 ;
 
 @DRAW-LATIN
-    5  0 DF::move-to  T"PATER NOSTER, qui es in"
-    5  1 DF::move-to  T"caelis, sanctificetur"
-    5  2 DF::move-to  T"nomen tuum. Adveniat"
-    5  3 DF::move-to  T"regnum tuum. Fiat"
-    5  4 DF::move-to  T"voluntas tua, sicut in"
-    5  5 DF::move-to  T"caelo et in terra."
+    10   0 DF::move-to  T"PATER NOSTER, qui es in"
+    10  13 DF::move-to  T"caelis, sanctificetur"
+    10  26 DF::move-to  T"nomen tuum. Adveniat"
+    10  39 DF::move-to  T"regnum tuum. Fiat"
+    10  52 DF::move-to  T"voluntas tua, sicut in"
+    10  65 DF::move-to  T"caelo et in terra."
 
-    5  7 DF::move-to  T"Panem nostrum quotidianum"
-    5  8 DF::move-to  T"da nobis hodie, et dimitte"
-    5  9 DF::move-to  T"nobis debita nostra sicut"
-    5 10 DF::move-to  T"et nos dimittimus"
-    5 11 DF::move-to  T"debitoribus nostris."
+    10  91 DF::move-to  T"Panem nostrum quotidianum"
+    10 104 DF::move-to  T"da nobis hodie, et dimitte"
+    10 117 DF::move-to  T"nobis debita nostra sicut"
+    10 130 DF::move-to  T"et nos dimittimus"
+    10 143 DF::move-to  T"debitoribus nostris."
 
-    5 13 DF::move-to  T"Et ne nos inducas in"
-    5 14 DF::move-to  T"tentationem, sed libera"
-    5 15 DF::move-to  T"nos a malo."
+    10 169 DF::move-to  T"Et ne nos inducas in"
+    10 182 DF::move-to  T"tentationem, sed libera"
+    10 195 DF::move-to  T"nos a malo."
 
-    5 17 DF::move-to  T"Amen."
+    10 221 DF::move-to  T"Amen."
 ;
 
 ( Repaint everything from scratch. Installed as the screen vector so
@@ -59,11 +58,11 @@ MODULE OURFATHER
 @DRAW-ALL
     DF::use-window     -1 DF::clear-screen
     1  DF::set-text-scale
-    1  DF::set-pen-color
+    255 DF::set-pen-color
     2 0 DF::use-pane-h    DRAW-ENGLISH
     2 1 DF::use-pane-h    DRAW-LATIN
     DF::use-window
-    0 DF::window-w 2 / 0 DF::window-h DF::v-line
+    255 DF::window-w 2 / 0 DF::window-h DF::v-line
 ;
 
 @keep-alive

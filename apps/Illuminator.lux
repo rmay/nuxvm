@@ -134,6 +134,7 @@ MODULE ILLUMINATOR
     load-data
     F"File" ILLUM_MENU MENU::init!
     111 F"Open" [ on-open ] ILLUM_MENU MENU::add!
+    113 F"Quit" [ HALT ] ILLUM_MENU MENU::add!
     ILLUM_MENU MENU::register!
     [ CALL ] MENU::vector!
     [ DRAW-ALL ] SCREEN::vector!

@@ -85,13 +85,10 @@ MODULE FILE
 @dir-each ( name-ptr line-buf max quot -- )
     rot name!              ( line-buf max quot )
     swap buf!              ( max quot )
-    [ dup list dup 0 > ] [
+    [ 1 PICK list dup 0 > ] [
         ( max quot len )
-        rot               ( quot len max )
-        rot               ( len max quot )
-        rot               ( max quot len )
-        2 PICK 2 PICK CALL ( max quot len )
-        drop              ( max quot )
+        dup 2 PICK CALL    ( max quot len )
+        drop               ( max quot )
     ] |:
     drop drop
 ;

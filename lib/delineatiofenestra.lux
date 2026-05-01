@@ -5,10 +5,7 @@
   coordinates and clips anything outside the pane.
 
   Pane state lives in DF-owned memory above VideoFramebufferEnd
-  at 0x700000, so STOREI/LOADI hit memory directly. The
-  framebuffer-routing layer clips fb writes outside the active
-  window's framebuffer silently, so off-pane pixels that slip past
-  DF's clip math are dropped on the floor instead of faulting the VM.
+  at 0x700000, so STOREI/LOADI hit memory directly.
 
   Strings: there is no string-as-data primitive in Lux yet, so DF
   does not provide draw-string. Apps use the existing T literal —
@@ -88,14 +85,23 @@ MODULE DELINEATIOFENESTRA
     13 * cell-h!
 ;
 
-( move-to: cell-coords inside the current pane. )
-@move-to ( col row -- )
-    cell-h@ * pane-y@ +        ( col y' )
-    swap                       ( y' col )
-    cell-w@ * pane-x@ +        ( y' x' )
+( move-to: pixel coordinates inside the current pane. )
+@move-to ( x y -- )
+    pane-y@ +                  ( x y' )
+    swap                       ( y' x )
+    pane-x@ +                  ( y' x' )
     65536 *                    ( y' x'<<16 )
     +
     TEXT::cursor!
+;
+
+( move-to-cell: cell coordinates inside the current pane. )
+@move-to-cell ( col row -- )
+    cell-h@ *                  ( col y-offset )
+    swap                       ( y-offset col )
+    cell-w@ *                  ( y-offset x-offset )
+    swap                       ( x-offset y-offset )
+    move-to
 ;
 
 @draw-char ( c -- )
@@ -138,9 +144,13 @@ MODULE DELINEATIOFENESTRA
 ( --- Rectangles --- )
 
 @frame-rect ( rgb x y w h -- )
+    ( top: rgb x y w )
     4 PICK 4 PICK 4 PICK 4 PICK h-line
+    ( bottom: rgb x y+h-1 w )
     4 PICK 4 PICK 4 PICK 3 PICK + 1 - 4 PICK h-line
+    ( left: rgb x y h )
     4 PICK 4 PICK 4 PICK 3 PICK v-line
+    ( right: rgb x+w-1 y h )
     4 PICK 4 PICK 3 PICK + 1 - 4 PICK 3 PICK v-line
     drop drop drop drop drop
 ;

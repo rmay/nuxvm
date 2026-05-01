@@ -13,32 +13,32 @@ MODULE CONTROLS
 ( Gray pattern for scrollbars/backgrounds - Checkerboard )
 @draw-gray-rect ( x y w h -- )
     ( Initial stack: x y w h )
-    0 [ ( x y w row )
-        0 [ ( x y w row col )
-            4 PICK 0 PICK + ( x+col )
-            3 PICK 1 PICK + ( y+row )
-            ( x' y' )
-            1 PICK 1 PICK + 2 MOD 0 = [
-                0 2 PICK 2 PICK DF::pixel
-            ] ?
+    0 ( row ) [
+        0 ( col ) [
+            ( stack: x y w h row col )
+            5 PICK 1 PICK + ( x' )
+            5 PICK 3 PICK + ( y' )
+            TWO-DUP + 2 MOD 0 = [
+                255 2 PICK 2 PICK DF::pixel
+            ] [ ] ?:
             drop drop
             1 +
-        ] 2 PICK ( w ) #:
+        ] 3 PICK #:
         drop
         1 +
-    ] swap #:
-    drop drop drop
+    ] 1 PICK #:
+    drop drop drop drop drop
 ;
 
 ( --- Dialogs --- )
 
 @dialog-bg ( x y w h -- )
     ( Draw drop shadow first )
-    0 4 PICK 2 + 4 PICK 2 + 4 PICK 4 PICK DF::fill-rect
+    255 4 PICK 2 + 4 PICK 2 + 4 PICK 4 PICK DF::fill-rect
     ( Draw main white body )
-    16777215 4 PICK 4 PICK 4 PICK 4 PICK DF::fill-rect
+    -1 4 PICK 4 PICK 4 PICK 4 PICK DF::fill-rect
     ( Draw 1px black frame )
-    0 4 PICK 4 PICK 4 PICK 4 PICK DF::frame-rect
+    255 4 PICK 4 PICK 4 PICK 4 PICK DF::frame-rect
     drop drop drop drop
 ;
 
@@ -46,9 +46,9 @@ MODULE CONTROLS
 
 @button ( x y w h -- )
     ( Rounded-rect imitation: black frame )
-    0 4 PICK 4 PICK 4 PICK 4 PICK DF::frame-rect
+    255 4 PICK 4 PICK 4 PICK 4 PICK DF::frame-rect
     ( Fill with white )
-    16777215 4 PICK 1 + 4 PICK 1 + 4 PICK 2 - 4 PICK 2 - DF::fill-rect
+    -1 4 PICK 1 + 4 PICK 1 + 4 PICK 2 - 4 PICK 2 - DF::fill-rect
     drop drop drop drop
 ;
 
@@ -56,11 +56,11 @@ MODULE CONTROLS
 
 @checkbox ( checked? x y -- )
     ( 12x12 checkbox )
-    0 2 PICK 2 PICK 12 12 DF::frame-rect
-    16777215 3 PICK 1 + 3 PICK 1 + 10 10 DF::fill-rect
+    255 2 PICK 2 PICK 12 12 DF::frame-rect
+    -1 3 PICK 1 + 3 PICK 1 + 10 10 DF::fill-rect
     ( If checked, draw placeholder cross )
     [
-        0 2 PICK 4 + 2 PICK 4 + 4 4 DF::fill-rect
+        255 2 PICK 4 + 2 PICK 4 + 4 4 DF::fill-rect
     ] ?
     drop drop
 ;
@@ -72,21 +72,21 @@ MODULE CONTROLS
     DF::pane-x@ DF::pane-y@ DF::pane-w@ DF::pane-h@
     
     ( Setup scrollbar pane )
-    6 PICK 6 PICK 16 6 PICK DF::use-rect
+    6 PICK 6 PICK 16 7 PICK DF::use-rect
     
     ( Background gray pattern )
-    0 0 16 3 PICK draw-gray-rect
+    0 0 16 4 PICK draw-gray-rect
     
     ( Top/Bottom arrows )
-    16777215 0 0 16 16 DF::fill-rect
-    0 0 0 16 16 DF::frame-rect
+    -1 0 0 16 16 DF::fill-rect
+    255 0 0 16 16 DF::frame-rect
     
-    16777215 0 2 PICK 16 - 16 16 DF::fill-rect
-    0 0 2 PICK 16 - 16 16 DF::frame-rect
+    -1 0 4 PICK 16 - 16 16 DF::fill-rect
+    255 0 4 PICK 16 - 16 16 DF::frame-rect
     
     ( Thumb )
-    16777215 0 20 16 16 DF::fill-rect
-    0 0 20 16 16 DF::frame-rect
+    -1 0 20 16 16 DF::fill-rect
+    255 0 20 16 16 DF::frame-rect
     
     ( Restore previous pane )
     DF::use-rect
