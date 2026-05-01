@@ -1220,12 +1220,49 @@ func TestCompileStringInQuotation(t *testing.T) {
 }
 
 func TestCompileUnsupportedCombinatorInQuotation(t *testing.T) {
-	source := " [ ?: ] "
+	// |: (while) is still not supported inside quotations
+	source := " [ |: ] "
 	_, err := Compile(source)
 	if err == nil {
 		t.Error("Expected error for unsupported combinator in quotation")
 	} else if !contains(err.Error(), "not yet supported in quotations") {
 		t.Errorf("Expected error containing 'not yet supported in quotations', got: %v", err)
+	}
+}
+
+func TestCompileIfElseInQuotation(t *testing.T) {
+	// ?:, ?, !: must compile without error inside quotations
+	for _, src := range []string{
+		"[ 1 [ 2 DROP ] [ 3 DROP ] ?: ]",
+		"[ 1 [ 2 DROP ] ? ]",
+		"[ 0 [ 2 DROP ] !: ]",
+	} {
+		_, err := Compile(src)
+		if err != nil {
+			t.Errorf("source %q: unexpected compile error: %v", src, err)
+		}
+	}
+}
+
+func TestRunIfElseInQuotation(t *testing.T) {
+	// Compile a word that calls ?:, ?, !: from within a quotation argument
+	// and verify correct runtime behavior.
+	src := `
+@branch-test ( cond -- result )
+    [ [ 42 ] [ 99 ] ?: ] CALL
+;
+1 branch-test
+`
+	bytecode, err := Compile(src)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+	v := vm.NewVM(bytecode)
+	if err := v.Run(); err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+	if len(v.Stack()) != 1 || v.Stack()[0] != 42 {
+		t.Errorf("expected stack [42], got %v", v.Stack())
 	}
 }
 

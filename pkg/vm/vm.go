@@ -83,7 +83,7 @@ func NewVM(program []byte, trace ...bool) *VM {
 
 	return &VM{
 		stack:              make([]int32, 0, MaxStackSize),
-		returnStack:        make([]int32, 0, MaxStackSize),
+		returnStack:        make([]int32, 0, MaxReturnStackSize),
 		memory:             totalMemory,
 		pc:                 UserMemoryOffset, // Start execution at user memory
 		running:            true,
@@ -110,7 +110,7 @@ func NewVMWithMemorySize(program []byte, totalSize uint32, trace ...bool) *VM {
 
 	return &VM{
 		stack:              make([]int32, 0, MaxStackSize),
-		returnStack:        make([]int32, 0, MaxStackSize),
+		returnStack:        make([]int32, 0, MaxReturnStackSize),
 		memory:             totalMemory,
 		pc:                 UserMemoryOffset,
 		running:            true,
@@ -135,7 +135,7 @@ func NewVMWithReservedMemory(program []byte, reservedSize uint32, trace ...bool)
 
 	return &VM{
 		stack:              make([]int32, 0, MaxStackSize),
-		returnStack:        make([]int32, 0, MaxStackSize),
+		returnStack:        make([]int32, 0, MaxReturnStackSize),
 		memory:             totalMemory,
 		pc:                 UserMemoryOffset, // Start execution at user memory
 		running:            true,

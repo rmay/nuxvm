@@ -15,42 +15,27 @@ MODULE ILLUMINATOR
 ( --- Aliases --- )
 @OVER 1 PICK ;
 
-( --- Constants ---
-  All buffers must live ABOVE the framebuffer-routed range.
-  Framebuf end is approx 0x511000.
-  0x800000 is safe. )
-@WIDTH_TABLE  0x800000 ; ( 256 bytes )
-@GLYPH_DATA   0x800100 ; ( Rest of the file )
+( --- Constants --- )
+@WIDTH_TABLE  0x800000 ;
+@GLYPH_DATA   0x800100 ;
 @FILENAME_BUF 0x810000 ;
-
-( --- State --- )
 @STATE_BASE   0x820000 ;
-@data_size    STATE_BASE ;
-@mode         STATE_BASE 4 + ;
-@picker_sel   STATE_BASE 8 + ;
-
-( --- Menu Table --- )
+@mode_addr    STATE_BASE 4 + ;
+@picker_sel_addr STATE_BASE 8 + ;
 @ILLUM_MENU   0x840000 ;
 
-@size@        data_size LOADI ;
-@size!        data_size STOREI ;
-@mode@        mode LOADI ;
-@mode!        mode STOREI ;
-@picker_sel@  picker_sel LOADI ;
-@picker_sel!  picker_sel STOREI ;
-
-( --- Picker buffers --- )
-@PICKER_BUF   0x818000 ; ( directory listing line buffer )
-@ENTRIES_BUF  0x819000 ; ( parsed filenames, up to 64 entries @ 64 bytes each )
-
+( --- State Accessors --- )
+@mode@        mode_addr LOADI ;
+@mode!        mode_addr STOREI ;
+@picker_sel@  picker_sel_addr LOADI ;
+@picker_sel!  picker_sel_addr STOREI ;
 
 ( --- Rendering --- )
 
 @RENDER-BIT ( x y color byte bit dx -- )
-    ( dx bit byte color y x )
-    2 PICK 3 PICK AND 0 > [
-        4 PICK ( color )
-        6 PICK 2 PICK + ( x+dx )
+    2 PICK 2 PICK AND 0 > [
+        3 PICK ( color )
+        6 PICK ( x ) 2 PICK ( dx ) +
         6 PICK ( y )
         DF::pixel
     ] ?
@@ -58,7 +43,6 @@ MODULE ILLUMINATOR
 ;
 
 @RENDER-BYTE ( x y color byte -- )
-    ( x y color byte )
     3 PICK 3 PICK 3 PICK 3 PICK 0x80 0 RENDER-BIT
     3 PICK 3 PICK 3 PICK 3 PICK 0x40 1 RENDER-BIT
     3 PICK 3 PICK 3 PICK 3 PICK 0x20 2 RENDER-BIT
@@ -71,58 +55,79 @@ MODULE ILLUMINATOR
 ;
 
 @DRAW-GLYPH-ROW ( x y ptr row -- )
-    ( x y ptr row )
-    dup 2 PICK + load-byte ( x y ptr row byte )
+    1 PICK 1 PICK + load-byte ( byte )
     4 PICK ( x )
-    5 PICK 3 PICK + ( y+row )
-    0xFFFFFF ( color )
-    ROT ( x y ptr row x y' color byte )
+    4 PICK 3 PICK + ( y+row )
+    -1 ( color )
+    3 PICK ( byte )
     RENDER-BYTE
+    drop drop drop drop drop
 ;
 
 @DRAW-GLYPH-ROWS ( x y ptr -- )
-    [ DRAW-GLYPH-ROW ] 8 #:
-    drop drop drop
+    0 [
+        3 PICK 3 PICK 3 PICK 3 PICK
+        DRAW-GLYPH-ROW
+        1 +
+    ] 8 #:
+    drop drop drop drop
 ;
 
 @DRAW-ONE-GLYPH ( ptr cp -- )
-    ( ptr cp )
-    dup 16 MOD 38 * 10 + ( ptr cp x )
-    OVER 16 / 38 * 10 + ( ptr cp x y )
+    dup 16 MOD 38 * 10 + ( x )
+    OVER 16 / 38 * 10 + ( y )
     ( ptr cp x y )
-    4 PICK ( ptr cp x y ptr )
+    ROT ( ptr x y cp ) drop ( ptr x y )
+    ROT ( x y ptr )
     DRAW-GLYPH-ROWS
-    drop drop ( pop x y )
 ;
 
-@DRAW-GRID-BODY ( ptr cp width -- ptr' cp )
-    dup 0 > [
-        ( ptr cp width )
-        7 + 8 / 8 * ( ptr cp size )
-        ROT ROT ( size ptr cp )
-        TWO-DUP DRAW-ONE-GLYPH ( size ptr cp )
-        ROT + ( cp ptr' )
-        swap ( ptr' cp )
+@DRAW-GRID-LOOP ( ptr cp -- )
+    dup 256 < [
+        dup WIDTH_TABLE + load-byte ( ptr cp width )
+        dup 0 > [
+            7 + 8 / 8 * ( stride )
+            2 PICK 2 PICK DRAW-ONE-GLYPH
+            ROT + swap 1 +
+            DRAW-GRID-LOOP
+        ] [
+            drop 1 +
+            DRAW-GRID-LOOP
+        ] ?:
     ] [
-        drop ( ptr cp )
+        drop drop
     ] ?:
 ;
 
 @DRAW-GRID
-    GLYPH_DATA 0 ( ptr cp )
-    [ dup 256 < ] [
-        dup WIDTH_TABLE + load-byte ( ptr cp width )
-        DRAW-GRID-BODY
-        1 +
-    ] |:
-    drop drop
+    GLYPH_DATA 0 DRAW-GRID-LOOP
 ;
 
 @load-data
     F"pkg/system/chicago.cff" FILE::name!
     WIDTH_TABLE FILE::buf!
-    32768 FILE::read
-    size!
+    32768 FILE::read drop
+;
+
+@on-key
+    CTRL::key@
+    dup 111 = [ 0 picker_sel! 1 mode! ] ?
+    dup 17 = [ picker_sel@ dup 0 > [ 1 - picker_sel! ] [ drop ] ?: ] ?
+    dup 18 = [ picker_sel@ 1 + picker_sel! ] ?
+    dup 13 = [ 0 mode! ] ?
+    dup 27 = [ 0 mode! ] ?
+    drop
+;
+
+@DRAW-ALL
+    DF::use-window
+    0 DF::clear-screen
+    mode@ 0 = [ DRAW-GRID ] ?
+    mode@ 1 = [
+        -1 TEXT::color!
+        0 TEXT::cursor!
+        T"File Picker (O to exit)"
+    ] ?
 ;
 
 @keep-alive
@@ -130,53 +135,16 @@ MODULE ILLUMINATOR
     keep-alive
 ;
 
-@handle-menu-select ( callback -- )
-    CALL
-;
-
-@handle-up-arrow
-    picker_sel@ dup 0 > [ 1 - picker_sel! ] [ drop ] ?:
-;
-
-@on-key
-    CTRL::key@
-    dup 111 = [ drop 0 picker_sel! 1 mode! ] ?
-    dup 17 = [ drop handle-up-arrow ] ?
-    dup 18 = [ drop picker_sel@ 1 + picker_sel! ] ?
-    dup 13 = [ drop 0 mode! ] ?
-    dup 27 = [ drop 0 mode! ] ?
-    drop
-;
-
-@DRAW-ALL
-    DF::use-window
-    0 DF::clear-screen
-    
-    ( Debug pixel )
-    0xFFFFFF 0 0 SCREEN::pixel!
-
-    mode@ 0 = [ DRAW-GRID ] ?
-    mode@ 1 = [
-        ( picker mode - draw file list )
-        TEXT::color! 16777215
-        0 TEXT::cursor!
-        T"File Picker (O to exit)"
-    ] ?
-;
-
 @start
     load-data
     0 mode!
-
-    ( Register menu with Cloister )
     F"File" ILLUM_MENU MENU::init!
     111 F"Open" [ 0 picker_sel! 1 mode! ] ILLUM_MENU MENU::add!
     ILLUM_MENU MENU::register!
-    [ handle-menu-select ] MENU::vector!
-
+    [ CALL ] MENU::vector!
     [ DRAW-ALL ] SCREEN::vector!
     [ on-key ] CTRL::vector!
-    keep-alive
+    YIELD keep-alive
 ;
 
 MODULE MAIN

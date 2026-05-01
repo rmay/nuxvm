@@ -69,10 +69,10 @@ func NewMachineSharedServices(program []byte, memSize uint32, services *ServiceM
 	} else {
 		cpu = vm.NewVM(program, trace...)
 	}
-	sys := NewSystem()
-	// Drop the auto-created Services in favor of the shared one. The discarded
-	// Services has unstarted goroutine channels; they're GC'd when this scope
-	// exits.
+	// Skip the 5 MB screenPixels fallback — this VM shares a ServiceManager
+	// that has real windows, so getActiveFramebuffer always resolves to a
+	// window FrameBuf.
+	sys := NewSystemNoFallback()
 	sys.Services = services
 	sys.SetMemory(cpu.Memory())
 	sys.SetVectorCallbacks(

@@ -758,12 +758,30 @@ func TestPCOutOfBounds(t *testing.T) {
 	// Create a program that jumps/calls beyond the end of the memory
 	programJmp := make([]byte, 10)
 	programJmp[0] = OpJmp
-	binary.BigEndian.PutUint32(programJmp[1:], 99999) // Jump to address well beyond memory
+	binary.BigEndian.PutUint32(programJmp[1:], 0) // placeholder
 
 	vmJmp := createVMWithProgram(programJmp)
+	outOfBoundsTarget := vmJmp.UserMemoryStart() + uint32(len(programJmp)) + 1
+	binary.BigEndian.PutUint32(vmJmp.memory[vmJmp.UserMemoryStart()+1:], outOfBoundsTarget)
 	err = vmJmp.Run()
 	if err == nil {
 		t.Error("Expected error for PC out of bounds after JMP")
+	}
+	if !contains(err.Error(), "program counter out of bounds") {
+		t.Errorf("Expected 'program counter out of bounds' in error, got: %v", err)
+	}
+
+	// Test for call
+	programCall := make([]byte, 10)
+	programCall[0] = OpCall
+	binary.BigEndian.PutUint32(programCall[1:], 0) // placeholder
+
+	vmCall := createVMWithProgram(programCall)
+	outOfBoundsTarget = vmCall.UserMemoryStart() + uint32(len(programCall)) + 1
+	binary.BigEndian.PutUint32(vmCall.memory[vmCall.UserMemoryStart()+1:], outOfBoundsTarget)
+	err = vmCall.Run()
+	if err == nil {
+		t.Error("Expected error for PC out of bounds after CALL")
 	}
 	if !contains(err.Error(), "program counter out of bounds") {
 		t.Errorf("Expected 'program counter out of bounds' in error, got: %v", err)

@@ -163,6 +163,26 @@ func NewSystem() *System {
 	return s
 }
 
+// NewSystemNoFallback is like NewSystem but skips the 5 MB screenPixels
+// fallback buffer. Use this when a shared ServiceManager is already in place
+// and getActiveFramebuffer() will always resolve to a real window FrameBuf.
+func NewSystemNoFallback() *System {
+	s := &System{
+		screenWidth:  800,
+		screenHeight: 600,
+		rngState:     uint32(time.Now().UnixNano()),
+		text: textState{
+			scale: 2,
+			color: 0xFFFFFF,
+		},
+		Services: NewServiceManager(),
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		_ = s.SetSandboxRoot(cwd)
+	}
+	return s
+}
+
 // SetVectorCallbacks wires vector register read/write to the CPU (used by Machine).
 func (s *System) SetVectorCallbacks(get func(int) uint32, set func(int, uint32)) {
 	s.getVector = get

@@ -1904,7 +1904,7 @@ func (c *clipboardBus) Write(address uint32, value int32) error {
 }
 
 func main() {
-	memFlag := flag.Int("mem", 32, "VM memory size in megabytes (max 128)")
+	memFlag := flag.Int("mem", 12, "VM memory size in megabytes (max 128)")
 	widthFlag := flag.Int("w", 0, "Screen width override (0 = defer to shell.lux)")
 	heightFlag := flag.Int("h", 0, "Screen height override (0 = defer to shell.lux)")
 	scaleFlag := flag.Int("scale", 0, "Window pixel scale override (0 = defer to shell.lux)")

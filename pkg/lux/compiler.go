@@ -83,12 +83,20 @@ type Word struct {
 	Module  string
 }
 
+// InternalJump tracks a jump within quotation code whose target address can
+// only be computed once the quotation is placed into the final bytecode stream.
+type InternalJump struct {
+	PlaceholderAt int // offset of the 4-byte address placeholder within quot.Code
+	TargetOffset  int // local offset within quot.Code that the jump should land on
+}
+
 // Quotation represents a compiled code block
 type Quotation struct {
-	Address  int32  // Where the quotation code starts
-	EndAddr  int32  // Where it ends
-	Code     []byte // Compiled bytecode
-	TempAddr int32  // Temporary address for patching
+	Address       int32          // Where the quotation code starts
+	EndAddr       int32          // Where it ends
+	Code          []byte         // Compiled bytecode
+	TempAddr      int32          // Temporary address for patching
+	InternalJumps []InternalJump // Jumps within Code that need absolute-address patching
 }
 
 // UnresolvedReference tracks a word in a quotation that needs resolution
@@ -299,6 +307,15 @@ func (c *Compiler) compile() ([]byte, error) {
 				i, c.quotations[i].Address, c.quotations[i].TempAddr)
 		}
 		c.bytecode = append(c.bytecode, c.quotations[i].Code...)
+		// Patch any internal jumps (?:, ?, !: inside quotation bodies).
+		// PlaceholderAt and TargetOffset are local offsets within quot.Code;
+		// resolve them to absolute addresses now that placement is known.
+		quotStartByteIdx := int(c.quotations[i].Address) - int(c.baseAddr)
+		for _, ij := range c.quotations[i].InternalJumps {
+			absTarget := c.quotations[i].Address + int32(ij.TargetOffset)
+			patchAt := quotStartByteIdx + ij.PlaceholderAt
+			binary.BigEndian.PutUint32(c.bytecode[patchAt:patchAt+4], uint32(absTarget))
+		}
 		c.quotations[i].EndAddr = c.currentAddress()
 	}
 	// Now patch all PUSH instructions that reference quotation addresses
@@ -562,7 +579,7 @@ func (c *Compiler) compileToken(token Token) error {
 	case TokenLBracket:
 		// Use a temporary address that won't conflict with real addresses
 		// We use 0x1000 + quotation index * 0x100 to ensure uniqueness
-		tempAddr := int32(0x1000 + len(c.quotations)*0x100)
+		tempAddr := int32(0x7FFF0000 + len(c.quotations))
 		if c.trace {
 			fmt.Fprintf(os.Stderr, "compileToken: Emitting PUSH for quotation at temp addr=%d\n", tempAddr)
 		}
@@ -614,7 +631,7 @@ func (c *Compiler) compileWordDefinition() error {
 		switch token.Type {
 		case TokenLBracket:
 			// Create a quotation entry
-			tempAddr := c.currentAddress() + 5 // Address after the PUSH instruction
+			tempAddr := int32(0x7FFF0000 + len(c.quotations))
 			c.quotations = append(c.quotations, Quotation{TempAddr: tempAddr, Code: []byte{}})
 			// Emit PUSH with temporary address
 			c.emit(vm.OpPush)
@@ -668,10 +685,11 @@ func (c *Compiler) compileQuotationInDefinition(currentWordName string, currentW
 		token := c.peek()
 
 		if token.Type == TokenLBracket {
-			// Handle nested quotation
-			depth++
+			// Handle nested quotation. Do NOT increment depth here — the
+			// recursive call consumes its own closing ], so depth stays at 1
+			// until the outer ] is reached.
 			// Calculate a temporary address for the nested quotation
-			tempAddr := int32(0x1000 + len(c.quotations)*0x100)
+			tempAddr := int32(0x7FFF0000 + len(c.quotations))
 
 			// Emit PUSH instruction in the parent quotation
 			quot.Code = append(quot.Code, vm.OpPush)
@@ -891,7 +909,7 @@ func (c *Compiler) compileQuotation() error {
 
 			// Calculate a temporary address for the nested quotation
 			// This will be patched later when we know the real address
-			tempAddr := int32(0x1000 + len(c.quotations)*0x100) // Temporary unique address
+			tempAddr := int32(0x7FFF0000 + len(c.quotations)) // Temporary unique address
 
 			// Emit PUSH instruction in the parent quotation with temp address
 			quot.Code = append(quot.Code, vm.OpPush)
@@ -1037,8 +1055,62 @@ func (c *Compiler) compileQuotationCombinator(name string, quot *Quotation) erro
 		// CALL just executes the quotation on top of stack
 		quot.Code = append(quot.Code, vm.OpCallStack)
 
+	case "?:":
+		// Mirrors compileIfElse(): [... cond true-addr false-addr] ?:
+		quot.Code = append(quot.Code, vm.OpSwap)
+		quot.Code = append(quot.Code, vm.OpRot)
+		jzAt := len(quot.Code) + 1
+		quot.Code = append(quot.Code, vm.OpJz, 0, 0, 0, 0)
+		quot.Code = append(quot.Code, vm.OpSwap)
+		quot.Code = append(quot.Code, vm.OpPop)
+		quot.Code = append(quot.Code, vm.OpCallStack)
+		jmpAt := len(quot.Code) + 1
+		quot.Code = append(quot.Code, vm.OpJmp, 0, 0, 0, 0)
+		elseAt := len(quot.Code)
+		quot.Code = append(quot.Code, vm.OpPop)
+		quot.Code = append(quot.Code, vm.OpCallStack)
+		endAt := len(quot.Code)
+		quot.InternalJumps = append(quot.InternalJumps,
+			InternalJump{PlaceholderAt: jzAt, TargetOffset: elseAt},
+			InternalJump{PlaceholderAt: jmpAt, TargetOffset: endAt},
+		)
+
+	case "?":
+		// Mirrors compileIf(): [... cond addr] ?
+		quot.Code = append(quot.Code, vm.OpSwap)
+		jzAt := len(quot.Code) + 1
+		quot.Code = append(quot.Code, vm.OpJz, 0, 0, 0, 0)
+		quot.Code = append(quot.Code, vm.OpCallStack)
+		jmpAt := len(quot.Code) + 1
+		quot.Code = append(quot.Code, vm.OpJmp, 0, 0, 0, 0)
+		skipAt := len(quot.Code)
+		quot.Code = append(quot.Code, vm.OpPop)
+		endAt := len(quot.Code)
+		quot.InternalJumps = append(quot.InternalJumps,
+			InternalJump{PlaceholderAt: jzAt, TargetOffset: skipAt},
+			InternalJump{PlaceholderAt: jmpAt, TargetOffset: endAt},
+		)
+
+	case "!:":
+		// Mirrors compileUnless(): [... cond addr] !:
+		quot.Code = append(quot.Code, vm.OpSwap)
+		quot.Code = append(quot.Code, vm.OpPush)
+		quot.Code = append(quot.Code, vm.EncodeInt32(0)...)
+		quot.Code = append(quot.Code, vm.OpEq)
+		jzAt := len(quot.Code) + 1
+		quot.Code = append(quot.Code, vm.OpJz, 0, 0, 0, 0)
+		quot.Code = append(quot.Code, vm.OpCallStack)
+		jmpAt := len(quot.Code) + 1
+		quot.Code = append(quot.Code, vm.OpJmp, 0, 0, 0, 0)
+		skipAt := len(quot.Code)
+		quot.Code = append(quot.Code, vm.OpPop)
+		endAt := len(quot.Code)
+		quot.InternalJumps = append(quot.InternalJumps,
+			InternalJump{PlaceholderAt: jzAt, TargetOffset: skipAt},
+			InternalJump{PlaceholderAt: jmpAt, TargetOffset: endAt},
+		)
+
 	default:
-		// For now, other combinators aren't supported in quotations
 		return fmt.Errorf("combinator '%s' not yet supported in quotations", name)
 	}
 	return nil
