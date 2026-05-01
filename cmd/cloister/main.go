@@ -641,7 +641,30 @@ func (g *Game) Update() error {
 			case HitZoneGrowBox:
 				// no-op in v1
 			case HitZoneMenuBar:
-				// Handle menu item selection if menu is already open
+				// If clicking the title, toggle the menu
+				if app := g.luxAppForWinID(hit.WinID); app != nil {
+					if win := g.machine.Services().GetWindowByID(hit.WinID); win != nil {
+						mem := app.machine.CPU.Memory()
+						title, _ := readMenuFromMem(mem, win.MenuTablePtr)
+						titleW := measureSystemFontText(title, 1) + 12
+						if hit.LocalX < titleW {
+							if g.openMenuWinID == hit.WinID {
+								g.openMenuWinID = 0
+								g.openMenuIdx = -1
+							} else {
+								g.openMenuWinID = hit.WinID
+								g.openMenuIdx = -1
+							}
+							g.wm.MarkDirty(hit.WinID)
+							return nil
+						}
+					}
+				}
+				// Otherwise, close any open menu
+				g.openMenuWinID = 0
+				g.openMenuIdx = -1
+			case HitZoneContent:
+				// If a menu item is hovered, execute it
 				if g.openMenuWinID == hit.WinID && g.openMenuIdx >= 0 {
 					if win := g.machine.Services().GetWindowByID(hit.WinID); win != nil {
 						if app := g.luxAppForWinID(hit.WinID); app != nil {
@@ -649,33 +672,17 @@ func (g *Game) Update() error {
 							_, items := readMenuFromMem(mem, win.MenuTablePtr)
 							if g.openMenuIdx < len(items) {
 								item := items[g.openMenuIdx]
-								// Push callback address onto stack and trigger MENU vector
 								app.machine.CPU.Push(int32(item.Callback))
 								app.machine.CPU.TriggerVector(system.MenuVectorIdx)
 								g.openMenuWinID = 0
 								g.openMenuIdx = -1
 								g.wm.MarkDirty(hit.WinID)
-							}
-						}
-					}
-				} else {
-					// Open the menu dropdown
-					g.focusAndShow(hit.WinID)
-					if app := g.luxAppForWinID(hit.WinID); app != nil {
-						g.openMenuWinID = hit.WinID
-						g.openMenuIdx = -1 // Will be set by hover
-						// TODO: determine which item was clicked based on hit.LocalX
-						// For now, just open at position 0
-						if win := g.machine.Services().GetWindowByID(hit.WinID); win != nil {
-							mem := app.machine.CPU.Memory()
-							_, items := readMenuFromMem(mem, win.MenuTablePtr)
-							if len(items) > 0 {
-								g.openMenuIdx = 0
+								return nil
 							}
 						}
 					}
 				}
-			case HitZoneContent:
+
 				// Close any open menu first
 				if g.openMenuWinID != 0 {
 					g.openMenuWinID = 0
@@ -693,7 +700,7 @@ func (g *Game) Update() error {
 					g.machine.Services().QueueMouseButton(int32(hit.LocalX), int32(hit.LocalY), 1, true)
 				}
 			}
-		} else if g.openMenuWinID != 0 && hit.WinID == g.openMenuWinID && hit.Zone != HitZoneContent {
+		} else if g.openMenuWinID != 0 && hit.WinID == g.openMenuWinID {
 			// Track hover over open menu dropdown
 			if win := g.machine.Services().GetWindowByID(g.openMenuWinID); win != nil {
 				if app := g.luxAppForWinID(g.openMenuWinID); app != nil {
@@ -701,12 +708,19 @@ func (g *Game) Update() error {
 					_, items := readMenuFromMem(mem, win.MenuTablePtr)
 
 					// Calculate which item is under the mouse
+					dropX := int(win.ContRgn.Left) + 4
+					dropW := 150
 					dropY := int(win.ContRgn.Top)
-					itemIdx := (my - dropY - 2) / 16
-					if itemIdx < 0 || itemIdx >= len(items) {
-						g.openMenuIdx = -1
+					
+					if mx >= dropX && mx < dropX+dropW {
+						itemIdx := (my - dropY - 2) / 16
+						if itemIdx < 0 || itemIdx >= len(items) {
+							g.openMenuIdx = -1
+						} else {
+							g.openMenuIdx = itemIdx
+						}
 					} else {
-						g.openMenuIdx = itemIdx
+						g.openMenuIdx = -1
 					}
 				}
 			}
@@ -944,26 +958,15 @@ func (g *Game) drawWindowMenuBar(screen *ebiten.Image, win *system.WindowRecord,
 	// Draw menu title on the left
 	titleX := menuBarX + 4
 	titleY := menuBarY + (system.WinMenuBarHeight-shellFontH)/2
-	drawShellText(screen, title, titleX, titleY, color.Black)
-
-	// Draw items horizontally spaced
-	itemX := titleX + measureSystemFontText(title, 1) + 20
-	for i, item := range items {
-		if itemX >= menuBarX+menuBarW-50 {
-			break
-		}
-		itemW := measureSystemFontText(item.Text, 1) + 8
-
-		// Highlight if hovering and menu is open
-		if g.openMenuWinID == win.ID && g.openMenuIdx == i {
-			ebitenutil.DrawRect(screen, float64(itemX-2), float64(titleY-1),
-				float64(itemW), float64(shellFontH+2), color.RGBA{100, 100, 100, 255})
-			drawShellText(screen, item.Text, itemX, titleY, color.White)
-		} else {
-			drawShellText(screen, item.Text, itemX, titleY, color.Black)
-		}
-
-		itemX += itemW + 8
+	
+	// Highlight title if menu is open
+	if g.openMenuWinID == win.ID {
+		titleW := measureSystemFontText(title, 1) + 8
+		ebitenutil.DrawRect(screen, float64(titleX-2), float64(titleY-1),
+			float64(titleW), float64(shellFontH+2), color.RGBA{100, 100, 100, 255})
+		drawShellText(screen, title, titleX, titleY, color.White)
+	} else {
+		drawShellText(screen, title, titleX, titleY, color.Black)
 	}
 }
 
@@ -1239,7 +1242,7 @@ func (g *Game) handleAppleMenuInput(justPressed bool) {
 
 	// Mouse hover and click
 	mx, my := ebiten.CursorPosition()
-	appleX, appleY := 20, TopBarHeight+10
+	appleX, appleY := 5, TopBarHeight
 	itemHeight := 18
 	for i := 0; i < appleMenuItemCount; i++ {
 		itemY := appleY + i*itemHeight

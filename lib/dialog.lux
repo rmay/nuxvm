@@ -1,0 +1,139 @@
+( === DIALOG SYSTEM LIBRARY === )
+
+INCLUDE "lib/core.lux"
+INCLUDE "lib/system.lux"
+INCLUDE "lib/file.lux"
+INCLUDE "lib/delineatiofenestra.lux"
+INCLUDE "lib/controls.lux"
+IMPORT SCREEN
+IMPORT TEXT
+IMPORT FILE
+IMPORT CTRL
+IMPORT DELINEATIOFENESTRA AS DF
+IMPORT CONTROLS
+
+MODULE DIALOG
+
+( --- State --- )
+@FILES_BUF 0x860000 ; ( Store up to 64 filenames, 32 bytes each )
+@count_addr 0x860800 ;
+@sel_addr   0x860804 ;
+@result_ptr_addr 0x860808 ;
+@callback_addr 0x86080C ;
+@saved_screen_addr 0x860810 ;
+@saved_ctrl_addr 0x860814 ;
+
+@count@ count_addr LOADI ;
+@count! count_addr STOREI ;
+@sel@   sel_addr LOADI ;
+@sel!   sel_addr STOREI ;
+@result_ptr@ result_ptr_addr LOADI ;
+@result_ptr! result_ptr_addr STOREI ;
+@callback@ callback_addr LOADI ;
+@callback! callback_addr STOREI ;
+@saved_screen@ saved_screen_addr LOADI ;
+@saved_screen! saved_screen_addr STOREI ;
+@saved_ctrl@ saved_ctrl_addr LOADI ;
+@saved_ctrl! saved_ctrl_addr STOREI ;
+
+@load-files
+    0 count!
+    0 sel!
+    F"." FILES_BUF 32 [
+        drop
+        FILES_BUF count@ 32 * +
+        31 [
+            OVER load-byte
+            dup 0 = [ drop drop drop 0 0 0 ] [
+                1 PICK store-byte
+                1 + swap 1 + swap
+                1
+            ] ?:
+        ] #:
+        drop drop
+        0 FILES_BUF count@ 32 * + 31 + store-byte
+        count@ 1 + count!
+    ] FILE::dir-each
+;
+
+@DRAW-DIALOG
+    DF::use-window
+    ( Draw modal background )
+    DF::window-w 100 - ( w )
+    DF::window-h 100 - ( w h )
+    50 50 3 PICK 3 PICK CONTROLS::dialog-bg
+    
+    ( Draw title )
+    0 TEXT::color!
+    60 65 DF::move-to T"Select a file:"
+    
+    ( Draw list box )
+    0 80 85 DF::window-w 160 - DF::window-h 180 - DF::frame-rect
+    
+    ( Draw scrollbar placeholder )
+    80 85 DF::window-w 160 - + 16 - ( sb-x )
+    85 ( sb-y )
+    DF::window-h 180 - ( sb-h )
+    CONTROLS::scrollbar-v
+    
+    ( Draw file list entries )
+    0 [
+        dup sel@ = [
+            0 95 OVER 16 * 90 + DF::window-w 180 - 16 DF::fill-rect
+            16777215 TEXT::color!
+        ] [
+            0 TEXT::color!
+        ] ?:
+        
+        97 OVER 16 * 92 + DF::move-to
+        FILES_BUF OVER 32 * + ( ptr )
+        [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop
+        drop
+        1 +
+    ] count@ #:
+    drop
+    
+    ( Draw buttons )
+    DF::window-w 140 - DF::window-h 90 - 60 20 CONTROLS::button
+    DF::window-w 130 - DF::window-h 85 - DF::move-to T"Open"
+    
+    DF::window-w 220 - DF::window-h 90 - 60 20 CONTROLS::button
+    DF::window-w 215 - DF::window-h 85 - DF::move-to T"Cancel"
+;
+
+@CLOSE
+    saved_screen@ 0x10020 STOREI
+    saved_ctrl@ 0x10040 STOREI
+;
+
+@ON-KEY
+    CTRL::key@
+    dup 18 = [ sel@ 1 + count@ 1 - MIN sel! ] ? ( Down )
+    dup 17 = [ sel@ 1 - 0 MAX sel! ] ?     ( Up )
+    dup 13 = [ ( Enter )
+        FILES_BUF sel@ 32 * +
+        result_ptr@
+        32 [ OVER load-byte 1 PICK store-byte 1 + swap 1 + swap ] #:
+        drop drop
+        CLOSE
+        callback@ CALL
+    ] ?
+    dup 27 = [ CLOSE ] ? ( Esc )
+    drop
+;
+
+@FILE-PICKER ( result-ptr callback -- )
+    callback!
+    result_ptr!
+    load-files
+    0x10020 LOADI saved_screen!
+    0x10040 LOADI saved_ctrl!
+    [ DRAW-DIALOG ] 0x10020 STOREI
+    [ ON-KEY ] 0x10040 STOREI
+;
+
+MODULE FILE-DIALOG
+IMPORT DIALOG
+@show ( result-ptr callback -- )
+    DIALOG::FILE-PICKER
+;

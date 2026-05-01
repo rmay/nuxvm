@@ -29,53 +29,42 @@ MODULE DELINEATIOFENESTRA
 @pane-y@   PANE-BASE  4 +  LOADI ;
 @pane-w@   PANE-BASE  8 +  LOADI ;
 @pane-h@   PANE-BASE 12 +  LOADI ;
-@cell-px@  PANE-BASE 16 +  LOADI ;
+@cell-w@   PANE-BASE 16 +  LOADI dup 0 = [ drop 7 ] ? ;
+@cell-h@   PANE-BASE 20 +  LOADI dup 0 = [ drop 13 ] ? ;
 
 @pane-x!   ( v -- ) PANE-BASE       STOREI ;
 @pane-y!   ( v -- ) PANE-BASE  4 +  STOREI ;
 @pane-w!   ( v -- ) PANE-BASE  8 +  STOREI ;
 @pane-h!   ( v -- ) PANE-BASE 12 +  STOREI ;
-@cell-px!  ( v -- ) PANE-BASE 16 +  STOREI ;
+@cell-w!   ( v -- ) PANE-BASE 16 +  STOREI ;
+@cell-h!   ( v -- ) PANE-BASE 20 +  STOREI ;
 
-( --- Window-size accessors ---
-  Read via SCREEN::width / SCREEN::height (which the system bus
-  routes to the active window's content rect). WINDOW::visible-h@
-  is unreliable: its MMIO offset (windowPort+16 = 0x30C0) lands on
-  the next 16-byte device block's vector slot and gets intercepted
-  by the bus's vector-register dispatch before WINDOW's own read
-  handler runs. )
+( --- Window-size accessors --- )
 
 @window-w  ( -- w )  SCREEN::width ;
 @window-h  ( -- h )  SCREEN::height ;
 
-( --- Pane selectors ---
-  Each writes the pane-x/y/w/h slots; subsequent drawing is
-  pane-relative + clipped. )
+( --- Pane selectors --- )
 
-( use-rect: explicit pane rect, window-relative. )
 @use-rect ( x y w h -- )
     pane-h!  pane-w!  pane-y!  pane-x!
 ;
 
-( use-window: pane = whole window. )
 @use-window ( -- )
     0 0 window-w window-h use-rect
 ;
 
-( use-pane-h: nth-of-N horizontal slice, left to right.
-  `2 0 use-pane-h` selects the left half of two horizontal panes. )
 @use-pane-h ( n idx -- )
     swap                       ( idx n )
     window-w swap /         ( idx slice-w )
     swap                       ( slice-w idx )
-    ROLL *                     ( slice-w idx*slice-w; ROLL is OVER )
+    ROLL *                     ( slice-w idx*slice-w )
     pane-x!                    ( slice-w )
     0 pane-y!
     pane-w!                    ( -- )
     window-h pane-h!
 ;
 
-( use-pane-v: nth-of-N vertical slice, top to bottom. )
 @use-pane-v ( n idx -- )
     swap                       ( idx n )
     window-h swap /         ( idx slice-h )
@@ -93,19 +82,18 @@ MODULE DELINEATIOFENESTRA
     TEXT::color!
 ;
 
-( set-text-scale: also updates DF's cell-px shadow so move-to
-  can translate pane offsets to absolute cell coords. )
 @set-text-scale ( scale -- )
     dup TEXT::cell-size!
-    8 * cell-px!
+    dup 7 * cell-w!
+    13 * cell-h!
 ;
 
 ( move-to: cell-coords inside the current pane. )
 @move-to ( col row -- )
-    pane-y@ cell-px@ / +       ( col row' )
-    swap                       ( row' col )
-    pane-x@ cell-px@ / +       ( row' col' )
-    65536 *                    ( row' col'<<16 )
+    cell-h@ * pane-y@ +        ( col y' )
+    swap                       ( y' col )
+    cell-w@ * pane-x@ +        ( y' x' )
+    65536 *                    ( y' x'<<16 )
     +
     TEXT::cursor!
 ;
@@ -116,10 +104,6 @@ MODULE DELINEATIOFENESTRA
 
 ( --- Pixels --- )
 
-( y-ok? / x-ok?: bounds checks against the current pane.
-  Factored out into their own words because the compiler doesn't
-  support nested ?: inside quotations, and pixel needs to compute
-  both flags before its branching ?:. )
 @y-ok? ( y -- bool )
     dup 0 < [ drop 0 ] [ pane-h@ < ] ?:
 ;
@@ -128,8 +112,6 @@ MODULE DELINEATIOFENESTRA
     dup 0 < [ drop 0 ] [ pane-w@ < ] ?:
 ;
 
-( pixel: window-clipped, pane-translated single pixel.
-  Translation: x' = x + pane-x, y' = y + pane-y. )
 @pixel ( rgb x y -- )
     TWO-DUP                    ( rgb x y x y )
     y-ok?                   ( rgb x y x y-ok )
@@ -141,10 +123,6 @@ MODULE DELINEATIOFENESTRA
     ?:
 ;
 
-( h-line and v-line iterate via #: and rely on pixel for
-  per-step clipping. Slower than pre-clipping the parameters but
-  much simpler to get right; acceptable for the line-counts apps
-  draw today. )
 @h-line ( rgb x y len -- )
     [ 2 PICK 2 PICK 2 PICK pixel swap 1 + swap ]
     swap #:
@@ -159,29 +137,20 @@ MODULE DELINEATIOFENESTRA
 
 ( --- Rectangles --- )
 
-( frame-rect: hollow. Re-PICK args from preserved entry frame. )
 @frame-rect ( rgb x y w h -- )
-    ( top: rgb x y w )
     4 PICK 4 PICK 4 PICK 4 PICK h-line
-    ( bottom: rgb x y+h-1 w )
     4 PICK 4 PICK 4 PICK 3 PICK + 1 - 4 PICK h-line
-    ( left: rgb x y h )
     4 PICK 4 PICK 4 PICK 3 PICK v-line
-    ( right: rgb x+w-1 y h )
     4 PICK 4 PICK 3 PICK + 1 - 4 PICK 3 PICK v-line
     drop drop drop drop drop
 ;
 
-( fill-rect: solid. h horizontal lines, advancing y. )
 @fill-rect ( rgb x y w h -- )
     [ 3 PICK 3 PICK 3 PICK 3 PICK h-line swap 1 + swap ]
     swap #:
     drop drop drop drop
 ;
 
-( clear-screen: fill the current pane. "Clear" means "clear what
-  I declared mine" — not the whole window. Apps that want a true
-  whole-window clear do `use-window` first. )
 @clear-screen ( rgb -- )
     0 0 pane-w@ pane-h@ fill-rect
 ;

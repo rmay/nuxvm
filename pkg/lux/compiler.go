@@ -11,11 +11,11 @@ import (
 
 // Built-in words map to opcodes
 // textCharRegAddr is the MMIO address of the TEXT device's char register
-// (0x3090 + 12 = 0x309C). Writing a byte here draws that glyph at the current
+// (0x10090 + 12 = 0x1009C). Writing a byte here draws that glyph at the current
 // text cursor and advances the cursor — see pkg/system/text.go drawChar.
 // T"..." string literals compile to per-char STOREI to this address.
 // F"..." string literals are compiled to heap at compile time and push the address.
-const textCharRegAddr = 0x309C
+const textCharRegAddr = 0x1009C
 const fileStringHeapBase = 0x614000
 
 var builtins = map[string]byte{
@@ -1108,6 +1108,90 @@ func (c *Compiler) compileQuotationCombinator(name string, quot *Quotation) erro
 		quot.InternalJumps = append(quot.InternalJumps,
 			InternalJump{PlaceholderAt: jzAt, TargetOffset: skipAt},
 			InternalJump{PlaceholderAt: jmpAt, TargetOffset: endAt},
+		)
+
+	case "#:":
+		// Mirrors compileTimes(): [... data... quot-addr count]
+		tempQuotAddr, err := c.allocTemp(4)
+		if err != nil {
+			return err
+		}
+		tempCountAddr, err := c.allocTemp(4)
+		if err != nil {
+			return err
+		}
+
+		loopStartOffset := len(quot.Code)
+
+		quot.Code = append(quot.Code, vm.OpDup) // count count
+		jzAt := len(quot.Code) + 1
+		quot.Code = append(quot.Code, vm.OpJz, 0, 0, 0, 0)
+
+		quot.Code = append(quot.Code, vm.OpDec) // count-1
+		quot.Code = append(quot.Code, vm.OpStore)
+		quot.Code = append(quot.Code, vm.EncodeInt32(tempCountAddr)...)
+
+		quot.Code = append(quot.Code, vm.OpStore) // store quot-addr
+		quot.Code = append(quot.Code, vm.EncodeInt32(tempQuotAddr)...)
+
+		quot.Code = append(quot.Code, vm.OpLoad)
+		quot.Code = append(quot.Code, vm.EncodeInt32(tempQuotAddr)...)
+		quot.Code = append(quot.Code, vm.OpCallStack)
+
+		quot.Code = append(quot.Code, vm.OpLoad)
+		quot.Code = append(quot.Code, vm.EncodeInt32(tempQuotAddr)...)
+		quot.Code = append(quot.Code, vm.OpLoad)
+		quot.Code = append(quot.Code, vm.EncodeInt32(tempCountAddr)...)
+
+		jmpAt := len(quot.Code) + 1
+		quot.Code = append(quot.Code, vm.OpJmp, 0, 0, 0, 0)
+
+		endAt := len(quot.Code)
+		quot.Code = append(quot.Code, vm.OpPop)
+		quot.Code = append(quot.Code, vm.OpPop)
+
+		quot.InternalJumps = append(quot.InternalJumps,
+			InternalJump{PlaceholderAt: jzAt, TargetOffset: endAt},
+			InternalJump{PlaceholderAt: jmpAt, TargetOffset: loopStartOffset},
+		)
+
+	case "|:":
+		// Mirrors compileWhile(): [... cond-addr body-addr] |:
+		tempCondAddr, err := c.allocTemp(4)
+		if err != nil {
+			return err
+		}
+		tempBodyAddr, err := c.allocTemp(4)
+		if err != nil {
+			return err
+		}
+
+		quot.Code = append(quot.Code, vm.OpStore)
+		quot.Code = append(quot.Code, vm.EncodeInt32(tempBodyAddr)...)
+		quot.Code = append(quot.Code, vm.OpStore)
+		quot.Code = append(quot.Code, vm.EncodeInt32(tempCondAddr)...)
+
+		loopStartOffset := len(quot.Code)
+
+		quot.Code = append(quot.Code, vm.OpLoad)
+		quot.Code = append(quot.Code, vm.EncodeInt32(tempCondAddr)...)
+		quot.Code = append(quot.Code, vm.OpCallStack)
+
+		jzAt := len(quot.Code) + 1
+		quot.Code = append(quot.Code, vm.OpJz, 0, 0, 0, 0)
+
+		quot.Code = append(quot.Code, vm.OpLoad)
+		quot.Code = append(quot.Code, vm.EncodeInt32(tempBodyAddr)...)
+		quot.Code = append(quot.Code, vm.OpCallStack)
+
+		jmpAt := len(quot.Code) + 1
+		quot.Code = append(quot.Code, vm.OpJmp, 0, 0, 0, 0)
+
+		endAt := len(quot.Code)
+
+		quot.InternalJumps = append(quot.InternalJumps,
+			InternalJump{PlaceholderAt: jzAt, TargetOffset: endAt},
+			InternalJump{PlaceholderAt: jmpAt, TargetOffset: loopStartOffset},
 		)
 
 	default:

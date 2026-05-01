@@ -1,4 +1,5 @@
 ( --- Fundamental Utilities --- )
+@OVER 1 PICK ;
 @TWO-DUP ROLL ROLL ;
 @TWO-DROP DROP DROP ;
 

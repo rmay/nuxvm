@@ -199,7 +199,7 @@ func TestCompileMultipleStrings(t *testing.T) {
 }
 
 func TestCompileTextStringEmitsToTextRegister(t *testing.T) {
-	// T"Hi" compiles to: prelude OpJmp+addr(5) | per-char [PUSH ch | PUSH 0x309C | STOREI](11) | trailing jmp+halt(6).
+	// T"Hi" compiles to: prelude OpJmp+addr(5) | per-char [PUSH ch | PUSH 0x1009C | STOREI](11) | trailing jmp+halt(6).
 	bytecode, err := Compile(`T"Hi"`)
 	if err != nil {
 		t.Fatalf("Compile error: %v", err)
@@ -1219,23 +1219,14 @@ func TestCompileStringInQuotation(t *testing.T) {
 	}
 }
 
-func TestCompileUnsupportedCombinatorInQuotation(t *testing.T) {
-	// |: (while) is still not supported inside quotations
-	source := " [ |: ] "
-	_, err := Compile(source)
-	if err == nil {
-		t.Error("Expected error for unsupported combinator in quotation")
-	} else if !contains(err.Error(), "not yet supported in quotations") {
-		t.Errorf("Expected error containing 'not yet supported in quotations', got: %v", err)
-	}
-}
-
-func TestCompileIfElseInQuotation(t *testing.T) {
-	// ?:, ?, !: must compile without error inside quotations
+func TestCompileCombinatorsInQuotation(t *testing.T) {
+	// ?:, ?, !:, |:, #: must compile without error inside quotations
 	for _, src := range []string{
 		"[ 1 [ 2 DROP ] [ 3 DROP ] ?: ]",
 		"[ 1 [ 2 DROP ] ? ]",
 		"[ 0 [ 2 DROP ] !: ]",
+		"[ [ 1 ] [ 2 ] |: ]",
+		"[ [ 1 ] 5 #: ]",
 	} {
 		_, err := Compile(src)
 		if err != nil {

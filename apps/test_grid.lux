@@ -1,5 +1,4 @@
 INCLUDE "lib/system.lux"
-@OVER 1 PICK ;
 
 @WIDTH_TABLE  0x800000 ;
 @GLYPH_DATA   0x800100 ;

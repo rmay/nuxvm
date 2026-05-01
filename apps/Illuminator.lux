@@ -2,6 +2,7 @@ INCLUDE "lib/system.lux"
 INCLUDE "lib/file.lux"
 INCLUDE "lib/menu.lux"
 INCLUDE "lib/delineatiofenestra.lux"
+INCLUDE "lib/dialog.lux"
 IMPORT SYSTEM
 IMPORT SCREEN
 IMPORT TEXT
@@ -9,24 +10,22 @@ IMPORT FILE
 IMPORT MENU
 IMPORT CTRL
 IMPORT DELINEATIOFENESTRA AS DF
+IMPORT FILE-DIALOG
 
 MODULE ILLUMINATOR
 
 ( --- Aliases --- )
-@OVER 1 PICK ;
+( OVER is now in core.lux )
 
 ( --- Constants --- )
 @WIDTH_TABLE  0x800000 ;
 @GLYPH_DATA   0x800100 ;
 @FILENAME_BUF 0x810000 ;
 @STATE_BASE   0x820000 ;
-@mode_addr    STATE_BASE 4 + ;
 @picker_sel_addr STATE_BASE 8 + ;
 @ILLUM_MENU   0x840000 ;
 
 ( --- State Accessors --- )
-@mode@        mode_addr LOADI ;
-@mode!        mode_addr STOREI ;
 @picker_sel@  picker_sel_addr LOADI ;
 @picker_sel!  picker_sel_addr STOREI ;
 
@@ -104,30 +103,25 @@ MODULE ILLUMINATOR
 ;
 
 @load-data
-    F"pkg/system/chicago.cff" FILE::name!
+    FILENAME_BUF FILE::name!
     WIDTH_TABLE FILE::buf!
     32768 FILE::read drop
 ;
 
+@on-open
+    FILENAME_BUF [ load-data ] FILE-DIALOG::show
+;
+
 @on-key
     CTRL::key@
-    dup 111 = [ 0 picker_sel! 1 mode! ] ?
-    dup 17 = [ picker_sel@ dup 0 > [ 1 - picker_sel! ] [ drop ] ?: ] ?
-    dup 18 = [ picker_sel@ 1 + picker_sel! ] ?
-    dup 13 = [ 0 mode! ] ?
-    dup 27 = [ 0 mode! ] ?
+    dup 111 = [ on-open ] ?
     drop
 ;
 
 @DRAW-ALL
     DF::use-window
     0 DF::clear-screen
-    mode@ 0 = [ DRAW-GRID ] ?
-    mode@ 1 = [
-        -1 TEXT::color!
-        0 TEXT::cursor!
-        T"File Picker (O to exit)"
-    ] ?
+    DRAW-GRID
 ;
 
 @keep-alive
@@ -136,10 +130,10 @@ MODULE ILLUMINATOR
 ;
 
 @start
+    F"pkg/system/chicago.cff" FILENAME_BUF [ OVER load-byte 1 PICK store-byte 1 + swap 1 + swap ] 32 #: drop drop
     load-data
-    0 mode!
     F"File" ILLUM_MENU MENU::init!
-    111 F"Open" [ 0 picker_sel! 1 mode! ] ILLUM_MENU MENU::add!
+    111 F"Open" [ on-open ] ILLUM_MENU MENU::add!
     ILLUM_MENU MENU::register!
     [ CALL ] MENU::vector!
     [ DRAW-ALL ] SCREEN::vector!
