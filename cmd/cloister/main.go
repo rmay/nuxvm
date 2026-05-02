@@ -647,7 +647,7 @@ func (g *Game) Update() error {
 						mem := app.machine.CPU.Memory()
 						title, _ := readMenuFromMem(mem, win.MenuTablePtr)
 						titleW := measureSystemFontText(title, 1) + 12
-						if hit.LocalX < titleW {
+						if hit.LocalX >= 50 && hit.LocalX < 50+titleW {
 							if g.openMenuWinID == hit.WinID {
 								g.openMenuWinID = 0
 								g.openMenuIdx = -1
@@ -942,23 +942,15 @@ func (g *Game) drawWindowMenuBar(screen *ebiten.Image, win *system.WindowRecord,
 		return
 	}
 
-	// Menu bar is at cont.Top - WinMenuBarHeight, extends to cont.Top
-	menuBarY := int(win.ContRgn.Top) - system.WinMenuBarHeight
-	menuBarX := int(win.ContRgn.Left)
-	menuBarW := int(win.ContRgn.Width())
+	// Menu bar is integrated into the chrome (title bar).
+	// Chrome is at struc.Top + 1, WinChromeHeight tall.
+	menuBarY := int(win.StrucRgn.Top) + 1
+	menuBarX := int(win.StrucRgn.Left) + 50 // Offset by 50 to avoid close/arrow buttons
 
-	// Draw bar background (light gray)
-	ebitenutil.DrawRect(screen, float64(menuBarX), float64(menuBarY),
-		float64(menuBarW), float64(system.WinMenuBarHeight), color.RGBA{200, 200, 200, 255})
+	// Draw menu title on the left of the chrome
+	titleX := menuBarX
+	titleY := menuBarY + (system.WinChromeHeight-shellFontH)/2
 
-	// Draw bar border (black line at bottom)
-	ebitenutil.DrawLine(screen, float64(menuBarX), float64(menuBarY+system.WinMenuBarHeight-1),
-		float64(menuBarX+menuBarW), float64(menuBarY+system.WinMenuBarHeight-1), color.Black)
-
-	// Draw menu title on the left
-	titleX := menuBarX + 4
-	titleY := menuBarY + (system.WinMenuBarHeight-shellFontH)/2
-	
 	// Highlight title if menu is open
 	if g.openMenuWinID == win.ID {
 		titleW := measureSystemFontText(title, 1) + 8
@@ -968,8 +960,7 @@ func (g *Game) drawWindowMenuBar(screen *ebiten.Image, win *system.WindowRecord,
 	} else {
 		drawShellText(screen, title, titleX, titleY, color.Black)
 	}
-}
-
+	}
 func (g *Game) drawOpenMenuDropdown(screen *ebiten.Image, win *system.WindowRecord, app *LuxApp) {
 	if g.openMenuWinID != win.ID || app == nil {
 		return

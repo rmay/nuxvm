@@ -1,6 +1,6 @@
 ( --- Fundamental Utilities --- )
 @OVER 1 PICK ;
-@TWO-DUP ROLL ROLL ;
+@TWO-DUP OVER OVER ;
 @TWO-DROP DROP DROP ;
 
 ( Each takes ( val offset -- byte ); offset is unused but on stack from caller. )

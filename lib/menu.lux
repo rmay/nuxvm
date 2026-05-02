@@ -34,24 +34,16 @@ MODULE MENU
 @add! ( key-char text-ptr callback base -- )
     dup 4 + LOADI                  ( key text cb base count )
     dup MAX-ITEMS < [
-        ENTRY-SIZE *               ( key text cb base count*16 )
-        ROLL HEADER-SIZE +         ( key text cb base count*16 base+12 )
-        +                          ( key text cb base item-addr )
+        ENTRY-SIZE *               ( key text cb base offset )
+        swap                       ( key text cb offset base )
+        dup 4 + dup LOADI 1 + swap STOREI ( increment count )
 
-        ( store callback at item+8: ROT brings cb to top, ROLL dups item-addr )
-        ROT ROLL 8 + STOREI        ( key text base item-addr )
-
-        ( store text_ptr at item+4 )
-        ROT ROLL 4 + STOREI        ( key base item-addr )
-
-        ( store key_char at item+0 )
-        ROT ROLL STOREI            ( base item-addr )
-        DROP                       ( base )
-
-        ( increment item_count at base+4 )
-        dup 4 + dup LOADI 1 + swap STOREI
-        DROP
+        HEADER-SIZE + +            ( key text cb item-addr )
+        dup 8 + 2 PICK swap STOREI ( store callback )
+        dup 4 + 3 PICK swap STOREI ( store text-ptr )
+        3 PICK swap STOREI         ( store key-char )
+        drop drop drop
     ] [
-        DROP DROP DROP DROP DROP
+        drop drop drop drop
     ] ?:
 ;

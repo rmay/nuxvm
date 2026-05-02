@@ -129,14 +129,13 @@ func (wm *WindowManager) HitTest(x, y, TopBarH int, windows []*system.WindowReco
 
 		// We hit this window. Determine which zone.
 
-		// Menu bar check (if window has a menu, menu bar sits below title bar)
-		menuBarTop := int(win.ContRgn.Top) - system.WinMenuBarHeight
-		if win.MenuTablePtr != 0 && y >= menuBarTop && y < int(win.ContRgn.Top) {
-			return HitResult{WinID: win.ID, Zone: HitZoneMenuBar}
-		}
-
-		// Title bar check
+		// Chrome check (Title bar and buttons)
 		if y < int(win.ContRgn.Top) {
+			// If window has a menu, it might be a HitZoneMenuBar click
+			if win.MenuTablePtr != 0 && x >= int(win.StrucRgn.Left)+50 {
+				return HitResult{WinID: win.ID, Zone: HitZoneMenuBar, LocalX: x - int(win.StrucRgn.Left), LocalY: y - int(win.StrucRgn.Top)}
+			}
+
 			// Chrome button hit-tests (close, prev, next) — all share Y and radius.
 			btnCenterY := int(win.StrucRgn.Top) + WinCloseBtnY + system.WinBorderWidth
 			dy := y - btnCenterY

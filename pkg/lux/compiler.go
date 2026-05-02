@@ -16,7 +16,7 @@ import (
 // T"..." string literals compile to per-char STOREI to this address.
 // F"..." string literals are compiled to heap at compile time and push the address.
 const textCharRegAddr = 0x1009C
-const fileStringHeapBase = 0x614000
+const fileStringHeapBase = 0x700000
 
 var builtins = map[string]byte{
 	// Stack operations
@@ -128,6 +128,7 @@ type Compiler struct {
 	nextStringHeap int32                 // Heap allocator for F"..." literals
 	unresolved     []UnresolvedReference // Track words to resolve after definitions
 	unresolvedJmps []UnresolvedJmp       // To handle recursion
+	quotationStack []int                 // Track indices of quotations for the current scope
 	includeDepth   int                   // To prevent infinite INCLUDE recursion
 	trace          bool                  // Trace compilation steps, defaults to false
 }
@@ -214,6 +215,13 @@ func (c *Compiler) compile() ([]byte, error) {
 			fmt.Fprintf(os.Stderr, "compile: Patched unresolved word %s at offset %d to CALL addr %d\n", unresolved.Word, unresolved.Offset, word.Address)
 		}
 	}
+
+	if c.trace {
+		fmt.Fprintf(os.Stderr, "Dictionary:\n")
+		for name, word := range c.dictionary {
+			fmt.Fprintf(os.Stderr, "  %s: 0x%X\n", name, word.Address)
+		}
+	}
 	c.unresolved = nil // Clear resolved references
 	mainStart := c.currentAddress()
 	if c.trace {
@@ -269,6 +277,7 @@ func (c *Compiler) compile() ([]byte, error) {
 			}
 			c.skipWordDefinition()
 		} else if token.Type == TokenLBracket {
+			quotIdx := len(c.quotations)
 			// Initialize quotation and emit PUSH
 			if err := c.compileToken(token); err != nil {
 				return nil, err
@@ -278,6 +287,7 @@ func (c *Compiler) compile() ([]byte, error) {
 			if err := c.compileQuotation(); err != nil {
 				return nil, err
 			}
+			c.quotationStack = append(c.quotationStack, quotIdx)
 		} else if token.Type != TokenEOF {
 			if c.trace {
 				fmt.Fprintf(os.Stderr, "compile: Compiling token %v\n", token)
@@ -631,6 +641,7 @@ func (c *Compiler) compileWordDefinition() error {
 		switch token.Type {
 		case TokenLBracket:
 			// Create a quotation entry
+			quotIdx := len(c.quotations)
 			tempAddr := int32(0x7FFF0000 + len(c.quotations))
 			c.quotations = append(c.quotations, Quotation{TempAddr: tempAddr, Code: []byte{}})
 			// Emit PUSH with temporary address
@@ -642,6 +653,7 @@ func (c *Compiler) compileWordDefinition() error {
 			if err := c.compileQuotationInDefinition(wordName, wordAddress); err != nil {
 				return err
 			}
+			c.quotationStack = append(c.quotationStack, quotIdx)
 			// The ] has been consumed by compileQuotationInDefinition
 		case TokenRBracket:
 			return fmt.Errorf("unexpected ] in word definition at line %d", token.Line)
@@ -674,6 +686,10 @@ func (c *Compiler) compileWordDefinition() error {
 
 // compileQuotationInDefinition is a special version for compiling quotations inside word definitions
 func (c *Compiler) compileQuotationInDefinition(currentWordName string, currentWordAddr int32) error {
+	oldStack := c.quotationStack
+	c.quotationStack = nil
+	defer func() { c.quotationStack = oldStack }()
+
 	quotIndex := len(c.quotations) - 1
 	if quotIndex < 0 {
 		return fmt.Errorf("no quotation started for [ at line %d", c.peek().Line)
@@ -689,6 +705,7 @@ func (c *Compiler) compileQuotationInDefinition(currentWordName string, currentW
 			// recursive call consumes its own closing ], so depth stays at 1
 			// until the outer ] is reached.
 			// Calculate a temporary address for the nested quotation
+			quotIdx := len(c.quotations)
 			tempAddr := int32(0x7FFF0000 + len(c.quotations))
 
 			// Emit PUSH instruction in the parent quotation
@@ -705,6 +722,8 @@ func (c *Compiler) compileQuotationInDefinition(currentWordName string, currentW
 			if err := c.compileQuotationInDefinition(currentWordName, currentWordAddr); err != nil {
 				return err
 			}
+
+			c.quotationStack = append(c.quotationStack, quotIdx)
 
 			// Refresh our quotation pointer
 			quot = &c.quotations[quotIndex]
@@ -887,6 +906,10 @@ func (c *Compiler) skipWordDefinition() {
 
 // compileQuotation compiles a [ ... ] block
 func (c *Compiler) compileQuotation() error {
+	oldStack := c.quotationStack
+	c.quotationStack = nil
+	defer func() { c.quotationStack = oldStack }()
+
 	quotIndex := len(c.quotations) - 1
 	if quotIndex < 0 {
 		return fmt.Errorf("no quotation started for [ at line %d", c.peek().Line)
@@ -909,6 +932,7 @@ func (c *Compiler) compileQuotation() error {
 
 			// Calculate a temporary address for the nested quotation
 			// This will be patched later when we know the real address
+			quotIdx := len(c.quotations)
 			tempAddr := int32(0x7FFF0000 + len(c.quotations)) // Temporary unique address
 
 			// Emit PUSH instruction in the parent quotation with temp address
@@ -925,6 +949,8 @@ func (c *Compiler) compileQuotation() error {
 			if err := c.compileQuotation(); err != nil {
 				return err
 			}
+
+			c.quotationStack = append(c.quotationStack, quotIdx)
 
 			// After recursive call, refresh our quotation pointer as the slice may have been reallocated
 			quot = &c.quotations[quotIndex]
@@ -1147,6 +1173,8 @@ func (c *Compiler) compileQuotationCombinator(name string, quot *Quotation) erro
 		quot.Code = append(quot.Code, vm.OpJmp, 0, 0, 0, 0)
 
 		endAt := len(quot.Code)
+		// OpJz already popped the duplicated count, but we still have the original
+		// count and the quotation address on the stack.
 		quot.Code = append(quot.Code, vm.OpPop)
 		quot.Code = append(quot.Code, vm.OpPop)
 
@@ -1234,145 +1262,131 @@ func (c *Compiler) compileIfElse() error {
 	if c.trace {
 		fmt.Fprintf(os.Stderr, "compileIfElse: Starting, bytecode length=%d, baseAddr=%d\n", len(c.bytecode), c.baseAddr)
 	}
-	if len(c.quotations) < 2 {
+	if len(c.quotationStack) < 2 {
 		return fmt.Errorf("if-else requires two quotations at line %d", c.peek().Line)
 	}
 
-	// Check if the false (else) quotation ends with JMP (i.e., was TRO-optimized)
-	falseQuot := c.quotations[len(c.quotations)-1]
-	isTailRecursive := len(falseQuot.Code) >= 5 &&
+	falseQuotIdx := c.quotationStack[len(c.quotationStack)-1]
+	trueQuotIdx := c.quotationStack[len(c.quotationStack)-2]
+	c.quotationStack = c.quotationStack[:len(c.quotationStack)-2]
+
+	trueQuot := c.quotations[trueQuotIdx]
+	isTrueTailRecursive := len(trueQuot.Code) >= 5 &&
+		trueQuot.Code[len(trueQuot.Code)-5] == vm.OpJmp
+
+	falseQuot := c.quotations[falseQuotIdx]
+	isFalseTailRecursive := len(falseQuot.Code) >= 5 &&
 		falseQuot.Code[len(falseQuot.Code)-5] == vm.OpJmp
 
 	if c.trace {
-		fmt.Fprintf(os.Stderr, "compileIfElse: Checking false quotation for TRO\n")
-		fmt.Fprintf(os.Stderr, "  False quot length=%d\n", len(falseQuot.Code))
-		if len(falseQuot.Code) >= 5 {
-			fmt.Fprintf(os.Stderr, "  falseQuot.Code[len-5]=0x%02X (OpJmp=0x%02X)\n",
-				falseQuot.Code[len(falseQuot.Code)-5], vm.OpJmp)
-		}
-		fmt.Fprintf(os.Stderr, "  isTailRecursive=%v\n", isTailRecursive)
+		fmt.Fprintf(os.Stderr, "compileIfElse: Checking quotations for TRO\n")
+		fmt.Fprintf(os.Stderr, "  isTrueTailRecursive=%v, isFalseTailRecursive=%v\n", isTrueTailRecursive, isFalseTailRecursive)
 	}
 
 	c.emit(vm.OpSwap)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Emitted SWAP, bytecode=%v\n", c.bytecode)
-	}
 	c.emit(vm.OpRot)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Emitted ROT, bytecode=%v\n", c.bytecode)
-	}
 	elseLabel := len(c.bytecode)
 	c.emit(vm.OpJz)
 	c.emit(0, 0, 0, 0)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Emitted JZ, elseLabel=%d (relative), bytecode length=%d\n", elseLabel, len(c.bytecode))
-	}
+
+	// --- True Branch ---
 	c.emit(vm.OpSwap)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Emitted SWAP (true branch), bytecode=%v\n", c.bytecode)
-	}
 	c.emit(vm.OpPop)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Emitted POP (true branch), bytecode=%v\n", c.bytecode)
-	}
-	c.emit(vm.OpCallStack)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Emitted CALLSTACK (true branch), bytecode=%v\n", c.bytecode)
-	}
-	endLabel := len(c.bytecode)
-	c.emit(vm.OpJmp)
-	c.emit(0, 0, 0, 0)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Emitted JMP, endLabel=%d (relative), bytecode length=%d\n", endLabel, len(c.bytecode))
-	}
-	elseBranch := c.currentAddress()
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Else branch starts at absolute addr=%d, isTailRecursive=%v\n", elseBranch, isTailRecursive)
-	}
-	c.emit(vm.OpPop)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Emitted POP (else branch), bytecode=%v\n", c.bytecode)
-	}
 
-	if isTailRecursive {
-		// For tail recursive quotations, we need to pop BOTH quotation addresses
-		// The first POP already removed the true quotation address
-		// Now we need to pop the false quotation address too
-		c.emit(vm.OpPop)
-
-		// For tail recursive quotations, pop the false quotation address
-		// and get the jump target from the quotation
-		// Extract the JMP target address from the quotation
-		jmpTarget := int32(binary.BigEndian.Uint32(falseQuot.Code[len(falseQuot.Code)-4:]))
-
-		// Inline the quotation code EXCEPT the final JMP
-		// Then emit a direct JMP (not via CALLSTACK)
-		quotCode := falseQuot.Code[:len(falseQuot.Code)-5] // Remove JMP instruction
+	if isTrueTailRecursive {
+		c.emit(vm.OpPop) // Pop true-addr
+		jmpTarget := int32(binary.BigEndian.Uint32(trueQuot.Code[len(trueQuot.Code)-4:]))
+		quotCode := trueQuot.Code[:len(trueQuot.Code)-5]
 		c.emit(quotCode...)
 		c.emit(vm.OpJmp)
 		c.emit(vm.EncodeInt32(jmpTarget)...)
-
-		if c.trace {
-			fmt.Fprintf(os.Stderr, "Inlined tail-recursive quotation and emitted direct JMP to %d\n", jmpTarget)
-		}
 	} else {
-		// Normal case: call the quotation
 		c.emit(vm.OpCallStack)
-		if c.trace {
-			fmt.Fprintf(os.Stderr, "Emitted CALLSTACK (else branch), bytecode=%v\n", c.bytecode)
-		}
+	}
+
+	endLabel := len(c.bytecode)
+	c.emit(vm.OpJmp)
+	c.emit(0, 0, 0, 0)
+
+	// --- False Branch ---
+	elseBranch := c.currentAddress()
+	c.emit(vm.OpPop) // Pop false-addr
+
+	if isFalseTailRecursive {
+		c.emit(vm.OpPop) // Pop true-addr
+		jmpTarget := int32(binary.BigEndian.Uint32(falseQuot.Code[len(falseQuot.Code)-4:]))
+		quotCode := falseQuot.Code[:len(falseQuot.Code)-5]
+		c.emit(quotCode...)
+		c.emit(vm.OpJmp)
+		c.emit(vm.EncodeInt32(jmpTarget)...)
+	} else {
+		c.emit(vm.OpCallStack)
 	}
 
 	// Calculate end address AFTER emitting else branch code
 	end := c.currentAddress()
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "End at absolute addr=%d\n", end)
-	}
 	// Patch JZ to jump to else branch
-	elseLabelBytes := vm.EncodeInt32(elseBranch)
-	copy(c.bytecode[elseLabel+1:elseLabel+5], elseLabelBytes)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Patching JZ at %d with addr=%d\n", elseLabel+1, elseBranch)
-		fmt.Fprintf(os.Stderr, "After JZ patch, bytecode=%v\n", c.bytecode)
-	}
+	copy(c.bytecode[elseLabel+1:elseLabel+5], vm.EncodeInt32(elseBranch))
 	// Patch JMP to jump to end (after else branch)
-	endLabelBytes := vm.EncodeInt32(end)
-	copy(c.bytecode[endLabel+1:endLabel+5], endLabelBytes)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Patching JMP at %d with addr=%d\n", endLabel+1, end)
-		fmt.Fprintf(os.Stderr, "After JMP patch, bytecode=%v\n", c.bytecode)
-	}
+	copy(c.bytecode[endLabel+1:endLabel+5], vm.EncodeInt32(end))
 	return nil
 }
 
 // compileIf compiles: condition [ true ] ?
 func (c *Compiler) compileIf() error {
-	if len(c.quotations) < 1 {
+	if len(c.quotationStack) < 1 {
 		return fmt.Errorf("if requires one quotation at line %d", c.peek().Line)
 	}
+
+	trueQuotIdx := c.quotationStack[len(c.quotationStack)-1]
+	c.quotationStack = c.quotationStack[:len(c.quotationStack)-1]
+
+	trueQuot := c.quotations[trueQuotIdx]
+	isTailRecursive := len(trueQuot.Code) >= 5 &&
+		trueQuot.Code[len(trueQuot.Code)-5] == vm.OpJmp
+
 	c.emit(vm.OpSwap)
 	c.emit(vm.OpJz)
-	skipLabel := c.currentOffset() // Use offset, not address
+	skipLabel := c.currentOffset()
 	c.emit(0, 0, 0, 0)
-	c.emit(vm.OpCallStack)
+
+	if isTailRecursive {
+		c.emit(vm.OpPop) // Pop true-addr
+		jmpTarget := int32(binary.BigEndian.Uint32(trueQuot.Code[len(trueQuot.Code)-4:]))
+		quotCode := trueQuot.Code[:len(trueQuot.Code)-5]
+		c.emit(quotCode...)
+		c.emit(vm.OpJmp)
+		c.emit(vm.EncodeInt32(jmpTarget)...)
+	} else {
+		c.emit(vm.OpCallStack)
+	}
+
 	c.emit(vm.OpJmp)
-	endLabel := c.currentOffset() // Use offset, not address
+	endLabel := c.currentOffset()
 	c.emit(0, 0, 0, 0)
-	skip := c.currentAddress() // Keep this as address for the jump target
+
+	skip := c.currentAddress()
 	c.emit(vm.OpPop)
-	end := c.currentAddress() // Keep this as address for the jump target
-	skipBytes := vm.EncodeInt32(skip)
-	copy(c.bytecode[skipLabel:skipLabel+4], skipBytes) // Now skipLabel is a valid offset
-	endBytes := vm.EncodeInt32(end)
-	copy(c.bytecode[endLabel:endLabel+4], endBytes) // Now endLabel is a valid offset
+	end := c.currentAddress()
+
+	copy(c.bytecode[skipLabel:skipLabel+4], vm.EncodeInt32(skip))
+	copy(c.bytecode[endLabel:endLabel+4], vm.EncodeInt32(end))
 	return nil
 }
 
 // compileUnless compiles: condition [ false ] !:
 func (c *Compiler) compileUnless() error {
-	if len(c.quotations) < 1 {
+	if len(c.quotationStack) < 1 {
 		return fmt.Errorf("unless requires one quotation at line %d", c.peek().Line)
 	}
+
+	falseQuotIdx := c.quotationStack[len(c.quotationStack)-1]
+	c.quotationStack = c.quotationStack[:len(c.quotationStack)-1]
+
+	falseQuot := c.quotations[falseQuotIdx]
+	isTailRecursive := len(falseQuot.Code) >= 5 &&
+		falseQuot.Code[len(falseQuot.Code)-5] == vm.OpJmp
+
 	c.emit(vm.OpSwap)
 	c.emit(vm.OpPush)
 	c.emit(vm.EncodeInt32(0)...)
@@ -1380,25 +1394,37 @@ func (c *Compiler) compileUnless() error {
 	c.emit(vm.OpJz)
 	skipLabel := c.currentOffset()
 	c.emit(0, 0, 0, 0)
-	c.emit(vm.OpCallStack)
+
+	if isTailRecursive {
+		c.emit(vm.OpPop) // Pop false-addr
+		jmpTarget := int32(binary.BigEndian.Uint32(falseQuot.Code[len(falseQuot.Code)-4:]))
+		quotCode := falseQuot.Code[:len(falseQuot.Code)-5]
+		c.emit(quotCode...)
+		c.emit(vm.OpJmp)
+		c.emit(vm.EncodeInt32(jmpTarget)...)
+	} else {
+		c.emit(vm.OpCallStack)
+	}
+
 	c.emit(vm.OpJmp)
 	endLabel := c.currentOffset()
 	c.emit(0, 0, 0, 0)
+
 	skip := c.currentAddress()
 	c.emit(vm.OpPop)
 	end := c.currentAddress()
-	skipBytes := vm.EncodeInt32(skip)
-	copy(c.bytecode[skipLabel:skipLabel+4], skipBytes)
-	endBytes := vm.EncodeInt32(end)
-	copy(c.bytecode[endLabel:endLabel+4], endBytes)
+
+	copy(c.bytecode[skipLabel:skipLabel+4], vm.EncodeInt32(skip))
+	copy(c.bytecode[endLabel:endLabel+4], vm.EncodeInt32(end))
 	return nil
 }
 
 // compileWhile compiles: [ condition ] [ body ] |:
 func (c *Compiler) compileWhile() error {
-	if len(c.quotations) < 2 {
+	if len(c.quotationStack) < 2 {
 		return fmt.Errorf("while requires two quotations at line %d", c.peek().Line)
 	}
+	c.quotationStack = c.quotationStack[:len(c.quotationStack)-2]
 	tempCondAddr, err := c.allocTemp(4)
 	if err != nil {
 		return err
@@ -1414,8 +1440,6 @@ func (c *Compiler) compileWhile() error {
 	c.emit(vm.EncodeInt32(tempCondAddr)...)
 
 	loopStart := c.currentAddress()
-
-	c.emit(vm.OpDup)
 
 	c.emit(vm.OpLoad)
 	c.emit(vm.EncodeInt32(tempCondAddr)...)
@@ -1448,6 +1472,11 @@ func (c *Compiler) compileWhile() error {
 // We need to temporarily remove quot-addr and count, execute the quotation,
 // then restore them for the next iteration.
 func (c *Compiler) compileTimes() error {
+	if len(c.quotationStack) < 1 {
+		return fmt.Errorf("times requires one quotation at line %d", c.peek().Line)
+	}
+	c.quotationStack = c.quotationStack[:len(c.quotationStack)-1]
+
 	// Use reserved memory to save loop variables
 	// This is similar to the dip combinator
 	tempQuotAddr, err := c.allocTemp(4)
@@ -1492,8 +1521,10 @@ func (c *Compiler) compileTimes() error {
 
 	// Exit: clean up
 	exit := c.currentAddress()
-	c.emit(vm.OpPop) // Pop count (0)
-	c.emit(vm.OpPop) // Pop quot-addr
+	// OpJz already popped the duplicated count, but we still have the original
+	// count and the quotation address on the stack.
+	c.emit(vm.OpPop)
+	c.emit(vm.OpPop)
 
 	copy(c.bytecode[exitLabel:exitLabel+4], vm.EncodeInt32(exit))
 	return nil
@@ -1501,6 +1532,11 @@ func (c *Compiler) compileTimes() error {
 
 // compileDip compiles: [body] dip
 func (c *Compiler) compileDip() error {
+	if len(c.quotationStack) < 1 {
+		return fmt.Errorf("dip requires one quotation at line %d", c.peek().Line)
+	}
+	c.quotationStack = c.quotationStack[:len(c.quotationStack)-1]
+
 	// Stack: [... x body-addr]
 	// Execute body directly
 	c.emit(vm.OpCallStack) // Execute body: [... x']
@@ -1510,6 +1546,11 @@ func (c *Compiler) compileDip() error {
 
 // compileKeep compiles: x [ quot ] keep
 func (c *Compiler) compileKeep() error {
+	if len(c.quotationStack) < 1 {
+		return fmt.Errorf("keep requires one quotation at line %d", c.peek().Line)
+	}
+	c.quotationStack = c.quotationStack[:len(c.quotationStack)-1]
+
 	// Initial stack assumption: ... x quot (quot is the address of the quotation to execute)
 	// Step 1: Emit SWAP to rearrange the stack so quot is below x
 	c.emit(vm.OpSwap)

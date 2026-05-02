@@ -109,7 +109,7 @@ MODULE ILLUMINATOR
 ;
 
 @on-open
-    FILENAME_BUF [ load-data ] FILE-DIALOG::show
+    F"." FILENAME_BUF [ load-data ] FILE-DIALOG::show
 ;
 
 @on-key

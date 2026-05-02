@@ -1,6 +1,9 @@
 package system
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/rmay/nuxvm/pkg/vm"
 )
 
@@ -108,6 +111,8 @@ func (m *Machine) Tick() (bool, error) {
 	for m.CPU.Running() && !m.CPU.Yielded() {
 		_, err := m.CPU.Step()
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "Machine: Tick error at PC=0x%X: %v\n", m.CPU.PC(), err)
+			fmt.Fprintf(os.Stderr, "Machine: Stack Dump (top 32): %v\n", m.CPU.StackDump(32))
 			return false, err
 		}
 	}

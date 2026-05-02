@@ -87,7 +87,7 @@ MODULE FILE
     swap buf!              ( max quot )
     [ 1 PICK list dup 0 > ] [
         ( max quot len )
-        dup 2 PICK CALL    ( max quot len )
+        dup 1 PICK CALL    ( max quot len )
         drop               ( max quot )
     ] |:
     drop drop

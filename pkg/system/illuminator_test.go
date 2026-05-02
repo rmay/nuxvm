@@ -37,7 +37,8 @@ func TestIlluminatorApp(t *testing.T) {
 		t.Fatalf("create window: %v", err)
 	}
 
-	app := system.NewMachineSharedServices(bytecode, 16*1024*1024, services)
+	// DO NOT ENABLE TRACE HERE THE OUTPUT IS TOO LARGE
+	app := system.NewMachineSharedServices(bytecode, 12*1024*1024, services)
 
 	saved := services.GetActiveWindowID()
 	services.SetRenderTarget(winID)
@@ -58,7 +59,6 @@ func TestIlluminatorApp(t *testing.T) {
 	}
 	services.SetRenderTarget(saved)
 
-
 	win := services.GetWindowByID(winID)
 	if win == nil {
 		t.Fatalf("window %d disappeared", winID)
@@ -78,8 +78,8 @@ func TestIlluminatorApp(t *testing.T) {
 		t.Errorf("framebuffer is empty — no glyphs rendered")
 	}
 
-	// Spot check a specific glyph. 
-	// Space (cp 32) is the first glyph at (10, 10) if -first 32 was used, 
+	// Spot check a specific glyph.
+	// Space (cp 32) is the first glyph at (10, 10) if -first 32 was used,
 	// but WIDTH_TABLE starts at 0.
 	// If WIDTH_TABLE[32] has width > 0, it should be at (10, 10).
 	// In chicago.png, '!' is cp 33. It should be at x=10 + 38 = 48, y=10.

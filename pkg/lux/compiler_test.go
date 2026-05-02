@@ -232,7 +232,7 @@ func TestCompileFileStringPushesAddress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile error: %v", err)
 	}
-	machine := vm.NewVMWithMemorySize(bytecode, 0x620000)
+	machine := vm.NewVMWithMemorySize(bytecode, 0x800000)
 	if err := machine.Run(); err != nil {
 		t.Fatalf("Runtime error: %v", err)
 	}
@@ -474,7 +474,7 @@ func TestCompileUnless(t *testing.T) {
 
 func TestCompileWhile(t *testing.T) {
 	source := `
-		5 [ 0 > ] [ 1 - dup ] |:
+		5 [ dup 0 > ] [ 1 - ] |:
 	`
 	bytecode, err := Compile(source)
 	if err != nil {
@@ -487,9 +487,8 @@ func TestCompileWhile(t *testing.T) {
 	}
 
 	stack := machine.Stack()
-	if len(stack) != 6 || stack[0] != 4 || stack[1] != 3 || stack[2] != 2 || stack[3] != 1 ||
-		stack[4] != 0 || stack[5] != 0 {
-		t.Errorf("Expected [4 3 2 1 0 0], got %v", stack)
+	if len(stack) != 1 || stack[0] != 0 {
+		t.Errorf("Expected [0], got %v", stack)
 	}
 }
 
@@ -1006,8 +1005,8 @@ func TestRegressionQuotationInDefinition(t *testing.T) {
 
 func TestCompileComplexNestedCombinators(t *testing.T) {
 	// Nested: WHILE outside DIP
-	// Stack: [5 10] -> 5 10 [ 1 + ] dip [ 0 > ] [ 1 - ] |:
-	source := "5 10 [ 1 + ] dip [ 0 > ] [ 1 - ] |:"
+	// Stack: [5 10] -> 5 10 [ 1 + ] dip [ dup 0 > ] [ 1 - ] |:
+	source := "5 10 [ 1 + ] dip [ dup 0 > ] [ 1 - ] |:"
 	bytecode, err := Compile(source)
 	if err != nil {
 		t.Fatalf("Compile error: %v", err)
@@ -1174,8 +1173,8 @@ func TestCompileQuotationInsideQuotationCombinators(t *testing.T) {
 }
 
 func TestCompileWhileCorrectStack(t *testing.T) {
-	// WHILE: 5 [ 0 > ] [ 1 - ] |:
-	source := " 5 [ 0 > ] [ 1 - ] |: "
+	// WHILE: 5 [ dup 0 > ] [ 1 - ] |:
+	source := " 5 [ dup 0 > ] [ 1 - ] |: "
 	bytecode, err := Compile(source)
 	if err != nil {
 		t.Fatalf("Compile error: %v", err)
@@ -1254,6 +1253,29 @@ func TestRunIfElseInQuotation(t *testing.T) {
 	}
 	if len(v.Stack()) != 1 || v.Stack()[0] != 42 {
 		t.Errorf("expected stack [42], got %v", v.Stack())
+	}
+}
+
+func TestCompileNestedTROBug(t *testing.T) {
+	// This test reproduces the bug where top-level ?: picks wrong quotations
+	// when nested quotations are present.
+	source := `
+@nested-trouble ( n -- )
+    dup 0 > [
+        dup 1 - [ 1 - nested-trouble ] [ drop ] ?:
+    ] [
+        drop
+    ] ?:
+;
+10 nested-trouble
+`
+	bytecode, err := Compile(source)
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	machine := vm.NewVM(bytecode)
+	if err := machine.Run(); err != nil {
+		t.Fatalf("Runtime error: %v\nFinal VM state:\n%s", err, machine.DebugInfo())
 	}
 }
 

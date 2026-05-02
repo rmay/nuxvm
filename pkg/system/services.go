@@ -251,19 +251,10 @@ func (sm *ServiceManager) SetWindowMenu(winID WindowID, tablePtr uint32) {
 		return
 	}
 
-	hasMenuBefore := win.MenuTablePtr != 0
-	hasMenuAfter := tablePtr != 0
-
 	win.MenuTablePtr = tablePtr
 
 	// Adjust content rect if menu state changed
-	if hasMenuBefore && !hasMenuAfter {
-		// Removing menu: shift content up
-		win.ContRgn.Top -= WinMenuBarHeight
-	} else if !hasMenuBefore && hasMenuAfter {
-		// Adding menu: shift content down
-		win.ContRgn.Top += WinMenuBarHeight
-	}
+	// (V2: menus are in the chrome, so we don't shift content anymore)
 }
 
 func (sm *ServiceManager) ActiveWindowName() string {

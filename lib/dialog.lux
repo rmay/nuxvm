@@ -22,11 +22,12 @@ MODULE DIALOG
 @callback_addr 0x86080C ;
 @saved_screen_addr 0x860810 ;
 @saved_ctrl_addr 0x860814 ;
-@title_ptr_addr 0x860818 ;
-@ok_ptr_addr    0x86081C ;
-@cancel_ptr_addr 0x860820 ;
-@w_addr 0x860824 ;
-@h_addr 0x860828 ;
+@saved_mouse_addr 0x860818 ;
+@title_ptr_addr 0x86081C ;
+@ok_ptr_addr    0x860820 ;
+@cancel_ptr_addr 0x860824 ;
+@w_addr 0x860828 ;
+@h_addr 0x86082C ;
 
 @SCRATCH_BUF 0x860900 ;
 
@@ -42,6 +43,8 @@ MODULE DIALOG
 @saved_screen! saved_screen_addr STOREI ;
 @saved_ctrl@ saved_ctrl_addr LOADI ;
 @saved_ctrl! saved_ctrl_addr STOREI ;
+@saved_mouse@ saved_mouse_addr LOADI ;
+@saved_mouse! saved_mouse_addr STOREI ;
 
 @title@ title_ptr_addr LOADI ;
 @title! title_ptr_addr STOREI ;
@@ -90,6 +93,7 @@ MODULE DIALOG
     
     ( Setup pane for dialog content )
     50 50 w@ h@ DF::use-rect
+    1 DF::set-text-scale
     
     ( Draw title )
     255 TEXT::color!
@@ -128,6 +132,7 @@ MODULE DIALOG
 @CLOSE
     saved_screen@ 0x10020 STOREI
     saved_ctrl@ 0x10040 STOREI
+    saved_mouse@ 0x10050 STOREI
 ;
 
 @ON-KEY
@@ -146,20 +151,56 @@ MODULE DIALOG
     drop
 ;
 
+@ON-MOUSE
+    0x1005C LOADI 1 = [ ( Left button down )
+        0x10054 LOADI ( mouse_x )
+        0x10058 LOADI ( mouse_y )
+        
+        ( Transform to relative coords: Dialog is at 50, 50 )
+        50 - swap 50 - swap ( rel_x rel_y )
+        
+        ( Check Cancel button: x in [w-160, w-100], y in [h-30, h-10] )
+        TWO-DUP
+        h@ 30 - >= [ h@ 10 - <= ] [ 0 ] ?: [
+            w@ 160 - >= [ w@ 100 - <= ] [ 0 ] ?: [
+                CLOSE
+            ] ?
+        ] ?
+        
+        ( Check Ok button: x in [w-80, w-20], y in [h-30, h-10] )
+        TWO-DUP
+        h@ 30 - >= [ h@ 10 - <= ] [ 0 ] ?: [
+            w@ 80 - >= [ w@ 20 - <= ] [ 0 ] ?: [
+                ITEMS_BUF sel@ 32 * +
+                result_ptr@
+                32 [ OVER load-byte 1 PICK store-byte 1 + swap 1 + swap ] #:
+                drop drop
+                CLOSE
+                callback@ CALL
+            ] ?
+        ] ?
+        
+        TWO-DROP
+    ] ?
+;
+
+
 @show-list ( result-ptr callback -- )
     callback!
     result_ptr!
     0x10020 LOADI saved_screen!
     0x10040 LOADI saved_ctrl!
+    0x10050 LOADI saved_mouse!
     [ DRAW-DIALOG ] 0x10020 STOREI
     [ ON-KEY ] 0x10040 STOREI
+    [ ON-MOUSE ] 0x10050 STOREI
 ;
 
 MODULE FILE-DIALOG
 IMPORT DIALOG
 
-@load-files
-    F"." DIALOG::SCRATCH_BUF 32 [
+@load-files ( dir-ptr -- )
+    DIALOG::SCRATCH_BUF 32 [
         ( len )
         dup 6 > [
             DIALOG::SCRATCH_BUF 5 + swap 6 - DIALOG::add-item
@@ -167,11 +208,11 @@ IMPORT DIALOG
     ] FILE::dir-each
 ;
 
-@show ( result-ptr callback -- )
+@show ( dir-ptr result-ptr callback -- )
     DIALOG::clear-items
-    load-files
-    T"Select a file:" DIALOG::title!
-    T"Open" DIALOG::ok-label!
-    T"Cancel" DIALOG::cancel-label!
+    ROT load-files
+    F"Select a file:" DIALOG::title!
+    F"Open" DIALOG::ok-label!
+    F"Cancel" DIALOG::cancel-label!
     DIALOG::show-list
 ;

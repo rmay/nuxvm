@@ -1260,6 +1260,8 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 			return currentPC, fmt.Errorf("storei failed: address %d out of bounds", addr)
 		}
 	default:
+		vm.pc-- // Rewind to faulty opcode
+		vm.running = false
 		return currentPC, fmt.Errorf("unknown opcode 0x%02X at PC=%d", opcode, currentPC)
 	}
 	return currentPC, nil
@@ -1288,6 +1290,20 @@ func (vm *VM) Run() error {
 		}
 	}
 	return nil
+}
+
+func (vm *VM) StackDump(limit int) []int32 {
+	n := len(vm.stack)
+	if n == 0 {
+		return nil
+	}
+	if limit > n {
+		limit = n
+	}
+	// Create a copy to avoid mutation by the caller
+	res := make([]int32, limit)
+	copy(res, vm.stack[n-limit:])
+	return res
 }
 
 // DebugInfo returns detailed state for error reporting

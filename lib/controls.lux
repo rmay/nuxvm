@@ -71,8 +71,11 @@ MODULE CONTROLS
     ( Save current pane rect to stack )
     DF::pane-x@ DF::pane-y@ DF::pane-w@ DF::pane-h@
     
-    ( Setup scrollbar pane )
-    6 PICK 6 PICK 16 7 PICK DF::use-rect
+    ( Setup scrollbar pane at absolute x,y relative to current pane )
+    6 PICK 3 PICK + ( abs_x = x + px )
+    6 PICK 3 PICK + ( abs_y = y + py )
+    16 7 PICK ( 16 h )
+    DF::use-rect
     
     ( Background gray pattern )
     0 0 16 4 PICK draw-gray-rect
@@ -92,3 +95,4 @@ MODULE CONTROLS
     DF::use-rect
     drop drop drop
 ;
+

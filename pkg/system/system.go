@@ -362,6 +362,11 @@ const (
 //	bits 23..16: flags (bit 0 = append)
 //	bits 15..0:  length
 func (s *System) handleFileCommand(cmd, flags, length uint32) {
+	if cmd == fileCmdRead || cmd == fileCmdWrite || cmd == fileCmdStat {
+		path := s.getCString(s.fileNamePtr)
+		fmt.Printf("File Command: cmd=%d path=%q length=%d\n", cmd, path, length)
+	}
+
 	// STAT / DELETE / SEEK don't need an open handle or an in-range buffer.
 	switch cmd {
 	case fileCmdStat:
@@ -375,8 +380,14 @@ func (s *System) handleFileCommand(cmd, flags, length uint32) {
 		return
 	}
 
-	path, err := s.resolvePath(s.getCString(s.fileNamePtr))
+	pathStr := s.getCString(s.fileNamePtr)
+	path, err := s.resolvePath(pathStr)
 	if err != nil {
+		fmt.Printf("File Error: resolvePath failed for %q (ptr=0x%X): %v\n", pathStr, s.fileNamePtr, err)
+		// Dump first 8 bytes at ptr if possible
+		if s.fileNamePtr != 0 && int(s.fileNamePtr)+8 <= len(s.memory) {
+			fmt.Printf("File Error: Bytes at ptr: % 02X\n", s.memory[s.fileNamePtr:s.fileNamePtr+8])
+		}
 		s.lastFileResult = -1
 		return
 	}
@@ -414,20 +425,25 @@ func (s *System) fileRead(path string, length uint32) {
 	if s.file.readFile == nil && s.file.dir == nil {
 		info, err := os.Stat(path)
 		if err != nil {
+			fmt.Printf("File Error: stat failed: %v\n", err)
 			s.lastFileResult = -1
 			return
 		}
 		if info.IsDir() {
+			fmt.Printf("File: Reading directory %q\n", path)
 			entries, err := os.ReadDir(path)
 			if err != nil {
+				fmt.Printf("File Error: readdir failed: %v\n", err)
 				s.lastFileResult = -1
 				return
 			}
 			s.file.dir = entries
 			s.file.dirIndex = 0
 		} else {
+			fmt.Printf("File: Opening file %q\n", path)
 			f, err := os.Open(path)
 			if err != nil {
+				fmt.Printf("File Error: open failed: %v\n", err)
 				s.lastFileResult = -1
 				return
 			}
@@ -459,6 +475,7 @@ func (s *System) fileRead(path string, length uint32) {
 // bytes written, or 0 at end of listing.
 func (s *System) readDirEntry(length uint32) int32 {
 	if s.file.dirIndex >= len(s.file.dir) {
+		fmt.Printf("File: End of directory\n")
 		return 0
 	}
 	entry := s.file.dir[s.file.dirIndex]
@@ -479,6 +496,7 @@ func (s *System) readDirEntry(length uint32) int32 {
 		}
 	}
 	line := fmt.Sprintf("%s %s\n", detail, entry.Name())
+	fmt.Printf("File: Entry [%d/%d]: %s", s.file.dirIndex, len(s.file.dir), line)
 	lineBytes := []byte(line)
 	if uint32(len(lineBytes)) > length {
 		lineBytes = lineBytes[:length]
@@ -486,6 +504,7 @@ func (s *System) readDirEntry(length uint32) int32 {
 	copy(s.memory[s.fileBufferPtr:], lineBytes)
 	return int32(len(lineBytes))
 }
+
 
 // fileWrite writes length bytes from buffer to the current file.
 func (s *System) fileWrite(path string, flags, length uint32) {

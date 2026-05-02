@@ -53,23 +53,23 @@ MODULE DELINEATIOFENESTRA
 
 @use-pane-h ( n idx -- )
     swap                       ( idx n )
-    window-w swap /         ( idx slice-w )
-    swap                       ( slice-w idx )
-    ROLL *                     ( slice-w idx*slice-w )
-    pane-x!                    ( slice-w )
+    window-w swap /            ( idx slice-w )
+    dup 2 PICK *               ( idx slice-w offset )
+    pane-x!                    ( idx slice-w )
+    pane-w!                    ( idx )
+    drop                       ( )
     0 pane-y!
-    pane-w!                    ( -- )
     window-h pane-h!
 ;
 
 @use-pane-v ( n idx -- )
     swap                       ( idx n )
-    window-h swap /         ( idx slice-h )
-    swap                       ( slice-h idx )
-    ROLL *                     ( slice-h idx*slice-h )
-    pane-y!                    ( slice-h )
+    window-h swap /            ( idx slice-h )
+    dup 2 PICK *               ( idx slice-h offset )
+    pane-y!                    ( idx slice-h )
+    pane-h!                    ( idx )
+    drop                       ( )
     0 pane-x!
-    pane-h!                    ( -- )
     window-w pane-w!
 ;
 
