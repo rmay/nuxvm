@@ -462,6 +462,11 @@ func (s *System) fileRead(path string, length uint32) {
 	if err != nil && n == 0 {
 		// EOF with nothing read → 0. Any other error → -1.
 		if strings.Contains(err.Error(), "EOF") {
+			if s.file.readFile != nil {
+				s.file.readFile.Close()
+				s.file.readFile = nil
+				s.file.readCursor = 0
+			}
 			s.lastFileResult = 0
 			return
 		}
@@ -476,6 +481,8 @@ func (s *System) fileRead(path string, length uint32) {
 func (s *System) readDirEntry(length uint32) int32 {
 	if s.file.dirIndex >= len(s.file.dir) {
 		fmt.Printf("File: End of directory\n")
+		s.file.dir = nil
+		s.file.dirIndex = 0
 		return 0
 	}
 	entry := s.file.dir[s.file.dirIndex]
@@ -495,8 +502,7 @@ func (s *System) readDirEntry(length uint32) int32 {
 			detail = "!!!!"
 		}
 	}
-	line := fmt.Sprintf("%s %s\n", detail, entry.Name())
-	fmt.Printf("File: Entry [%d/%d]: %s", s.file.dirIndex, len(s.file.dir), line)
+	line := fmt.Sprintf("%s %s\x00", detail, entry.Name())
 	lineBytes := []byte(line)
 	if uint32(len(lineBytes)) > length {
 		lineBytes = lineBytes[:length]
@@ -896,10 +902,21 @@ func (s *System) Write(address uint32, value int32) error {
 		return nil
 	}
 
-	// Mouse and DateTime registers are read-only
-	if address == mousePort+4 || address == mousePort+8 || address == mousePort+12 {
-		return fmt.Errorf("system: mouse position/button registers are read-only")
+	// Mouse registers: allow writing for tests/scripts
+	if address == mousePort+4 {
+		s.mouseX = value
+		return nil
 	}
+	if address == mousePort+8 {
+		s.mouseY = value
+		return nil
+	}
+	if address == mousePort+12 {
+		s.mouseButton = uint32(value)
+		return nil
+	}
+	
+	// DateTime registers are read-only
 	if address == dateTimePort+4 || address == dateTimePort+8 || address == dateTimePort+12 {
 		return fmt.Errorf("system: datetime registers are read-only")
 	}

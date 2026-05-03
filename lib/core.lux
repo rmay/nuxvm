@@ -3,75 +3,175 @@
 @TWO-DUP OVER OVER ;
 @TWO-DROP DROP DROP ;
 
+@MAX ( a b -- max )
+    TWO-DUP < [ swap ] ? drop
+;
+
+@MIN ( a b -- min )
+    TWO-DUP > [ swap ] ? drop
+;
+
+INCLUDE "lib/memory.lux"
+IMPORT MEMORY
+
+( --- Global registers for UI and utilities --- )
+@x@ MEMORY::CTRL_X LOADI ; x! MEMORY::CTRL_X STOREI ;
+@y@ MEMORY::CTRL_Y LOADI ; y! MEMORY::CTRL_Y STOREI ;
+@w@ MEMORY::CTRL_W LOADI ; w! MEMORY::CTRL_W STOREI ;
+@h@ MEMORY::CTRL_H LOADI ; h! MEMORY::CTRL_H STOREI ;
+@base@ MEMORY::CTRL_BASE LOADI ; base! MEMORY::CTRL_BASE STOREI ;
+@temp@ MEMORY::CTRL_TEMP LOADI ; temp! MEMORY::CTRL_TEMP STOREI ;
+
+@push-frame ( size -- )
+    FP@ OVER - ( new-fp )
+    FP@ OVER STOREI ( save old-fp at new-fp )
+    FP! ( set current fp )
+    drop ( size )
+;
+
+@pop-frame ( size -- )
+    FP@ LOADI ( old-fp )
+    FP! ( restore )
+    drop ( size )
+;
+
+@local@ ( offset -- val )
+    FP@ + LOADI
+;
+
+@local! ( val offset -- )
+    FP@ + STOREI
+;
+
+
+@local@ ( offset -- val )
+    FP@ + LOADI
+;
+
+@local! ( val offset -- )
+    FP@ + STOREI
+;
+
 ( Each takes ( val offset -- byte ); offset is unused but on stack from caller. )
 @load-byte-0 drop 24 RSHIFT 255 AND ;
 @load-byte-1 drop 16 RSHIFT 255 AND ;
 @load-byte-2 drop 8 RSHIFT 255 AND ;
 @load-byte-3 drop 255 AND ;
 
-@load-byte-gt-1 ( val offset -- byte )
-    dup 2 = [ load-byte-2 ] [ load-byte-3 ] ?:
-;
-
-@load-byte-gt-0 ( val offset -- byte )
-    dup 1 = [ load-byte-1 ] [ load-byte-gt-1 ] ?:
-;
-
-( Extract a single byte from memory. Addresses are byte-aligned, but LOADI fetches 32 bits. )
 @load-byte ( addr -- byte )
-    dup 4 / 4 * LOADI        ( -- addr aligned-val )
-    swap 4 MOD               ( -- aligned-val byte-offset )
-    dup 0 = [ load-byte-0 ] [ load-byte-gt-0 ] ?:
-;
-
-( --- Byte Storage --- )
-
-( store-byte-N ( byte base old-val -- ) )
-
-@store-byte-0 ( byte base old-val -- )
-    0x00FFFFFF AND ( byte base masked-old )
-    rot 16777216 * ( base masked-old shifted-byte )
-    OR ( base combined-val )
-    swap STOREI
-;
-
-@store-byte-1 ( byte base old-val -- )
-    0xFF00FFFF AND ( byte base masked-old )
-    rot 65536 *
-    OR
-    swap STOREI
-;
-
-@store-byte-2 ( byte base old-val -- )
-    0xFFFF00FF AND ( byte base masked-old )
-    rot 256 *
-    OR
-    swap STOREI
-;
-
-@store-byte-3 ( byte base old-val -- )
-    0xFFFFFF00 AND ( byte base masked-old )
-    rot
-    OR
-    swap STOREI
-;
-
-@store-byte-offset-3 ( byte base old-val offset -- )
-    drop store-byte-3
-;
-
-@store-byte-offset-2 ( byte base old-val offset -- )
-    dup 2 = [ drop store-byte-2 ] [ store-byte-offset-3 ] ?:
-;
-
-@store-byte-offset-1 ( byte base old-val offset -- )
-    dup 1 = [ drop store-byte-1 ] [ store-byte-offset-2 ] ?:
+    dup 4 MOD               ( addr offset )
+    swap 4 / 4 * LOADI      ( offset val )
+    swap                    ( val offset )
+    
+    dup 0 = [ load-byte-0 ] [
+        dup 1 = [ load-byte-1 ] [
+            dup 2 = [ load-byte-2 ] [ load-byte-3 ] ?:
+        ] ?:
+    ] ?:
 ;
 
 @store-byte ( byte addr -- )
-    dup 4 / 4 *             ( byte addr base )
-    dup LOADI               ( byte addr base old-val )
-    rot 4 MOD               ( byte base old-val offset )
+    ( Manual store-byte without frames for stability )
+    dup 4 / 4 * ( byte addr aligned )
+    dup LOADI ( byte addr aligned old )
+    2 PICK 4 MOD ( byte addr aligned old offset )
     
-    dup 0 = [ drop store-byte-0 ] [ store-byte-offset-1 ] ?:
+    dup 0 = [ drop 3 PICK swap 0x00FFFFFF AND swap 24 LSHIFT OR ] [
+        dup 1 = [ drop 3 PICK swap 0xFF00FFFF AND swap 16 LSHIFT OR ] [
+            dup 2 = [ drop 3 PICK swap 0xFFFF00FF AND swap 8 LSHIFT OR ] [
+                drop 3 PICK swap 0xFFFFFF00 AND swap OR
+            ] ?:
+        ] ?:
+    ] ?:
+    
+    ( addr val )
+    swap STOREI
+    drop drop ( addr byte )
+;
+
+( @strcpy ( src dest -- )
+  Copy 32 bytes from src to dest. )
+@strcpy ( src dest -- )
+    0 ( i )
+    [ dup 8 < ] [
+        ( i )
+        2 PICK OVER 4 * + LOADI ( src dest i word )
+        2 PICK 2 PICK 4 * + ( src dest i word addr )
+        STOREI
+        1 +
+    ] |:
+    drop drop drop
+;
+
+( @strcpy-safe ( src dest -- )
+  Copies until null terminator OR 32 bytes, then pads the rest of 32 bytes with nulls. )
+@strcpy-safe ( src dest -- )
+    MEMORY::CTRL_BASE LOADI ( save base )
+    rot rot ( base src dest )
+    MEMORY::CTRL_BASE STOREI ( save dest in base )
+    MEMORY::CTRL_BASE 4 + STOREI ( save src in base+4 )
+    
+    ( 1. Clear dest )
+    0 ( i )
+    [ dup 32 < ] [
+        0 MEMORY::CTRL_BASE LOADI 2 PICK + STOREI
+        1 +
+    ] |:
+    drop
+    
+    ( 2. Copy src )
+    0 ( i )
+    [ dup 32 < ] [
+        MEMORY::CTRL_BASE 4 + LOADI OVER + load-byte ( byte )
+        dup 0 = [
+            drop swap drop 32 ( exit: replaces i with 32 )
+        ] [
+            MEMORY::CTRL_BASE LOADI 2 PICK + ( addr )
+            store-byte
+            1 +
+        ] ?:
+    ] |:
+    drop
+    
+    MEMORY::CTRL_BASE STOREI ( restore base )
+;
+
+( @strlen ( ptr -- len )
+  Returns length of null-terminated string. )
+@strlen ( ptr -- len )
+    MEMORY::CTRL_TEMP STOREI ( save ptr )
+    0 ( len )
+    [ MEMORY::CTRL_TEMP LOADI load-byte 0 > ] [
+        1 +
+        MEMORY::CTRL_TEMP LOADI 1 + MEMORY::CTRL_TEMP STOREI
+    ] |:
+;
+
+( @strends ( str_ptr ext_ptr -- bool )
+  Returns 1 if str ends with ext, 0 otherwise. )
+@strends ( str_ptr ext_ptr -- bool )
+    MEMORY::CTRL_BASE LOADI ( save base )
+    rot rot ( base str ext )
+    MEMORY::CTRL_BASE 8 + STOREI ( ext )
+    MEMORY::CTRL_BASE 12 + STOREI ( str )
+    
+    MEMORY::CTRL_BASE 12 + LOADI strlen MEMORY::CTRL_BASE 8 + LOADI strlen
+    TWO-DUP < [
+        drop drop 0
+    ] [
+        - MEMORY::CTRL_BASE 12 + LOADI + ( a_ptr )
+        1 ( match )
+        [ MEMORY::CTRL_BASE 8 + LOADI load-byte dup 0 > 2 PICK 1 = AND ] [
+            drop
+            dup load-byte MEMORY::CTRL_BASE 8 + LOADI load-byte = [
+                1 +
+                MEMORY::CTRL_BASE 8 + LOADI 1 + MEMORY::CTRL_BASE 8 + STOREI
+            ] [
+                drop 0
+            ] ?:
+        ] |:
+        swap drop ( drop byte )
+    ] ?:
+    
+    swap MEMORY::CTRL_BASE STOREI ( restore base, return result )
 ;

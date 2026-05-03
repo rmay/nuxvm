@@ -341,16 +341,16 @@ func TestFileDirectoryListing(t *testing.T) {
 		t.Fatalf("expected 3 entries, got %d: %v", len(lines), lines)
 	}
 
-	// Each entry is "<4-char detail> <name>\n". Order is directory-dependent;
+	// Each entry is "<4-char detail> <name>\x00". Order is directory-dependent;
 	// just check presence and shape.
 	joined := strings.Join(lines, "")
-	if !strings.Contains(joined, "0005 a.txt\n") {
+	if !strings.Contains(joined, "0005 a.txt\x00") {
 		t.Errorf("missing 'a.txt' size-5 entry; got:\n%s", joined)
 	}
-	if !strings.Contains(joined, "0002 b.bin\n") {
+	if !strings.Contains(joined, "0002 b.bin\x00") {
 		t.Errorf("missing 'b.bin' size-2 entry; got:\n%s", joined)
 	}
-	if !strings.Contains(joined, "---- sub\n") {
+	if !strings.Contains(joined, "---- sub\x00") {
 		t.Errorf("missing 'sub' directory marker; got:\n%s", joined)
 	}
 }

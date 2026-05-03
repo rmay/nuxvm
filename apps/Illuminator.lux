@@ -24,10 +24,13 @@ MODULE ILLUMINATOR
 @STATE_BASE   0x820000 ;
 @picker_sel_addr STATE_BASE 8 + ;
 @ILLUM_MENU   0x840000 ;
+@drawing_addr 0x820010 ;
 
 ( --- State Accessors --- )
 @picker_sel@  picker_sel_addr LOADI ;
 @picker_sel!  picker_sel_addr STOREI ;
+@drawing@     drawing_addr LOADI ;
+@drawing!     drawing_addr STOREI ;
 
 ( --- Rendering --- )
 
@@ -73,29 +76,38 @@ MODULE ILLUMINATOR
 ;
 
 @DRAW-ONE-GLYPH ( ptr cp -- )
+    ( stack: ptr cp )
     dup 16 MOD 38 * 10 + ( x )
-    OVER 16 / 38 * 10 + ( y )
-    ( ptr cp x y )
-    ROT ( ptr x y cp ) drop ( ptr x y )
-    ROT ( x y ptr )
+    1 PICK 16 / 38 * 10 + ( y )
+    ( stack: ptr cp x y )
+    
+    ( We want: x y ptr )
+    1 PICK ( x )
+    1 PICK ( y )
+    5 PICK ( ptr )
+    
+    ( stack: ptr cp x y x y ptr )
     DRAW-GLYPH-ROWS
+    
+    ( stack: ptr cp x y )
+    drop drop drop drop
 ;
 
 @DRAW-GRID-LOOP ( ptr cp -- )
-    dup 256 < [
+    [ dup 256 < ] [
         dup WIDTH_TABLE + load-byte ( ptr cp width )
         dup 0 > [
-            7 + 8 / 8 * ( stride )
+            ( ptr cp width )
+            7 + 8 / 8 * ( ptr cp stride )
             2 PICK 2 PICK DRAW-ONE-GLYPH
-            ROT + swap 1 +
-            DRAW-GRID-LOOP
+            ( ptr cp stride )
+            rot + ( cp ptr+stride )
+            swap 1 + ( ptr+stride cp+1 )
         ] [
             drop 1 +
-            DRAW-GRID-LOOP
         ] ?:
-    ] [
-        drop drop
-    ] ?:
+    ] |:
+    drop drop
 ;
 
 @DRAW-GRID
@@ -109,7 +121,7 @@ MODULE ILLUMINATOR
 ;
 
 @on-open
-    F"." FILENAME_BUF [ load-data ] FILE-DIALOG::show
+    F"." F".cff" FILENAME_BUF [ load-data ] FILE-DIALOG::show
 ;
 
 @on-key
@@ -119,14 +131,17 @@ MODULE ILLUMINATOR
 ;
 
 @DRAW-ALL
-    DF::use-window
-    0 DF::clear-screen
-    DRAW-GRID
+    drawing@ [ ] [
+        1 drawing!
+        DF::use-window
+        0 DF::clear-screen
+        DRAW-GRID
+        0 drawing!
+    ] ?:
 ;
 
 @keep-alive
-    YIELD
-    keep-alive
+    [ 1 ] [ YIELD ] |:
 ;
 
 @start

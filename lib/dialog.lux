@@ -5,36 +5,35 @@ INCLUDE "lib/system.lux"
 INCLUDE "lib/file.lux"
 INCLUDE "lib/delineatiofenestra.lux"
 INCLUDE "lib/controls.lux"
+INCLUDE "lib/memory.lux"
+IMPORT CORE
 IMPORT SCREEN
 IMPORT TEXT
 IMPORT FILE
 IMPORT CTRL
 IMPORT DELINEATIOFENESTRA AS DF
 IMPORT CONTROLS
+IMPORT MEMORY
 
 MODULE DIALOG
 
 ( --- State --- )
-@ITEMS_BUF 0x860000 ; ( Store up to 64 strings, 32 bytes each )
-@count_addr 0x860800 ;
-@sel_addr   0x860804 ;
-@result_ptr_addr 0x860808 ;
-@callback_addr 0x86080C ;
-@saved_screen_addr 0x860810 ;
-@saved_ctrl_addr 0x860814 ;
-@saved_mouse_addr 0x860818 ;
-@title_ptr_addr 0x86081C ;
-@ok_ptr_addr    0x860820 ;
-@cancel_ptr_addr 0x860824 ;
-@w_addr 0x860828 ;
-@h_addr 0x86082C ;
+@ITEMS_BUF MEMORY::DIALOG_ITEMS_BUF ;
+@DIALOG-LIST-BASE MEMORY::DIALOG_LIST_BASE ;
+@result_ptr_addr MEMORY::DIALOG_RESULT_PTR_ADDR ;
+@callback_addr MEMORY::DIALOG_CALLBACK_ADDR ;
+@saved_screen_addr MEMORY::DIALOG_SAVED_SCREEN_ADDR ;
+@saved_ctrl_addr MEMORY::DIALOG_SAVED_CTRL_ADDR ;
+@saved_mouse_addr MEMORY::DIALOG_SAVED_MOUSE_ADDR ;
+@title_ptr_addr MEMORY::DIALOG_TITLE_PTR_ADDR ;
+@ok_ptr_addr MEMORY::DIALOG_OK_PTR_ADDR ;
+@cancel_ptr_addr MEMORY::DIALOG_CANCEL_PTR_ADDR ;
+@w_addr MEMORY::DIALOG_W_ADDR ;
+@h_addr MEMORY::DIALOG_H_ADDR ;
+@drawing_addr MEMORY::DIALOG_DRAWING_ADDR ;
 
-@SCRATCH_BUF 0x860900 ;
+@SCRATCH_BUF MEMORY::DIALOG_SCRATCH_BUF ;
 
-@count@ count_addr LOADI ;
-@count! count_addr STOREI ;
-@sel@   sel_addr LOADI ;
-@sel!   sel_addr STOREI ;
 @result_ptr@ result_ptr_addr LOADI ;
 @result_ptr! result_ptr_addr STOREI ;
 @callback@ callback_addr LOADI ;
@@ -54,80 +53,38 @@ MODULE DIALOG
 @cancel-label! cancel_ptr_addr STOREI ;
 
 @w@ w_addr LOADI ;
-@w! w_addr STOREI ;
+@DIALOG_W! w_addr STOREI ;
 @h@ h_addr LOADI ;
-@h! h_addr STOREI ;
+@DIALOG_H! h_addr STOREI ;
+@drawing@ drawing_addr LOADI ;
+@drawing! drawing_addr STOREI ;
 
-@clear-items 0 count! 0 sel! ;
+@clear-items 
+    ITEMS_BUF 64 32 DIALOG-LIST-BASE CONTROLS::list-new
+    0 drawing!
+;
 
 @add-item ( ptr len -- )
-    count@ 64 < [
-        ITEMS_BUF count@ 32 * + ( len src dst )
-        0 ( len src dst count )
-        [
-            ( stack: len src dst count )
-            dup 31 < [
-                3 PICK 1 PICK < [ 2 PICK load-byte 0 > ] [ 0 ] ?:
-            ] [ 0 ] ?:
-        ]
-        [
-            ( stack: len src dst count )
-            2 PICK load-byte ( len src dst count char )
-            2 PICK store-byte
-            1 + swap 1 + swap rot 1 + rot rot
-        ] |:
-        drop drop drop drop
-        0 ITEMS_BUF count@ 32 * + 31 + store-byte
-        count@ 1 + count!
-    ] [ drop drop ] ?:
+    0x860800 CONTROLS::list-add
 ;
 
 @DRAW-DIALOG
-    DF::use-window
-    ( Compute dimensions )
-    DF::window-w 100 - w!
-    DF::window-h 100 - h!
-    
-    ( Draw modal background )
-    50 50 w@ h@ CONTROLS::dialog-bg
-    
-    ( Setup pane for dialog content )
-    50 50 w@ h@ DF::use-rect
-    1 DF::set-text-scale
-    
-    ( Draw title )
-    255 TEXT::color!
-    10 15 DF::move-to title@ [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop
-    
-    ( Draw list box frame )
-    255 30 35 w@ 60 - h@ 80 - DF::frame-rect
-    
-    ( Draw scrollbar )
-    w@ 30 - 35 h@ 80 - CONTROLS::scrollbar-v
-    
-    ( Draw list entries )
-    0 [
-        dup sel@ = [
-            255 31 OVER 16 * 36 + w@ 62 - 16 DF::fill-rect
-            -1 TEXT::color!
-        ] [
-            255 TEXT::color!
-        ] ?:
-        
-        33 OVER 16 * 38 + DF::move-to
-        ITEMS_BUF OVER 32 * + ( ptr )
-        [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop
-        1 +
-    ] count@ #:
-    drop
-    
-    ( Draw buttons )
-    w@ 80 - h@ 30 - 60 20 CONTROLS::button
-    w@ 70 - h@ 26 - DF::move-to ok-label@ [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop
-    
-    w@ 160 - h@ 30 - 60 20 CONTROLS::button
-    w@ 150 - h@ 26 - DF::move-to cancel-label@ [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop
+    DIALOG::drawing@ [ ] [
+        1 drawing!
+        DF::use-window
+        DF::window-w 100 - DIALOG::DIALOG_W!
+        DF::window-h 100 - DIALOG::DIALOG_H!
+        1 DF::set-text-scale
+
+        50 50 w@ h@ title@ CONTROLS::dialog-window
+        80 85 w@ 60 - h@ 80 - DIALOG-LIST-BASE CONTROLS::list-draw
+
+        w@ 50 + 200 - h@ 50 + 30 - 80 20 ok-label@ 0 CONTROLS::button
+        w@ 50 + 100 - h@ 50 + 30 - 80 20 cancel-label@ 0 CONTROLS::button
+        0 drawing!
+    ] ?:
 ;
+
 
 @CLOSE
     saved_screen@ 0x10020 STOREI
@@ -137,18 +94,19 @@ MODULE DIALOG
 
 @ON-KEY
     CTRL::key@
-    dup 18 = [ sel@ 1 + count@ 1 - MIN sel! ] ? ( Down )
-    dup 17 = [ sel@ 1 - 0 MAX sel! ] ?     ( Up )
     dup 13 = [ ( Enter )
-        ITEMS_BUF sel@ 32 * +
-        result_ptr@
-        32 [ OVER load-byte 1 PICK store-byte 1 + swap 1 + swap ] #:
-        drop drop
+        DIALOG-LIST-BASE 8 + LOADI ( sel )
+        32 * ITEMS_BUF + ( ptr )
+        result_ptr@ strcpy-safe
         CLOSE
         callback@ CALL
-    ] ?
-    dup 27 = [ CLOSE ] ? ( Esc )
-    drop
+        drop ( key )
+    ] [
+        dup 27 = [ CLOSE drop ] [
+            DIALOG-LIST-BASE CONTROLS::list-key
+            0 drawing!
+        ] ?:
+    ] ?:
 ;
 
 @ON-MOUSE
@@ -156,27 +114,30 @@ MODULE DIALOG
         0x10054 LOADI ( mouse_x )
         0x10058 LOADI ( mouse_y )
         
-        ( Transform to relative coords: Dialog is at 50, 50 )
-        50 - swap 50 - swap ( rel_x rel_y )
-        
-        ( Check Cancel button: x in [w-160, w-100], y in [h-30, h-10] )
-        TWO-DUP
-        h@ 30 - >= [ h@ 10 - <= ] [ 0 ] ?: [
-            w@ 160 - >= [ w@ 100 - <= ] [ 0 ] ?: [
+        TWO-DUP h@ 20 + >= [ h@ 40 + <= ] [ 0 ] ?: [
+            OVER w@ 150 - >= [ OVER w@ 70 - <= ] [ 0 ] ?: [
+                ( HIT OK )
+                DIALOG-LIST-BASE 8 + LOADI ( sel )
+                32 * ITEMS_BUF + ( ptr )
+                result_ptr@ strcpy-safe
+                CLOSE
+                callback@ CALL
+            ] ?
+        ] ?
+
+        TWO-DUP h@ 20 + >= [ h@ 40 + <= ] [ 0 ] ?: [
+            OVER w@ 50 - >= [ OVER w@ 30 + <= ] [ 0 ] ?: [
                 CLOSE
             ] ?
         ] ?
         
-        ( Check Ok button: x in [w-80, w-20], y in [h-30, h-10] )
-        TWO-DUP
-        h@ 30 - >= [ h@ 10 - <= ] [ 0 ] ?: [
-            w@ 80 - >= [ w@ 20 - <= ] [ 0 ] ?: [
-                ITEMS_BUF sel@ 32 * +
-                result_ptr@
-                32 [ OVER load-byte 1 PICK store-byte 1 + swap 1 + swap ] #:
-                drop drop
-                CLOSE
-                callback@ CALL
+        TWO-DUP 85 >= [ h@ 55 + <= ] [ 0 ] ?: [
+            OVER 80 >= [ OVER w@ 20 + <= ] [ 0 ] ?: [
+                ( rx = x - 80, ry = y - 85 )
+                1 PICK 80 -
+                1 PICK 85 -
+                w@ 60 - h@ 80 - DIALOG-LIST-BASE CONTROLS::list-click
+                0 drawing!
             ] ?
         ] ?
         
@@ -184,10 +145,10 @@ MODULE DIALOG
     ] ?
 ;
 
-
 @show-list ( result-ptr callback -- )
     callback!
     result_ptr!
+    init-locals
     0x10020 LOADI saved_screen!
     0x10040 LOADI saved_ctrl!
     0x10050 LOADI saved_mouse!
@@ -198,21 +159,181 @@ MODULE DIALOG
 
 MODULE FILE-DIALOG
 IMPORT DIALOG
+IMPORT MEMORY
 
-@load-files ( dir-ptr -- )
-    DIALOG::SCRATCH_BUF 32 [
+( --- File Dialog State --- )
+@FILE_ITEMS_BUF MEMORY::FILE_DIALOG_ITEMS_BUF ;
+@FILE_LIST_BASE MEMORY::FILE_DIALOG_LIST_BASE ;
+@CURRENT_PATH MEMORY::FILE_DIALOG_CURRENT_PATH ;
+@SELECTED_DIR MEMORY::FILE_DIALOG_SELECTED_DIR ;
+@FILTER_EXT_ADDR MEMORY::FILE_DIALOG_FILTER_EXT_ADDR ;
+@FILTER_EXT@ FILTER_EXT_ADDR LOADI ;
+@FILTER_EXT! FILTER_EXT_ADDR STOREI ;
+
+@init-path ( ptr -- )
+    CURRENT_PATH strcpy-safe
+;
+
+@load-files
+    FILE_ITEMS_BUF 128 32 FILE_LIST_BASE CONTROLS::list-new
+    
+    ( Pass 1: Directories )
+    CURRENT_PATH DIALOG::SCRATCH_BUF 32 [
         ( len )
-        dup 6 > [
-            DIALOG::SCRATCH_BUF 5 + swap 6 - DIALOG::add-item
-        ] [ drop ] ?:
+        DIALOG::SCRATCH_BUF LOADI 0x2D2D2D2D = [ ( "----" )
+            DIALOG::SCRATCH_BUF swap FILE_LIST_BASE CONTROLS::list-add
+        ] [
+            drop
+        ] ?:
+    ] FILE::dir-each
+
+    ( Pass 2: Files )
+    CURRENT_PATH DIALOG::SCRATCH_BUF 32 [
+        ( len )
+        DIALOG::SCRATCH_BUF LOADI 0x2D2D2D2D = [ ( "----" )
+            drop
+        ] [
+            ( Check Filter )
+            FILTER_EXT@ [
+                DIALOG::SCRATCH_BUF FILTER_EXT@ strends [
+                    DIALOG::SCRATCH_BUF swap FILE_LIST_BASE CONTROLS::list-add
+                ] [ drop ] ?:
+            ] [
+                DIALOG::SCRATCH_BUF swap FILE_LIST_BASE CONTROLS::list-add
+            ] ?:
+        ] ?:
     ] FILE::dir-each
 ;
 
-@show ( dir-ptr result-ptr callback -- )
-    DIALOG::clear-items
-    ROT load-files
+@DRAW-FILE-DIALOG
+    DIALOG::drawing@ [ ] [
+        1 DIALOG::drawing!
+        DF::use-window
+        DF::window-w 100 - DIALOG::DIALOG_W!
+        DF::window-h 100 - DIALOG::DIALOG_H!
+        1 DF::set-text-scale
+        
+        50 50 DIALOG::w@ DIALOG::h@ DIALOG::title@ CONTROLS::dialog-window
+        
+        ( Current Path Component - Centered at top )
+        0 TEXT::color!
+        DIALOG::w@ 2 / 50 + 75 DF::move-to
+        CURRENT_PATH [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop drop
+        
+        ( List )
+        80 95 DIALOG::w@ 60 - DIALOG::h@ 110 - FILE_LIST_BASE CONTROLS::list-draw
+        
+        ( Buttons )
+        DIALOG::w@ 50 + 200 - DIALOG::h@ 50 + 30 - 80 20 DIALOG::ok-label@ 0 CONTROLS::button
+        DIALOG::w@ 50 + 100 - DIALOG::h@ 50 + 30 - 80 20 DIALOG::cancel-label@ 0 CONTROLS::button
+        
+        0 DIALOG::drawing!
+    ] ?:
+;
+
+@ON-FILE-MOUSE
+    0x1005C LOADI 1 = [
+        0x10054 LOADI ( x )
+        0x10058 LOADI ( y )
+        
+        ( List Hit? y in [95, h+35] and x in [80, w+20] )
+        TWO-DUP 95 >= [ OVER DIALOG::h@ 35 + <= ] [ 0 ] ?: [
+            OVER 80 >= [ OVER DIALOG::w@ 20 + <= ] [ 0 ] ?: [
+                ( List Click )
+                FILE_LIST_BASE 8 + LOADI ( old-sel )
+                
+                ( rx = x - 80, ry = y - 95 )
+                2 PICK 80 - 
+                2 PICK 95 -
+                DIALOG::w@ 60 - DIALOG::h@ 110 - FILE_LIST_BASE CONTROLS::list-click
+                
+                FILE_LIST_BASE 8 + LOADI ( new-sel )
+                DUP 2 PICK = [
+                    ( DOUBLE CLICK )
+                    32 * FILE_ITEMS_BUF + ( ptr )
+                    dup load-byte 45 = [ ( Starts with '-' )
+                        5 + ( skip prefix )
+                        CURRENT_PATH strcpy-safe
+                        load-files
+                    ] [
+                        DIALOG::result_ptr@ strcpy-safe
+                        DIALOG::CLOSE
+                        DIALOG::callback@ CALL
+                    ] ?:
+                ] [
+                    drop
+                ] ?:
+                drop ( old-sel )
+                0 DIALOG::drawing!
+            ] ?
+        ] ?
+        
+        ( OK button Hit )
+        TWO-DUP DIALOG::h@ 20 + >= [ OVER DIALOG::h@ 40 + <= ] [ 0 ] ?: [
+            OVER DIALOG::w@ 50 + 200 - >= [ OVER DIALOG::w@ 50 + 120 - <= ] [ 0 ] ?: [
+                ( HIT OK )
+                FILE_LIST_BASE 8 + LOADI 32 * FILE_ITEMS_BUF +
+                DIALOG::result_ptr@ strcpy-safe
+                DIALOG::CLOSE
+                DIALOG::callback@ CALL
+            ] ?
+        ] ?
+
+        ( Cancel button Hit )
+        TWO-DUP DIALOG::h@ 20 + >= [ OVER DIALOG::h@ 40 + <= ] [ 0 ] ?: [
+            OVER DIALOG::w@ 50 + 100 - >= [ OVER DIALOG::w@ 50 + 20 - <= ] [ 0 ] ?: [
+                DIALOG::CLOSE
+            ] ?
+        ] ?
+        
+        TWO-DROP
+    ] ?
+;
+
+@ON-FILE-KEY
+    CTRL::key@
+    dup 13 = [ ( Enter )
+        FILE_LIST_BASE 8 + LOADI ( sel )
+        32 * FILE_ITEMS_BUF + ( ptr )
+        dup load-byte 45 = [ ( Directory )
+            5 + CURRENT_PATH strcpy-safe
+            load-files
+        ] [
+            DIALOG::result_ptr@ strcpy-safe
+            DIALOG::CLOSE
+            DIALOG::callback@ CALL
+        ] ?:
+        drop ( key )
+    ] [
+        dup 17 = [ ( Up )
+            FILE_LIST_BASE CONTROLS::list-key
+            0 DIALOG::drawing!
+        ] [
+            dup 18 = [ ( Down )
+                FILE_LIST_BASE CONTROLS::list-key
+                0 DIALOG::drawing!
+            ] [
+                dup 27 = [ DIALOG::CLOSE drop ] [ ] ?:
+            ] ?:
+        ] ?:
+    ] ?:
+;
+
+@show ( dir-ptr ext-ptr result-ptr callback -- )
+    DIALOG::callback!
+    DIALOG::result_ptr!
+    FILTER_EXT!
+    init-locals
+    init-path
+    load-files
     F"Select a file:" DIALOG::title!
     F"Open" DIALOG::ok-label!
     F"Cancel" DIALOG::cancel-label!
-    DIALOG::show-list
+    
+    0x10020 LOADI DIALOG::saved_screen!
+    0x10040 LOADI DIALOG::saved_ctrl!
+    0x10050 LOADI DIALOG::saved_mouse!
+    [ DRAW-FILE-DIALOG ] 0x10020 STOREI
+    [ ON-FILE-KEY ] 0x10040 STOREI
+    [ ON-FILE-MOUSE ] 0x10050 STOREI
 ;

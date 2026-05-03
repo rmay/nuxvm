@@ -1,6 +1,8 @@
 ( === FILE OPERATIONS LIBRARY === )
 
 INCLUDE "lib/core.lux"
+INCLUDE "lib/memory.lux"
+IMPORT MEMORY
 
 MODULE FILE
 @addr 0x10060 ;
@@ -78,17 +80,20 @@ MODULE FILE
     dup 0 >=
 ;
 
-( @dir-each ( name-ptr line-buf max quot -- )
-  List directory. Sets name and line-buf, loops reading entries, calls
-  quotation with ( line-ptr line-len -- ) for each. Quotation can DROP DROP
-  to skip processing. Loop ends when read returns 0. )
+( --- dir-each state --- )
+@DIR_QUOT MEMORY::FILE_DIR_QUOT ;
+@DIR_MAX  MEMORY::FILE_DIR_MAX ;
+
+( @dir-each ( name-ptr line-buf max quot -- ) )
 @dir-each ( name-ptr line-buf max quot -- )
-    rot name!              ( line-buf max quot )
-    swap buf!              ( max quot )
-    [ 1 PICK list dup 0 > ] [
-        ( max quot len )
-        dup 1 PICK CALL    ( max quot len )
-        drop               ( max quot )
+    DIR_QUOT STOREI
+    DIR_MAX STOREI
+    buf!
+    name!
+    
+    [ DIR_MAX LOADI list dup 0 > ] [
+        ( len )
+        DIR_QUOT LOADI CALL
     ] |:
-    drop drop
+    drop ( Drop the final 0 length )
 ;

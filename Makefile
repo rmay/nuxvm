@@ -48,7 +48,6 @@ buildall:
 	go build -o bin/cloister ./cmd/cloister
 	go build -o bin/luxc ./cmd/luxc
 	go build -o bin/luxrepl ./cmd/luxrepl
-	go build -o bin/png2cff ./cmd/png2cff
 
 luxbuild:
 	go build -o bin/luxc cmd/luxc/main.go
