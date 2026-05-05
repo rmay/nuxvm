@@ -31,10 +31,6 @@ Complete reference for all opcodes in the NUX virtual machine (32 original opcod
 **Action**: `[a, b] → [b, a]`  
 **Description**: Swap the top two values on the stack.
 
-#### 0x04 - ROLL
-**Format**: `ROLL` (1 byte)  
-**Action**: `[a, b] → [a, b, a]`  
-**Description**: Copy the second-from-top value to the top of the stack (roll nth element to top).
 
 #### 0x05 - ROT
 **Format**: `ROT` (1 byte)  
@@ -42,9 +38,14 @@ Complete reference for all opcodes in the NUX virtual machine (32 original opcod
 **Description**: Rotate the top three values, moving third to top.
 
 #### 0x28 - PICK
-**Format**: `PICK` (1 byte)  
-**Action**: `[... stack[n] ... n] → [... stack[n] ... stack[n]]`  
+**Format**: `PICK` (1 byte)
+**Action**: `[... stack[n] ... n] → [... stack[n] ... stack[n]]`
 **Description**: Pop index n from top, then copy the nth element of stack (0=top) to the top. Useful for duplicating values at arbitrary depths without temporaries.
+
+#### 0x2E - OVER
+**Format**: `OVER` (1 byte)
+**Action**: `[a, b] → [a, b, a]`
+**Description**: Copies the second-from-top value to the top of the stack. Note that while this shares a similar stack effect with `ROLL`, `ROLL` typically moves an element from a deeper position to the top, whereas `OVER` specifically duplicates the second item. This clarifies that `OVER` is a distinct operation despite superficial similarities to `ROLL`.
 
 ### Arithmetic Operations
 
@@ -278,7 +279,7 @@ The bytecode now includes native opcodes for these operations, eliminating the o
 | 0x01 | POP       | 1     | `[a] → []` |
 | 0x02 | DUP       | 1     | `[a] → [a, a]` |
 | 0x03 | SWAP      | 1     | `[a, b] → [b, a]` |
-| 0x04 | ROLL      | 1     | `[a, b] → [a, b, a]` |
+
 | 0x05 | ROT       | 1     | `[a, b, c] → [b, c, a]` |
 | 0x06 | ADD       | 1     | `[a, b] → [a+b]` |
 | 0x07 | SUB       | 1     | `[a, b] → [a-b]` |

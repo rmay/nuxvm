@@ -218,7 +218,7 @@ IMPORT MEMORY
         ( Current Path Component - Centered at top )
         0 TEXT::color!
         DIALOG::w@ 2 / 50 + 75 DF::move-to
-        CURRENT_PATH [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop drop
+        CURRENT_PATH [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop
         
         ( List )
         80 95 DIALOG::w@ 60 - DIALOG::h@ 110 - FILE_LIST_BASE CONTROLS::list-draw

@@ -156,9 +156,17 @@ MODULE DELINEATIOFENESTRA
 ;
 
 @fill-rect ( rgb x y w h -- )
-    [ 3 PICK 3 PICK 3 PICK 3 PICK h-line swap 1 + swap ]
-    swap #:
-    drop drop drop drop
+    0 ( row ) [
+        ( stack: rgb x y w h row )
+        5 PICK ( rgb )
+        5 PICK ( x )
+        5 PICK 2 PICK + ( y+row )
+        5 PICK ( w )
+        h-line
+        1 +
+    ] 2 PICK #:
+    ( stack: rgb x y w h row_final )
+    drop drop drop drop drop drop
 ;
 
 @clear-screen ( rgb -- )

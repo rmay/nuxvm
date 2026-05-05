@@ -13,9 +13,9 @@ const MaxReturnStackSize = 1024
 
 // Memory layout constants
 const (
-	ReservedMemorySize = 0x4000 // 16KB (0x0000-0x3FFF)
+	ReservedMemorySize = 0x4000  // 16KB (0x0000-0x3FFF)
 	DeviceMemoryOffset = 0x10000 // Device ports start at 0x10000
-	DeviceMemorySize   = 0x1000 // 4KB for device ports (0x10000-0x10FFF)
+	DeviceMemorySize   = 0x1000  // 4KB for device ports (0x10000-0x10FFF)
 
 	// Video Framebuffer: Starting at 0x11000.
 	// Support up to 1280x1024 pixels (~5MB).
@@ -54,6 +54,7 @@ type VM struct {
 	reservedMemorySize uint32  // Size of reserved memory region
 	userMemoryStart    uint32  // Start of user-accessible memory
 	trace              bool
+	traceCount         int
 
 	vectors [16]uint32 // Interrupt/Jump vectors
 	bus     Bus        // External I/O bus
@@ -70,7 +71,11 @@ func NewVM(program []byte, trace ...bool) *VM {
 	// Allocate RAM: Reserved + (Framebuffer range but not allocated) + User Memory
 	// Actually, we should only allocate what the VM physically needs to address as RAM.
 	// Let's keep UserMemoryOffset as the constant it is, but memory slice will be sized to fit.
+	// We ensure at least 8MB to cover the string heap (0x700000).
 	memSize := UserMemoryOffset + uint32(len(program))
+	if memSize < 0x800000 {
+		memSize = 0x800000
+	}
 	totalMemory := make([]byte, memSize)
 
 	// Copy program to user memory area
@@ -318,14 +323,6 @@ func (vm *VM) Swap() error {
 	n := len(vm.stack)
 	vm.stack[n-1], vm.stack[n-2] = vm.stack[n-2], vm.stack[n-1]
 	return nil
-}
-
-// Roll copies the second-from-top value to the top.
-func (vm *VM) Roll() error {
-	if len(vm.stack) < 2 {
-		return fmt.Errorf("stack underflow: need 2 values for ROLL")
-	}
-	return vm.Push(vm.stack[len(vm.stack)-2])
 }
 
 // Rot rotates the top three values.
@@ -828,12 +825,12 @@ func (vm *VM) Jz() error {
 	vm.stack = vm.stack[:len(vm.stack)-1]
 	if cond == 0 {
 		if vm.trace {
-			fmt.Fprintf(os.Stderr, "VM: OpJz: Condition false, jumping to %d", addr)
+			fmt.Fprintf(os.Stderr, "VM: OpJz: Condition true, jumping to %d", addr)
 		}
 		vm.pc = uint32(addr)
 	} else {
 		if vm.trace {
-			fmt.Fprintf(os.Stderr, "VM: OpJz: Condition true, skipping jump")
+			fmt.Fprintf(os.Stderr, "VM: OpJz: Condition false, skipping jump")
 		}
 		vm.pc += 4
 	}
@@ -903,19 +900,19 @@ func (vm *VM) Load() error {
 	address := binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4])
 	vm.pc += 4
 
-	// Check if the address is within the device memory region
-	if address >= DeviceMemoryOffset && address < UserMemoryOffset {
+	// Check if the address is within the device memory region or video framebuffer
+	if isDeviceAddr(address) {
 		// It's a device memory access, call device handler
 		value, err := vm.handleDeviceRead(address)
 		if err != nil {
-			return fmt.Errorf("device read error at address %d: %v", address, err)
+			return fmt.Errorf("device read error at address 0x%04X: %v", address, err)
 		}
 		return vm.Push(value)
 	}
 
 	// Standard memory access
 	if int(address)+4 > len(vm.memory) {
-		return fmt.Errorf("load address out of bounds: %d", address)
+		return fmt.Errorf("load address 0x%04X out of bounds", address)
 	}
 	value := int32(binary.BigEndian.Uint32(vm.memory[address : address+4]))
 	return vm.Push(value)
@@ -936,22 +933,48 @@ func (vm *VM) Store() error {
 	address := binary.BigEndian.Uint32(vm.memory[vm.pc : vm.pc+4])
 	vm.pc += 4
 
-	// Check if the address is within the device memory region
-	if address >= DeviceMemoryOffset && address < UserMemoryOffset {
+	// Check if the address is within the device memory region or video framebuffer
+	if isDeviceAddr(address) {
 		// It's a device memory access, call device handler
 		err := vm.handleDeviceWrite(address, value)
 		if err != nil {
-			return fmt.Errorf("device write error at address %d: %v", address, err)
+			return fmt.Errorf("device write error at address 0x%04X: %v", address, err)
 		}
 		return nil
 	}
 
 	// Standard memory access
 	if int(address)+4 > len(vm.memory) {
-		return fmt.Errorf("store address out of bounds: %d", address)
+		return fmt.Errorf("store address 0x%04X out of bounds", address)
 	}
 	binary.BigEndian.PutUint32(vm.memory[address:address+4], uint32(value))
 	return nil
+}
+
+// JmpStack pops an address from STACK and jumps to it.
+func (vm *VM) JmpStack() error {
+	if len(vm.stack) < 1 {
+		return fmt.Errorf("jmpstack failed: stack underflow")
+	}
+	addr := vm.stack[len(vm.stack)-1]
+	vm.stack = vm.stack[:len(vm.stack)-1]
+	if addr < 0 || int(addr) >= len(vm.memory) {
+		return fmt.Errorf("jmpstack failed: address %d out of bounds", addr)
+	}
+	if vm.trace {
+		fmt.Fprintf(os.Stderr, "VM: OpJmpStack: Jumping to addr=%d", addr)
+	}
+	vm.pc = uint32(addr)
+	return nil
+}
+
+// Over copies the second item on STACK to the top.
+func (vm *VM) Over() error {
+	if len(vm.stack) < 2 {
+		return fmt.Errorf("over failed: stack underflow")
+	}
+	value := vm.stack[len(vm.stack)-2]
+	return vm.Push(value)
 }
 
 // Out pops a value and outputs it.
@@ -990,7 +1013,13 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 	vm.pc++
 
 	if vm.trace {
-		fmt.Fprintf(os.Stderr, "VM: PC=%d, Instruction=%s, Stack=%v, ReturnStack=%v", currentPC, OpcodeName(opcode), vm.stack, vm.returnStack)
+		vm.traceCount++
+		if vm.traceCount > 1000 {
+			vm.trace = false
+			fmt.Fprintf(os.Stderr, "\nVM: Trace limit (1000) reached, tracing disabled\n")
+		} else {
+			fmt.Fprintf(os.Stderr, "\nVM: PC=%d, Instruction=%s, Stack=%v, ReturnStack=%v", currentPC, OpcodeName(opcode), vm.stack, vm.returnStack)
+		}
 	}
 
 	switch opcode {
@@ -1016,9 +1045,9 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		if err := vm.Swap(); err != nil {
 			return currentPC, fmt.Errorf("swap failed: %v", err)
 		}
-	case OpRoll:
-		if err := vm.Roll(); err != nil {
-			return currentPC, fmt.Errorf("roll failed: %v", err)
+	case OpOver:
+		if err := vm.Over(); err != nil {
+			return currentPC, fmt.Errorf("over failed: %v", err)
 		}
 	case OpRot:
 		if err := vm.Rot(); err != nil {
@@ -1173,12 +1202,12 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		vm.stack = vm.stack[:len(vm.stack)-1]
 		if cond == 0 {
 			if vm.trace {
-				fmt.Fprintf(os.Stderr, "VM: OpJz: Condition false, jumping to %d", addr)
+				fmt.Fprintf(os.Stderr, "VM: OpJz: Condition true, jumping to %d", addr)
 			}
 			vm.pc = uint32(addr)
 		} else {
 			if vm.trace {
-				fmt.Fprintf(os.Stderr, "VM: OpJz: Condition true, skipping jump")
+				fmt.Fprintf(os.Stderr, "VM: OpJz: Condition false, skipping jump")
 			}
 			vm.pc += 4
 		}
@@ -1258,6 +1287,10 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 			binary.BigEndian.PutUint32(vm.memory[addr:addr+4], uint32(value))
 		} else {
 			return currentPC, fmt.Errorf("storei failed: address %d out of bounds", addr)
+		}
+	case OpJmpStack:
+		if err := vm.JmpStack(); err != nil {
+			return currentPC, fmt.Errorf("jmpstack failed: %v", err)
 		}
 	default:
 		vm.pc-- // Rewind to faulty opcode
@@ -1357,7 +1390,6 @@ func (vm *VM) DebugInfo() string {
 
 	return info
 }
-
 
 // isDeviceAddr checks if an address is in device memory or video framebuffer range.
 func isDeviceAddr(addr uint32) bool {

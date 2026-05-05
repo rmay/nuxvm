@@ -123,7 +123,7 @@ func myExample() {
 | 0x01 | POP       | Pop and discard |
 | 0x02 | DUP       | Duplicate top |
 | 0x03 | SWAP      | Swap top two |
-| 0x04 | ROLL      | Roll nth element to top |
+| 0x04 | OVER      | Over nth element to top |
 | 0x05 | ROT       | Rotate top 3 |
 | 0x06 | ADD       | Add top two |
 | 0x07 | SUB       | Subtract |
@@ -212,7 +212,7 @@ copy(prog[endPH+1:], enc(endAddr))
 1. **Track Stack State** - Comment what's on the stack after each operation
 2. **Calculate Addresses** - Jump addresses must be computed after the code is placed
 3. **Test Incrementally** - Build programs one section at a time
-4. **Use ROLL for Peeking** - Copy values without consuming them
+4. **Use Over for Peeking** - Copy values without consuming them
 5. **Watch for Underflows** - Ensure enough values are on stack for operations
 
 ## Try These Challenges

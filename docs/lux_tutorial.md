@@ -159,7 +159,7 @@ The parens handle multiple line comments, the `//` single line.
 dup           ( Duplicate top: a → a a )
 drop          ( Remove top: a → )
 swap          ( Swap top two: a b → b a )
-roll          ( Copy second: a b → a b a )
+over          ( Copy second: a b → a b a )
 rot           ( Rotate three: a b c → b c a )
 ```
 
@@ -176,7 +176,7 @@ lux> 10
   Stack: [5 10]
 lux> swap
   Stack: [10 5]
-lux> roll
+lux> over
   Stack: [10 5 10]
 lux> rot
   Stack: [5 10 10]

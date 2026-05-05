@@ -29,7 +29,7 @@ func (m *MockBus) Write(address uint32, value int32) error {
 
 // Helper function to create a VM with a simple program
 func createVMWithProgram(program []byte) *VM {
-	vm := NewVM(program)
+	vm := NewVMWithMemorySize(program, uint32(UserMemoryOffset)+uint32(len(program)))
 	vm.SetBus(&MockBus{})
 	return vm
 }
@@ -83,8 +83,11 @@ func TestNewVM(t *testing.T) {
 		t.Error("Expected VM to be running initially")
 	}
 	expectedMemSize := int(UserMemoryOffset) + len(program)
+	if expectedMemSize < 0x800000 {
+		expectedMemSize = 0x800000
+	}
 	if len(vm.memory) != expectedMemSize {
-		t.Errorf("Expected memory length %d (UserMemoryOffset + program), got %d", expectedMemSize, len(vm.memory))
+		t.Errorf("Expected memory length %d, got %d", expectedMemSize, len(vm.memory))
 	}
 	if len(vm.ReturnStack()) != 0 {
 		t.Errorf("Expected empty return stack, got length %d", len(vm.ReturnStack()))
@@ -199,13 +202,13 @@ func TestSwap(t *testing.T) {
 	}
 }
 
-func TestRoll(t *testing.T) {
+func TestOver(t *testing.T) {
 	vm := createVMWithProgram([]byte{})
 	pushValue(t, vm, 10)
 	pushValue(t, vm, 20)
 
-	if err := vm.Roll(); err != nil {
-		t.Fatalf("Roll failed: %v", err)
+	if err := vm.Over(); err != nil {
+		t.Fatalf("Over failed: %v", err)
 	}
 
 	stack := vm.Stack()
@@ -216,11 +219,11 @@ func TestRoll(t *testing.T) {
 		t.Errorf("Expected [10, 20, 10], got %v", stack)
 	}
 
-	// Test roll with insufficient values
+	// Test over with insufficient values
 	vm = createVMWithProgram([]byte{})
 	pushValue(t, vm, 1)
-	if err := vm.Roll(); err == nil {
-		t.Error("Expected error when roll with only one value")
+	if err := vm.Over(); err == nil {
+		t.Error("Expected error when over with only one value")
 	}
 }
 
@@ -452,9 +455,9 @@ func TestJz(t *testing.T) {
 func TestJnzEquivalent(t *testing.T) {
 	// Jump when condition is non-zero: PUSH 1; PUSH 0; EQ; JZ target
 	program := []byte{}
-	program = append(program, pushInstruction(1)...)  // PUSH 1 (nonzero cond)
-	program = append(program, pushInstruction(0)...)  // PUSH 0
-	program = append(program, OpEq)                   // EQ → 0 (false, so JZ won't jump)
+	program = append(program, pushInstruction(1)...) // PUSH 1 (nonzero cond)
+	program = append(program, pushInstruction(0)...) // PUSH 0
+	program = append(program, OpEq)                  // EQ → 0 (false, so JZ won't jump)
 	jzAddr := len(program)
 	program = append(program, JzInstruction(0)...)    // JZ placeholder (not taken)
 	program = append(program, pushInstruction(20)...) // PUSH 20 (skipped — wait, JZ not taken means we DO execute this)
@@ -922,7 +925,7 @@ func TestOpcodeName(t *testing.T) {
 		{OpPop, "POP"},
 		{OpDup, "DUP"},
 		{OpSwap, "SWAP"},
-		{OpRoll, "ROLL"},
+		{OpOver, "OVER"},
 		{OpRot, "ROT"},
 		{OpAdd, "ADD"},
 		{OpSub, "SUB"},
@@ -1243,9 +1246,9 @@ func TestExecuteInstructionErrors(t *testing.T) {
 			errMsg:  "swap failed",
 		},
 		{
-			name:    "ROLL underflow",
-			program: []byte{OpRoll},
-			errMsg:  "roll failed",
+			name:    "OVER underflow",
+			program: []byte{OpOver},
+			errMsg:  "over failed: stack underflow",
 		},
 		{
 			name:    "ROT underflow",
@@ -1538,7 +1541,7 @@ func TestDeviceWriteControllerStatusUnsupported(t *testing.T) {
 func TestDeviceAccessUnhandledAddress(t *testing.T) {
 	program := []byte{}
 	// Address within device memory range but not explicitly handled
-	unhandledDeviceAddr := DeviceMemoryOffset + DeviceMemorySize - 4 
+	unhandledDeviceAddr := DeviceMemoryOffset + DeviceMemorySize - 4
 
 	// Test read
 	program = append(program, LoadInstruction(int32(unhandledDeviceAddr))...)
@@ -1582,7 +1585,6 @@ func TestDeviceAccessOutsideRange(t *testing.T) {
 	}
 
 	vm := createVMWithProgram(program)
-	vm.trace = true
 
 	if err := vm.Run(); err != nil {
 		t.Fatalf("Run failed: %v", err)
@@ -1605,7 +1607,7 @@ func TestDeviceAccessOutsideRange(t *testing.T) {
 
 func TestStackLimits(t *testing.T) {
 	vm := createVMWithProgram([]byte{OpHalt})
-	
+
 	// Test Data Stack Overflow
 	for i := 0; i < MaxStackSize; i++ {
 		if err := vm.Push(int32(i)); err != nil {
@@ -1633,7 +1635,7 @@ func TestStackLimits(t *testing.T) {
 
 func TestShlLargeAmount(t *testing.T) {
 	vm := createVMWithProgram([]byte{})
-	
+
 	// 1 << 33 should be equivalent to 1 << 1 (which is 2)
 	pushValue(t, vm, 1)
 	pushValue(t, vm, 33)
@@ -1768,12 +1770,12 @@ func TestLoadStoreBoundaries(t *testing.T) {
 	// Store at the very last 4 bytes
 	addr := memLen - 4
 	pushValue(t, vm, 0x12345678)
-	
+
 	// Manually set PC to point to an address we'll use for OpStore/OpLoad
 	// OpStore expects 4 bytes after PC for the address
 	vm.pc = vm.UserMemoryStart()
 	binary.BigEndian.PutUint32(vm.memory[vm.pc:], addr)
-	
+
 	if err := vm.Store(); err != nil {
 		t.Fatalf("Store at boundary failed: %v", err)
 	}
@@ -1862,7 +1864,7 @@ func TestDeviceIOEdgeCases(t *testing.T) {
 
 func TestJnzMethod(t *testing.T) {
 	vm := NewVM(make([]byte, 100))
-	
+
 	// Test Jnz directly (not zero)
 	vm.pc = vm.UserMemoryStart()
 	target := vm.UserMemoryStart() + 20

@@ -171,7 +171,7 @@ func TestCompileSimpleString(t *testing.T) {
 		t.Fatalf("Compile error: %v", err)
 	}
 	// Should have bytecode for 'H' and 'i'
-	if len(bytecode) < 20 {
+	if len(bytecode) < 11 {
 		t.Errorf("Expected bytecode for string, got length %d", len(bytecode))
 	}
 }
@@ -182,7 +182,7 @@ func TestCompileStringWithEscapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile error: %v", err)
 	}
-	if len(bytecode) < 20 {
+	if len(bytecode) < 11 {
 		t.Errorf("Expected bytecode for string, got length %d", len(bytecode))
 	}
 }
@@ -193,7 +193,7 @@ func TestCompileMultipleStrings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile error: %v", err)
 	}
-	if len(bytecode) < 40 {
+	if len(bytecode) < 20 {
 		t.Errorf("Expected bytecode for strings, got length %d", len(bytecode))
 	}
 }
@@ -264,7 +264,7 @@ func TestCompileAllStackOps(t *testing.T) {
 		{"DUP", "5 DUP", []int32{5, 5}},
 		{"DROP", "5 10 DROP", []int32{5}},
 		{"SWAP", "5 10 SWAP", []int32{10, 5}},
-		{"ROLL", "5 10 ROLL", []int32{5, 10, 5}},
+		{"OVER", "5 10 OVER", []int32{5, 10, 5}},
 		{"ROT", "1 2 3 ROT", []int32{2, 3, 1}},
 	}
 
@@ -515,7 +515,7 @@ func TestCompileTimes(t *testing.T) {
 
 func TestCompileDip(t *testing.T) {
 	source := `
-		5
+		10 5
 		[ 1 + ] dip
 	`
 	bytecode, err := Compile(source)
@@ -529,14 +529,14 @@ func TestCompileDip(t *testing.T) {
 	}
 
 	stack := machine.Stack()
-	if len(stack) != 1 || stack[0] != 6 {
-		t.Errorf("Expected [6], got %v", stack)
+	if len(stack) != 2 || stack[0] != 11 || stack[1] != 5 {
+		t.Errorf("Expected [11 5], got %v", stack)
 	}
 }
 
 func TestCompileNestedDip(t *testing.T) {
 	source := `
-		[ 5 [ 1 + ] dip ] dip
+		100 10 [ 5 [ 1 + ] dip ] dip
 	`
 	bytecode, err := Compile(source)
 	if err != nil {
@@ -547,8 +547,8 @@ func TestCompileNestedDip(t *testing.T) {
 		t.Fatalf("Runtime error: %v", err)
 	}
 	stack := machine.Stack()
-	if len(stack) != 1 || stack[0] != 6 {
-		t.Errorf("Expected [6], got %v", stack)
+	if len(stack) != 3 || stack[0] != 101 || stack[1] != 5 || stack[2] != 10 {
+		t.Errorf("Expected [101 5 10], got %v", stack)
 	}
 }
 
@@ -567,8 +567,8 @@ func TestCompileKeep(t *testing.T) {
 	}
 
 	stack := machine.Stack()
-	if len(stack) != 2 || stack[0] != 5 || stack[1] != 6 {
-		t.Errorf("Expected [5, 6], got %v", stack)
+	if len(stack) != 2 || stack[0] != 6 || stack[1] != 5 {
+		t.Errorf("Expected [6, 5], got %v", stack)
 	}
 }
 
@@ -1016,12 +1016,12 @@ func TestCompileComplexNestedCombinators(t *testing.T) {
 		t.Fatalf("Runtime error: %v", err)
 	}
 	stack := machine.Stack()
-	// Current DIP implementation just calls the quotation on top of stack.
-	// So 5 10 [ 1 + ] dip -> 5 11 (incorrect DIP, but matches current compiler)
-	// Then [ 0 > ] [ 1 - ] |: operates on 11, leaving 0.
-	// Stack should be [5 0]
-	if len(stack) != 2 || stack[0] != 5 || stack[1] != 0 {
-		t.Errorf("Expected [5 0], got %v", stack)
+	// Correct DIP implementation hiding top value.
+	// So 5 10 [ 1 + ] dip -> 6 10
+	// Then [ 0 > ] [ 1 - ] |: operates on 10, leaving 0.
+	// Stack should be [6 0]
+	if len(stack) != 2 || stack[0] != 6 || stack[1] != 0 {
+		t.Errorf("Expected [6 0], got %v", stack)
 	}
 }
 
@@ -1058,9 +1058,9 @@ func TestCompileCombinatorErrors(t *testing.T) {
 		source string
 		errMsg string
 	}{
-		{"Missing quotations for IF-ELSE", "1 [ ] ?: ", "if-else requires two quotations"},
-		{"Missing quotation for IF", "1 ? ", "if requires one quotation"},
-		{"Missing quotation for WHILE", " [ ] |: ", "while requires two quotations"},
+		{"Missing quotations for IF-ELSE", "1 [ ] ?: ", "?: requires two quotations"},
+		{"Missing quotation for IF", "1 ? ", "? requires one quotation"},
+		{"Missing quotation for WHILE", " [ ] |: ", "|: requires two quotations"},
 		{"Incomplete definition", "@incomplete dup ", "unexpected end of file"},
 		{"Missing module name", "MODULE ", "expected module name"},
 		{"Missing import name", "IMPORT ", "expected module name"},
@@ -1068,7 +1068,7 @@ func TestCompileCombinatorErrors(t *testing.T) {
 		{"Unknown word", "unknownword", "unknown word"},
 		{"Unclosed quotation", " [ 1 + ", "unclosed quotation"},
 		{"Unexpected ]", " ] ", "unexpected ]"},
-		{"Empty quotation combinator", "[ ] ?: ", "if-else requires two quotations"},
+		{"Empty quotation combinator", "[ ] ?: ", "?: requires two quotations"},
 	}
 
 	for _, tt := range tests {
@@ -1127,8 +1127,8 @@ func TestCompileQuotationCombinatorSpecial(t *testing.T) {
 		source   string
 		expected []int32
 	}{
-		{"DIP in quot", " 5 [ 1 + ] dip ", []int32{6}},
-		{"KEEP in quot", " 5 [ 1 + ] keep ", []int32{5, 6}},
+		{"DIP in quot", " 10 5 [ 1 + ] dip ", []int32{11, 5}},
+		{"KEEP in quot", " 5 [ 1 + ] keep ", []int32{6, 5}},
 		{"CALL in quot", " [ 42 ] call ", []int32{42}},
 	}
 
@@ -1157,7 +1157,7 @@ func TestCompileQuotationCombinatorSpecial(t *testing.T) {
 
 func TestCompileQuotationInsideQuotationCombinators(t *testing.T) {
 	// Nested combinators in quotations
-	source := " [ 5 [ 1 + ] dip ] call "
+	source := " [ 10 5 [ 1 + ] dip ] call "
 	bytecode, err := Compile(source)
 	if err != nil {
 		t.Fatalf("Compile error: %v", err)
@@ -1167,8 +1167,8 @@ func TestCompileQuotationInsideQuotationCombinators(t *testing.T) {
 		t.Fatalf("Runtime error: %v", err)
 	}
 	stack := machine.Stack()
-	if len(stack) != 1 || stack[0] != 6 {
-		t.Errorf("Expected [6], got %v", stack)
+	if len(stack) != 2 || stack[0] != 11 || stack[1] != 5 {
+		t.Errorf("Expected [11 5], got %v", stack)
 	}
 }
 

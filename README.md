@@ -168,7 +168,7 @@ INCLUDE "lib/system.lux"
 dup           ( Duplicate top: a → a a )
 drop          ( Remove top: a → )
 swap          ( Swap top two: a b → b a )
-roll          ( Copy second: a b → a b a )
+over          ( Copy second: a b → a b a )
 rot           ( Rotate three: a b c → b c a )
 ```
 
@@ -248,7 +248,7 @@ Define reusable functions with `@name ... ;`
 | Stack Operations | DUP     ||
 | Stack Operations | DROP    ||
 | Stack Operations | SWAP    ||
-| Stack Operations | ROLL    ||
+| Stack Operations | OVER    ||
 | Stack Operations | ROT     ||
 | Arithmetic     | +       ||
 | Arithmetic     | -       ||
@@ -341,7 +341,7 @@ The compiler resolves words in this order:
 | 0x01 | POP       | `[a] → []`         | Discard top of stack |
 | 0x02 | DUP       | `[a] → [a a]`   | Duplicate top |
 | 0x03 | SWAP      | `[a b] → [b a]`  | Swap top two |
-| 0x04 | ROLL      | `[a b] → [a b a]` | Roll nth element to top |
+| 0x04 | OVER      | `[a b] → [a b a]` | Over nth element to top |
 | 0x05 | ROT       | `[a b c] → [b c a]` | Rotate top three |
 | 0x06 | ADD       | `[a b] → [a + b]` | Add |
 | 0x07 | SUB       | `[a b] → [a - b]` | Subtract |

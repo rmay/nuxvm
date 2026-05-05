@@ -69,8 +69,8 @@ MODULE QUILL
     dup 0 > [
         swap ( dest len src )
         dup load-byte ( dest len src byte )
-        rot roll roll ( len byte dest src )
-        roll store-byte
+        rot over over ( len byte dest src )
+        over store-byte
         1 + swap 1 + swap 1 -
         1
     ] [ 0 ] ?:
@@ -213,7 +213,7 @@ MODULE QUILL
 @insert-byte-shift-inner ( i -- )
     dup cursor@ > [
         dup 1 - BUFFER_START + load-byte
-        roll BUFFER_START + store-byte
+        over BUFFER_START + store-byte
     ] ?
 ;
 
@@ -240,7 +240,7 @@ MODULE QUILL
 @delete-byte-shift-inner ( i -- )
     dup size@ < [
         dup BUFFER_START + load-byte
-        roll 1 - BUFFER_START + store-byte
+        over 1 - BUFFER_START + store-byte
     ] ?
 ;
 

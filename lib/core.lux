@@ -11,61 +11,14 @@
     TWO-DUP > [ swap ] ? drop
 ;
 
-INCLUDE "lib/memory.lux"
-IMPORT MEMORY
-
-( --- Global registers for UI and utilities --- )
-@x@ MEMORY::CTRL_X LOADI ; x! MEMORY::CTRL_X STOREI ;
-@y@ MEMORY::CTRL_Y LOADI ; y! MEMORY::CTRL_Y STOREI ;
-@w@ MEMORY::CTRL_W LOADI ; w! MEMORY::CTRL_W STOREI ;
-@h@ MEMORY::CTRL_H LOADI ; h! MEMORY::CTRL_H STOREI ;
-@base@ MEMORY::CTRL_BASE LOADI ; base! MEMORY::CTRL_BASE STOREI ;
-@temp@ MEMORY::CTRL_TEMP LOADI ; temp! MEMORY::CTRL_TEMP STOREI ;
-
-@push-frame ( size -- )
-    FP@ OVER - ( new-fp )
-    FP@ OVER STOREI ( save old-fp at new-fp )
-    FP! ( set current fp )
-    drop ( size )
-;
-
-@pop-frame ( size -- )
-    FP@ LOADI ( old-fp )
-    FP! ( restore )
-    drop ( size )
-;
-
-@local@ ( offset -- val )
-    FP@ + LOADI
-;
-
-@local! ( val offset -- )
-    FP@ + STOREI
-;
-
-
-@local@ ( offset -- val )
-    FP@ + LOADI
-;
-
-@local! ( val offset -- )
-    FP@ + STOREI
-;
-
-( Each takes ( val offset -- byte ); offset is unused but on stack from caller. )
-@load-byte-0 drop 24 RSHIFT 255 AND ;
-@load-byte-1 drop 16 RSHIFT 255 AND ;
-@load-byte-2 drop 8 RSHIFT 255 AND ;
-@load-byte-3 drop 255 AND ;
-
 @load-byte ( addr -- byte )
     dup 4 MOD               ( addr offset )
     swap 4 / 4 * LOADI      ( offset val )
     swap                    ( val offset )
     
-    dup 0 = [ load-byte-0 ] [
-        dup 1 = [ load-byte-1 ] [
-            dup 2 = [ load-byte-2 ] [ load-byte-3 ] ?:
+    dup 0 = [ drop 24 RSHIFT 255 AND ] [
+        dup 1 = [ drop 16 RSHIFT 255 AND ] [
+            dup 2 = [ drop 8 RSHIFT 255 AND ] [ drop 255 AND ] ?:
         ] ?:
     ] ?:
 ;
@@ -89,8 +42,6 @@ IMPORT MEMORY
     drop drop ( addr byte )
 ;
 
-( @strcpy ( src dest -- )
-  Copy 32 bytes from src to dest. )
 @strcpy ( src dest -- )
     0 ( i )
     [ dup 8 < ] [
@@ -100,44 +51,36 @@ IMPORT MEMORY
         STOREI
         1 +
     ] |:
-    drop drop drop
+    drop drop drop ( src dest i )
 ;
 
-( @strcpy-safe ( src dest -- )
-  Copies until null terminator OR 32 bytes, then pads the rest of 32 bytes with nulls. )
+INCLUDE "lib/memory.lux"
+IMPORT MEMORY
+
 @strcpy-safe ( src dest -- )
-    MEMORY::CTRL_BASE LOADI ( save base )
-    rot rot ( base src dest )
-    MEMORY::CTRL_BASE STOREI ( save dest in base )
-    MEMORY::CTRL_BASE 4 + STOREI ( save src in base+4 )
-    
     ( 1. Clear dest )
     0 ( i )
     [ dup 32 < ] [
-        0 MEMORY::CTRL_BASE LOADI 2 PICK + STOREI
+        0 1 PICK OVER + store-byte
         1 +
     ] |:
-    drop
+    drop ( i )
     
     ( 2. Copy src )
     0 ( i )
     [ dup 32 < ] [
-        MEMORY::CTRL_BASE 4 + LOADI OVER + load-byte ( byte )
+        2 PICK OVER + load-byte ( byte )
         dup 0 = [
-            drop swap drop 32 ( exit: replaces i with 32 )
+            drop drop 32 ( exit )
         ] [
-            MEMORY::CTRL_BASE LOADI 2 PICK + ( addr )
+            2 PICK 2 PICK + ( dest+i )
             store-byte
             1 +
         ] ?:
     ] |:
-    drop
-    
-    MEMORY::CTRL_BASE STOREI ( restore base )
+    drop ( i )
+    drop drop ( src dest )
 ;
-
-( @strlen ( ptr -- len )
-  Returns length of null-terminated string. )
 @strlen ( ptr -- len )
     MEMORY::CTRL_TEMP STOREI ( save ptr )
     0 ( len )
@@ -145,10 +88,9 @@ IMPORT MEMORY
         1 +
         MEMORY::CTRL_TEMP LOADI 1 + MEMORY::CTRL_TEMP STOREI
     ] |:
+    ( len is already on stack )
 ;
 
-( @strends ( str_ptr ext_ptr -- bool )
-  Returns 1 if str ends with ext, 0 otherwise. )
 @strends ( str_ptr ext_ptr -- bool )
     MEMORY::CTRL_BASE LOADI ( save base )
     rot rot ( base str ext )
@@ -161,17 +103,56 @@ IMPORT MEMORY
     ] [
         - MEMORY::CTRL_BASE 12 + LOADI + ( a_ptr )
         1 ( match )
-        [ MEMORY::CTRL_BASE 8 + LOADI load-byte dup 0 > 2 PICK 1 = AND ] [
-            drop
+        [ MEMORY::CTRL_BASE 8 + LOADI load-byte 0 > OVER 1 = AND ] [
+            drop ( match )
             dup load-byte MEMORY::CTRL_BASE 8 + LOADI load-byte = [
                 1 +
                 MEMORY::CTRL_BASE 8 + LOADI 1 + MEMORY::CTRL_BASE 8 + STOREI
+                1 ( match )
             ] [
-                drop 0
+                0 ( match )
             ] ?:
         ] |:
-        swap drop ( drop byte )
+        ( stack: a_ptr match )
+        swap drop ( a_ptr match -> match )
     ] ?:
     
     swap MEMORY::CTRL_BASE STOREI ( restore base, return result )
 ;
+
+@init-locals ( -- )
+    0x852400 MEMORY::FP_STACK STOREI
+    0x852400 MEMORY::FP_ADDR STOREI
+;
+
+@FP@
+    MEMORY::FP_ADDR LOADI
+;
+@FP! MEMORY::FP_ADDR STOREI ;
+
+@local@ ( offset -- val )
+    FP@ + LOADI
+;
+
+@local! ( val offset -- )
+    FP@ + STOREI
+;
+
+( --- Core Registers (Global) --- )
+( Using raw addresses for maximum stability )
+@x@ 0x851000 LOADI ; @x! 0x851000 STOREI ;
+@y@ 0x851004 LOADI ; @y! 0x851004 STOREI ;
+@w@ 0x851008 LOADI ; @w! 0x851008 STOREI ;
+@h@ 0x85100C LOADI ; @h! 0x85100C STOREI ;
+@base@ 0x851010 LOADI ; @base! 0x851010 STOREI ;
+@temp@ 0x851014 LOADI ; @temp! 0x851014 STOREI ;
+
+( --- CORE Module --- )
+MODULE CORE
+
+@x@ 0x851000 LOADI ; @x! 0x851000 STOREI ;
+@y@ 0x851004 LOADI ; @y! 0x851004 STOREI ;
+@w@ 0x851008 LOADI ; @w! 0x851008 STOREI ;
+@h@ 0x85100C LOADI ; @h! 0x85100C STOREI ;
+@base@ 0x851010 LOADI ; @base! 0x851010 STOREI ;
+@temp@ 0x851014 LOADI ; @temp! 0x851014 STOREI ;

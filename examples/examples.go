@@ -33,7 +33,7 @@ func ex1_GCD() {
 	prog = append(prog, vm.OpDup) // DUP
 	endPH := len(prog)
 	prog = append(prog, jz(0)...)
-	prog = append(prog, vm.OpRoll, vm.OpRoll, vm.OpMod) // ROLL, ROLL, MOD
+	prog = append(prog, vm.OpOver, vm.OpOver, vm.OpMod) // OVER, OVER, MOD
 	prog = append(prog, vm.OpRot, vm.OpPop)             // ROT, POP
 	prog = append(prog, jmp(loop)...)
 	// Patch the JZ target
@@ -100,7 +100,7 @@ func ex4_Min() {
 	prog = append(prog, push(34)...)
 	prog = append(prog, push(21)...)
 	// Stack: [34, 21]
-	prog = append(prog, vm.OpRoll, vm.OpRoll) // ROLL, ROLL -> [34, 21, 34, 21]
+	prog = append(prog, vm.OpOver, vm.OpOver) // OVER, OVER -> [34, 21, 34, 21]
 	prog = append(prog, vm.OpSwap, vm.OpLt)   // GT = SWAP; LT  (34 > 21?) -> [34, 21, 1]
 	elsePH := len(prog)
 	prog = append(prog, jz(0)...) // if false (a not > b), a is min
@@ -129,7 +129,7 @@ func ex5_Max() {
 	prog = append(prog, push(15)...)
 	prog = append(prog, push(28)...)
 	// Stack: [15, 28]
-	prog = append(prog, vm.OpRoll, vm.OpRoll) // ROLL, ROLL -> [15, 28, 15, 28]
+	prog = append(prog, vm.OpOver, vm.OpOver) // OVER, OVER -> [15, 28, 15, 28]
 	prog = append(prog, vm.OpLt)              // LT (15 < 28?) -> [15, 28, 1]
 	elsePH := len(prog)
 	prog = append(prog, jz(0)...) // if false (a not < b), a is max

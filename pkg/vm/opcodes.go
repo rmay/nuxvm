@@ -7,54 +7,52 @@ import (
 
 // Opcode constants — 32 original opcodes (0x00–0x1F) + new opcodes (0x20+).
 const (
-	OpPush      = 0x00
-	OpPop       = 0x01
-	OpDup       = 0x02
-	OpSwap      = 0x03
-	OpRoll      = 0x04
-	OpRot       = 0x05
-	OpAdd       = 0x06
-	OpSub       = 0x07
-	OpMul       = 0x08
-	OpDiv       = 0x09
-	OpMod       = 0x0A
-	OpInc       = 0x0B
-	OpDec       = 0x0C
-	OpAnd       = 0x0D
-	OpOr        = 0x0E
-	OpXor       = 0x0F
-	OpNot       = 0x10
-	OpShl       = 0x11
-	OpEq        = 0x12
-	OpLt        = 0x13
-	OpCallStack = 0x14
-	OpJmp       = 0x15
-	OpJz        = 0x16
-	OpCall      = 0x17
-	OpRet       = 0x18
-	OpLoad      = 0x19
-	OpStore     = 0x1A
-	OpOut       = 0x1B
-	OpHalt      = 0x1C
+	OpPush      = 0x00 // [] → [value]
+	OpPop       = 0x01 // [a] → []
+	OpDup       = 0x02 // [a] → [a, a]
+	OpSwap      = 0x03 // [a, b] → [b, a]
+	OpOver      = 0x04 // [a, b] → [a, b, a]
+	OpRot       = 0x05 // [a, b, c] → [b, c, a]
+	OpAdd       = 0x06 // [a, b] → [a+b]
+	OpSub       = 0x07 // [a, b] → [a-b]
+	OpMul       = 0x08 // [a, b] → [a*b]
+	OpDiv       = 0x09 // [a, b] → [a/b]
+	OpMod       = 0x0A // [a, b] → [a%b]
+	OpInc       = 0x0B // [a] → [a+1]
+	OpDec       = 0x0C // [a] → [a-1]
+	OpAnd       = 0x0D // [a, b] → [a&b]
+	OpOr        = 0x0E // [a, b] → [a|b]
+	OpXor       = 0x0F // [a, b] → [a^b]
+	OpNot       = 0x10 // [a] → [~a]
+	OpShl       = 0x11 // [a, b] → [a << (b%32)]
+	OpEq        = 0x12 // [a, b] → [a==b ? 1 : 0]
+	OpLt        = 0x13 // [a, b] → [a<b ? 1 : 0]
+	OpCallStack = 0x14 // [addr] → [...]
+	OpJmp       = 0x15 // unconditional jump
+	OpJz        = 0x16 // [cond] → [], jump if zero
+	OpCall      = 0x17 // call inline address
+	OpRet       = 0x18 // return from call
+	OpLoad      = 0x19 // [] → [mem[addr]]
+	OpStore     = 0x1A // [value] → []
+	OpOut       = 0x1B // [format, value] → []
+	OpHalt      = 0x1C // stop
 	OpYield     = 0x1D // Yield to host; triggers YieldHandler if set
-	OpLoadI     = 0x1E // Pop addr from stack, push memory[addr]
-	OpStoreI    = 0x1F // Pop addr from stack, pop value, store value at addr
-	// Tier 1 additions (0x20–0x23)
-	OpShr       = 0x20 // Logical right shift: [a, b] → [a >>> (b%32)]
-	OpSar       = 0x21 // Arithmetic right shift: [a, b] → [a >> (b%32)] with sign extension
-	OpJnz       = 0x22 // Jump if non-zero: [cond] → [], jump if cond != 0
-	OpNeg       = 0x23 // Negate: [a] → [-a]
-	// Tier 2 additions (0x24–0x28)
-	OpGt        = 0x24 // Greater than: [a, b] → [a > b ? 1 : 0]
-	OpNeq       = 0x25 // Not equal: [a, b] → [a != b ? 1 : 0]
-	OpLte       = 0x26 // Less than or equal: [a, b] → [a <= b ? 1 : 0]
-	OpGte       = 0x27 // Greater than or equal: [a, b] → [a >= b ? 1 : 0]
+	OpLoadI     = 0x1E // [addr] → [mem[addr]] Pop addr from stack, push memory[addr]
+	OpStoreI    = 0x1F // [addr, value] → [] Pop addr from stack, pop value, store value at addr
+	OpShr       = 0x20 // [a, b] → [a >>> (b%32)] Logical right shift
+	OpSar       = 0x21 // [a, b] → [a >> (b%32)] Arithmetic right shift, with sign extension
+	OpJnz       = 0x22 // [cond] → [] Jump if non-zero, jump if cond != 0
+	OpNeg       = 0x23 // [a] → [-a]
+	OpGt        = 0x24 // [a, b] → [a > b ? 1 : 0]
+	OpNeq       = 0x25 // [a, b] → [a != b ? 1 : 0]
+	OpLte       = 0x26 // [a, b] → [a <= b ? 1 : 0]
+	OpGte       = 0x27 // [a, b] → [a >= b ? 1 : 0]
 	OpPick      = 0x28 // Pick: [... n] → [... stack[n]]; copies nth element (0=top) to top
-	// Tier 3 additions (0x29–0x2C)
-	OpDivmod    = 0x29 // Divide with modulus: [a, b] → [a/b, a%b]
-	OpAbs       = 0x2A // Absolute value: [a] → [|a|]
-	OpMin       = 0x2B // Minimum: [a, b] → [min(a, b)]
-	OpMax       = 0x2C // Maximum: [a, b] → [max(a, b)]
+	OpDivmod    = 0x29 // [a, b] → [a/b, a%b] Divide with modulus
+	OpAbs       = 0x2A // [a] → [|a|]
+	OpMin       = 0x2B // [a, b] → [min(a, b)]
+	OpMax       = 0x2C // [a, b] → [max(a, b)]
+	OpJmpStack  = 0x2D // [addr] → [], pc = addr
 )
 
 // OpcodeName returns the human-readable name for an opcode.
@@ -68,8 +66,8 @@ func OpcodeName(op byte) string {
 		return "DUP"
 	case OpSwap:
 		return "SWAP"
-	case OpRoll:
-		return "ROLL"
+	case OpOver:
+		return "OVER"
 	case OpRot:
 		return "ROT"
 	case OpAdd:
@@ -150,6 +148,8 @@ func OpcodeName(op byte) string {
 		return "MIN"
 	case OpMax:
 		return "MAX"
+	case OpJmpStack:
+		return "JMPSTACK"
 	default:
 		return fmt.Sprintf("UNKNOWN(0x%02X)", op)
 	}
