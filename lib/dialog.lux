@@ -19,7 +19,7 @@ MODULE DIALOG
 
 ( --- State --- )
 @ITEMS_BUF MEMORY::DIALOG_ITEMS_BUF ;
-@DIALOG-LIST-BASE MEMORY::DIALOG_LIST_BASE ;
+@.DIALOG-LIST-BASE MEMORY::DIALOG_LIST_BASE ;
 @result_ptr_addr MEMORY::DIALOG_RESULT_PTR_ADDR ;
 @callback_addr MEMORY::DIALOG_CALLBACK_ADDR ;
 @saved_screen_addr MEMORY::DIALOG_SAVED_SCREEN_ADDR ;
@@ -176,9 +176,12 @@ IMPORT MEMORY
     CURRENT_PATH strcpy-safe
 ;
 
-@load-files
+@load-files ( path-ptr -- )
+    1 frame!
+    0 local@ CURRENT_PATH strcpy-safe
+
     FILE_ITEMS_BUF 128 32 FILE_LIST_BASE CONTROLS::list-new
-    
+
     ( Pass 1: Directories )
     CURRENT_PATH DIALOG::SCRATCH_BUF 32 [
         ( len )
@@ -205,8 +208,8 @@ IMPORT MEMORY
             ] ?:
         ] ?:
     ] FILE::dir-each
+    1 unframe!
 ;
-
 @DRAW-FILE-DIALOG
     DIALOG::drawing@ [ ] [
         1 DIALOG::drawing!

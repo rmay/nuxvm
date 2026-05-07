@@ -53,7 +53,63 @@ const (
 	OpMin       = 0x2B // [a, b] → [min(a, b)]
 	OpMax       = 0x2C // [a, b] → [max(a, b)]
 	OpJmpStack  = 0x2D // [addr] → [], pc = addr
+	OpPushR     = 0x2E // [a] → [], LoopStack += a
+	OpPopR      = 0x2F // [] → [a], a = LoopStack.Pop()
+	OpPeekR     = 0x30 // [] → [a], a = LoopStack.Top()
+	OpFrame     = 0x31 // [n, v_n...v1] → [], save old FP, FP=SP, copy n items
+	OpUnframe   = 0x32 // [] → [], SP=FP, FP=[SP]
+	OpLocalGet  = 0x33 // [offset] → [val], val = Frame[FP+offset]
+	OpLocalSet  = 0x34 // [offset, val] → [], Frame[FP+offset] = val
+	OpPeekR2    = 0x35 // [] → [a, b], a = LoopStack.Top-1, b = LoopStack.Top
 )
+
+func PushInstruction(v int32) []byte {
+	b := []byte{OpPush}
+	b = append(b, EncodeInt32(v)...)
+	return b
+}
+
+func StoreInstruction(addr uint32) []byte {
+	b := []byte{OpStore}
+	b = append(b, EncodeInt32(int32(addr))...)
+	return b
+}
+
+func LoadInstruction(addr uint32) []byte {
+	b := []byte{OpLoad}
+	b = append(b, EncodeInt32(int32(addr))...)
+	return b
+}
+
+func JmpInstruction(addr uint32) []byte {
+	b := []byte{OpJmp}
+	b = append(b, EncodeInt32(int32(addr))...)
+	return b
+}
+
+func JzInstruction(addr uint32) []byte {
+	b := []byte{OpJz}
+	b = append(b, EncodeInt32(int32(addr))...)
+	return b
+}
+
+func CallInstruction(addr uint32) []byte {
+	b := []byte{OpCall}
+	b = append(b, EncodeInt32(int32(addr))...)
+	return b
+}
+
+func OutNumber() []byte {
+	b := PushInstruction(0)
+	b = append(b, OpOut)
+	return b
+}
+
+func OutCharacter() []byte {
+	b := PushInstruction(1)
+	b = append(b, OpOut)
+	return b
+}
 
 // OpcodeName returns the human-readable name for an opcode.
 func OpcodeName(op byte) string {
@@ -150,56 +206,29 @@ func OpcodeName(op byte) string {
 		return "MAX"
 	case OpJmpStack:
 		return "JMPSTACK"
+	case OpPushR:
+		return "PUSHR"
+	case OpPopR:
+		return "POPR"
+	case OpPeekR:
+		return "PEEKR"
+	case OpFrame:
+		return "FRAME"
+	case OpUnframe:
+		return "UNFRAME"
+	case OpLocalGet:
+		return "LOCALGET"
+	case OpLocalSet:
+		return "LOCALSET"
+	case OpPeekR2:
+		return "PEEKR2"
 	default:
 		return fmt.Sprintf("UNKNOWN(0x%02X)", op)
 	}
 }
 
-// Helper functions for building programs
-
-// EncodeInt32 encodes a 32-bit integer as big-endian bytes.
-func EncodeInt32(value int32) []byte {
-	buf := make([]byte, 4)
-	binary.BigEndian.PutUint32(buf, uint32(value))
-	return buf
-}
-
-// PushInstruction creates a PUSH instruction with the given value.
-func PushInstruction(value int32) []byte {
-	return append([]byte{OpPush}, EncodeInt32(value)...)
-}
-
-// JmpInstruction creates a JMP instruction to the given address.
-func JmpInstruction(addr int32) []byte {
-	return append([]byte{OpJmp}, EncodeInt32(addr)...)
-}
-
-// JzInstruction creates a JZ instruction to the given address.
-func JzInstruction(addr int32) []byte {
-	return append([]byte{OpJz}, EncodeInt32(addr)...)
-}
-
-// CallInstruction creates a CALL instruction to the given address.
-func CallInstruction(addr int32) []byte {
-	return append([]byte{OpCall}, EncodeInt32(addr)...)
-}
-
-// LoadInstruction creates a LOAD instruction from the given address.
-func LoadInstruction(addr int32) []byte {
-	return append([]byte{OpLoad}, EncodeInt32(addr)...)
-}
-
-// StoreInstruction creates a STORE instruction to the given address.
-func StoreInstruction(addr int32) []byte {
-	return append([]byte{OpStore}, EncodeInt32(addr)...)
-}
-
-// OutNumber emits bytecode to output top of stack as a number.
-func OutNumber() []byte {
-	return append(PushInstruction(0), OpOut)
-}
-
-// OutCharacter emits bytecode to output top of stack as a character.
-func OutCharacter() []byte {
-	return append(PushInstruction(1), OpOut)
+func EncodeInt32(v int32) []byte {
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint32(b, uint32(v))
+	return b
 }

@@ -64,7 +64,15 @@ type VM struct {
 
 	lastOpcode byte
 	halted     bool
+	fp         int // Index into locals stack
+	locals     []int32
+	loopStack  []int32
 }
+
+// MaxLocalsSize defines the maximum number of local variables.
+const MaxLocalsSize = 4096
+// MaxLoopStackSize defines the maximum depth of nested loops.
+const MaxLoopStackSize = 1024
 
 // NewVM initializes a new VM with the given program.
 // The program is loaded at UserMemoryOffset.
@@ -96,6 +104,9 @@ func NewVM(program []byte, trace ...bool) *VM {
 		reservedMemorySize: ReservedMemorySize,
 		userMemoryStart:    UserMemoryOffset,
 		trace:              traceEnabled,
+		locals:             make([]int32, 0, MaxLocalsSize),
+		loopStack:          make([]int32, 0, MaxLoopStackSize),
+		fp:                 -1,
 	}
 }
 
@@ -123,6 +134,9 @@ func NewVMWithMemorySize(program []byte, totalSize uint32, trace ...bool) *VM {
 		reservedMemorySize: ReservedMemorySize,
 		userMemoryStart:    UserMemoryOffset,
 		trace:              traceEnabled,
+		locals:             make([]int32, 0, MaxLocalsSize),
+		loopStack:          make([]int32, 0, MaxLoopStackSize),
+		fp:                 -1,
 	}
 }
 
@@ -309,6 +323,9 @@ func (vm *VM) Pop() (int32, error) {
 	}
 	value := vm.stack[len(vm.stack)-1]
 	vm.stack = vm.stack[:len(vm.stack)-1]
+	if vm.trace {
+		fmt.Fprintf(os.Stderr, "VM: Pop: value=%d, newStack=%v\n", value, vm.stack)
+	}
 	return value, nil
 }
 
@@ -1020,9 +1037,9 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 
 	if vm.trace {
 		vm.traceCount++
-		if vm.traceCount > 100000 {
+		if vm.traceCount > 1000 {
 			vm.trace = false
-			fmt.Fprintf(os.Stderr, "\nVM: Trace limit (100000) reached, tracing disabled\n")
+			fmt.Fprintf(os.Stderr, "\nVM: Trace limit (1000) reached, tracing disabled\n")
 		} else {
 			fmt.Fprintf(os.Stderr, "\nVM: PC=%d, Instruction=%s, Stack=%v, ReturnStack=%v", currentPC, OpcodeName(opcode), vm.stack, vm.returnStack)
 		}
@@ -1299,6 +1316,108 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		if err := vm.JmpStack(); err != nil {
 			return currentPC, fmt.Errorf("jmpstack failed: %v", err)
 		}
+	case OpPushR:
+		if len(vm.stack) < 1 {
+			return currentPC, fmt.Errorf("pushr failed: stack underflow")
+		}
+		if len(vm.loopStack) >= MaxLoopStackSize {
+			return currentPC, fmt.Errorf("pushr failed: loop stack overflow")
+		}
+		val, _ := vm.Pop()
+		vm.loopStack = append(vm.loopStack, val)
+	case OpPopR:
+		if len(vm.loopStack) == 0 {
+			return currentPC, fmt.Errorf("popr failed: loop stack underflow")
+		}
+		if len(vm.stack) >= MaxStackSize {
+			return currentPC, fmt.Errorf("popr failed: stack overflow")
+		}
+		val := vm.loopStack[len(vm.loopStack)-1]
+		vm.loopStack = vm.loopStack[:len(vm.loopStack)-1]
+		vm.stack = append(vm.stack, val)
+	case OpPeekR:
+		if len(vm.loopStack) == 0 {
+			return currentPC, fmt.Errorf("peekr failed: loop stack underflow")
+		}
+		if len(vm.stack) >= MaxStackSize {
+			return currentPC, fmt.Errorf("peekr failed: stack overflow")
+		}
+		val := vm.loopStack[len(vm.loopStack)-1]
+		vm.stack = append(vm.stack, val)
+	case OpFrame:
+		if len(vm.stack) < 1 {
+			return currentPC, fmt.Errorf("frame failed: stack underflow")
+		}
+		n, _ := vm.Pop()
+		if vm.trace {
+			fmt.Fprintf(os.Stderr, "VM: OpFrame: n=%d, stackBeforeItems=%v\n", n, vm.stack)
+		}
+		if len(vm.stack) < int(n) {
+			return currentPC, fmt.Errorf("frame failed: stack underflow for %d items (n=%d, stack=%v)", n, n, vm.stack)
+		}
+		if len(vm.locals)+int(n)+1 > MaxLocalsSize {
+			return currentPC, fmt.Errorf("frame failed: locals overflow")
+		}
+		
+		oldFP := int32(vm.fp)
+		vm.fp = len(vm.locals)
+		vm.locals = append(vm.locals, oldFP)
+		
+		// Copy n items from stack to locals
+		// Order: v_n ... v1. v1 is at top of main stack.
+		// We want local@ 0 to be v1.
+		for i := 0; i < int(n); i++ {
+			val, _ := vm.Pop()
+			vm.locals = append(vm.locals, val)
+		}
+	case OpUnframe:
+		if len(vm.stack) < 1 {
+			return currentPC, fmt.Errorf("unframe failed: stack underflow (missing n)")
+		}
+		_, _ = vm.Pop() // Pop n
+		if vm.fp < 0 {
+			return currentPC, fmt.Errorf("unframe failed: no active frame")
+		}
+		oldFP := vm.locals[vm.fp]
+		vm.locals = vm.locals[:vm.fp]
+		vm.fp = int(oldFP)
+	case OpLocalGet:
+		if len(vm.stack) < 1 {
+			return currentPC, fmt.Errorf("localget failed: stack underflow")
+		}
+		offset, _ := vm.Pop()
+		if vm.fp < 0 {
+			return currentPC, fmt.Errorf("localget failed: no active frame")
+		}
+		idx := vm.fp + 1 + int(offset)
+		if idx < 0 || idx >= len(vm.locals) {
+			return currentPC, fmt.Errorf("localget failed: offset %d out of bounds (fp=%d, size=%d)", offset, vm.fp, len(vm.locals))
+		}
+		vm.stack = append(vm.stack, vm.locals[idx])
+	case OpLocalSet:
+		if len(vm.stack) < 2 {
+			return currentPC, fmt.Errorf("localset failed: stack underflow")
+		}
+		offset, _ := vm.Pop()
+		val, _ := vm.Pop()
+		if vm.fp < 0 {
+			return currentPC, fmt.Errorf("localset failed: no active frame")
+		}
+		idx := vm.fp + 1 + int(offset)
+		if idx < 0 || idx >= len(vm.locals) {
+			return currentPC, fmt.Errorf("localset failed: offset %d out of bounds", offset)
+		}
+		vm.locals[idx] = val
+	case OpPeekR2:
+		if len(vm.loopStack) < 2 {
+			return currentPC, fmt.Errorf("peekr2 failed: loop stack underflow")
+		}
+		if len(vm.stack)+2 >= MaxStackSize {
+			return currentPC, fmt.Errorf("peekr2 failed: stack overflow")
+		}
+		b := vm.loopStack[len(vm.loopStack)-1]
+		a := vm.loopStack[len(vm.loopStack)-2]
+		vm.stack = append(vm.stack, a, b)
 	default:
 		vm.pc-- // Rewind to faulty opcode
 		vm.running = false

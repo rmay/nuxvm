@@ -108,6 +108,10 @@ var builtins = map[string]byte{
 	"MIN":    vm.OpMin,
 	"MAX":    vm.OpMax,
 	"DIVMOD": vm.OpDivmod,
+	"FRAME!":   vm.OpFrame,
+	"UNFRAME!": vm.OpUnframe,
+	"LOCAL@":   vm.OpLocalGet,
+	"LOCAL!":   vm.OpLocalSet,
 }
 
 var combinators = map[string]bool{
@@ -385,7 +389,10 @@ func (c *Compiler) emitTextString(s string) {
 
 func (c *Compiler) compileWordDefinition() error {
 	name := strings.ToUpper(c.advance().Value)
-	if c.currentModule != "" && !strings.Contains(name, "::") {
+	isExported := strings.HasPrefix(name, ".")
+	if isExported {
+		name = name[1:]
+	} else if c.currentModule != "" && !strings.Contains(name, "::") {
 		name = c.currentModule + "::" + name
 	}
 	c.currentWord = name
@@ -578,28 +585,34 @@ func (c *Compiler) compileCombinator(name string, line int) error {
 			return fmt.Errorf("while requires two quotations")
 		}
 		c.quotationStack = c.quotationStack[:len(c.quotationStack)-2]
-		tc, _ := c.allocTemp(4)
-		tb, _ := c.allocTemp(4)
-		c.emit(vm.OpPush)
-		c.emit(vm.EncodeInt32(tb)...)
-		c.emit(vm.OpStoreI)
-		c.emit(vm.OpPush)
-		c.emit(vm.EncodeInt32(tc)...)
-		c.emit(vm.OpStoreI)
+		
+		// At runtime: [ ... cond body ]
+		c.emit(vm.OpPushR) // body to R
+		c.emit(vm.OpPushR) // cond to R
+
 		start := c.currentAddress()
-		c.emit(vm.OpPush)
-		c.emit(vm.EncodeInt32(tc)...)
-		c.emit(vm.OpLoadI)
-		c.emit(vm.OpCallStack, vm.OpJz)
+
+		c.emit(vm.OpPeekR)     // cond
+		c.emit(vm.OpCallStack) // calls cond. Result on stack.
+
+		c.emit(vm.OpJz)
 		jzAt := c.currentOffset()
 		c.emit(0, 0, 0, 0)
-		c.emit(vm.OpPush)
-		c.emit(vm.EncodeInt32(tb)...)
-		c.emit(vm.OpLoadI)
-		c.emit(vm.OpCallStack, vm.OpJmp)
+
+		c.emit(vm.OpPeekR2)    // [ body cond ]
+		c.emit(vm.OpPop)       // drop cond copy. Stack: [ body ]
+		c.emit(vm.OpCallStack) // calls body
+
+		c.emit(vm.OpJmp)
 		jmpAt := c.currentOffset()
 		c.emit(0, 0, 0, 0)
+
 		exit := c.currentAddress()
+		c.emit(vm.OpPopR) // cond
+		c.emit(vm.OpPopR) // body
+		c.emit(vm.OpPop)  // drop cond
+		c.emit(vm.OpPop)  // drop body
+		
 		if c.activeQuotIdx >= 0 {
 			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, exit}, InternalJump{jmpAt, start})
 		} else {
@@ -608,23 +621,15 @@ func (c *Compiler) compileCombinator(name string, line int) error {
 		}
 	case "#:":
 		c.quotationStack = c.quotationStack[:len(c.quotationStack)-1]
-		tq, _ := c.allocTemp(4)
-		tc, _ := c.allocTemp(4)
-
+		
 		// At runtime: [ ... addr count ]
-		c.emit(vm.OpPush)
-		c.emit(vm.EncodeInt32(tc)...)
-		c.emit(vm.OpStoreI) // Pops tc then count. Stack: [ ... addr ]
-
-		c.emit(vm.OpPush)
-		c.emit(vm.EncodeInt32(tq)...)
-		c.emit(vm.OpStoreI) // Pops tq then addr. Stack: [ ... ]
+		c.emit(vm.OpPushR) // count to R
+		c.emit(vm.OpPushR) // addr to R
 
 		start := c.currentAddress()
 
-		c.emit(vm.OpPush)
-		c.emit(vm.EncodeInt32(tc)...)
-		c.emit(vm.OpLoadI)
+		c.emit(vm.OpPopR)  // addr
+		c.emit(vm.OpPopR)  // count
 		
 		// Terminate if count <= 0
 		c.emit(vm.OpDup)
@@ -634,22 +639,20 @@ func (c *Compiler) compileCombinator(name string, line int) error {
 		jzAt := c.currentOffset()
 		c.emit(0, 0, 0, 0)
 
-		c.emit(vm.OpDec)
-		c.emit(vm.OpPush)
-		c.emit(vm.EncodeInt32(tc)...)
-		c.emit(vm.OpStoreI) // Update count.
-
-		c.emit(vm.OpPush)
-		c.emit(vm.EncodeInt32(tq)...)
-		c.emit(vm.OpLoadI)
-		c.emit(vm.OpCallStack) // Calls body.
+		c.emit(vm.OpDec)       // count--
+		c.emit(vm.OpPushR)     // count-1 back to R
+		c.emit(vm.OpDup)       // addr copy
+		c.emit(vm.OpPushR)     // addr back to R
+		c.emit(vm.OpCallStack) // calls addr
 
 		c.emit(vm.OpJmp)
 		jmpAt := c.currentOffset()
 		c.emit(0, 0, 0, 0)
 
 		exit := c.currentAddress()
-		c.emit(vm.OpPop) // Pops the 0.
+		c.emit(vm.OpPop)       // pops extra count (0)
+		c.emit(vm.OpPop)       // pops extra addr
+		
 		if c.activeQuotIdx >= 0 {
 			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, exit}, InternalJump{jmpAt, start})
 		} else {

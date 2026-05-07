@@ -197,19 +197,23 @@ MODULE CONTROLS
     4 frame!
     
     ( Initialize list record )
-    0 local@ 0 local! ( base )
-    1 local@ 1 local! ( item-size )
-    2 local@ 2 local! ( capacity )
-    3 local@ 3 local! ( buf_ptr )
+    ( base+0: capacity )
+    2 local@ 0 local@ STOREI
     
-    ( count = 0 )
+    ( base+4: count = 0 )
     0 0 local@ 4 + STOREI
     
-    ( sel_idx = -1 )
+    ( base+8: sel_idx = -1 )
     -1 0 local@ 8 + STOREI
     
-    ( scroll = 0 )
+    ( base+12: scroll = 0 )
     0 0 local@ 12 + STOREI
+    
+    ( base+16: buf_ptr )
+    3 local@ 0 local@ 16 + STOREI
+    
+    ( base+20: item_size )
+    1 local@ 0 local@ 20 + STOREI
     
     4 unframe!
 ;

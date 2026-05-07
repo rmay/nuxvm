@@ -26,6 +26,8 @@ IMPORT DELINEATIOFENESTRA AS DF
 IMPORT SCREEN
 
 @DRAW-ALL
+    init-locals
+    -65536 0 0 SCREEN::pixel!
     0 2 DF::use-pane-h  -65536 DF::clear-screen
     1 2 DF::use-pane-h  -16776961 DF::clear-screen
 ;
@@ -33,6 +35,8 @@ IMPORT SCREEN
 @keep-alive [ 1 ] [ YIELD ] |: ;
 
 [ DRAW-ALL ] SCREEN::vector!
+init-locals
+DRAW-ALL
 keep-alive
 HALT
 `
@@ -54,7 +58,7 @@ HALT
 		t.Fatalf("create window: %v", err)
 	}
 
-	app := system.NewMachineSharedServices(bytecode, 16*1024*1024, services)
+	app := system.NewMachineSharedServices(bytecode, 16*1024*1024, services, true)
 
 	saved := services.GetActiveWindowID()
 	services.SetRenderTarget(winID)

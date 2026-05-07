@@ -11,11 +11,11 @@ func push(value int32) []byte {
 	return vm.PushInstruction(value)
 }
 
-func jz(addr int32) []byte {
+func jz(addr uint32) []byte {
 	return vm.JzInstruction(addr)
 }
 
-func jmp(addr int32) []byte {
+func jmp(addr uint32) []byte {
 	return vm.JmpInstruction(addr)
 }
 
@@ -29,7 +29,7 @@ func ex1_GCD() {
 	prog := []byte{}
 	prog = append(prog, push(48)...)
 	prog = append(prog, push(18)...)
-	loop := vm.UserMemoryOffset + int32(len(prog))
+	loop := vm.UserMemoryOffset + uint32(len(prog))
 	prog = append(prog, vm.OpDup) // DUP
 	endPH := len(prog)
 	prog = append(prog, jz(0)...)
@@ -79,7 +79,7 @@ func ex3_Absolute() {
 	prog = append(prog, push(0)...)
 	prog = append(prog, vm.OpLt) // LT (is negative?)
 	negPH := len(prog)
-	prog = append(prog, jz(0)...) // if not negative, skip
+	prog = append(prog, jz(0)...)                 // if not negative, skip
 	prog = append(prog, vm.PushInstruction(0)...) // NEGATE = PUSH 0; SWAP; SUB
 	prog = append(prog, vm.OpSwap)
 	prog = append(prog, vm.OpSub)
@@ -171,7 +171,7 @@ func ex7_CountDown() {
 	fmt.Println("╔══ EXAMPLE 7: Count Down from 10 ══╗")
 	prog := []byte{}
 	prog = append(prog, push(10)...)
-	loop := vm.UserMemoryOffset + int32(len(prog))
+	loop := vm.UserMemoryOffset + uint32(len(prog))
 	prog = append(prog, vm.OpDup)             // DUP
 	prog = append(prog, vm.OutNumber()...)    // OUT (print current value)
 	prog = append(prog, push(32)...)          // Push space character (ASCII 32)

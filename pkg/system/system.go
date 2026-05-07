@@ -227,17 +227,23 @@ func (s *System) SandboxRoot() string {
 // resolvePath turns a VM-supplied filename into a real path that is guaranteed
 // to live inside sandboxRoot. Returns ("", error) on any attempt to escape.
 func (s *System) resolvePath(name string) (string, error) {
+	fmt.Fprintf(os.Stderr, "System: resolvePath name=%q, root=%q\n", name, s.sandboxRoot)
 	if name == "" {
 		return "", fmt.Errorf("empty name")
-	}
-	if filepath.IsAbs(name) {
-		return "", fmt.Errorf("absolute path not allowed: %q", name)
 	}
 	if s.sandboxRoot == "" {
 		return "", fmt.Errorf("sandbox root not set")
 	}
-	joined := filepath.Clean(filepath.Join(s.sandboxRoot, name))
+
+	var joined string
+	if filepath.IsAbs(name) {
+		joined = filepath.Clean(name)
+	} else {
+		joined = filepath.Clean(filepath.Join(s.sandboxRoot, name))
+	}
+
 	if !withinRoot(joined, s.sandboxRoot) {
+		fmt.Fprintf(os.Stderr, "System: path escapes sandbox: joined=%q\n", joined)
 		return "", fmt.Errorf("path escapes sandbox: %q", name)
 	}
 	// If the path (or any ancestor) exists as a symlink, EvalSymlinks will
@@ -416,8 +422,10 @@ func (s *System) fileRead(path string, length uint32) {
 
 	// First op after a name! — decide whether this is a file or directory.
 	if s.file.readFile == nil && s.file.dir == nil {
+		fmt.Fprintf(os.Stderr, "System: fileRead path=%q\n", path)
 		info, err := os.Stat(path)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "System: Stat failed: %v\n", err)
 			s.lastFileResult = -1
 			return
 		}

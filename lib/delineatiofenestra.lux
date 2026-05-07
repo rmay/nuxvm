@@ -53,7 +53,7 @@ MODULE DELINEATIOFENESTRA
 
 @use-pane-h ( idx total -- )
     window-w OVER /            ( idx total slice-w )
-    dup 2 PICK *               ( idx total slice-w offset )
+    dup 3 PICK *               ( idx total slice-w offset )
     pane-x!                    ( idx total slice-w )
     pane-w!                    ( idx total )
     drop drop                  ( )
@@ -63,7 +63,7 @@ MODULE DELINEATIOFENESTRA
 
 @use-pane-v ( idx total -- )
     window-h OVER /            ( idx total slice-h )
-    dup 2 PICK *               ( idx total slice-h offset )
+    dup 3 PICK *               ( idx total slice-h offset )
     pane-y!                    ( idx total slice-h )
     pane-h!                    ( idx total )
     drop drop                  ( )

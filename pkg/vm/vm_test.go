@@ -42,20 +42,6 @@ func pushValue(t *testing.T, vm *VM, value int32) {
 	}
 }
 
-// Helper function to encode a 32-bit value as big-endian bytes
-func encodeInt32(value int32) []byte {
-	buf := make([]byte, 4)
-	binary.BigEndian.PutUint32(buf, uint32(value))
-	return buf
-}
-
-// Helper function to create a PUSH instruction
-func pushInstruction(value int32) []byte {
-	result := []byte{OpPush}
-	result = append(result, encodeInt32(value)...)
-	return result
-}
-
 // Helper function to check if string contains substring
 func contains(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {
@@ -323,11 +309,11 @@ func TestCallStack(t *testing.T) {
 	// Build program: push quotation addr, callstack, halt, then quotation
 	program := []byte{}
 	pushAddr := len(program)
-	program = append(program, pushInstruction(0)...) // placeholder address
+	program = append(program, PushInstruction(0)...) // placeholder address
 	program = append(program, OpCallStack)           // pop addr and call
 	program = append(program, OpHalt)                // reached after RET
 	quotationAddr := len(program)
-	program = append(program, pushInstruction(42)...) // PUSH 42
+	program = append(program, PushInstruction(42)...) // PUSH 42
 	program = append(program, OpRet)                  // RET
 
 	vm := createVMWithProgram(program)
@@ -371,13 +357,13 @@ func TestCallStackInvalidAddress(t *testing.T) {
 
 func TestJmp(t *testing.T) {
 	program := []byte{}
-	program = append(program, pushInstruction(10)...) // PUSH 10
+	program = append(program, PushInstruction(10)...) // PUSH 10
 	jmpAddr := len(program)
 	program = append(program, JmpInstruction(0)...)   // JMP (placeholder)
-	program = append(program, pushInstruction(20)...) // PUSH 20 (skipped)
+	program = append(program, PushInstruction(20)...) // PUSH 20 (skipped)
 	// Target for jump
 	targetAddr := len(program)
-	program = append(program, pushInstruction(30)...) // PUSH 30
+	program = append(program, PushInstruction(30)...) // PUSH 30
 	program = append(program, OpHalt)                 // HALT
 
 	vm := createVMWithProgram(program)
@@ -402,13 +388,13 @@ func TestJmp(t *testing.T) {
 func TestJz(t *testing.T) {
 	// Test jump when condition is zero
 	program := []byte{}
-	program = append(program, pushInstruction(0)...) // PUSH 0
+	program = append(program, PushInstruction(0)...) // PUSH 0
 	jzAddr := len(program)
 	program = append(program, JzInstruction(0)...)    // JZ (placeholder)
-	program = append(program, pushInstruction(20)...) // PUSH 20 (skipped)
+	program = append(program, PushInstruction(20)...) // PUSH 20 (skipped)
 	// Target for jump
 	targetAddr := len(program)
-	program = append(program, pushInstruction(30)...) // PUSH 30
+	program = append(program, PushInstruction(30)...) // PUSH 30
 	program = append(program, OpHalt)                 // HALT
 
 	vm := createVMWithProgram(program)
@@ -431,9 +417,9 @@ func TestJz(t *testing.T) {
 
 	// Test no jump when condition is non-zero
 	program = []byte{}
-	program = append(program, pushInstruction(1)...)  // PUSH 1
+	program = append(program, PushInstruction(1)...)  // PUSH 1
 	program = append(program, JzInstruction(100)...)  // JZ to address 100 (not taken)
-	program = append(program, pushInstruction(20)...) // PUSH 20
+	program = append(program, PushInstruction(20)...) // PUSH 20
 	program = append(program, OpHalt)                 // HALT
 
 	vm = createVMWithProgram(program)
@@ -455,14 +441,14 @@ func TestJz(t *testing.T) {
 func TestJnzEquivalent(t *testing.T) {
 	// Jump when condition is non-zero: PUSH 1; PUSH 0; EQ; JZ target
 	program := []byte{}
-	program = append(program, pushInstruction(1)...) // PUSH 1 (nonzero cond)
-	program = append(program, pushInstruction(0)...) // PUSH 0
+	program = append(program, PushInstruction(1)...) // PUSH 1 (nonzero cond)
+	program = append(program, PushInstruction(0)...) // PUSH 0
 	program = append(program, OpEq)                  // EQ → 0 (false, so JZ won't jump)
 	jzAddr := len(program)
 	program = append(program, JzInstruction(0)...)    // JZ placeholder (not taken)
-	program = append(program, pushInstruction(20)...) // PUSH 20 (skipped — wait, JZ not taken means we DO execute this)
+	program = append(program, PushInstruction(20)...) // PUSH 20 (skipped — wait, JZ not taken means we DO execute this)
 	targetAddr := len(program)
-	program = append(program, pushInstruction(30)...) // PUSH 30
+	program = append(program, PushInstruction(30)...) // PUSH 30
 	program = append(program, OpHalt)
 
 	// Since cond=1 → EQ(1,0)=0 → JZ IS taken → skip PUSH 20, land at PUSH 30.
@@ -480,11 +466,11 @@ func TestJnzEquivalent(t *testing.T) {
 
 	// No jump when condition is zero: PUSH 0; PUSH 0; EQ → 1 → JZ not taken
 	program = []byte{}
-	program = append(program, pushInstruction(0)...)  // PUSH 0 (zero cond)
-	program = append(program, pushInstruction(0)...)  // PUSH 0
+	program = append(program, PushInstruction(0)...)  // PUSH 0 (zero cond)
+	program = append(program, PushInstruction(0)...)  // PUSH 0
 	program = append(program, OpEq)                   // EQ → 1 (JZ not taken)
 	program = append(program, JzInstruction(9999)...) // JZ far address (not taken)
-	program = append(program, pushInstruction(20)...) // PUSH 20 (executed)
+	program = append(program, PushInstruction(20)...) // PUSH 20 (executed)
 	program = append(program, OpHalt)
 
 	vm = createVMWithProgram(program)
@@ -500,15 +486,15 @@ func TestJnzEquivalent(t *testing.T) {
 func TestCallRet(t *testing.T) {
 	// Test CALL/RET with separate return stack
 	program := []byte{}
-	program = append(program, pushInstruction(10)...) // PUSH 10
+	program = append(program, PushInstruction(10)...) // PUSH 10
 	callAddr := len(program)
 	program = append(program, CallInstruction(0)...)  // CALL (placeholder)
-	program = append(program, pushInstruction(20)...) // PUSH 20 (return here)
+	program = append(program, PushInstruction(20)...) // PUSH 20 (return here)
 	program = append(program, OpHalt)                 // HALT
 	// Subroutine at calculated address:
 	subroutineAddr := len(program)
-	program = append(program, pushInstruction(30)...) // PUSH 30
-	program = append(program, pushInstruction(40)...) // PUSH 40
+	program = append(program, PushInstruction(30)...) // PUSH 30
+	program = append(program, PushInstruction(40)...) // PUSH 40
 	program = append(program, OpAdd)                  // ADD (30+40=70)
 	program = append(program, OpRet)                  // RET
 
@@ -668,11 +654,11 @@ func TestLoadStoreOutOfBounds(t *testing.T) {
 func TestOut(t *testing.T) {
 	// Test OUT instruction - can't easily capture stdout, so just verify it executes
 	program := []byte{}
-	program = append(program, pushInstruction(42)...) // PUSH 42
-	program = append(program, pushInstruction(0)...)  // PUSH 0 (format: number)
+	program = append(program, PushInstruction(42)...) // PUSH 42
+	program = append(program, PushInstruction(0)...)  // PUSH 0 (format: number)
 	program = append(program, OpOut)                  // OUT
-	program = append(program, pushInstruction(72)...) // PUSH 72 (H)
-	program = append(program, pushInstruction(1)...)  // PUSH 1 (format: character)
+	program = append(program, PushInstruction(72)...) // PUSH 72 (H)
+	program = append(program, PushInstruction(1)...)  // PUSH 1 (format: character)
 	program = append(program, OpOut)                  // OUT
 	program = append(program, OpHalt)                 // HALT
 
@@ -708,9 +694,9 @@ func TestOutUnderflow(t *testing.T) {
 
 func TestHalt(t *testing.T) {
 	program := []byte{}
-	program = append(program, pushInstruction(10)...) // PUSH 10
+	program = append(program, PushInstruction(10)...) // PUSH 10
 	program = append(program, OpHalt)                 // HALT
-	program = append(program, pushInstruction(20)...) // PUSH 20 (not executed)
+	program = append(program, PushInstruction(20)...) // PUSH 20 (not executed)
 
 	vm := createVMWithProgram(program)
 
@@ -793,8 +779,8 @@ func TestPCOutOfBounds(t *testing.T) {
 
 func TestStep(t *testing.T) {
 	program := []byte{}
-	program = append(program, pushInstruction(10)...) // PUSH 10
-	program = append(program, pushInstruction(20)...) // PUSH 20
+	program = append(program, PushInstruction(10)...) // PUSH 10
+	program = append(program, PushInstruction(20)...) // PUSH 20
 	program = append(program, OpAdd)                  // ADD
 	program = append(program, OpHalt)                 // HALT
 
@@ -855,10 +841,10 @@ func TestStep(t *testing.T) {
 func TestComplexProgram(t *testing.T) {
 	// Program that computes (5 + 3) * 2 = 16
 	program := []byte{}
-	program = append(program, pushInstruction(5)...)
-	program = append(program, pushInstruction(3)...)
+	program = append(program, PushInstruction(5)...)
+	program = append(program, PushInstruction(3)...)
 	program = append(program, OpAdd) // ADD
-	program = append(program, pushInstruction(2)...)
+	program = append(program, PushInstruction(2)...)
 	program = append(program, OpMul) // MUL
 	program = append(program, OpHalt)
 
@@ -881,7 +867,7 @@ func TestSimpleLoop(t *testing.T) {
 	// Simple loop: push 5, loop: dup, jz end, dec, jmp loop, end: halt
 	// This will count 5 down to 0
 	program := []byte{}
-	program = append(program, pushInstruction(5)...) // PUSH 5
+	program = append(program, PushInstruction(5)...) // PUSH 5
 	loopStart := len(program)
 	program = append(program, OpDup) // DUP
 	jzAddr := len(program)
@@ -1150,7 +1136,7 @@ func TestNewVMWithReservedMemory(t *testing.T) {
 
 func TestReservedMemoryInDebugInfo(t *testing.T) {
 	program := []byte{}
-	program = append(program, pushInstruction(42)...)
+	program = append(program, PushInstruction(42)...)
 	program = append(program, OpHalt)
 
 	vm := createVMWithProgram(program)
@@ -1185,7 +1171,7 @@ func TestReservedMemoryInDebugInfo(t *testing.T) {
 func TestReservedMemoryWithCode(t *testing.T) {
 	// Create a VM
 	program := []byte{}
-	program = append(program, pushInstruction(10)...) // PUSH 10
+	program = append(program, PushInstruction(10)...) // PUSH 10
 	callAddr := len(program)
 	program = append(program, CallInstruction(0)...) // CALL (placeholder)
 	program = append(program, OpHalt)                // HALT
@@ -1195,7 +1181,7 @@ func TestReservedMemoryWithCode(t *testing.T) {
 	// Write a simple subroutine to reserved memory
 	// The subroutine will: PUSH 42, RET
 	subroutine := []byte{}
-	subroutine = append(subroutine, pushInstruction(42)...)
+	subroutine = append(subroutine, PushInstruction(42)...)
 	subroutine = append(subroutine, OpRet)
 
 	// Write subroutine at offset 100 within reserved memory
@@ -1544,10 +1530,10 @@ func TestDeviceAccessUnhandledAddress(t *testing.T) {
 	unhandledDeviceAddr := DeviceMemoryOffset + DeviceMemorySize - 4
 
 	// Test read
-	program = append(program, LoadInstruction(int32(unhandledDeviceAddr))...)
+	program = append(program, LoadInstruction(uint32(unhandledDeviceAddr))...)
 	// Test write
 	program = append(program, PushInstruction(99)...)
-	program = append(program, StoreInstruction(int32(unhandledDeviceAddr))...)
+	program = append(program, StoreInstruction(uint32(unhandledDeviceAddr))...)
 	program = append(program, OpHalt)
 
 	vm := createVMWithProgram(program)
@@ -1574,10 +1560,10 @@ func TestDeviceAccessOutsideRange(t *testing.T) {
 	normalMemAddr := NewVM([]byte{}).UserMemoryStart() + 100 // Address in normal user memory
 	program := []byte{}
 	// Write to normal memory
-	program = append(program, pushInstruction(123)...)
-	program = append(program, StoreInstruction(int32(normalMemAddr))...)
+	program = append(program, PushInstruction(123)...)
+	program = append(program, StoreInstruction(uint32(normalMemAddr))...)
 	// Read from normal memory
-	program = append(program, LoadInstruction(int32(normalMemAddr))...)
+	program = append(program, LoadInstruction(uint32(normalMemAddr))...)
 	program = append(program, OpHalt)
 	// Pad so memory extends to the store/load target address
 	for uint32(len(program)) < 104 {
