@@ -466,29 +466,47 @@ func (c *Compiler) compileCombinator(name string, line int) error {
 		c.quotationStack = c.quotationStack[:len(c.quotationStack)-2]
 		next := c.peek().Type
 		isTailCall := next == TokenSemicolon || next == TokenRBracket
-		c.emit(vm.OpSwap, vm.OpRot, vm.OpJz)
+		// Stack at runtime: [ cond addr_if addr_else ]
+		c.emit(vm.OpRot, vm.OpJz) // -> [ addr_if addr_else cond ] -> Jz pops cond
 		jzAt := c.currentOffset()
 		c.emit(0, 0, 0, 0)
+		// True branch: [ addr_if addr_else ]
+		c.emit(vm.OpPop) // -> [ addr_if ]
 		if isTailCall {
-			c.emit(vm.OpSwap, vm.OpPop, vm.OpJmpStack, vm.OpJmp)
+			c.emit(vm.OpJmpStack)
 		} else {
-			c.emit(vm.OpSwap, vm.OpPop, vm.OpCallStack, vm.OpJmp)
+			c.emit(vm.OpCallStack)
+			c.emit(vm.OpJmp)
+			jmpAt := c.currentOffset()
+			c.emit(0, 0, 0, 0)
+			
+			// False branch: [ addr_if addr_else ]
+			elseAt := c.currentAddress()
+			c.emit(vm.OpSwap, vm.OpPop) // -> [ addr_else ]
+			if isTailCall {
+				c.emit(vm.OpJmpStack)
+			} else {
+				c.emit(vm.OpCallStack)
+			}
+			endAt := c.currentAddress()
+			if c.activeQuotIdx >= 0 {
+				c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, elseAt}, InternalJump{jmpAt, endAt})
+			} else {
+				binary.BigEndian.PutUint32(getBuf()[jzAt:jzAt+4], uint32(elseAt))
+				binary.BigEndian.PutUint32(getBuf()[jmpAt:jmpAt+4], uint32(endAt))
+			}
+			return nil // Finished ?:
 		}
-		jmpAt := c.currentOffset()
-		c.emit(0, 0, 0, 0)
+		// If tail call, we still need the else branch for the Jz to jump to!
 		elseAt := c.currentAddress()
-		if isTailCall {
-			c.emit(vm.OpPop, vm.OpJmpStack)
-		} else {
-			c.emit(vm.OpPop, vm.OpCallStack)
-		}
-		endAt := c.currentAddress()
+		c.emit(vm.OpSwap, vm.OpPop) // -> [ addr_else ]
+		c.emit(vm.OpJmpStack)
 		if c.activeQuotIdx >= 0 {
-			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, elseAt}, InternalJump{jmpAt, endAt})
+			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, elseAt})
 		} else {
 			binary.BigEndian.PutUint32(getBuf()[jzAt:jzAt+4], uint32(elseAt))
-			binary.BigEndian.PutUint32(getBuf()[jmpAt:jmpAt+4], uint32(endAt))
 		}
+
 	case "?":
 		if len(c.quotationStack) < 1 {
 			return fmt.Errorf("if requires one quotation")
@@ -496,24 +514,38 @@ func (c *Compiler) compileCombinator(name string, line int) error {
 		c.quotationStack = c.quotationStack[:len(c.quotationStack)-1]
 		next := c.peek().Type
 		isTailCall := next == TokenSemicolon || next == TokenRBracket
-		c.emit(vm.OpSwap, vm.OpJz)
+		// Stack at runtime: [ cond addr ]
+		c.emit(vm.OpSwap, vm.OpJz) // -> [ addr cond ] -> Jz pops cond
 		jzAt := c.currentOffset()
 		c.emit(0, 0, 0, 0)
+		// True branch: [ addr ]
 		if isTailCall {
-			c.emit(vm.OpJmpStack, vm.OpJmp)
+			c.emit(vm.OpJmpStack)
 		} else {
-			c.emit(vm.OpCallStack, vm.OpJmp)
+			c.emit(vm.OpCallStack)
+			c.emit(vm.OpJmp)
+			jmpAt := c.currentOffset()
+			c.emit(0, 0, 0, 0)
+			
+			// False branch: [ addr ]
+			skipAt := c.currentAddress()
+			c.emit(vm.OpPop)
+			endAt := c.currentAddress()
+			if c.activeQuotIdx >= 0 {
+				c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, skipAt}, InternalJump{jmpAt, endAt})
+			} else {
+				binary.BigEndian.PutUint32(getBuf()[jzAt:jzAt+4], uint32(skipAt))
+				binary.BigEndian.PutUint32(getBuf()[jmpAt:jmpAt+4], uint32(endAt))
+			}
+			return nil
 		}
-		jmpAt := c.currentOffset()
-		c.emit(0, 0, 0, 0)
+		// If tail call, False branch (skip)
 		skipAt := c.currentAddress()
 		c.emit(vm.OpPop)
-		endAt := c.currentAddress()
 		if c.activeQuotIdx >= 0 {
-			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, skipAt}, InternalJump{jmpAt, endAt})
+			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, skipAt})
 		} else {
 			binary.BigEndian.PutUint32(getBuf()[jzAt:jzAt+4], uint32(skipAt))
-			binary.BigEndian.PutUint32(getBuf()[jmpAt:jmpAt+4], uint32(endAt))
 		}
 	case "!:":
 		if len(c.quotationStack) < 1 {
@@ -565,51 +597,64 @@ func (c *Compiler) compileCombinator(name string, line int) error {
 		c.emit(vm.EncodeInt32(tb)...)
 		c.emit(vm.OpLoadI)
 		c.emit(vm.OpCallStack, vm.OpJmp)
-		c.emit(vm.EncodeInt32(start)...)
+		jmpAt := c.currentOffset()
+		c.emit(0, 0, 0, 0)
 		exit := c.currentAddress()
 		if c.activeQuotIdx >= 0 {
-			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, exit})
+			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, exit}, InternalJump{jmpAt, start})
 		} else {
 			binary.BigEndian.PutUint32(getBuf()[jzAt:jzAt+4], uint32(exit))
+			binary.BigEndian.PutUint32(getBuf()[jmpAt:jmpAt+4], uint32(start))
 		}
 	case "#:":
 		c.quotationStack = c.quotationStack[:len(c.quotationStack)-1]
 		tq, _ := c.allocTemp(4)
 		tc, _ := c.allocTemp(4)
 
-		// At runtime: [ ... count addr ]
+		// At runtime: [ ... addr count ]
+		c.emit(vm.OpPush)
+		c.emit(vm.EncodeInt32(tc)...)
+		c.emit(vm.OpStoreI) // Pops tc then count. Stack: [ ... addr ]
+
 		c.emit(vm.OpPush)
 		c.emit(vm.EncodeInt32(tq)...)
-		c.emit(vm.OpStoreI) // Pops addr. Stack: [ ... count ]
+		c.emit(vm.OpStoreI) // Pops tq then addr. Stack: [ ... ]
 
 		start := c.currentAddress()
-		c.emit(vm.OpDup, vm.OpJz)
+
+		c.emit(vm.OpPush)
+		c.emit(vm.EncodeInt32(tc)...)
+		c.emit(vm.OpLoadI)
+		
+		// Terminate if count <= 0
+		c.emit(vm.OpDup)
+		c.emit(vm.OpPush)
+		c.emit(vm.EncodeInt32(0)...)
+		c.emit(vm.OpGt, vm.OpJz) // If !(count > 0), jump to exit
 		jzAt := c.currentOffset()
 		c.emit(0, 0, 0, 0)
 
 		c.emit(vm.OpDec)
 		c.emit(vm.OpPush)
 		c.emit(vm.EncodeInt32(tc)...)
-		c.emit(vm.OpStoreI) // Pops count-1. Stack: [ ... ]
+		c.emit(vm.OpStoreI) // Update count.
 
 		c.emit(vm.OpPush)
 		c.emit(vm.EncodeInt32(tq)...)
 		c.emit(vm.OpLoadI)
 		c.emit(vm.OpCallStack) // Calls body.
 
-		c.emit(vm.OpPush)
-		c.emit(vm.EncodeInt32(tc)...)
-		c.emit(vm.OpLoadI) // Pushes count-1.
-
 		c.emit(vm.OpJmp)
-		c.emit(vm.EncodeInt32(start)...)
+		jmpAt := c.currentOffset()
+		c.emit(0, 0, 0, 0)
 
 		exit := c.currentAddress()
 		c.emit(vm.OpPop) // Pops the 0.
 		if c.activeQuotIdx >= 0 {
-			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, exit})
+			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, exit}, InternalJump{jmpAt, start})
 		} else {
 			binary.BigEndian.PutUint32(getBuf()[jzAt:jzAt+4], uint32(exit))
+			binary.BigEndian.PutUint32(getBuf()[jmpAt:jmpAt+4], uint32(start))
 		}
 	case "DIP":
 		c.quotationStack = c.quotationStack[:len(c.quotationStack)-1]

@@ -1279,6 +1279,29 @@ func TestCompileNestedTROBug(t *testing.T) {
 	}
 }
 
+func TestCompileLoopInQuotation(t *testing.T) {
+	// Reproduction for bug where backward jumps in quotations used local offsets
+	source := `
+@test-loop ( n -- 0 )
+    [ [ dup 0 > ] [ 1 - ] |: ] CALL
+;
+5 test-loop
+`
+	bytecode, err := Compile(source)
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	machine := vm.NewVM(bytecode)
+	// If the bug is present, this will loop infinitely (or until timeout)
+	if err := machine.Run(); err != nil {
+		t.Fatalf("Runtime error: %v", err)
+	}
+	stack := machine.Stack()
+	if len(stack) != 1 || stack[0] != 0 {
+		t.Errorf("Expected [0], got %v", stack)
+	}
+}
+
 // Helper function to check if string contains substring
 func contains(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {

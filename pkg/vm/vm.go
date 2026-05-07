@@ -63,6 +63,7 @@ type VM struct {
 	OutputHandler func(value int32, format int32)
 
 	lastOpcode byte
+	halted     bool
 }
 
 // NewVM initializes a new VM with the given program.
@@ -275,6 +276,11 @@ func (vm *VM) LastOpcode() string {
 // Running returns whether the VM is currently running
 func (vm *VM) Running() bool {
 	return vm.running
+}
+
+// Halted returns whether the VM has halted.
+func (vm *VM) Halted() bool {
+	return vm.halted
 }
 
 // Yielded returns true if the last executed instruction was YIELD.
@@ -1014,9 +1020,9 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 
 	if vm.trace {
 		vm.traceCount++
-		if vm.traceCount > 1000 {
+		if vm.traceCount > 100000 {
 			vm.trace = false
-			fmt.Fprintf(os.Stderr, "\nVM: Trace limit (1000) reached, tracing disabled\n")
+			fmt.Fprintf(os.Stderr, "\nVM: Trace limit (100000) reached, tracing disabled\n")
 		} else {
 			fmt.Fprintf(os.Stderr, "\nVM: PC=%d, Instruction=%s, Stack=%v, ReturnStack=%v", currentPC, OpcodeName(opcode), vm.stack, vm.returnStack)
 		}
@@ -1247,11 +1253,12 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		}
 	case OpHalt:
 		vm.running = false
+		vm.halted = true
 		if vm.trace {
 			fmt.Fprintf(os.Stderr, "VM: OpHalt: Stopping execution")
 		}
 	case OpYield:
-		// Yield to host; handled by the external loop
+		vm.running = false
 	case OpLoadI:
 		addr, err := vm.Pop()
 		if err != nil {

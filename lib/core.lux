@@ -15,7 +15,7 @@
     dup 4 MOD               ( addr offset )
     swap 4 / 4 * LOADI      ( offset val )
     swap                    ( val offset )
-    
+
     dup 0 = [ drop 24 RSHIFT 255 AND ] [
         dup 1 = [ drop 16 RSHIFT 255 AND ] [
             dup 2 = [ drop 8 RSHIFT 255 AND ] [ drop 255 AND ] ?:
@@ -28,7 +28,7 @@
     dup 4 / 4 * ( byte addr aligned )
     dup LOADI ( byte addr aligned old )
     2 PICK 4 MOD ( byte addr aligned old offset )
-    
+
     dup 0 = [ drop 3 PICK swap 0x00FFFFFF AND swap 24 LSHIFT OR ] [
         dup 1 = [ drop 3 PICK swap 0xFF00FFFF AND swap 16 LSHIFT OR ] [
             dup 2 = [ drop 3 PICK swap 0xFFFF00FF AND swap 8 LSHIFT OR ] [
@@ -36,13 +36,21 @@
             ] ?:
         ] ?:
     ] ?:
-    
+
     ( addr val )
     swap STOREI
     drop drop ( addr byte )
 ;
 
+@x@ 0x851000 LOADI ; @x! 0x851000 STOREI ;
+@y@ 0x851004 LOADI ; @y! 0x851004 STOREI ;
+@w@ 0x851008 LOADI ; @w! 0x851008 STOREI ;
+@h@ 0x85100C LOADI ; @h! 0x85100C STOREI ;
+@base@ 0x851010 LOADI ; @base! 0x851010 STOREI ;
+@temp@ 0x851014 LOADI ; @temp! 0x851014 STOREI ;
+
 @strcpy ( src dest -- )
+
     0 ( i )
     [ dup 8 < ] [
         ( i )
@@ -61,26 +69,29 @@ IMPORT MEMORY
     ( 1. Clear dest )
     0 ( i )
     [ dup 32 < ] [
-        0 1 PICK OVER + store-byte
+        ( src dest i )
+        0 2 PICK 2 PICK + store-byte
         1 +
     ] |:
     drop ( i )
-    
+
     ( 2. Copy src )
     0 ( i )
     [ dup 32 < ] [
+        ( src dest i )
         2 PICK OVER + load-byte ( byte )
         dup 0 = [
             drop drop 32 ( exit )
         ] [
+            ( src dest i byte )
             2 PICK 2 PICK + ( dest+i )
             store-byte
             1 +
         ] ?:
     ] |:
-    drop ( i )
-    drop drop ( src dest )
+    drop drop drop ( src dest i )
 ;
+
 @strlen ( ptr -- len )
     MEMORY::CTRL_TEMP STOREI ( save ptr )
     0 ( len )
@@ -126,33 +137,44 @@ IMPORT MEMORY
 ;
 
 @FP@
-    MEMORY::FP_ADDR LOADI
+    0x852404 LOADI
 ;
-@FP! MEMORY::FP_ADDR STOREI ;
+@FP! ( addr -- ) 0x852404 STOREI ;
+
+@frame! ( n -- )
+    MEMORY::CTRL_TEMP STOREI
+    MEMORY::FP_STACK LOADI ( sp )
+    FP@ ( old_fp )
+    OVER STOREI ( [sp] = old_fp )
+    
+    ( Set new FP )
+    DUP FP!
+    
+    ( Advance SP past old_fp )
+    4 + MEMORY::FP_STACK STOREI
+    
+    ( Copy n values from main stack to frame )
+    MEMORY::CTRL_TEMP LOADI [
+        ( val )
+        MEMORY::FP_STACK LOADI ( val sp )
+        STOREI
+        MEMORY::FP_STACK LOADI 4 + MEMORY::FP_STACK STOREI
+    ] MEMORY::CTRL_TEMP LOADI #:
+;
+
+@unframe! ( n -- )
+    ( Restore FP from [FP] )
+    FP@ LOADI FP!
+    
+    ( Restore SP to new FP )
+    FP@ MEMORY::FP_STACK STOREI
+    drop ( n )
+;
 
 @local@ ( offset -- val )
-    FP@ + LOADI
+    4 * 4 + FP@ + LOADI
 ;
 
 @local! ( val offset -- )
-    FP@ + STOREI
+    4 * 4 + FP@ + STOREI
 ;
-
-( --- Core Registers (Global) --- )
-( Using raw addresses for maximum stability )
-@x@ 0x851000 LOADI ; @x! 0x851000 STOREI ;
-@y@ 0x851004 LOADI ; @y! 0x851004 STOREI ;
-@w@ 0x851008 LOADI ; @w! 0x851008 STOREI ;
-@h@ 0x85100C LOADI ; @h! 0x85100C STOREI ;
-@base@ 0x851010 LOADI ; @base! 0x851010 STOREI ;
-@temp@ 0x851014 LOADI ; @temp! 0x851014 STOREI ;
-
-( --- CORE Module --- )
-MODULE CORE
-
-@x@ 0x851000 LOADI ; @x! 0x851000 STOREI ;
-@y@ 0x851004 LOADI ; @y! 0x851004 STOREI ;
-@w@ 0x851008 LOADI ; @w! 0x851008 STOREI ;
-@h@ 0x85100C LOADI ; @h! 0x85100C STOREI ;
-@base@ 0x851010 LOADI ; @base! 0x851010 STOREI ;
-@temp@ 0x851014 LOADI ; @temp! 0x851014 STOREI ;

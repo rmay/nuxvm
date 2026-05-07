@@ -26,11 +26,11 @@ IMPORT DELINEATIOFENESTRA AS DF
 IMPORT SCREEN
 
 @DRAW-ALL
-    2 0 DF::use-pane-h  -65536 DF::clear-screen
-    2 1 DF::use-pane-h  -16776961 DF::clear-screen
+    0 2 DF::use-pane-h  -65536 DF::clear-screen
+    1 2 DF::use-pane-h  -16776961 DF::clear-screen
 ;
 
-@keep-alive YIELD keep-alive ;
+@keep-alive [ 1 ] [ YIELD ] |: ;
 
 [ DRAW-ALL ] SCREEN::vector!
 keep-alive

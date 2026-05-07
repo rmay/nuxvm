@@ -65,7 +65,7 @@ MODULE DIALOG
 ;
 
 @add-item ( ptr len -- )
-    0x860800 CONTROLS::list-add
+    DIALOG-LIST-BASE CONTROLS::list-add
 ;
 
 @DRAW-DIALOG
@@ -80,11 +80,11 @@ MODULE DIALOG
         80 85 w@ 60 - h@ 80 - DIALOG-LIST-BASE CONTROLS::list-draw
 
         w@ 50 + 200 - h@ 50 + 30 - 80 20 ok-label@ 0 CONTROLS::button
+
         w@ 50 + 100 - h@ 50 + 30 - 80 20 cancel-label@ 0 CONTROLS::button
         0 drawing!
     ] ?:
 ;
-
 
 @CLOSE
     saved_screen@ 0x10020 STOREI
@@ -114,9 +114,9 @@ MODULE DIALOG
         0x10054 LOADI ( mouse_x )
         0x10058 LOADI ( mouse_y )
         
-        TWO-DUP h@ 20 + >= [ h@ 40 + <= ] [ 0 ] ?: [
-            OVER w@ 150 - >= [ OVER w@ 70 - <= ] [ 0 ] ?: [
-                ( HIT OK )
+        ( HIT OK? )
+        DUP h@ 50 + 30 + <= [ DUP h@ 50 + 30 - >= ] [ 0 ] ?: [
+            OVER w@ 50 + 200 - >= [ OVER w@ 50 + 120 - <= ] [ 0 ] ?: [
                 DIALOG-LIST-BASE 8 + LOADI ( sel )
                 32 * ITEMS_BUF + ( ptr )
                 result_ptr@ strcpy-safe
@@ -125,16 +125,18 @@ MODULE DIALOG
             ] ?
         ] ?
 
-        TWO-DUP h@ 20 + >= [ h@ 40 + <= ] [ 0 ] ?: [
-            OVER w@ 50 - >= [ OVER w@ 30 + <= ] [ 0 ] ?: [
+        ( HIT CANCEL? )
+        DUP h@ 50 + 30 + <= [ DUP h@ 50 + 30 - >= ] [ 0 ] ?: [
+            OVER w@ 50 + 100 - >= [ OVER w@ 50 + 20 - <= ] [ 0 ] ?: [
                 CLOSE
             ] ?
         ] ?
-        
-        TWO-DUP 85 >= [ h@ 55 + <= ] [ 0 ] ?: [
+
+        ( List Hit? )
+        DUP 85 >= [ DUP h@ 5 + <= ] [ 0 ] ?: [
             OVER 80 >= [ OVER w@ 20 + <= ] [ 0 ] ?: [
-                ( rx = x - 80, ry = y - 85 )
-                1 PICK 80 -
+                ( List Click )
+                1 PICK 80 - 
                 1 PICK 85 -
                 w@ 60 - h@ 80 - DIALOG-LIST-BASE CONTROLS::list-click
                 0 drawing!
@@ -237,7 +239,7 @@ IMPORT MEMORY
         0x10058 LOADI ( y )
         
         ( List Hit? y in [95, h+35] and x in [80, w+20] )
-        TWO-DUP 95 >= [ OVER DIALOG::h@ 35 + <= ] [ 0 ] ?: [
+        DUP 95 >= [ DUP DIALOG::h@ 35 + <= ] [ 0 ] ?: [
             OVER 80 >= [ OVER DIALOG::w@ 20 + <= ] [ 0 ] ?: [
                 ( List Click )
                 FILE_LIST_BASE 8 + LOADI ( old-sel )
@@ -269,7 +271,7 @@ IMPORT MEMORY
         ] ?
         
         ( OK button Hit )
-        TWO-DUP DIALOG::h@ 20 + >= [ OVER DIALOG::h@ 40 + <= ] [ 0 ] ?: [
+        DUP DIALOG::h@ 20 + >= [ DUP DIALOG::h@ 40 + <= ] [ 0 ] ?: [
             OVER DIALOG::w@ 50 + 200 - >= [ OVER DIALOG::w@ 50 + 120 - <= ] [ 0 ] ?: [
                 ( HIT OK )
                 FILE_LIST_BASE 8 + LOADI 32 * FILE_ITEMS_BUF +
@@ -280,7 +282,7 @@ IMPORT MEMORY
         ] ?
 
         ( Cancel button Hit )
-        TWO-DUP DIALOG::h@ 20 + >= [ OVER DIALOG::h@ 40 + <= ] [ 0 ] ?: [
+        DUP DIALOG::h@ 20 + >= [ DUP DIALOG::h@ 40 + <= ] [ 0 ] ?: [
             OVER DIALOG::w@ 50 + 100 - >= [ OVER DIALOG::w@ 50 + 20 - <= ] [ 0 ] ?: [
                 DIALOG::CLOSE
             ] ?
@@ -313,7 +315,7 @@ IMPORT MEMORY
                 FILE_LIST_BASE CONTROLS::list-key
                 0 DIALOG::drawing!
             ] [
-                dup 27 = [ DIALOG::CLOSE drop ] [ ] ?:
+                dup 27 = [ DIALOG::CLOSE drop ] [ drop ] ?:
             ] ?:
         ] ?:
     ] ?:

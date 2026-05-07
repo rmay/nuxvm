@@ -117,7 +117,7 @@ func (m *Machine) Tick() (bool, error) {
 		}
 	}
 	
-	return m.CPU.Running(), nil
+	return !m.CPU.Halted(), nil
 }
 
 // Input methods (proxy to system and trigger vectors)

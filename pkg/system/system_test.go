@@ -567,3 +567,23 @@ func TestFileStatDetail(t *testing.T) {
 		t.Errorf("stat detail: got %q, want %q", detail, "0004")
 	}
 }
+
+func TestNewSystemNoFallback(t *testing.T) {
+	s := NewSystemNoFallback()
+	if s.screenPixels != nil {
+		t.Errorf("screenPixels should be nil in NoFallback mode")
+	}
+	// Default screen width/height should be initialized even in NoFallback
+	if s.getScreenWidth() != 800 || s.getScreenHeight() != 600 {
+		t.Errorf("expected 800x600 default dimensions, got %dx%d", s.getScreenWidth(), s.getScreenHeight())
+	}
+	if fb := s.getActiveFramebuffer(); fb != nil {
+		t.Errorf("getActiveFramebuffer should be nil when no services/windows are present")
+	}
+
+	// Writing to framebuffer should not panic even if fb is nil
+	err := s.Write(vm.VideoFramebufferStart, -1)
+	if err != nil {
+		t.Errorf("writing to nil framebuffer should be silent, got err: %v", err)
+	}
+}

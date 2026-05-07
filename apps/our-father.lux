@@ -59,15 +59,14 @@ MODULE OURFATHER
     DF::use-window     -1 DF::clear-screen
     1  DF::set-text-scale
     255 DF::set-pen-color
-    2 0 DF::use-pane-h    DRAW-ENGLISH
-    2 1 DF::use-pane-h    DRAW-LATIN
+    0 2 DF::use-pane-h    DRAW-ENGLISH
+    1 2 DF::use-pane-h    DRAW-LATIN
     DF::use-window
     255 DF::window-w 2 / 0 DF::window-h DF::v-line
 ;
 
 @keep-alive
-    YIELD
-    keep-alive
+    [ 1 ] [ YIELD ] |:
 ;
 
 @start

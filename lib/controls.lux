@@ -18,105 +18,111 @@ MODULE CONTROLS
 
 ( --- Patterns --- )
 @draw-gray-pattern ( x y w h -- )
-    0 ( row ) [
-        ( stack: x y w h row )
-        0 ( col ) [
-            ( stack: x y w h row col )
-            TWO-DUP + 2 MOD 0 = [
-                0 ( rgb )
-                6 PICK 1 PICK + ( x+col )
-                6 PICK 3 PICK + ( y+row )
+    0 0 6 frame!
+    [
+        0 0 local! ( row = 0 )
+        [
+            0 local@ 1 local@ + 2 MOD 0 = [
+                0 ( black )
+                5 local@ 0 local@ + ( x+col )
+                4 local@ 1 local@ + ( y+row )
                 DF::pixel
             ] ?
-            1 +
-        ] 4 PICK #:
-        drop ( col_final )
-        1 +
-    ] 2 PICK #:
-    drop drop drop drop drop
+            0 local@ 1 + 0 local! ( col++ )
+        ] 3 local@ ( w ) 0 MAX #:
+        1 local@ 1 + 1 local! ( row++ )
+    ] 2 local@ ( h ) 0 MAX #:
+    6 unframe!
 ;
 
 ( --- Dialogs --- )
 @dialog-window ( x y w h title-ptr -- )
-    CORE::base! CORE::h! CORE::w! CORE::y! CORE::x!
-    
+    5 frame!
+
     ( 1. Drop shadow )
-    0x000000 CORE::x@ 2 + CORE::y@ 2 + CORE::w@ CORE::h@ DF::fill-rect
+    0x000000 0 local@ 2 + 1 local@ 2 + 2 local@ 3 local@ DF::fill-rect
     ( 2. Main white body )
-    -1 CORE::x@ CORE::y@ CORE::w@ CORE::h@ DF::fill-rect
+    -1 0 local@ 1 local@ 2 local@ 3 local@ DF::fill-rect
     ( 3. 1px Black Frame )
-    0x000000 CORE::x@ CORE::y@ CORE::w@ CORE::h@ DF::frame-rect
+    0x000000 0 local@ 1 local@ 2 local@ 3 local@ DF::frame-rect
     ( 4. Inner Frame - Mac double border )
-    0x000000 CORE::x@ 2 + CORE::y@ 2 + CORE::w@ 4 - CORE::h@ 4 - DF::frame-rect
-    
+    0x000000 0 local@ 2 + 1 local@ 2 + 2 local@ 4 - 3 local@ 4 - DF::frame-rect
+
     ( 5. Title bar area )
-    -1 CORE::x@ 4 + CORE::y@ 4 + CORE::w@ 8 - 18 DF::fill-rect
+    -1 0 local@ 4 + 1 local@ 4 + 2 local@ 8 - 18 DF::fill-rect
     ( Dithered lines for title bar )
-    0x000000 CORE::x@ 4 + CORE::y@ 18 + CORE::w@ 8 - 1 DF::fill-rect
-    0x000000 CORE::x@ 4 + CORE::y@ 20 + CORE::w@ 8 - 1 DF::fill-rect
-    
+    0x000000 0 local@ 4 + 1 local@ 18 + 2 local@ 8 - 1 DF::fill-rect
+    0x000000 0 local@ 4 + 1 local@ 20 + 2 local@ 8 - 1 DF::fill-rect
+
     ( 6. Title text background - white block in middle of lines )
-    -1 CORE::x@ CORE::w@ 2 / + 60 - CORE::y@ 2 + 120 18 DF::fill-rect
-    
+    -1 0 local@ 2 local@ 2 / + 60 - 1 local@ 2 + 120 18 DF::fill-rect
+
     ( 7. Title text )
     0 TEXT::color!
-    CORE::x@ CORE::w@ 2 / + 55 - CORE::y@ 6 + DF::move-to
-    CORE::base@ [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop
-;
+    0 local@ 2 local@ 2 / + 55 - 1 local@ 6 + DF::move-to
+    4 local@ [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop
 
+    5 unframe!
+;
 ( --- Buttons --- )
 @button ( x y w h ptr inverted -- )
-    CORE::temp! CORE::base! CORE::h! CORE::w! CORE::y! CORE::x!
-
+    6 frame!
+    
     ( 1. Fill )
-    CORE::temp@ [ 0 ] [ -1 ] ?: CORE::x@ CORE::y@ CORE::w@ CORE::h@ DF::fill-rect
-
+    5 local@ ( inverted ) [ 0 ] [ -1 ] ?: 
+    0 local@ 1 local@ 2 local@ 3 local@ DF::fill-rect
+    
     ( 2. Frame - Single black line )
-    0 CORE::x@ CORE::y@ CORE::w@ CORE::h@ DF::frame-rect
-
-    ( 3. Corner rounding - clear the actual corner pixels to simulate System 6 )
-    ( We do this by drawing white pixels over the black corners )
-    -1 x@ y@ DF::pixel
-    -1 x@ w@ + 1 - y@ DF::pixel
-    -1 x@ y@ h@ + 1 - DF::pixel
-    -1 x@ w@ + 1 - y@ h@ + 1 - DF::pixel
-
+    0 0 local@ 1 local@ 2 local@ 3 local@ DF::frame-rect
+    
+    ( 3. Corner rounding )
+    -1 0 local@ 1 local@ DF::pixel
+    -1 0 local@ 2 local@ + 1 - 1 local@ DF::pixel
+    -1 0 local@ 1 local@ 3 local@ + 1 - DF::pixel
+    -1 0 local@ 2 local@ + 1 - 1 local@ 3 local@ + 1 - DF::pixel
+    
     ( 4. Text )
-    temp@ [ -1 ] [ 0 ] ?: TEXT::color!
-    x@ 8 + y@ 4 + DF::move-to
-    base@ [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop
+    5 local@ ( inverted ) [ -1 ] [ 0 ] ?: TEXT::color!
+    0 local@ 8 + 1 local@ 4 + DF::move-to
+    4 local@ [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop
+    
+    6 unframe!
 ;
 
 ( --- Checkboxes --- )
 @checkbox ( x y ptr checked -- )
-    temp! base! y! x!
+    4 frame!
     
     ( box )
-    0 x@ y@ 12 12 DF::frame-rect
-    -1 x@ 1 + y@ 1 + 10 10 DF::fill-rect
-    temp@ [
+    0 ( black ) 0 local@ 1 local@ 12 12 DF::frame-rect
+    -1 ( white ) 0 local@ 1 + 1 local@ 1 + 10 10 DF::fill-rect
+    3 local@ ( checked ) [
         ( classic X mark )
-        0 x@ 3 + y@ 3 + 6 6 DF::fill-rect
+        0 0 local@ 3 + 1 local@ 3 + 6 6 DF::fill-rect
     ] ?
     ( text )
     0 TEXT::color!
-    x@ 18 + y@ 1 + DF::move-to
-    base@ [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop
+    0 local@ 18 + 1 local@ 1 + DF::move-to
+    2 local@ [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop
+    
+    4 unframe!
 ;
 
 ( --- Text Boxes --- )
 @textbox ( x y w h ptr -- )
-    base! h! w! y! x!
+    5 frame!
     
     ( white background )
-    -1 x@ y@ w@ h@ DF::fill-rect
+    -1 0 local@ 1 local@ 2 local@ 3 local@ DF::fill-rect
     ( 1px black frame )
-    0 x@ y@ w@ h@ DF::frame-rect
+    0 0 local@ 1 local@ 2 local@ 3 local@ DF::frame-rect
     
     ( text )
     0 TEXT::color!
-    x@ 4 + y@ 2 + DF::move-to
-    base@ [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop
+    0 local@ 4 + 1 local@ 2 + DF::move-to
+    4 local@ [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop
+    
+    5 unframe!
 ;
 
 ( --- Sliders --- )
@@ -139,30 +145,42 @@ MODULE CONTROLS
 
 ( --- Scrollbars --- )
 @scrollbar-v ( x y h scroll max -- )
-    ( stack: x y h scroll max )
-    
+    5 frame!
+
     ( Track )
-    4 PICK 4 PICK 16 4 PICK draw-gray-pattern
-    0 4 PICK 4 PICK 16 4 PICK DF::frame-rect
-    
+    0 local@ ( x )
+    1 local@ ( y )
+    16
+    2 local@ ( h )
+    draw-gray-pattern
+
+    0 ( black )
+    0 local@ ( x )
+    1 local@ ( y )
+    16
+    2 local@ ( h )
+    DF::frame-rect
+
     ( Arrows )
-    -1 4 PICK 4 PICK 16 16 DF::fill-rect
-    0 4 PICK 4 PICK 16 16 DF::frame-rect
-    -1 4 PICK 4 PICK 4 PICK + 16 - 16 16 DF::fill-rect
-    0 4 PICK 4 PICK 4 PICK + 16 - 16 16 DF::frame-rect
-    
+    -1 ( white ) 0 local@ 1 local@ 16 16 DF::fill-rect
+     0 ( black ) 0 local@ 1 local@ 16 16 DF::frame-rect
+    -1 ( white ) 0 local@ 1 local@ 2 local@ + 16 - 16 16 DF::fill-rect
+     0 ( black ) 0 local@ 1 local@ 2 local@ + 16 - 16 16 DF::frame-rect
+
     ( Thumb )
-    1 PICK 0 > [
-        ( stack: x y h scroll max )
-        3 PICK 52 - ( track area height )
-        2 PICK * 1 PICK /
-        4 PICK + 18 + ( thumb y )
-        -1 5 PICK 1 PICK 16 16 DF::fill-rect
-        0 5 PICK 2 PICK 16 16 DF::frame-rect
-        drop
+    4 local@ ( max ) 0 > [
+        ( Track area is h - 32 for arrows - 16 for thumb = h - 48 )
+        2 local@ 48 - ( track-area-h )
+        3 local@ ( scroll ) *
+        4 local@ ( max ) /
+        1 local@ ( y ) + 16 + ( thumb y )
+
+        -1 ( white ) 0 local@ SWAP 16 16 DF::fill-rect
+         0 ( black ) 0 local@ OVER 16 16 DF::frame-rect
+        drop ( thumb y )
     ] ?
-    
-    drop drop drop drop drop ( cleanup )
+
+    5 unframe!
 ;
 
 ( --- List Manager --- )
@@ -176,110 +194,129 @@ MODULE CONTROLS
 )
 
 @list-new ( buf capacity item-size base -- )
-    base! temp! y! x!
+    4 frame!
     
-    0 base@ 8 + STOREI ( sel_idx = 0 )
-    0 base@ 12 + STOREI ( scroll_idx = 0 )
-    0 base@ 4 + STOREI ( count = 0 )
+    ( Initialize list record )
+    0 local@ 0 local! ( base )
+    1 local@ 1 local! ( item-size )
+    2 local@ 2 local! ( capacity )
+    3 local@ 3 local! ( buf_ptr )
     
-    x@ base@ 16 + STOREI ( buf_ptr )
-    temp@ base@ 20 + STOREI ( item_size )
-    y@ base@ 0 + STOREI ( capacity )
+    ( count = 0 )
+    0 0 local@ 4 + STOREI
+    
+    ( sel_idx = -1 )
+    -1 0 local@ 8 + STOREI
+    
+    ( scroll = 0 )
+    0 0 local@ 12 + STOREI
+    
+    4 unframe!
 ;
 
 @list-add ( ptr len base -- )
-    base! temp! x!
-    base@ 4 + LOADI base@ LOADI < [
-        base@ 4 + LOADI base@ 20 + LOADI * 
-        base@ 16 + LOADI + ( dest )
-        x@ swap strcpy
+    3 frame!
+    ( base+4: count, base+0: capacity )
+    0 local@ 4 + LOADI 0 local@ LOADI < [
+        ( offset = count * item_size )
+        0 local@ 4 + LOADI 0 local@ 20 + LOADI * 
+        ( dest = buf_ptr + offset )
+        0 local@ 16 + LOADI + ( dest )
+        2 local@ ( src ) swap strcpy-safe
         
-        base@ 4 + LOADI 1 + base@ 4 + STOREI
+        ( count++ )
+        0 local@ 4 + LOADI 1 + 0 local@ 4 + STOREI
     ] ?
+    3 unframe!
 ;
 
 @list-draw ( x y w h base -- )
-    CORE::base! CORE::h! CORE::w! CORE::y! CORE::x!
+    5 frame!
     
-    CORE::x@ CORE::y@ CORE::w@ CORE::h@ DF::use-rect
+    0 local@ 1 local@ 2 local@ 3 local@ DF::use-rect
     -1 DF::clear-screen ( Clear list background to white )
-    0 0 0 CORE::w@ CORE::h@ DF::frame-rect
+    0 0 0 2 local@ 3 local@ DF::frame-rect
     
     ( Entries )
-    CORE::h@ 16 / 0 MAX ( stack: visible-lines )
+    3 local@ 16 / 0 MAX ( stack: visible-lines )
     0 ( i )
     [ OVER OVER SWAP < ] [
         ( stack: visible-lines i )
-        dup CORE::base@ 12 + LOADI + ( idx )
-        dup CORE::base@ 4 + LOADI < [
+        dup 4 local@ 12 + LOADI + ( idx )
+        dup 4 local@ 4 + LOADI < [
             ( idx )
-            dup CORE::base@ 8 + LOADI = [
+            dup 4 local@ 8 + LOADI = [
                 ( highlight )
-                0 1 3 PICK 16 * 1 + CORE::w@ 18 - 16 DF::fill-rect
+                0 1 3 PICK 16 * 1 + 2 local@ 18 - 16 DF::fill-rect
                 -1 TEXT::color!
             ] [ 0 TEXT::color! ] ?:
             
             2 OVER 16 * 3 + DF::move-to
-            dup CORE::base@ 20 + LOADI * CORE::base@ 16 + LOADI +
+            dup 4 local@ 20 + LOADI * 4 local@ 16 + LOADI +
             ( ptr )
             [ dup load-byte 0 > ] [ dup load-byte DF::draw-char 1 + ] |: drop
-            ] ?
-            drop ( idx )
-            1 +
-            ] |:
-            drop drop ( visible i )
+        ] ?
+        drop ( idx )
+        1 +
+    ] |:
+    drop drop ( visible-lines i )
 
-            ( Scrollbar )
-    CORE::w@ 16 - 0 CORE::h@ 
-    CORE::base@ 12 + LOADI ( scroll )
-    CORE::base@ 4 + LOADI CORE::h@ 16 / - 0 MAX ( max = count - visible )
+    ( Scrollbar )
+    2 local@ 16 - 0 3 local@ 
+    4 local@ 12 + LOADI ( scroll )
+    4 local@ 4 + LOADI 3 local@ 16 / - 0 MAX ( max = count - visible )
     ( stack: x y h scroll max )
     scrollbar-v
     
     DF::use-window
+    5 unframe!
 ;
 
 @list-key ( key base -- )
-    base! temp! ( key )
+    2 frame!
     
-    temp@ 17 = [ ( Up )
-        base@ 8 + dup LOADI 1 - 0 MAX swap STOREI
-        base@ 8 + LOADI base@ 12 + LOADI < [
-            base@ 8 + LOADI base@ 12 + STOREI
+    ( key is 0 local@, base is 1 local@ )
+    0 local@ 17 = [ ( Up )
+        1 local@ 8 + dup LOADI 1 - 0 MAX swap STOREI
+    ] [
+        0 local@ 18 = [ ( Down )
+            1 local@ 8 + dup LOADI 1 + 1 local@ 4 + LOADI 1 - MIN swap STOREI
         ] ?
-    ] ?
+    ] ?:
     
-    temp@ 18 = [ ( Down )
-        base@ 4 + LOADI 1 - ( max-idx )
-        base@ 8 + dup LOADI 1 + 2 PICK MIN swap STOREI
-        drop
-        base@ 8 + LOADI base@ 12 + LOADI - 9 > [
-            base@ 8 + LOADI 9 - base@ 12 + STOREI
+    ( Ensure scroll follows selection )
+    1 local@ 8 + LOADI ( sel )
+    1 local@ 12 + LOADI ( scroll )
+    OVER OVER < [
+        ( scroll = sel )
+        DROP DUP 1 local@ 12 + STOREI
+    ] [
+        ( scroll + visible < sel? )
+        ( visible = 10 for now )
+        OVER 10 + 1 PICK < [
+            ( scroll = sel - 9 )
+            DROP DUP 9 - 1 local@ 12 + STOREI
         ] ?
-    ] ?
+    ] ?:
+    drop drop ( sel scroll )
+    
+    2 unframe!
 ;
 
-@list-click ( rx ry w h base -- )
-    base! h! w! y! x! ( rx ry )
+@list-click ( x y w h base -- )
+    5 frame!
+    ( x y w h base )
+    ( rel_y = y )
+    1 local@ 16 / ( click_idx )
+    4 local@ 12 + LOADI + ( actual_idx )
     
-    x@ w@ 16 - < [
-        y@ 16 / ( line )
-        dup 0 >= [
-            dup base@ 12 + LOADI + ( idx )
-            dup base@ 4 + LOADI < [
-                base@ 8 + STOREI
-            ] [ drop ] ?:
-        ] [ drop ] ?:
-    ] [
-        ( Scrollbar click )
-        y@ 16 < [
-            base@ 12 + dup LOADI 1 - 0 MAX swap STOREI
-        ] [
-            y@ h@ 16 - > [
-                base@ 12 + dup LOADI 1 + 
-                base@ 4 + LOADI h@ 16 / - 0 MAX MIN
-                swap STOREI
-            ] ?
-        ] ?:
-    ] ?:
-;
+    ( Check bounds )
+    DUP 0 >= [ DUP 4 local@ 4 + LOADI < ] [ 0 ] ?: [
+        4 local@ 8 + STOREI ( Set selection )
+    ] [ drop ] ?:
+    
+    5 unframe!
+    ;
+
+    ( --- Sliders --- )
+

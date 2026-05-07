@@ -51,24 +51,22 @@ MODULE DELINEATIOFENESTRA
     0 0 window-w window-h use-rect
 ;
 
-@use-pane-h ( n idx -- )
-    swap                       ( idx n )
-    window-w swap /            ( idx slice-w )
-    dup 2 PICK *               ( idx slice-w offset )
-    pane-x!                    ( idx slice-w )
-    pane-w!                    ( idx )
-    drop                       ( )
+@use-pane-h ( idx total -- )
+    window-w OVER /            ( idx total slice-w )
+    dup 2 PICK *               ( idx total slice-w offset )
+    pane-x!                    ( idx total slice-w )
+    pane-w!                    ( idx total )
+    drop drop                  ( )
     0 pane-y!
     window-h pane-h!
 ;
 
-@use-pane-v ( n idx -- )
-    swap                       ( idx n )
-    window-h swap /            ( idx slice-h )
-    dup 2 PICK *               ( idx slice-h offset )
-    pane-y!                    ( idx slice-h )
-    pane-h!                    ( idx )
-    drop                       ( )
+@use-pane-v ( idx total -- )
+    window-h OVER /            ( idx total slice-h )
+    dup 2 PICK *               ( idx total slice-h offset )
+    pane-y!                    ( idx total slice-h )
+    pane-h!                    ( idx total )
+    drop drop                  ( )
     0 pane-x!
     window-w pane-w!
 ;
@@ -130,44 +128,58 @@ MODULE DELINEATIOFENESTRA
 ;
 
 @h-line ( rgb x y len -- )
-    [ 2 PICK 2 PICK 2 PICK pixel swap 1 + swap ]
-    swap #:
-    drop drop drop
+    4 frame!
+    [
+        3 local@ ( rgb )
+        2 local@ ( x )
+        1 local@ ( y )
+        pixel
+        
+        2 local@ 1 + 2 local! ( x++ )
+    ] 0 local@ ( len ) 0 MAX #:
+    4 unframe!
 ;
 
 @v-line ( rgb x y len -- )
-    [ 2 PICK 2 PICK 2 PICK pixel 1 + ]
-    swap #:
-    drop drop drop
+    4 frame!
+    [
+        3 local@ ( rgb )
+        2 local@ ( x )
+        1 local@ ( y )
+        pixel
+        
+        1 local@ 1 + 1 local! ( y++ )
+    ] 0 local@ ( len ) 0 MAX #:
+    4 unframe!
 ;
 
 ( --- Rectangles --- )
 
 @frame-rect ( rgb x y w h -- )
+    5 frame!
     ( top: rgb x y w )
-    4 PICK 4 PICK 4 PICK 4 PICK h-line
+    4 local@ 3 local@ 2 local@ 1 local@ 0 MAX h-line
     ( bottom: rgb x y+h-1 w )
-    4 PICK 4 PICK 4 PICK 3 PICK + 1 - 4 PICK h-line
+    4 local@ 3 local@ 2 local@ 0 local@ + 1 - 1 local@ 0 MAX h-line
     ( left: rgb x y h )
-    4 PICK 4 PICK 4 PICK 3 PICK v-line
+    4 local@ 3 local@ 2 local@ 0 local@ 0 MAX v-line
     ( right: rgb x+w-1 y h )
-    4 PICK 4 PICK 3 PICK + 1 - 4 PICK 3 PICK v-line
-    drop drop drop drop drop
+    4 local@ 3 local@ 1 local@ + 1 - 2 local@ 0 local@ 0 MAX v-line
+    5 unframe!
 ;
 
 @fill-rect ( rgb x y w h -- )
-    0 ( row ) [
-        ( stack: rgb x y w h row )
-        5 PICK ( rgb )
-        5 PICK ( x )
-        5 PICK 2 PICK + ( y+row )
-        5 PICK ( w )
-        h-line
-        1 +
-    ] 2 PICK #:
-    ( stack: rgb x y w h row_final )
-    drop drop drop drop drop drop
+    0 ( row ) 6 frame!
+    [
+        5 local@ ( rgb )
+        4 local@ ( x )
+        3 local@ 0 local@ + ( y+row )
+        2 local@ ( w ) 0 MAX h-line
+        0 local@ 1 + 0 local! ( row++ )
+    ] 1 local@ ( h ) 0 MAX #:
+    6 unframe!
 ;
+
 
 @clear-screen ( rgb -- )
     0 0 pane-w@ pane-h@ fill-rect

@@ -177,6 +177,9 @@ func NewSystemNoFallback() *System {
 		},
 		Services: NewServiceManager(),
 	}
+	// Note: screenPixels is left nil. getActiveFramebuffer MUST return nil
+	// if there is no active window window, causing writes to be dropped.
+	// This is the intended behavior for NoFallback.
 	if cwd, err := os.Getwd(); err == nil {
 		_ = s.SetSandboxRoot(cwd)
 	}
@@ -583,6 +586,10 @@ func (s *System) fileSeek() {
 
 // Read implements vm.Bus.Read
 func (s *System) Read(address uint32) (int32, error) {
+	return s.read(address)
+}
+
+func (s *System) read(address uint32) (int32, error) {
 	// Port vector registers (offset+0 of any 16-byte device block)
 	if address >= vm.DeviceMemoryOffset && address < vm.DeviceMemoryOffset+vm.DeviceMemorySize {
 		offset := address - vm.DeviceMemoryOffset
