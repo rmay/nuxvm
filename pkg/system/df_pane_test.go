@@ -15,6 +15,9 @@ import (
 // declaring two horizontal panes and filling each with a different
 // color leaves the framebuffer's left half red and right half blue.
 func TestDFPaneSplit(t *testing.T) {
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(origDir) })
+
 	root := repoRoot(t)
 	if err := os.Chdir(root); err != nil {
 		t.Fatalf("chdir: %v", err)
@@ -110,6 +113,9 @@ HALT
 // this, an aborted CPU step leaves a TriggerVector-pushed PC on the
 // return stack and the VM overflows after ~1024 frames.
 func TestFramebufferOOBSilent(t *testing.T) {
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(origDir) })
+
 	root := repoRoot(t)
 	if err := os.Chdir(root); err != nil {
 		t.Fatalf("chdir: %v", err)

@@ -13,6 +13,9 @@ import (
 // target swap, boot tick. After the boot tick the prayer's framebuffer
 // should have been cleared to white and overlaid with black text + divider.
 func TestOurFatherAppRendersToWindow(t *testing.T) {
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(origDir) })
+
 	root := repoRoot(t)
 	if err := os.Chdir(root); err != nil {
 		t.Fatalf("chdir to repo root: %v", err)

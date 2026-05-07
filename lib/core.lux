@@ -68,7 +68,7 @@ IMPORT MEMORY
     drop ( final 0 )
     0 MEMORY::CTRL_BASE 8 + LOADI store-byte
     
-    swap MEMORY::CTRL_BASE STOREI
+    MEMORY::CTRL_BASE STOREI
 ;
 
 @strlen ( ptr -- len )
