@@ -1,12 +1,16 @@
 package system
 
 import (
+	_ "embed"
 	"image"
 	"golang.org/x/image/font/basicfont"
 )
 
+//go:embed chicago12x12.cff
+var chicagoCFF []byte
+
 // The Text device renders characters into the framebuffer using the Ebiten
-// debug font (7x13).
+// debug font (7x13) or the new Chicago 12x12 CFF font.
 //
 // Cursor coordinates (cursorX, cursorY) are now in PIXELS, not cells.
 // This allows for arbitrary text placement.
@@ -14,20 +18,26 @@ import (
 // textState holds the mutable registers for the Text device.
 type textState struct {
 	scale    uint8  // scale factor (1..8)
+	useCFF   bool   // if true, use Chicago 12x12
 	color    uint32 // 24-bit RGB
 	cursorX  uint16 // in pixels
 	cursorY  uint16 // in pixels
 	lastChar byte
 }
 
-// attrPacked returns the attr register value (scale<<24 | color).
+// attrPacked returns the attr register value (useCFF<<31 | scale<<24 | color).
 func (t *textState) attrPacked() uint32 {
-	return (uint32(t.scale) << 24) | (t.color & 0xFFFFFF)
+	var v uint32 = (uint32(t.scale) << 24) | (t.color & 0xFFFFFF)
+	if t.useCFF {
+		v |= 0x80000000
+	}
+	return v
 }
 
 // setAttr decodes an attr-register write.
 func (t *textState) setAttr(v uint32) {
-	scale := (v >> 24) & 0xFF
+	t.useCFF = (v & 0x80000000) != 0
+	scale := (v >> 24) & 0x7F
 	if scale == 0 {
 		scale = 1
 	}
@@ -49,9 +59,14 @@ func (t *textState) setCursor(v uint32) {
 }
 
 // drawChar renders one ASCII glyph into the active window's framebuffer.
-// Cursor advances by the width of the character (7*scale).
+// Cursor advances by the width of the character (7*scale or CFF-width*scale).
 func (s *System) drawChar(c byte) {
 	s.text.lastChar = c
+
+	if s.text.useCFF {
+		s.drawCharCFF(c)
+		return
+	}
 
 	scale := int(s.text.scale)
 	if scale < 1 {
@@ -128,6 +143,121 @@ func (s *System) drawChar(c byte) {
 	}
 
 	s.text.cursorX += uint16(cellW)
+}
+
+func (s *System) drawCharCFF(c byte) {
+	scale := int(s.text.scale)
+	if scale < 1 {
+		scale = 1
+	}
+
+	switch c {
+	case '\n':
+		s.text.cursorX = 0
+		s.text.cursorY += uint16(16 * scale) // Chicago 12x12 is in 16x16 tiles
+		return
+	case '\r':
+		s.text.cursorX = 0
+		return
+	}
+
+	if int(c) >= 256 {
+		return
+	}
+
+	width := int(chicagoCFF[c])
+	if width == 0 {
+		// Use a default width for space if not set
+		if c == ' ' {
+			width = 4
+		} else {
+			return
+		}
+	}
+
+	s.drawCFFRaw(chicagoCFF, c, int32(s.text.cursorX), int32(s.text.cursorY), s.text.color, 16, scale)
+	s.text.cursorX += uint16(width * scale)
+}
+
+// drawCFF renders a character from a Cloister Font Format (CFF) font in memory.
+func (s *System) drawCFF(fontPtr uint32, char byte, x, y int32, color uint32, tileSize int) {
+	if fontPtr == 0 || int(fontPtr)+256 >= len(s.memory) {
+		return
+	}
+	s.drawCFFRaw(s.memory[fontPtr:], char, x, y, color, tileSize, 1)
+}
+
+// drawCFFRaw renders a character from a CFF data slice.
+func (s *System) drawCFFRaw(data []byte, char byte, x, y int32, color uint32, tileSize int, scale int) {
+	if len(data) < 256 {
+		return
+	}
+
+	width := int(data[char])
+	if width == 0 && char != ' ' {
+		return
+	}
+
+	fb := s.getActiveFramebuffer()
+	if fb == nil {
+		return
+	}
+
+	sw := int(s.getScreenWidth())
+	sh := int(s.getScreenHeight())
+
+	r := byte(color >> 16)
+	g := byte(color >> 8)
+	b := byte(color)
+
+	numVTiles := tileSize / 8
+	numHTiles := tileSize / 8
+	tileCount := numHTiles * numVTiles
+	glyphDataOffset := 256 + int(char)*tileCount*8
+
+	if glyphDataOffset+tileCount*8 > len(data) {
+		return
+	}
+
+	idx := 0
+	for tx := 0; tx < numHTiles; tx++ {
+		for ty := 0; ty < numVTiles; ty++ {
+			for rowInTile := 0; rowInTile < 8; rowInTile++ {
+				bits := data[glyphDataOffset+idx]
+				idx++
+				if bits == 0 {
+					continue
+				}
+
+				for colInTile := 0; colInTile < 8; colInTile++ {
+					if bits&(0x80>>colInTile) == 0 {
+						continue
+					}
+
+					for dy := 0; dy < scale; dy++ {
+						py := int(y) + (ty*8+rowInTile)*scale + dy
+						if py < 0 || py >= sh {
+							continue
+						}
+						for dx := 0; dx < scale; dx++ {
+							px := int(x) + (tx*8+colInTile)*scale + dx
+							if px < 0 || px >= sw {
+								continue
+							}
+
+							offset := (py*sw + px) * 4
+							if offset+4 <= len(fb) {
+								fb[offset] = r
+								fb[offset+1] = g
+								fb[offset+2] = b
+								fb[offset+3] = 0xFF
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 // Font is a 7x13 bitmap font covering printable ASCII (0x20–0x7E).

@@ -21,8 +21,8 @@ const (
 	rngPort        = vm.DeviceMemoryOffset + 0x0080
 	textPort       = vm.DeviceMemoryOffset + 0x0090
 	windowPort     = vm.DeviceMemoryOffset + 0x00B0
-	sciPort        = vm.DeviceMemoryOffset + 0x00C0
-	menuPort       = vm.DeviceMemoryOffset + 0x00D0
+	sciPort        = vm.DeviceMemoryOffset + 0x00D0
+	menuPort       = vm.DeviceMemoryOffset + 0x00F0
 
 	controllerStatusAddr = controllerPort + 4
 	controllerButtonAddr = controllerPort + 8
@@ -65,6 +65,7 @@ const (
 	SCIYield          = 15
 	SCIGetPID         = 16
 	SCIGetActiveWin   = 17
+	SCIDrawCFF        = 18
 )
 
 // fileState tracks an open file or directory for the File device.
@@ -786,11 +787,32 @@ func (s *System) read(address uint32) (int32, error) {
 		return 0, nil
 	}
 
+	// Default: General Memory
+	if address >= vm.VideoFramebufferEnd && address+4 <= uint32(len(s.memory)) {
+		return int32(binary.BigEndian.Uint32(s.memory[address : address+4])), nil
+	}
+
 	return 0, fmt.Errorf("system: unhandled read at 0x%04X", address)
 }
 
 // Write implements vm.Bus.Write
 func (s *System) Write(address uint32, value int32) error {
+	// SCI (System Call Interface) device:
+	if address == sciCommandAddr {
+		s.sciCommand = value
+		return nil
+	}
+	if address == sciArg1Addr {
+		s.sciArg1 = value
+		return nil
+	}
+	if address == sciArg2Addr {
+		s.sciArg2 = value
+		// Trigger SCI command handler when arg2 is written
+		s.handleSCICommand()
+		return nil
+	}
+
 	// Port vector registers (offset+0 of any 16-byte device block)
 	if address >= vm.DeviceMemoryOffset && address < vm.DeviceMemoryOffset+vm.DeviceMemorySize {
 		offset := address - vm.DeviceMemoryOffset
@@ -962,6 +984,12 @@ func (s *System) Write(address uint32, value int32) error {
 				return nil
 			}
 		}
+		return nil
+	}
+
+	// Default: General Memory
+	if address >= vm.VideoFramebufferEnd && address+4 <= uint32(len(s.memory)) {
+		binary.BigEndian.PutUint32(s.memory[address:address+4], uint32(value))
 		return nil
 	}
 

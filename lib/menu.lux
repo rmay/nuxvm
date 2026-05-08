@@ -3,7 +3,7 @@
 INCLUDE "lib/core.lux"
 
 MODULE MENU
-@addr 0x100D0 ;                  ( MenuPort = 0x30D0 )
+@addr 0x100F0 ;                  ( MenuPort = 0x100F0 )
 
 @vector!   addr STOREI ;
 @register! addr 4 + STOREI ;

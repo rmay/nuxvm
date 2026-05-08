@@ -24,3 +24,10 @@ MODULE TEXT
     OR
     attr!
 ;
+
+@cff! ( bool -- )
+    31 LSHIFT
+    attr@ 0x7FFFFFFF AND
+    OR
+    attr!
+;

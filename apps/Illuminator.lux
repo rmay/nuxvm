@@ -3,6 +3,7 @@ INCLUDE "lib/file.lux"
 INCLUDE "lib/menu.lux"
 INCLUDE "lib/delineatiofenestra.lux"
 INCLUDE "lib/dialog.lux"
+INCLUDE "lib/sci.lux"
 IMPORT SYSTEM
 IMPORT SCREEN
 IMPORT TEXT
@@ -11,11 +12,9 @@ IMPORT MENU
 IMPORT CTRL
 IMPORT DELINEATIOFENESTRA AS DF
 IMPORT FILE-DIALOG
+IMPORT SCI
 
 MODULE ILLUMINATOR
-
-( --- Aliases --- )
-( OVER is now in core.lux )
 
 ( --- Constants --- )
 @WIDTH_TABLE  0x800000 ;
@@ -32,96 +31,45 @@ MODULE ILLUMINATOR
 @drawing@     drawing_addr LOADI ;
 @drawing!     drawing_addr STOREI ;
 
+( --- Format Detection --- )
+@FILE_SIZE_ADDR 0x820014 ;
+@file-size@ FILE_SIZE_ADDR LOADI ;
+@file-size! FILE_SIZE_ADDR STOREI ;
+
+@get-tile-dim ( -- tiles )
+    file-size@ 4000 < [ 1 ] [
+        file-size@ 10000 < [ 2 ] [ 3 ] ?:
+    ] ?:
+;
+
 ( --- Rendering --- )
 
-@RENDER-BIT ( x y color byte bit dx -- )
-    2 PICK 2 PICK AND 0 > [
-        3 PICK ( color )
-        6 PICK ( x ) 2 PICK ( dx ) +
-        6 PICK ( y )
-        DF::pixel
+@DRAW-ONE-GLYPH ( cp -- cp )
+    dup WIDTH_TABLE + load-byte 0 > [
+        dup WIDTH_TABLE SWAP
+        dup 16 MOD 38 * 10 +
+        OVER 16 / 38 * 10 +
+        SCI::DRAW-CFF
     ] ?
-    drop drop drop drop drop drop
-;
-
-@RENDER-BYTE ( x y color byte -- )
-    3 PICK 3 PICK 3 PICK 3 PICK 0x80 0 RENDER-BIT
-    3 PICK 3 PICK 3 PICK 3 PICK 0x40 1 RENDER-BIT
-    3 PICK 3 PICK 3 PICK 3 PICK 0x20 2 RENDER-BIT
-    3 PICK 3 PICK 3 PICK 3 PICK 0x10 3 RENDER-BIT
-    3 PICK 3 PICK 3 PICK 3 PICK 0x08 4 RENDER-BIT
-    3 PICK 3 PICK 3 PICK 3 PICK 0x04 5 RENDER-BIT
-    3 PICK 3 PICK 3 PICK 3 PICK 0x02 6 RENDER-BIT
-    3 PICK 3 PICK 3 PICK 3 PICK 0x01 7 RENDER-BIT
-    drop drop drop drop
-;
-
-@DRAW-GLYPH-ROW ( x y ptr row -- )
-    1 PICK 1 PICK + load-byte ( byte )
-    4 PICK ( x )
-    4 PICK 3 PICK + ( y+row )
-    -1 ( color )
-    3 PICK ( byte )
-    RENDER-BYTE
-    drop drop drop drop drop
-;
-
-@DRAW-GLYPH-ROWS ( x y ptr -- )
-    0 [
-        3 PICK 3 PICK 3 PICK 3 PICK
-        DRAW-GLYPH-ROW
-        1 +
-    ] 8 #:
-    drop drop drop drop
-;
-
-@DRAW-ONE-GLYPH ( ptr cp -- )
-    ( stack: ptr cp )
-    dup 16 MOD 38 * 10 + ( x )
-    1 PICK 16 / 38 * 10 + ( y )
-    ( stack: ptr cp x y )
-    
-    ( We want: x y ptr )
-    1 PICK ( x )
-    1 PICK ( y )
-    5 PICK ( ptr )
-    
-    ( stack: ptr cp x y x y ptr )
-    DRAW-GLYPH-ROWS
-    
-    ( stack: ptr cp x y )
-    drop drop drop drop
-;
-
-@DRAW-GRID-LOOP ( ptr cp -- )
-    [ dup 256 < ] [
-        dup WIDTH_TABLE + load-byte ( ptr cp width )
-        dup 0 > [
-            ( ptr cp width )
-            7 + 8 / 8 * ( ptr cp stride )
-            2 PICK 2 PICK DRAW-ONE-GLYPH
-            ( ptr cp stride )
-            rot + ( cp ptr+stride )
-            swap 1 + ( ptr+stride cp+1 )
-        ] [
-            drop 1 +
-        ] ?:
-    ] |:
-    drop drop
 ;
 
 @DRAW-GRID
-    GLYPH_DATA 0 DRAW-GRID-LOOP
+    get-tile-dim TEXT::cell-size!
+    0xFFFFFF TEXT::color!
+    0 [
+        DRAW-ONE-GLYPH
+        1 +
+    ] 256 #: drop
 ;
 
-@load-data
-    FILENAME_BUF FILE::name!
+@load-data ( ptr -- )
+    FILE::name!
     WIDTH_TABLE FILE::buf!
-    32768 FILE::read drop
+    32768 FILE::read file-size!
 ;
 
 @on-open
-    F"." F".cff" FILENAME_BUF [ load-data ] FILE-DIALOG::show
+    F"." F".cff" FILENAME_BUF [ FILENAME_BUF load-data ] FILE-DIALOG::show
 ;
 
 @on-key
@@ -134,7 +82,7 @@ MODULE ILLUMINATOR
     drawing@ [ ] [
         1 drawing!
         DF::use-window
-        0 DF::clear-screen
+        0 SCREEN::clear
         DRAW-GRID
         0 drawing!
     ] ?:
@@ -145,8 +93,7 @@ MODULE ILLUMINATOR
 ;
 
 @start
-    F"pkg/system/chicago.cff" FILENAME_BUF [ OVER load-byte 1 PICK store-byte 1 + swap 1 + swap ] 32 #: drop drop
-    load-data
+    F"pkg/system/chicago12x12.cff" load-data
     F"File" ILLUM_MENU MENU::init!
     111 F"Open" [ on-open ] ILLUM_MENU MENU::add!
     113 F"Quit" [ HALT ] ILLUM_MENU MENU::add!
