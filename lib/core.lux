@@ -30,7 +30,7 @@
     dup LOADI ( byte offset aligned old )
     
     ( byte offset aligned old )
-    3 PICK ( offset )
+    2 PICK ( offset )
     dup 0 = [ drop 3 PICK 24 LSHIFT 0x00FFFFFF 2 PICK AND OR ] [
         dup 1 = [ drop 3 PICK 16 LSHIFT 0xFF00FFFF 2 PICK AND OR ] [
             dup 2 = [ drop 3 PICK 8 LSHIFT 0xFFFF00FF 2 PICK AND OR ] [
