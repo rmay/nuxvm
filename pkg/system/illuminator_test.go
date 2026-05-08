@@ -9,14 +9,17 @@ import (
 )
 
 func TestIlluminatorApp(t *testing.T) {
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(origDir) })
+
 	root := repoRoot(t)
 	if err := os.Chdir(root); err != nil {
 		t.Fatalf("chdir to repo root: %v", err)
 	}
 
 	// Ensure the CFF file exists where Illuminator expects it
-	if _, err := os.Stat("pkg/system/chicago.cff"); err != nil {
-		t.Fatalf("pkg/system/chicago.cff missing: %v. Run cmd/png2cff first.", err)
+	if _, err := os.Stat("pkg/system/chicago12x12.cff"); err != nil {
+		t.Fatalf("pkg/system/chicago12x12.cff missing: %v. Run cmd/png2cff first.", err)
 	}
 
 	bytecode, err := lux.LoadProgram("apps/Illuminator.lux")

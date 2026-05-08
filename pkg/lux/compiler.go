@@ -327,6 +327,12 @@ func (c *Compiler) compileToken(t Token) error {
 			c.emit(vm.OpOut)
 			return nil
 		}
+		if u == "EMIT" {
+			c.emit(vm.OpPush)
+			c.emit(vm.EncodeInt32(1)...)
+			c.emit(vm.OpOut)
+			return nil
+		}
 		if combinators[u] {
 			if c.trace {
 				fmt.Fprintf(os.Stderr, "Compiler: combinator=%s, quotStackLen=%d\n", u, len(c.quotationStack))
