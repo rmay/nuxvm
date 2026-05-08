@@ -39,7 +39,7 @@ IMPORT DIALOG
 	DIALOG::clear-items
 	F"Item 1" 6 DIALOG::add-item
 	F"Item 2" 6 DIALOG::add-item
-	DIALOG-LIST-BASE 4 + LOADI ( count )
+	DIALOG::DIALOG_LIST_BASE 4 + LOADI ( count )
 ;
 test-start
 `

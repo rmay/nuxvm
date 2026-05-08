@@ -24,24 +24,28 @@
 ;
 
 @store-byte ( byte addr -- )
-    ( byte addr )
-    dup 4 MOD ( byte addr offset )
-    swap 4 / 4 * ( byte offset aligned )
-    dup LOADI ( byte offset aligned old )
+    2 frame! ( 0:addr, 1:byte )
+    0 local@ 4 MOD ( offset )
+    0 local@ 4 / 4 * ( aligned )
+    dup LOADI ( offset aligned old )
     
-    ( byte offset aligned old )
+    ( offset aligned old )
     2 PICK ( offset )
-    dup 0 = [ drop 3 PICK 24 LSHIFT 0x00FFFFFF 2 PICK AND OR ] [
-        dup 1 = [ drop 3 PICK 16 LSHIFT 0xFF00FFFF 2 PICK AND OR ] [
-            dup 2 = [ drop 3 PICK 8 LSHIFT 0xFFFF00FF 2 PICK AND OR ] [
-                drop 3 PICK 0xFFFFFF00 2 PICK AND OR
+    0 = [ 1 local@ 24 LSHIFT 0x00FFFFFF 2 PICK AND OR ] [
+        2 PICK ( offset )
+        1 = [ 1 local@ 16 LSHIFT 0xFF00FFFF 2 PICK AND OR ] [
+            2 PICK ( offset )
+            2 = [ 1 local@ 8 LSHIFT 0xFFFF00FF 2 PICK AND OR ] [
+                1 local@ 0xFFFFFF00 2 PICK AND OR
             ] ?:
         ] ?:
     ] ?:
     
-    ( byte offset aligned new_val )
+    ( offset aligned old_ignored new_val )
+    swap drop ( offset aligned new_val )
     swap STOREI
-    drop drop drop
+    drop ( offset )
+    2 unframe!
 ;
 
 INCLUDE "lib/memory.lux"
@@ -55,20 +59,15 @@ IMPORT MEMORY
 @temp@ MEMORY::CTRL_TEMP LOADI ; @temp! MEMORY::CTRL_TEMP STOREI ;
 
 @strcpy-safe ( src dest -- )
-    MEMORY::CTRL_BASE LOADI ( save base )
-    rot rot
-    MEMORY::CTRL_BASE 8 + STOREI ( dest )
-    MEMORY::CTRL_BASE 12 + STOREI ( src )
-    
-    [ MEMORY::CTRL_BASE 12 + LOADI load-byte dup 0 > ] [
-        MEMORY::CTRL_BASE 8 + LOADI store-byte
-        MEMORY::CTRL_BASE 12 + LOADI 1 + MEMORY::CTRL_BASE 12 + STOREI
-        MEMORY::CTRL_BASE 8 + LOADI 1 + MEMORY::CTRL_BASE 8 + STOREI
+    2 frame! ( 0:dest, 1:src )
+    [ 1 local@ load-byte dup 0 > ] [
+        0 local@ store-byte
+        1 local@ 1 + 1 local!
+        0 local@ 1 + 0 local!
     ] |:
     drop ( final 0 )
-    0 MEMORY::CTRL_BASE 8 + LOADI store-byte
-    
-    MEMORY::CTRL_BASE STOREI
+    0 0 local@ store-byte
+    2 unframe!
 ;
 
 @strlen ( ptr -- len )
@@ -81,35 +80,29 @@ IMPORT MEMORY
 ;
 
 @strends ( str_ptr ext_ptr -- bool )
-    MEMORY::CTRL_BASE LOADI ( save base )
-    rot rot ( base str ext )
-    MEMORY::CTRL_BASE 8 + STOREI ( ext )
-    MEMORY::CTRL_BASE 12 + STOREI ( str )
-    
-    MEMORY::CTRL_BASE 12 + LOADI strlen MEMORY::CTRL_BASE 8 + LOADI strlen
+    2 frame! ( 0:ext, 1:str )
+    1 local@ strlen 0 local@ strlen
     TWO-DUP < [
         drop drop 0
     ] [
-        - MEMORY::CTRL_BASE 12 + LOADI + ( a_ptr )
+        - 1 local@ + ( a_ptr )
         1 ( match )
         [
-            MEMORY::CTRL_BASE 8 + LOADI load-byte 0 >
+            0 local@ load-byte 0 >
             OVER 1 = AND
         ] [
             drop ( match )
-            dup load-byte MEMORY::CTRL_BASE 8 + LOADI load-byte = [
-                1 +
-                MEMORY::CTRL_BASE 8 + LOADI 1 + MEMORY::CTRL_BASE 8 + STOREI
+            dup load-byte 0 local@ load-byte = [
+                0 local@ 1 + 0 local!
                 1 ( match )
             ] [
                 0 ( match )
             ] ?:
+            swap 1 + swap ( a_ptr++ )
         ] |:
-        ( stack: a_ptr match )
-        swap drop ( a_ptr match -> match )
+        swap drop ( a_ptr )
     ] ?:
-    
-    swap MEMORY::CTRL_BASE STOREI ( restore base, return result )
+    2 unframe!
 ;
 
 @init-locals ( -- ) ;

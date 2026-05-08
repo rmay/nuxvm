@@ -19,7 +19,7 @@ MODULE DIALOG
 
 ( --- State --- )
 @ITEMS_BUF MEMORY::DIALOG_ITEMS_BUF ;
-@.DIALOG-LIST-BASE MEMORY::DIALOG_LIST_BASE ;
+@DIALOG_LIST_BASE MEMORY::DIALOG_LIST_BASE ;
 @result_ptr_addr MEMORY::DIALOG_RESULT_PTR_ADDR ;
 @callback_addr MEMORY::DIALOG_CALLBACK_ADDR ;
 @saved_screen_addr MEMORY::DIALOG_SAVED_SCREEN_ADDR ;
@@ -60,12 +60,12 @@ MODULE DIALOG
 @drawing! drawing_addr STOREI ;
 
 @clear-items 
-    ITEMS_BUF 64 32 DIALOG-LIST-BASE CONTROLS::list-new
+    ITEMS_BUF 64 32 DIALOG_LIST_BASE CONTROLS::list-new
     0 drawing!
 ;
 
 @add-item ( ptr len -- )
-    DIALOG-LIST-BASE CONTROLS::list-add
+    DIALOG_LIST_BASE CONTROLS::list-add
 ;
 
 @DRAW-DIALOG
@@ -77,7 +77,7 @@ MODULE DIALOG
         1 DF::set-text-scale
 
         50 50 w@ h@ title@ CONTROLS::dialog-window
-        80 85 w@ 60 - h@ 80 - DIALOG-LIST-BASE CONTROLS::list-draw
+        80 85 w@ 60 - h@ 80 - DIALOG_LIST_BASE CONTROLS::list-draw
 
         w@ 50 + 200 - h@ 50 + 30 - 80 20 ok-label@ 0 CONTROLS::button
 
@@ -95,7 +95,7 @@ MODULE DIALOG
 @ON-KEY
     CTRL::key@
     dup 13 = [ ( Enter )
-        DIALOG-LIST-BASE 8 + LOADI ( sel )
+        DIALOG_LIST_BASE 8 + LOADI ( sel )
         32 * ITEMS_BUF + ( ptr )
         result_ptr@ strcpy-safe
         CLOSE
@@ -103,7 +103,7 @@ MODULE DIALOG
         drop ( key )
     ] [
         dup 27 = [ CLOSE drop ] [
-            DIALOG-LIST-BASE CONTROLS::list-key
+            DIALOG_LIST_BASE CONTROLS::list-key
             0 drawing!
         ] ?:
     ] ?:
@@ -117,7 +117,7 @@ MODULE DIALOG
         ( HIT OK? )
         DUP h@ 50 + 30 + <= [ DUP h@ 50 + 30 - >= ] [ 0 ] ?: [
             OVER w@ 50 + 200 - >= [ OVER w@ 50 + 120 - <= ] [ 0 ] ?: [
-                DIALOG-LIST-BASE 8 + LOADI ( sel )
+                DIALOG_LIST_BASE 8 + LOADI ( sel )
                 32 * ITEMS_BUF + ( ptr )
                 result_ptr@ strcpy-safe
                 CLOSE
@@ -138,7 +138,7 @@ MODULE DIALOG
                 ( List Click )
                 1 PICK 80 - 
                 1 PICK 85 -
-                w@ 60 - h@ 80 - DIALOG-LIST-BASE CONTROLS::list-click
+                w@ 60 - h@ 80 - DIALOG_LIST_BASE CONTROLS::list-click
                 0 drawing!
             ] ?
         ] ?
@@ -176,10 +176,7 @@ IMPORT MEMORY
     CURRENT_PATH strcpy-safe
 ;
 
-@load-files ( path-ptr -- )
-    1 frame!
-    0 local@ CURRENT_PATH strcpy-safe
-
+@load-files ( -- )
     FILE_ITEMS_BUF 128 32 FILE_LIST_BASE CONTROLS::list-new
 
     ( Pass 1: Directories )
@@ -208,7 +205,6 @@ IMPORT MEMORY
             ] ?:
         ] ?:
     ] FILE::dir-each
-    1 unframe!
 ;
 @DRAW-FILE-DIALOG
     DIALOG::drawing@ [ ] [

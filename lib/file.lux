@@ -80,20 +80,15 @@ MODULE FILE
     dup 0 >=
 ;
 
-( --- dir-each state --- )
-@DIR_QUOT MEMORY::FILE_DIR_QUOT ;
-@DIR_MAX  MEMORY::FILE_DIR_MAX ;
-
-( @dir-each ( name-ptr line-buf max quot -- ) )
 @dir-each ( name-ptr line-buf max quot -- )
-    DIR_QUOT STOREI
-    DIR_MAX STOREI
-    buf!
-    name!
+    4 frame! ( 0:quot, 1:max, 2:line-buf, 3:name-ptr )
+    2 local@ buf!
+    3 local@ name!
     
-    [ DIR_MAX LOADI list dup 0 > ] [
+    [ 1 local@ list dup 0 > ] [
         ( len )
-        DIR_QUOT LOADI CALL
+        0 local@ CALL
     ] |:
     drop ( Drop the final 0 length )
+    4 unframe!
 ;
