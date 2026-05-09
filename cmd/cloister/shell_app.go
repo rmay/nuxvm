@@ -160,7 +160,7 @@ func (g *Game) drawShellContent(win *system.WindowRecord, img *ebiten.Image) {
 	}
 	img.Fill(color.RGBA{0, 0, 0, 255})
 	fg := color.RGBA{255, 255, 255, 255}
-	const lineH = 15
+	const lineH = 16
 	
 	// Inner height available for text (excluding scrollbars)
 	innerH := int(win.ContRgn.Height()) - system.WinScrollbarSize

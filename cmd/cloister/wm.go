@@ -136,7 +136,7 @@ func (wm *WindowManager) HitTest(x, y, TopBarH int, windows []*system.WindowReco
 				return HitResult{WinID: win.ID, Zone: HitZoneCloseButton, LocalX: x - int(win.StrucRgn.Left), LocalY: y - int(win.StrucRgn.Top)}
 			}
 			// Menu bar check
-			if win.MenuTablePtr != 0 && x >= int(win.StrucRgn.Left)+50 {
+			if win.MenuTablePtr != 0 && x >= int(win.StrucRgn.Left)+30 {
 				return HitResult{WinID: win.ID, Zone: HitZoneMenuBar, LocalX: x - int(win.StrucRgn.Left), LocalY: y - int(win.StrucRgn.Top)}
 			}
 			// Rest of title bar: draggable

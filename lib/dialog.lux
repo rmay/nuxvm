@@ -88,10 +88,31 @@ MODULE DIALOG
     ] ?:
 ;
 
+@saved_pane MEMORY::DIALOG_SAVED_PANE ;
+
+@save-pane ( -- )
+    DF::PANE-BASE LOADI saved_pane STOREI
+    DF::PANE-BASE 4 + LOADI saved_pane 4 + STOREI
+    DF::PANE-BASE 8 + LOADI saved_pane 8 + STOREI
+    DF::PANE-BASE 12 + LOADI saved_pane 12 + STOREI
+    DF::PANE-BASE 16 + LOADI saved_pane 16 + STOREI
+    DF::PANE-BASE 20 + LOADI saved_pane 20 + STOREI
+;
+
+@restore-pane ( -- )
+    saved_pane LOADI DF::PANE-BASE STOREI
+    saved_pane 4 + LOADI DF::PANE-BASE 4 + STOREI
+    saved_pane 8 + LOADI DF::PANE-BASE 8 + STOREI
+    saved_pane 12 + LOADI DF::PANE-BASE 12 + STOREI
+    saved_pane 16 + LOADI DF::PANE-BASE 16 + STOREI
+    saved_pane 20 + LOADI DF::PANE-BASE 20 + STOREI
+;
+
 @CLOSE
     saved_screen@ 0x10020 STOREI
     saved_ctrl@ 0x10040 STOREI
     saved_mouse@ 0x10050 STOREI
+    restore-pane
 ;
 
 @ON-KEY
@@ -163,6 +184,7 @@ MODULE DIALOG
     0x10020 LOADI saved_screen!
     0x10040 LOADI saved_ctrl!
     0x10050 LOADI saved_mouse!
+    save-pane
     [ DRAW-DIALOG ] 0x10020 STOREI
     [ ON-KEY ] 0x10040 STOREI
     [ ON-MOUSE ] 0x10050 STOREI
@@ -233,10 +255,10 @@ MODULE FILE-DIALOG
         50 50 DIALOG::w@ DIALOG::h@ DIALOG::title@ WINDOW::draw-frame
         
         ( Current Path Dropdown Button )
-        DIALOG::w@ 2 / 50 + 80 - 65 160 20 CURRENT_PATH get-filename 0 CONTROLS::button
+        DIALOG::w@ 2 / 50 + 80 - 80 160 20 CURRENT_PATH 0 CONTROLS::button
         
         ( List )
-        80 95 DIALOG::w@ 60 - DIALOG::h@ 110 - FILE_LIST_BASE CONTROLS::list-draw
+        80 110 DIALOG::w@ 60 - DIALOG::h@ 110 - FILE_LIST_BASE CONTROLS::list-draw
         
         ( Buttons )
         DIALOG::w@ 50 + 200 - DIALOG::h@ 50 + 30 - 80 20 DIALOG::ok-label@ 0 CONTROLS::button
@@ -244,7 +266,7 @@ MODULE FILE-DIALOG
         
         ( Dropdown Overlay )
         dropdown-open@ [
-            DIALOG::w@ 2 / 50 + 80 - 85 160 100 DROPDOWN_LIST_BASE CONTROLS::list-draw
+            DIALOG::w@ 2 / 50 + 80 - 100 160 100 DROPDOWN_LIST_BASE CONTROLS::list-draw
         ] ?
     ] ?:
 ;
@@ -272,14 +294,14 @@ MODULE FILE-DIALOG
         ] [
             ( Check Filter )
             FILTER_EXT@ [
-                DIALOG::SCRATCH_BUF FILTER_EXT@ strends [
+                DIALOG::SCRATCH_BUF 5 + FILTER_EXT@ strends [
                     2 DIALOG::SCRATCH_BUF 256 + store-byte
-                    DIALOG::SCRATCH_BUF DIALOG::SCRATCH_BUF 257 + strcpy-safe
+                    DIALOG::SCRATCH_BUF 5 + DIALOG::SCRATCH_BUF 257 + strcpy-safe
                     DIALOG::SCRATCH_BUF 256 + 32 FILE_LIST_BASE CONTROLS::list-add
                 ] [ drop ] ?:
             ] [
                 2 DIALOG::SCRATCH_BUF 256 + store-byte
-                DIALOG::SCRATCH_BUF DIALOG::SCRATCH_BUF 257 + strcpy-safe
+                DIALOG::SCRATCH_BUF 5 + DIALOG::SCRATCH_BUF 257 + strcpy-safe
                 DIALOG::SCRATCH_BUF 256 + 32 FILE_LIST_BASE CONTROLS::list-add
             ] ?:
         ] ?:
@@ -294,22 +316,34 @@ MODULE FILE-DIALOG
             1 + ( p-dirname )
             ( Safe Path Construction - use SELECTED_DIR as intermediate )
             CURRENT_PATH SELECTED_DIR strcpy-safe
-            F"/" SELECTED_DIR strcat
-            swap ( p-dirname ) SELECTED_DIR strcat
+            
+            ( Avoid double slash if at root )
+            CURRENT_PATH strlen 1 > [
+                F"/" SELECTED_DIR strcat
+            ] ?
+            
+            SELECTED_DIR strcat
             SELECTED_DIR CURRENT_PATH strcpy-safe
             
             load-files
             0 DIALOG::drawing!
+            drop ( sel )
         ] [
             ( File )
             1 + ( p-filename )
             ( Full path to result_ptr )
             CURRENT_PATH DIALOG::result_ptr@ strcpy-safe
-            F"/" DIALOG::result_ptr@ strcat
-            swap ( p-filename ) DIALOG::result_ptr@ strcat
+            
+            ( Avoid double slash if at root )
+            CURRENT_PATH strlen 1 > [
+                F"/" DIALOG::result_ptr@ strcat
+            ] ?
+            
+            DIALOG::result_ptr@ strcat
             
             DIALOG::CLOSE
             DIALOG::callback@ CALL
+            drop ( sel )
         ] ?:
     ] [ drop ] ?:
 ;
@@ -323,11 +357,11 @@ MODULE FILE-DIALOG
             
             ( 1. Dropdown List )
             dropdown-open@ [
-                DUP 85 >= [ DUP 185 <= ] [ 0 ] ?: [
+                DUP 100 >= [ DUP 200 <= ] [ 0 ] ?: [
                     OVER DIALOG::w@ 2 / 50 + 80 - >= [ OVER DIALOG::w@ 2 / 50 + 80 + <= ] [ 0 ] ?: [
                         DROPDOWN_LIST_BASE 8 + LOADI ( old-sel )
                         2 PICK DIALOG::w@ 2 / 50 + 80 - -
-                        2 PICK 85 -
+                        2 PICK 100 -
                         160 100 DROPDOWN_LIST_BASE CONTROLS::list-click
                         DROPDOWN_LIST_BASE 8 + LOADI ( new-sel )
                         DUP 0 >= [
@@ -339,20 +373,27 @@ MODULE FILE-DIALOG
                 ] [ 0 dropdown-open! 0 DIALOG::drawing! ] ?:
             ] [
                 ( 2. Dropdown Button )
-                DUP 65 >= [ DUP 85 <= ] [ 0 ] ?: [
+                DUP 80 >= [ DUP 100 <= ] [ 0 ] ?: [
                     OVER DIALOG::w@ 2 / 50 + 80 - >= [ OVER DIALOG::w@ 2 / 50 + 80 + <= ] [ 0 ] ?: [
                         populate-dropdown 1 dropdown-open! 0 DIALOG::drawing!
                     ] ?
                 ] ?
 
                 ( 3. File List )
-                DUP 95 >= [ DUP DIALOG::h@ 35 + <= ] [ 0 ] ?: [
+                DUP 110 >= [ DUP DIALOG::h@ 50 + <= ] [ 0 ] ?: [
                     OVER 80 >= [ OVER DIALOG::w@ 20 + <= ] [ 0 ] ?: [
                         FILE_LIST_BASE 8 + LOADI ( old-sel )
-                        2 PICK 80 - 2 PICK 95 -
+                        2 PICK 80 - 2 PICK 110 -
                         DIALOG::w@ 60 - DIALOG::h@ 110 - FILE_LIST_BASE CONTROLS::list-click
                         FILE_LIST_BASE 8 + LOADI ( new-sel )
-                        DUP 2 PICK = [ open-selected drop ] [ drop ] ?:
+                        
+                        ( ONLY open if click was NOT in the scrollbar area )
+                        3 PICK 80 - ( local x )
+                        DIALOG::w@ 60 - 16 - ( list width - scrollbar )
+                        < [
+                            DUP 2 PICK = [ open-selected drop ] [ drop ] ?:
+                        ] [ drop ] ?:
+
                         drop ( old-sel ) 0 DIALOG::drawing!
                     ] ?
                 ] ?
@@ -422,6 +463,7 @@ MODULE FILE-DIALOG
     0x10020 LOADI DIALOG::saved_screen!
     0x10040 LOADI DIALOG::saved_ctrl!
     0x10050 LOADI DIALOG::saved_mouse!
+    DIALOG::save-pane
     [ DRAW-FILE-DIALOG ] 0x10020 STOREI
     [ ON-FILE-KEY ] 0x10040 STOREI
     [ ON-FILE-MOUSE ] 0x10050 STOREI

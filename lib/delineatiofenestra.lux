@@ -118,47 +118,64 @@ MODULE DELINEATIOFENESTRA
 ;
 
 @pixel ( color x y -- )
-    3 frame! ( 0:y, 1:x, 2:rgb )
-    1 local@ x-ok? [
-        0 local@ y-ok? [
-            2 local@ 
-            1 local@ pane-x@ + ( window x )
-            0 local@ pane-y@ + ( window y )
-            SCREEN::pixel!
-        ] ?
-    ] ?
-    3 unframe!
+    ( color x y )
+    DUP 0 < [ drop drop drop ] [
+        DUP pane-h@ < [
+            ( color x y )
+            OVER 0 < [ drop drop drop ] [
+                OVER pane-w@ < [
+                    ( color x y )
+                    pane-y@ + ( color x y' )
+                    swap pane-x@ + ( color y' x' )
+                    swap ( color x' y' )
+                    SCREEN::pixel!
+                ] [ drop drop drop ] ?:
+            ] ?:
+        ] [ drop drop drop ] ?:
+    ] ?:
 ;
 
 ( --- Lines --- )
 
 @h-line ( rgb x y len -- )
     4 frame! ( 0:len, 1:y, 2:x, 3:rgb )
-    0 ( i )
-    [
-        ( i )
-        3 local@ ( rgb )
-        2 local@ 2 PICK + ( x+i )
-        1 local@ ( y )
-        pixel
-        1 + ( i++ )
-    ] 0 local@ ( len ) 0 MAX #:
-    drop ( i )
+    1 local@ y-ok? [
+        ( Translate y once )
+        1 local@ pane-y@ + 1 local!
+        
+        0 ( i )
+        [
+            2 local@ 1 PICK + ( x+i )
+            dup x-ok? [
+                ( Translate x+i )
+                pane-x@ + ( win-x )
+                3 local@ ( rgb ) swap 1 local@ SCREEN::pixel!
+            ] [ drop ] ?:
+            1 + ( i++ )
+        ] 0 local@ ( len ) 0 MAX #:
+        drop
+    ] ?
     4 unframe!
 ;
 
 @v-line ( rgb x y len -- )
     4 frame! ( 0:len, 1:y, 2:x, 3:rgb )
-    0 ( i )
-    [
-        ( i )
-        3 local@ ( rgb )
-        2 local@ ( x )
-        1 local@ 3 PICK + ( y+i )
-        pixel
-        1 + ( i++ )
-    ] 0 local@ ( len ) 0 MAX #:
-    drop ( i )
+    2 local@ x-ok? [
+        ( Translate x once )
+        2 local@ pane-x@ + 2 local!
+        
+        0 ( i )
+        [
+            1 local@ 1 PICK + ( y+i )
+            dup y-ok? [
+                ( Translate y+i )
+                pane-y@ + ( win-y )
+                3 local@ ( rgb ) swap 2 local@ swap SCREEN::pixel!
+            ] [ drop ] ?:
+            1 + ( i++ )
+        ] 0 local@ ( len ) 0 MAX #:
+        drop
+    ] ?
     4 unframe!
 ;
 
@@ -184,13 +201,15 @@ MODULE DELINEATIOFENESTRA
     5 frame! ( 0:h, 1:w, 2:y, 3:x, 4:rgb )
     0 ( row )
     [
-        ( row )
+        ( stack: row )
         4 local@ ( rgb )
         3 local@ ( x )
-        2 local@ 3 PICK + ( y+row )
-        1 local@ ( w ) 0 MAX h-line
+        2 local@ 3 PICK + ( y' )
+        1 local@ ( w )
+        h-line
         1 + ( row++ )
-    ] 0 local@ ( h ) 0 MAX #:
+    ]
+ 0 local@ ( h ) 0 MAX #:
     drop ( row )
     5 unframe!
 ;

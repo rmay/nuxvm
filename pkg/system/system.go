@@ -509,6 +509,7 @@ func (s *System) readDirEntry(length uint32) int32 {
 	lineBytes := []byte(line)
 	if uint32(len(lineBytes)) > length {
 		lineBytes = lineBytes[:length]
+		lineBytes[length-1] = 0 // Force null-termination
 	}
 	copy(s.memory[s.fileBufferPtr:], lineBytes)
 	return int32(len(lineBytes))

@@ -7,7 +7,7 @@ import (
 )
 
 //go:embed chicago12x12.cff
-var chicagoCFF []byte
+var ChicagoCFF []byte
 
 // The Text device renders characters into the framebuffer using the Ebiten
 // debug font (7x13) or the new Chicago 12x12 CFF font.
@@ -165,7 +165,7 @@ func (s *System) drawCharCFF(c byte) {
 		return
 	}
 
-	width := int(chicagoCFF[c])
+	width := int(ChicagoCFF[c])
 	if width == 0 {
 		// Use a default width for space if not set
 		if c == ' ' {
@@ -175,7 +175,7 @@ func (s *System) drawCharCFF(c byte) {
 		}
 	}
 
-	s.drawCFFRaw(chicagoCFF, c, int32(s.text.cursorX), int32(s.text.cursorY), s.text.color, 16, scale)
+	s.drawCFFRaw(ChicagoCFF, c, int32(s.text.cursorX), int32(s.text.cursorY), s.text.color, 16, scale)
 	s.text.cursorX += uint16(width * scale)
 }
 

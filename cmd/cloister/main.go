@@ -12,11 +12,9 @@ import (
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
-	"github.com/hajimehoshi/ebiten/v2/text"
 	"github.com/hajimehoshi/ebiten/v2/vector"
 	"github.com/rmay/nuxvm/pkg/lux"
 	"github.com/rmay/nuxvm/pkg/system"
-	"golang.org/x/image/font/basicfont"
 )
 
 var screenScale = 10
@@ -189,29 +187,43 @@ func luxKeyCodeFromEbiten(k ebiten.Key) int32 {
 	}
 }
 
-var font = map[rune][5]byte{
-	'C': {0x7, 0x4, 0x4, 0x4, 0x7},
-	'L': {0x4, 0x4, 0x4, 0x4, 0x7},
-	'O': {0x7, 0x5, 0x5, 0x5, 0x7},
-	'I': {0x7, 0x2, 0x2, 0x2, 0x7},
-	'S': {0x7, 0x4, 0x7, 0x1, 0x7},
-	'T': {0x7, 0x2, 0x2, 0x2, 0x2},
-	'E': {0x7, 0x4, 0x7, 0x4, 0x7},
-	'R': {0x7, 0x5, 0x7, 0x6, 0x5},
-}
+var chicagoFontCache [256]*ebiten.Image
+var chicagoCharWidth [256]int
 
-func drawText(screen *ebiten.Image, text string, x, y int, clr color.Color) {
-	for i, r := range text {
-		if glyph, ok := font[r]; ok {
-			for row := 0; row < 5; row++ {
-				for col := 0; col < 3; col++ {
-					if glyph[row]&(1<<(2-col)) != 0 {
-						screen.Set(x+i*4+col, y+row, clr)
+func initChicagoFont() {
+	if len(system.ChicagoCFF) < 256 {
+		return
+	}
+	for i := 0; i < 256; i++ {
+		w := int(system.ChicagoCFF[i])
+		if w == 0 && i == ' ' {
+			w = 4
+		}
+		chicagoCharWidth[i] = w
+
+		img := ebiten.NewImage(16, 16)
+		glyphOffset := 256 + i*4*8 // 4 tiles per glyph, 8 bytes per tile
+		if glyphOffset+32 <= len(system.ChicagoCFF) {
+			for tx := 0; tx < 2; tx++ {
+				for ty := 0; ty < 2; ty++ {
+					tileIdx := (tx * 2) + ty
+					for row := 0; row < 8; row++ {
+						bits := system.ChicagoCFF[glyphOffset+tileIdx*8+row]
+						for col := 0; col < 8; col++ {
+							if bits&(0x80>>col) != 0 {
+								img.Set(tx*8+col, ty*8+row, color.White)
+							}
+						}
 					}
 				}
 			}
 		}
+		chicagoFontCache[i] = img
 	}
+}
+
+func drawText(screen *ebiten.Image, s string, x, y int, clr color.Color) {
+	drawSystemFontText(screen, s, x, y, 1, clr)
 }
 
 // menubarHitTest returns true if (x,y) is over the % glyph in the Top bar.
@@ -221,7 +233,13 @@ func menubarHitTest(x, y int) bool {
 }
 
 func measureSystemFontText(s string, scale int) int {
-	return len(s) * shellFontW * scale
+	w := 0
+	for _, r := range s {
+		if r < 256 {
+			w += chicagoCharWidth[r] * scale
+		}
+	}
+	return w
 }
 
 // strokeRect draws a 1px outline of a rectangle. ebitenutil.DrawRect fills,
@@ -230,14 +248,25 @@ func strokeRect(screen *ebiten.Image, x, y, w, h float32, clr color.Color) {
 	vector.StrokeRect(screen, x, y, w, h, 1, clr, false)
 }
 
-// drawSystemFontText renders s with basicfont.Face7x13. (x, y) is the Top-Left of
-// the glyph cell; basicfont's baseline sits 11px below the Top.
-const shellFontW = 7
-const shellFontH = 13
-const shellFontAscent = 11
+// drawSystemFontText renders s with the Chicago CFF font.
+const shellFontH = 16
 
 func drawSystemFontText(screen *ebiten.Image, s string, x, y, scale int, clr color.Color) {
-	text.Draw(screen, s, basicfont.Face7x13, x, y+shellFontAscent, clr)
+	for _, r := range s {
+		if r >= 256 {
+			continue
+		}
+		img := chicagoFontCache[r]
+		if img == nil {
+			continue
+		}
+		op := &ebiten.DrawImageOptions{}
+		op.GeoM.Scale(float64(scale), float64(scale))
+		op.GeoM.Translate(float64(x), float64(y))
+		op.ColorScale.ScaleWithColor(clr)
+		screen.DrawImage(img, op)
+		x += chicagoCharWidth[r] * scale
+	}
 }
 
 func drawShellText(screen *ebiten.Image, s string, x, y int, clr color.Color) {
@@ -249,11 +278,11 @@ func drawShellText(screen *ebiten.Image, s string, x, y int, clr color.Color) {
 func clockFormatString(idx int) string {
 	switch idx {
 	case 1:
-		return "3:04"
+		return "Mon Jan 2 3:04"
 	case 2:
-		return "3:04 PM"
+		return "Mon Jan 2 3:04 PM"
 	default:
-		return "15:04"
+		return "Mon Jan 2 15:04"
 	}
 }
 
@@ -647,7 +676,7 @@ func (g *Game) Update() error {
 						mem := app.machine.CPU.Memory()
 						title, _ := readMenuFromMem(mem, win.MenuTablePtr)
 						titleW := measureSystemFontText(title, 1) + 12
-						if hit.LocalX >= 50 && hit.LocalX < 50+titleW {
+						if hit.LocalX >= 30 && hit.LocalX < 30+titleW {
 							if g.openMenuWinID == hit.WinID {
 								g.openMenuWinID = 0
 								g.openMenuIdx = -1
@@ -700,6 +729,14 @@ func (g *Game) Update() error {
 					g.machine.Services().QueueMouseButton(int32(hit.LocalX), int32(hit.LocalY), 1, true)
 				}
 			}
+		} else if justReleased {
+			if hit.Zone == HitZoneContent {
+				if app := g.luxAppForWinID(hit.WinID); app != nil {
+					app.machine.QueueMouseButton(int32(hit.LocalX), int32(hit.LocalY), 0, false)
+				} else {
+					g.machine.Services().QueueMouseButton(int32(hit.LocalX), int32(hit.LocalY), 0, false)
+				}
+			}
 		} else if g.openMenuWinID != 0 && hit.WinID == g.openMenuWinID {
 			// Track hover over open menu dropdown
 			if win := g.machine.Services().GetWindowByID(g.openMenuWinID); win != nil {
@@ -708,12 +745,12 @@ func (g *Game) Update() error {
 					_, items := readMenuFromMem(mem, win.MenuTablePtr)
 
 					// Calculate which item is under the mouse
-					dropX := int(win.ContRgn.Left) + 50
+					dropX := int(win.ContRgn.Left) + 30
 					dropW := 150
 					dropY := int(win.ContRgn.Top) + 20
 					
 					if mx >= dropX && mx < dropX+dropW {
-						itemIdx := (my - dropY - 2) / 16
+						itemIdx := (my - dropY - 2) / 18
 						if itemIdx < 0 || itemIdx >= len(items) {
 							g.openMenuIdx = -1
 						} else {
@@ -812,8 +849,9 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 	if g.bootTimer > 0 {
 		screen.Fill(g.clearColor)
-		// Center "CLOISTER" (8 chars * 4px = 32px wide)
-		drawText(screen, "CLOISTER", (sw-32)/2, (sh-5)/2, color.White)
+		// Center "CLOISTER"
+		w := measureSystemFontText("CLOISTER", 1)
+		drawText(screen, "CLOISTER", (sw-w)/2, (sh-shellFontH)/2, color.White)
 		return
 	}
 
@@ -870,7 +908,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	ebitenutil.DrawRect(screen, 0, 0, float64(sw), float64(TopBarHeight), color.White)
 	ebitenutil.DrawLine(screen, 0, float64(TopBarHeight), float64(sw), float64(TopBarHeight), color.Black)
 	textY := (TopBarHeight - shellFontH) / 2
-	drawShellText(screen, "%", 4, textY, color.Black)
+	drawShellText(screen, "~", 4, textY, color.Black)
 
 	winName := "Cloister"
 
@@ -942,7 +980,7 @@ func (g *Game) drawWindowMenuBar(screen *ebiten.Image, win *system.WindowRecord,
 	// Menu bar is integrated into the chrome (title bar).
 	// Chrome is at struc.Top, 20px tall.
 	menuBarY := int(win.StrucRgn.Top)
-	menuBarX := int(win.StrucRgn.Left) + 50 // Offset by 50 to avoid Lux close button
+	menuBarX := int(win.StrucRgn.Left) + 30 // Offset by 30 to avoid Lux close button
 
 	// Draw menu title on the left of the chrome
 	titleX := menuBarX
@@ -971,10 +1009,10 @@ func (g *Game) drawOpenMenuDropdown(screen *ebiten.Image, win *system.WindowReco
 	}
 
 	// Dropdown box: white background with black border, items spaced vertically
-	dropX := int(win.ContRgn.Left) + 50
+	dropX := int(win.ContRgn.Left) + 30
 	dropY := int(win.ContRgn.Top) + 20
 	dropW := 150
-	dropH := len(items)*16 + 4
+	dropH := len(items)*18 + 4
 
 	ebitenutil.DrawRect(screen, float64(dropX), float64(dropY),
 		float64(dropW), float64(dropH), color.White)
@@ -982,8 +1020,8 @@ func (g *Game) drawOpenMenuDropdown(screen *ebiten.Image, win *system.WindowReco
 
 	// Draw items
 	for i, item := range items {
-		itemY := dropY + 2 + i*16
-		itemH := 14
+		itemY := dropY + 2 + i*18
+		itemH := 18
 
 		// Hover highlight
 		if i == g.openMenuIdx {
@@ -1848,6 +1886,7 @@ func (c *clipboardBus) Write(address uint32, value int32) error {
 }
 
 func main() {
+	initChicagoFont()
 	memFlag := flag.Int("mem", 12, "VM memory size in megabytes (max 128)")
 	widthFlag := flag.Int("w", 0, "Screen width override (0 = defer to shell.lux)")
 	heightFlag := flag.Int("h", 0, "Screen height override (0 = defer to shell.lux)")

@@ -79,7 +79,7 @@ MODULE ILLUMINATOR
 ;
 
 @on-open
-    F"." F".cff" FILENAME_BUF [ 0 drawing! FILENAME_BUF load-data ] FILE-DIALOG::show
+    F"." F"" FILENAME_BUF [ 0 drawing! FILENAME_BUF load-data ] FILE-DIALOG::show
 ;
 
 @on-key

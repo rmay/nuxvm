@@ -59,10 +59,17 @@ MODULE OURFATHER
     DF::use-window     -1 DF::clear-screen
     1  DF::set-text-scale
     255 DF::set-pen-color
-    0 2 DF::use-pane-h    DRAW-ENGLISH
-    1 2 DF::use-pane-h    DRAW-LATIN
+    
+    ( Window Chrome )
+    0 0 DF::window-w DF::window-h F"Our Father" WINDOW::draw-frame
+    
+    ( Panes inside window )
+    ( content starts at 4, 24 )
+    4 24 DF::window-w 2 / 4 - DF::window-h 28 - DF::use-rect DRAW-ENGLISH
+    DF::window-w 2 / 24 DF::window-w 2 / 4 - DF::window-h 28 - DF::use-rect DRAW-LATIN
+    
     DF::use-window
-    0 DF::window-w 2 / 0 DF::window-h DF::v-line
+    0 DF::window-w 2 / 24 DF::window-h 28 - DF::v-line
 ;
 
 @keep-alive

@@ -81,6 +81,9 @@ func (g *Game) tickLuxApps() {
 	}
 	services := g.machine.Services()
 	saved := services.GetActiveWindowID()
+
+	var toClose []system.WindowID
+
 	for _, app := range g.apps {
 		if app.machine == nil {
 			continue
@@ -91,14 +94,19 @@ func (g *Game) tickLuxApps() {
 		running, err := app.machine.Tick()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "lux app %s tick: %v\n", app.name, err)
+			toClose = append(toClose, app.winID)
 			continue
 		}
 		if !running {
-			app.machine.CPU.ClearYield()
+			toClose = append(toClose, app.winID)
 		}
 		g.wm.MarkDirty(app.winID)
 	}
 	services.SetRenderTarget(saved)
+
+	for _, winID := range toClose {
+		g.closeLuxApp(winID)
+	}
 }
 
 // closeLuxApp tears down the app whose window matches winID. Returns true if
