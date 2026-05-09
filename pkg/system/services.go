@@ -30,9 +30,9 @@ type WindowReply struct {
 // Window chrome geometry constants (moved from wm.go)
 const (
 	TopBarHeight      = 24
-	WinChromeHeight   = 20 // title bar height per window
+	WinChromeHeight   = 0 // title bar height per window (Lux handles this now)
 	WinMenuBarHeight  = 18 // menu bar height (if present)
-	WinBorderWidth    = 1  // 1px border all sides
+	WinBorderWidth    = 0  // 1px border all sides
 	WindowInset       = 4  // standard inset for windows from edges
 	WinScrollbarSize  = 15 // vertical and horizontal scrollbar thickness
 )

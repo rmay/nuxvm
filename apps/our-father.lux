@@ -62,7 +62,7 @@ MODULE OURFATHER
     0 2 DF::use-pane-h    DRAW-ENGLISH
     1 2 DF::use-pane-h    DRAW-LATIN
     DF::use-window
-    255 DF::window-w 2 / 0 DF::window-h DF::v-line
+    0 DF::window-w 2 / 0 DF::window-h DF::v-line
 ;
 
 @keep-alive

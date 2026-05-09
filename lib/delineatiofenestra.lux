@@ -12,7 +12,8 @@
   it emits each char to TEXT::emit, honouring the cursor / color /
   scale set via move-to / set-pen-color / set-text-scale. )
 
-INCLUDE "lib/system.lux"
+INCLUDE "lib/screen.lux"
+INCLUDE "lib/text.lux"
 IMPORT SCREEN
 IMPORT TEXT
 
@@ -38,8 +39,8 @@ MODULE DELINEATIOFENESTRA
 
 ( --- Window-size accessors --- )
 
-@window-w  ( -- w )  SCREEN::width ;
-@window-h  ( -- h )  SCREEN::height ;
+@window-w  ( -- w )  SCREEN::addr 4 + LOADI ;
+@window-h  ( -- h )  SCREEN::addr 8 + LOADI ;
 
 ( --- Pane selectors --- )
 
@@ -48,7 +49,7 @@ MODULE DELINEATIOFENESTRA
 ;
 
 @use-window ( -- )
-    0 0 window-w window-h use-rect
+    0 0 SCREEN::addr 4 + LOADI SCREEN::addr 8 + LOADI use-rect
 ;
 
 @use-pane-h ( idx total -- )
@@ -116,68 +117,82 @@ MODULE DELINEATIOFENESTRA
     dup 0 < [ drop 0 ] [ pane-w@ < ] ?:
 ;
 
-@pixel ( rgb x y -- )
-    TWO-DUP                    ( rgb x y x y )
-    y-ok?                   ( rgb x y x y-ok )
-    swap                       ( rgb x y y-ok x )
-    x-ok?                   ( rgb x y y-ok x-ok )
-    AND                        ( rgb x y both )
-    [ pane-y@ + swap pane-x@ + swap SCREEN::pixel! ]
-    [ drop drop drop ]
-    ?:
+@pixel ( color x y -- )
+    3 frame! ( 0:y, 1:x, 2:rgb )
+    1 local@ x-ok? [
+        0 local@ y-ok? [
+            2 local@ 
+            1 local@ pane-x@ + ( window x )
+            0 local@ pane-y@ + ( window y )
+            SCREEN::pixel!
+        ] ?
+    ] ?
+    3 unframe!
 ;
 
+( --- Lines --- )
+
 @h-line ( rgb x y len -- )
-    4 frame!
+    4 frame! ( 0:len, 1:y, 2:x, 3:rgb )
+    0 ( i )
     [
+        ( i )
         3 local@ ( rgb )
-        2 local@ ( x )
+        2 local@ 2 PICK + ( x+i )
         1 local@ ( y )
         pixel
-        
-        2 local@ 1 + 2 local! ( x++ )
+        1 + ( i++ )
     ] 0 local@ ( len ) 0 MAX #:
+    drop ( i )
     4 unframe!
 ;
 
 @v-line ( rgb x y len -- )
-    4 frame!
+    4 frame! ( 0:len, 1:y, 2:x, 3:rgb )
+    0 ( i )
     [
+        ( i )
         3 local@ ( rgb )
         2 local@ ( x )
-        1 local@ ( y )
+        1 local@ 3 PICK + ( y+i )
         pixel
-        
-        1 local@ 1 + 1 local! ( y++ )
+        1 + ( i++ )
     ] 0 local@ ( len ) 0 MAX #:
+    drop ( i )
     4 unframe!
 ;
 
 ( --- Rectangles --- )
 
 @frame-rect ( rgb x y w h -- )
-    5 frame!
-    ( top: rgb x y w )
-    4 local@ 3 local@ 2 local@ 1 local@ 0 MAX h-line
-    ( bottom: rgb x y+h-1 w )
-    4 local@ 3 local@ 2 local@ 0 local@ + 1 - 1 local@ 0 MAX h-line
-    ( left: rgb x y h )
-    4 local@ 3 local@ 2 local@ 0 local@ 0 MAX v-line
-    ( right: rgb x+w-1 y h )
-    4 local@ 3 local@ 1 local@ + 1 - 2 local@ 0 local@ 0 MAX v-line
+    5 frame! ( 0:h, 1:w, 2:y, 3:x, 4:rgb )
+    4 local@ 3 local@ 2 local@ 1 local@ ( rgb x y w )
+    h-line
+    
+    4 local@ 3 local@ 2 local@ 0 local@ + 1 - 1 local@ ( rgb x y+h-1 w )
+    h-line
+    
+    4 local@ 3 local@ 2 local@ 0 local@ ( rgb x y h )
+    v-line
+    
+    4 local@ 3 local@ 1 local@ + 1 - 2 local@ 0 local@ ( rgb x+w-1 y h )
+    v-line
     5 unframe!
 ;
 
 @fill-rect ( rgb x y w h -- )
-    0 ( row ) 6 frame!
+    5 frame! ( 0:h, 1:w, 2:y, 3:x, 4:rgb )
+    0 ( row )
     [
-        5 local@ ( rgb )
-        4 local@ ( x )
-        3 local@ 0 local@ + ( y+row )
-        2 local@ ( w ) 0 MAX h-line
-        0 local@ 1 + 0 local! ( row++ )
-    ] 1 local@ ( h ) 0 MAX #:
-    6 unframe!
+        ( row )
+        4 local@ ( rgb )
+        3 local@ ( x )
+        2 local@ 3 PICK + ( y+row )
+        1 local@ ( w ) 0 MAX h-line
+        1 + ( row++ )
+    ] 0 local@ ( h ) 0 MAX #:
+    drop ( row )
+    5 unframe!
 ;
 
 

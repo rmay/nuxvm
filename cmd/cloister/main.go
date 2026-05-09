@@ -708,9 +708,9 @@ func (g *Game) Update() error {
 					_, items := readMenuFromMem(mem, win.MenuTablePtr)
 
 					// Calculate which item is under the mouse
-					dropX := int(win.ContRgn.Left) + 4
+					dropX := int(win.ContRgn.Left) + 50
 					dropW := 150
-					dropY := int(win.ContRgn.Top)
+					dropY := int(win.ContRgn.Top) + 20
 					
 					if mx >= dropX && mx < dropX+dropW {
 						itemIdx := (my - dropY - 2) / 16
@@ -823,7 +823,6 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	// Get all windows for sync but only render visible panes
 	windows := g.machine.System.Services.ListWindowsSorted()
 	g.wm.SyncImages(windows)
-	activeID := g.machine.Services().GetActiveWindowID()
 
 	// Refresh content for host-rendered windows (launcher, shell)
 	if g.launcherWinID != 0 {
@@ -848,21 +847,19 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		if win == nil {
 			continue
 		}
-		// Draw window chrome (title bar, border, close/prev/next buttons)
-		g.drawWindowChrome(screen, win, win.ID == activeID)
-		// Draw window menu bar (if present)
-		if app := g.luxAppForWinID(win.ID); app != nil && win.MenuTablePtr != 0 {
-			g.drawWindowMenuBar(screen, win, app)
-		}
+		
 		// Draw window content from cached image
 		if img := g.wm.ContentImage(win.ID); img != nil {
 			op := &ebiten.DrawImageOptions{}
 			op.GeoM.Translate(float64(win.ContRgn.Left), float64(win.ContRgn.Top))
 			screen.DrawImage(img, op)
 		}
-		// Scrollbars paint *after* the framebuffer so the gutter is visible
-		// (otherwise the per-window content image overdraws it).
-		g.drawWindowScrollbars(screen, win)
+
+		// Draw window menu bar (if present)
+		if app := g.luxAppForWinID(win.ID); app != nil && win.MenuTablePtr != 0 {
+			g.drawWindowMenuBar(screen, win, app)
+		}
+
 		// Draw open menu dropdown (if one is open on this window)
 		if app := g.luxAppForWinID(win.ID); app != nil && g.openMenuWinID == win.ID {
 			g.drawOpenMenuDropdown(screen, win, app)
@@ -943,13 +940,13 @@ func (g *Game) drawWindowMenuBar(screen *ebiten.Image, win *system.WindowRecord,
 	}
 
 	// Menu bar is integrated into the chrome (title bar).
-	// Chrome is at struc.Top + 1, WinChromeHeight tall.
-	menuBarY := int(win.StrucRgn.Top) + 1
-	menuBarX := int(win.StrucRgn.Left) + 50 // Offset by 50 to avoid close/arrow buttons
+	// Chrome is at struc.Top, 20px tall.
+	menuBarY := int(win.StrucRgn.Top)
+	menuBarX := int(win.StrucRgn.Left) + 50 // Offset by 50 to avoid Lux close button
 
 	// Draw menu title on the left of the chrome
 	titleX := menuBarX
-	titleY := menuBarY + (system.WinChromeHeight-shellFontH)/2
+	titleY := menuBarY + (20-shellFontH)/2
 
 	// Highlight title if menu is open
 	if g.openMenuWinID == win.ID {
@@ -974,8 +971,8 @@ func (g *Game) drawOpenMenuDropdown(screen *ebiten.Image, win *system.WindowReco
 	}
 
 	// Dropdown box: white background with black border, items spaced vertically
-	dropX := int(win.ContRgn.Left) + 4
-	dropY := int(win.ContRgn.Top)
+	dropX := int(win.ContRgn.Left) + 50
+	dropY := int(win.ContRgn.Top) + 20
 	dropW := 150
 	dropH := len(items)*16 + 4
 
@@ -1000,54 +997,7 @@ func (g *Game) drawOpenMenuDropdown(screen *ebiten.Image, win *system.WindowReco
 }
 
 func (g *Game) drawWindowChrome(screen *ebiten.Image, win *system.WindowRecord, isActive bool) {
-	struc := win.StrucRgn
-	cont := win.ContRgn
-
-	// Outer border (1px all sides including chrome)
-	ebitenutil.DrawRect(screen, float64(struc.Left), float64(struc.Top), float64(struc.Width()), float64(struc.Height()), color.RGBA{0, 0, 0, 255})
-
-	// Title bar area: between struc.Top and cont.Top (minus border)
-	titleX := float64(struc.Left + system.WinBorderWidth)
-	titleY := float64(struc.Top + system.WinBorderWidth)
-	titleW := float64(struc.Width() - 2*system.WinBorderWidth)
-	titleH := float64(cont.Top - struc.Top - system.WinBorderWidth)
-
-	// Title bar fill
-	var titleClr color.RGBA
-	if isActive {
-		titleClr = color.RGBA{170, 170, 170, 255} // medium gray
-	} else {
-		titleClr = color.RGBA{210, 210, 210, 255} // light gray
-	}
-	ebitenutil.DrawRect(screen, titleX, titleY, titleW, titleH, titleClr)
-
-	// Close button (red square with darker border).
-	btnY := titleY + float64(WinCloseBtnY) - float64(WinCloseBtnSize)/2
-	closeX := titleX + float64(WinCloseBtnX) - float64(WinCloseBtnSize)/2
-	ebitenutil.DrawRect(screen, closeX, btnY, float64(WinCloseBtnSize), float64(WinCloseBtnSize), color.RGBA{204, 51, 51, 255})
-	ebitenutil.DrawRect(screen, closeX+1, btnY+1, float64(WinCloseBtnSize-2), float64(WinCloseBtnSize-2), color.RGBA{170, 0, 0, 255})
-
-	// Prev / Next window buttons
-	for _, b := range [...]struct {
-		cx    int
-		label string
-	}{
-		{WinPrevBtnX, "<"},
-		{WinNextBtnX, ">"},
-	} {
-		bx := titleX + float64(b.cx) - float64(WinCloseBtnSize)/2
-		ebitenutil.DrawRect(screen, bx, btnY, float64(WinCloseBtnSize), float64(WinCloseBtnSize), color.RGBA{170, 170, 170, 255})
-		ebitenutil.DrawRect(screen, bx+1, btnY+1, float64(WinCloseBtnSize-2), float64(WinCloseBtnSize-2), color.RGBA{220, 220, 220, 255})
-		drawShellText(screen, b.label, int(bx)+1, int(btnY)-2, color.Black)
-	}
-
-	// Window title centered in chrome
-	nameX := int(titleX) + (int(titleW)-measureSystemFontText(win.Name, 1))/2
-	nameY := int(titleY) + (int(titleH)-shellFontH)/2
-	drawShellText(screen, win.Name, nameX, nameY, color.Black)
-
-	// Horizontal line separating chrome from content
-	ebitenutil.DrawLine(screen, float64(cont.Left), float64(cont.Top-1), float64(cont.Right), float64(cont.Top-1), color.RGBA{0, 0, 0, 255})
+	// Function intentionally empty. Lux apps draw their own chrome now.
 }
 
 // getScrollGeometry calculates the track and thumb positions for a window.

@@ -13,6 +13,10 @@ IMPORT CTRL
 IMPORT DELINEATIOFENESTRA AS DF
 IMPORT FILE-DIALOG
 IMPORT SCI
+IMPORT WINDOW
+
+INCLUDE "lib/controls.lux"
+IMPORT CONTROLS
 
 MODULE ILLUMINATOR
 
@@ -24,12 +28,18 @@ MODULE ILLUMINATOR
 @picker_sel_addr STATE_BASE 8 + ;
 @ILLUM_MENU   0x840000 ;
 @drawing_addr 0x820010 ;
+@app_w_addr   0x820020 ;
+@app_h_addr   0x820024 ;
 
 ( --- State Accessors --- )
 @picker_sel@  picker_sel_addr LOADI ;
 @picker_sel!  picker_sel_addr STOREI ;
 @drawing@     drawing_addr LOADI ;
 @drawing!     drawing_addr STOREI ;
+@app_w@       app_w_addr LOADI ;
+@app_w!       app_w_addr STOREI ;
+@app_h@       app_h_addr LOADI ;
+@app_h!       app_h_addr STOREI ;
 
 ( --- Format Detection --- )
 @FILE_SIZE_ADDR 0x820014 ;
@@ -47,15 +57,15 @@ MODULE ILLUMINATOR
 @DRAW-ONE-GLYPH ( cp -- cp )
     dup WIDTH_TABLE + load-byte 0 > [
         dup WIDTH_TABLE SWAP
-        dup 16 MOD 38 * 10 +
-        OVER 16 / 38 * 10 +
+        dup 16 MOD 38 * 10 + ( x offset )
+        OVER 16 / 38 * 35 + ( y offset )
         SCI::DRAW-CFF
     ] ?
 ;
 
 @DRAW-GRID
     get-tile-dim TEXT::cell-size!
-    0xFFFFFF TEXT::color!
+    0 TEXT::color!
     0 [
         DRAW-ONE-GLYPH
         1 +
@@ -69,22 +79,27 @@ MODULE ILLUMINATOR
 ;
 
 @on-open
-    F"." F".cff" FILENAME_BUF [ FILENAME_BUF load-data ] FILE-DIALOG::show
+    F"." F".cff" FILENAME_BUF [ 0 drawing! FILENAME_BUF load-data ] FILE-DIALOG::show
 ;
 
 @on-key
     CTRL::key@
     dup 111 = [ on-open ] ?
     drop
+    0 drawing!
 ;
 
 @DRAW-ALL
     drawing@ [ ] [
         1 drawing!
         DF::use-window
-        0 SCREEN::clear
+        -1 SCREEN::clear
+        
+        DF::window-w app_w!
+        DF::window-h app_h!
+        
+        0 0 app_w@ app_h@ F"Illuminator" WINDOW::draw-frame
         DRAW-GRID
-        0 drawing!
     ] ?:
 ;
 

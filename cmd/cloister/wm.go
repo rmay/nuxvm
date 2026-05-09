@@ -129,35 +129,21 @@ func (wm *WindowManager) HitTest(x, y, TopBarH int, windows []*system.WindowReco
 
 		// We hit this window. Determine which zone.
 
-		// Chrome check (Title bar and buttons)
-		if y < int(win.ContRgn.Top) {
-			// If window has a menu, it might be a HitZoneMenuBar click
+		// Virtual Chrome check (Title bar and buttons drawn by Lux)
+		if y < int(win.StrucRgn.Top)+20 {
+			// Close button: top-left 16x16
+			if x < int(win.StrucRgn.Left)+16 {
+				return HitResult{WinID: win.ID, Zone: HitZoneCloseButton, LocalX: x - int(win.StrucRgn.Left), LocalY: y - int(win.StrucRgn.Top)}
+			}
+			// Menu bar check
 			if win.MenuTablePtr != 0 && x >= int(win.StrucRgn.Left)+50 {
 				return HitResult{WinID: win.ID, Zone: HitZoneMenuBar, LocalX: x - int(win.StrucRgn.Left), LocalY: y - int(win.StrucRgn.Top)}
 			}
-
-			// Chrome button hit-tests (close, prev, next) — all share Y and radius.
-			btnCenterY := int(win.StrucRgn.Top) + WinCloseBtnY + system.WinBorderWidth
-			dy := y - btnCenterY
-			if dy*dy <= WinCloseBtnR*WinCloseBtnR {
-				for _, b := range [...]struct {
-					cx   int
-					zone HitZone
-				}{
-					{int(win.StrucRgn.Left) + WinCloseBtnX + system.WinBorderWidth, HitZoneCloseButton},
-					{int(win.StrucRgn.Left) + WinPrevBtnX + system.WinBorderWidth, HitZonePrevButton},
-					{int(win.StrucRgn.Left) + WinNextBtnX + system.WinBorderWidth, HitZoneNextButton},
-				} {
-					dx := x - b.cx
-					if dx*dx+dy*dy <= WinCloseBtnR*WinCloseBtnR {
-						return HitResult{WinID: win.ID, Zone: b.zone}
-					}
-				}
-			}
-			return HitResult{WinID: win.ID, Zone: HitZoneTitleBar}
+			// Rest of title bar: draggable
+			return HitResult{WinID: win.ID, Zone: HitZoneTitleBar, LocalX: x - int(win.StrucRgn.Left), LocalY: y - int(win.StrucRgn.Top)}
 		}
 
-		// Window-local coordinates inside the content area
+		// Content area or scrollbars
 		localX := x - int(win.ContRgn.Left)
 		localY := y - int(win.ContRgn.Top)
 		contentW := int(win.ContRgn.Width())

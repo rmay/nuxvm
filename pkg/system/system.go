@@ -151,8 +151,9 @@ func NewSystem() *System {
 		screenPixels: make([]byte, vm.VideoMaxBufferSize),
 		rngState:     uint32(time.Now().UnixNano()),
 		text: textState{
-			scale: 2,
-			color: 0xFFFFFF,
+			scale:  1,
+			color:  0xFFFFFF,
+			useCFF: true,
 		},
 		Services: NewServiceManager(),
 	}
@@ -173,8 +174,9 @@ func NewSystemNoFallback() *System {
 		screenHeight: 600,
 		rngState:     uint32(time.Now().UnixNano()),
 		text: textState{
-			scale: 2,
-			color: 0xFFFFFF,
+			scale:  1,
+			color:  0xFFFFFF,
+			useCFF: true,
 		},
 		Services: NewServiceManager(),
 	}
@@ -261,7 +263,12 @@ func (s *System) resolvePath(name string) (string, error) {
 // withinRoot reports whether p is root itself or a descendant of root. The
 // trailing-separator guard stops "/tmp/rootX" from passing against "/tmp/root".
 func withinRoot(p, root string) bool {
+	p = filepath.Clean(p)
+	root = filepath.Clean(root)
 	if p == root {
+		return true
+	}
+	if root == string(filepath.Separator) {
 		return true
 	}
 	return strings.HasPrefix(p, root+string(filepath.Separator))
@@ -833,7 +840,7 @@ func (s *System) Write(address uint32, value int32) error {
 		if fb == nil || offset+4 > uint32(len(fb)) {
 			return nil
 		}
-		binary.BigEndian.PutUint32(fb[offset:offset+4], uint32(value))
+		binary.BigEndian.PutUint32(fb[offset:offset+4], (uint32(value)<<8)|0xFF)
 		return nil
 	}
 
@@ -844,6 +851,24 @@ func (s *System) Write(address uint32, value int32) error {
 	}
 	if address == screenHeightAddr {
 		s.setResolution(s.getScreenWidth(), value)
+		return nil
+	}
+
+	// Controller registers: allow writing for tests/scripts
+	if address == controllerStatusAddr {
+		// Clearing status effectively clears key/button?
+		if value == 0 {
+			s.controllerKey = 0
+			s.controllerButton = 0
+		}
+		return nil
+	}
+	if address == controllerButtonAddr {
+		s.controllerButton = uint32(value)
+		return nil
+	}
+	if address == controllerKeyAddr {
+		s.controllerKey = value
 		return nil
 	}
 

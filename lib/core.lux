@@ -105,6 +105,13 @@ IMPORT MEMORY
     2 unframe!
 ;
 
+@strcat ( src dest -- )
+    2 frame! ( 0:dest, 1:src )
+    0 local@ strlen 0 local@ + ( ptr to end )
+    1 local@ swap strcpy-safe
+    2 unframe!
+;
+
 @init-locals ( -- ) ;
 
 @frame!   FRAME!   ;

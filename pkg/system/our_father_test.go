@@ -57,9 +57,16 @@ func TestOurFatherAppRendersToWindow(t *testing.T) {
 		services.SetRenderTarget(saved)
 		t.Fatalf("app VBlank: %v", err)
 	}
-	if _, err := app.Tick(); err != nil {
-		services.SetRenderTarget(saved)
-		t.Fatalf("app draw tick: %v", err)
+	// Loop Tick until it yields (which means DRAW-ALL finished and it hit the keep-alive yield).
+	for i := 0; i < 100; i++ {
+		yielded, err := app.Tick()
+		if err != nil {
+			services.SetRenderTarget(saved)
+			t.Fatalf("app draw tick %d: %v", i, err)
+		}
+		if !yielded {
+			break
+		}
 	}
 	services.SetRenderTarget(saved)
 
