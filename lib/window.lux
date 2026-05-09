@@ -44,24 +44,17 @@ IMPORT TEXT
     0x000000 4 local@ 4 + 3 local@ 18 + 2 local@ 8 - 1 DF::fill-rect
     0x000000 4 local@ 4 + 3 local@ 20 + 2 local@ 8 - 1 DF::fill-rect
 
-    ( 6. Title text background - white block in middle of lines )
-    -1 4 local@ 2 local@ 2 / + ( center-x )
-    0 local@ strlen 7 * 2 / ( half-text-w )
-    - 6 - ( x )
-    3 local@ 2 +
-    0 local@ strlen 7 * 12 + ( w )
-    22 DF::fill-rect
-
-    ( 7. Title text )
+    ( 6. Title text )
     1 DF::set-text-scale
     0 TEXT::color!
     4 local@ 2 local@ 2 / + ( center-x )
     0 local@ strlen 7 * 2 / - ( x )
-    3 local@ 6 + ( y )
+    3 local@ 4 + ( y )
     DF::move-to
     0 local@ [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop
-    ( 8. Close Button )
-    4 local@ 8 + 3 local@ 5 + draw-close-button
+
+    ( 7. Close Button )
+    4 local@ 8 + 3 local@ 4 + draw-close-button
 
     5 unframe!
 ;

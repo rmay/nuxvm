@@ -52,7 +52,6 @@ func (g *Game) openShellApp() {
 	}
 	sa.repl = luxrepl.New(func(s string) { sa.appendOutput(s) })
 	sa.scrollback = append(sa.scrollback, "LUX REPL 280K  -  type 'help' for commands")
-	sa.scrollback = append(sa.scrollback, "Words: MAKE-PANE  DESTROY-PANE  NEXT-PANE  PREV-PANE  QUIT-OS  RESTART-OS")
 	g.shellApp = sa
 }
 
@@ -161,10 +160,10 @@ func (g *Game) drawShellContent(win *system.WindowRecord, img *ebiten.Image) {
 	img.Fill(color.RGBA{0, 0, 0, 255})
 	fg := color.RGBA{255, 255, 255, 255}
 	const lineH = 16
-	
+
 	// Inner height available for text (excluding scrollbars)
 	innerH := int(win.ContRgn.Height()) - system.WinScrollbarSize
-	
+
 	display := append([]string{}, g.shellApp.scrollback...)
 	display = append(display, g.shellApp.prompt+g.shellApp.inputLine+"_")
 

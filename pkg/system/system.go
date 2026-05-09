@@ -44,28 +44,28 @@ const (
 	AudioVectorIdx      = (audioPort - vm.DeviceMemoryOffset) / 16      // 3
 	ControllerVectorIdx = (controllerPort - vm.DeviceMemoryOffset) / 16 // 4
 	MouseVectorIdx      = (mousePort - vm.DeviceMemoryOffset) / 16      // 5
-	SCIVectorIdx        = (sciPort - vm.DeviceMemoryOffset) / 16         // 6
-	MenuVectorIdx       = (menuPort - vm.DeviceMemoryOffset) / 16        // 7
+	SCIVectorIdx        = (sciPort - vm.DeviceMemoryOffset) / 16        // 6
+	MenuVectorIdx       = (menuPort - vm.DeviceMemoryOffset) / 16       // 7
 
 	// SCI Command codes
-	SCICreateWin      = 1
-	SCICloseWin       = 2
-	SCIMoveWin        = 3
-	SCIDrawRect       = 4
-	SCIDrawText       = 5
-	SCISetPixel       = 6
-	SCIGetWinSize     = 7
-	SCIFocusWin       = 8
-	SCIPollEvent      = 9
-	SCIOpenFile       = 10
-	SCIReadFile       = 11
-	SCIWriteFile      = 12
-	SCICloseFile      = 13
-	SCIPlaySound      = 14
-	SCIYield          = 15
-	SCIGetPID         = 16
-	SCIGetActiveWin   = 17
-	SCIDrawCFF        = 18
+	SCICreateWin    = 1
+	SCICloseWin     = 2
+	SCIMoveWin      = 3
+	SCIDrawRect     = 4
+	SCIDrawText     = 5
+	SCISetPixel     = 6
+	SCIGetWinSize   = 7
+	SCIFocusWin     = 8
+	SCIPollEvent    = 9
+	SCIOpenFile     = 10
+	SCIReadFile     = 11
+	SCIWriteFile    = 12
+	SCICloseFile    = 13
+	SCIPlaySound    = 14
+	SCIYield        = 15
+	SCIGetPID       = 16
+	SCIGetActiveWin = 17
+	SCIDrawCFF      = 18
 )
 
 // fileState tracks an open file or directory for the File device.
@@ -230,7 +230,7 @@ func (s *System) SandboxRoot() string {
 // resolvePath turns a VM-supplied filename into a real path that is guaranteed
 // to live inside sandboxRoot. Returns ("", error) on any attempt to escape.
 func (s *System) resolvePath(name string) (string, error) {
-	fmt.Fprintf(os.Stderr, "System: resolvePath name=%q, root=%q\n", name, s.sandboxRoot)
+	// fmt.Fprintf(os.Stderr, "System: resolvePath name=%q, root=%q\n", name, s.sandboxRoot)
 	if name == "" {
 		return "", fmt.Errorf("empty name")
 	}
@@ -514,7 +514,6 @@ func (s *System) readDirEntry(length uint32) int32 {
 	copy(s.memory[s.fileBufferPtr:], lineBytes)
 	return int32(len(lineBytes))
 }
-
 
 // fileWrite writes length bytes from buffer to the current file.
 func (s *System) fileWrite(path string, flags, length uint32) {
@@ -962,7 +961,7 @@ func (s *System) Write(address uint32, value int32) error {
 		s.mouseButton = uint32(value)
 		return nil
 	}
-	
+
 	// DateTime registers are read-only
 	if address == dateTimePort+4 || address == dateTimePort+8 || address == dateTimePort+12 {
 		return fmt.Errorf("system: datetime registers are read-only")
@@ -1091,4 +1090,3 @@ func (s *System) MMIORegisters() []struct {
 		{"RNG_DATA", int32(s.rngState)},
 	}
 }
-
