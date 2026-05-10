@@ -92,16 +92,17 @@ MODULE ILLUMINATOR
 ;
 
 @DRAW-ZOOM-GRID
-    0xE0E0E0 ( color )
+    0xC0C0C0 ( darker gray for visibility )
     0 [ ( i color )
         OVER ( i )
         8 * 20 + ( pos )
         
+        ( stack: color i pos )
         ( Draw vertical line: rgb x y len )
-        1 PICK ( color ) 1 PICK ( pos ) 20 128 DF::v-line
+        2 PICK ( color ) 1 PICK ( pos ) 20 128 DF::v-line
         
         ( Draw horizontal line: rgb x y len )
-        1 PICK ( color ) 20 1 PICK ( pos ) 128 DF::h-line
+        2 PICK ( color ) 20 1 PICK ( pos ) 128 DF::h-line
         
         drop ( pos )
         1 + ( i++ )
@@ -191,7 +192,7 @@ MODULE ILLUMINATOR
                 dup 0 >= [ dup 16 < ] [ 0 ] ?: [
                     OVER 0 >= [ OVER 16 < ] [ 0 ] ?: [
                         ( valid click )
-                        16 * + ( cp = row*16 + col )
+                        swap 16 * + ( cp = row*16 + col )
                         picker_sel!
                         0 drawing!
                     ] [ drop drop ] ?:
