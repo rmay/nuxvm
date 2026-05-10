@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"image"
 	"image/color"
 	"os"
 	"path/filepath"
@@ -17,7 +18,7 @@ import (
 	"github.com/rmay/nuxvm/pkg/system"
 )
 
-var screenScale = 10
+var screenScale = 2
 
 // defaultShellPath is the on-disk Lux program cloister loads when invoked
 // without a positional argument. The shell stays alive forever, owns system
@@ -67,6 +68,10 @@ type Game struct {
 	bgPattern       int    // 0=solid, 1=50% gray, 2=dots, 3=stripes
 	clockFormat     int    // 0=24h, 1=12h, 2=12h-AMPM
 	settingsPath    string // absolute path of cloister-settings.lux (cwd at launch)
+	osScrollX       float64
+	osScrollY       float64
+	draggingOSScroll  bool
+	draggingOSScrollH bool
 
 	launcherWinID system.WindowID // 0 if launcher is not open
 	shellApp      *ShellApp       // singleton; nil until first launch
@@ -397,20 +402,23 @@ func readMenuFromMem(mem []byte, tablePtr uint32) (string, []MenuItem) {
 // drawDeskTopBackground paints the deskTop area below the menubar. Pattern 0 is
 // just a solid fill; patterns 1-3 tile an 8x8 1-bit overlay (black) over the
 // solid color.
-func (g *Game) drawDeskTopBackground(screen *ebiten.Image, sw, sh int) {
+func (g *Game) drawDeskTopBackground(screen *ebiten.Image, viewW, viewH int, scrollX, scrollY float64) {
 	screen.Fill(g.clearColor)
 	if g.bgPattern <= 0 || g.bgPattern >= len(bgPatternTiles) {
 		return
 	}
 	tile := bgPatternTiles[g.bgPattern]
 	black := color.RGBA{0, 0, 0, 255}
-	for y := TopBarHeight; y < sh; y++ {
-		row := tile[(y-TopBarHeight)&7]
+	for y := TopBarHeight; y < viewH; y++ {
+		// Logical coordinate on desktop
+		osY := y + int(scrollY)
+		row := tile[(osY-TopBarHeight)&7]
 		if row == 0 {
 			continue
 		}
-		for x := 0; x < sw; x++ {
-			if row&(1<<(x&7)) != 0 {
+		for x := 0; x < viewW; x++ {
+			osX := x + int(scrollX)
+			if row&(1<<(osX&7)) != 0 {
 				screen.Set(x, y, black)
 			}
 		}
@@ -624,15 +632,103 @@ func (g *Game) Update() error {
 		}
 	}
 
+	// Drag move (OS scroll)
+	if g.draggingOSScroll && LeftDown {
+		viewW, viewH := g.Layout(ebiten.WindowSize())
+		osH := int(g.machine.System.ScreenHeight())
+		_, trackH, _, thumbH, _, _, _, _ := g.getOSScrollGeometry(viewW, viewH)
+		trackTop := TopBarHeight + WinScrollArrowH
+
+		newThumbY := my - g.scrollGrabY
+		if newThumbY < trackTop {
+			newThumbY = trackTop
+		}
+		if newThumbY > trackTop+trackH-thumbH {
+			newThumbY = trackTop + trackH - thumbH
+		}
+
+		relThumbPos := float64(newThumbY - trackTop)
+		scrollPct := relThumbPos / float64(trackH-thumbH)
+		maxScroll := float64(osH - viewH)
+		g.osScrollY = scrollPct * maxScroll
+	}
+
+	// Drag move (OS scroll H)
+	if g.draggingOSScrollH && LeftDown {
+		viewW, viewH := g.Layout(ebiten.WindowSize())
+		osW := int(g.machine.System.ScreenWidth())
+		_, _, _, _, _, trackW, _, thumbW := g.getOSScrollGeometry(viewW, viewH)
+		trackLeft := WinScrollArrowH
+
+		newThumbX := mx - g.scrollGrabX
+		if newThumbX < trackLeft {
+			newThumbX = trackLeft
+		}
+		if newThumbX > trackLeft+trackW-thumbW {
+			newThumbX = trackLeft + trackW - thumbW
+		}
+
+		relThumbPos := float64(newThumbX - trackLeft)
+		scrollPct := relThumbPos / float64(trackW-thumbW)
+		maxScrollX := float64(osW - viewW)
+		g.osScrollX = scrollPct * maxScrollX
+	}
+
 	// Hit test on new click or for mouse move
-	if !g.dragging && !g.draggingScroll && !g.draggingScrollH {
+	if !g.dragging && !g.draggingScroll && !g.draggingScrollH && !g.draggingOSScroll && !g.draggingOSScrollH {
+		viewW, viewH := g.Layout(ebiten.WindowSize())
+		osW := int(g.machine.System.ScreenWidth())
+		osH := int(g.machine.System.ScreenHeight())
 		windows := g.machine.System.Services.ListWindowsSorted()
-		hit := g.wm.HitTest(mx, my, TopBarHeight, windows)
+		hit := g.wm.HitTest(mx, my, TopBarHeight, viewW, viewH, osW, osH, windows, g.osScrollX, g.osScrollY)
 
 		if justPressed {
 			switch hit.Zone {
+			case HitZoneOSScrollUp:
+				g.osScrollY -= WinScrollLineStep
+				if g.osScrollY < 0 {
+					g.osScrollY = 0
+				}
+			case HitZoneOSScrollDown:
+				maxScroll := float64(osH - viewH)
+				g.osScrollY += WinScrollLineStep
+				if g.osScrollY > maxScroll {
+					g.osScrollY = maxScroll
+				}
+			case HitZoneOSScrollLeft:
+				g.osScrollX -= WinScrollLineStep
+				if g.osScrollX < 0 {
+					g.osScrollX = 0
+				}
+			case HitZoneOSScrollRight:
+				maxScrollX := float64(osW - viewW)
+				g.osScrollX += WinScrollLineStep
+				if g.osScrollX > maxScrollX {
+					g.osScrollX = maxScrollX
+				}
+			case HitZoneOSScrollTrack:
+				_, _, thumbYRel, thumbH, _, _, _, _ := g.getOSScrollGeometry(viewW, viewH)
+				if my >= thumbYRel && my < thumbYRel+thumbH {
+					g.draggingOSScroll = true
+					g.scrollGrabY = my - thumbYRel
+				}
+			case HitZoneOSScrollTrackH:
+				_, _, _, _, _, _, thumbXRel, thumbW := g.getOSScrollGeometry(viewW, viewH)
+				if mx >= thumbXRel && mx < thumbXRel+thumbW {
+					g.draggingOSScrollH = true
+					g.scrollGrabX = mx - thumbXRel
+				}
 			case HitZoneTitleBar:
 				g.focusAndShow(hit.WinID)
+				g.dragging = true
+				g.dragWinID = hit.WinID
+				// Drag offsets must be in OS space relative to window top-left
+				osX := mx + int(g.osScrollX)
+				osY := my + int(g.osScrollY)
+				if win := g.machine.Services().GetWindowByID(hit.WinID); win != nil {
+					g.dragOffX = osX - int(win.StrucRgn.Left)
+					g.dragOffY = osY - int(win.StrucRgn.Top)
+				}
 			case HitZoneCloseButton:
 				g.closeWindowByID(hit.WinID)
 			case HitZonePrevButton:
@@ -744,10 +840,10 @@ func (g *Game) Update() error {
 					mem := app.machine.CPU.Memory()
 					_, items := readMenuFromMem(mem, win.MenuTablePtr)
 
-					// Calculate which item is under the mouse
-					dropX := int(win.ContRgn.Left) + 30
+					// Calculate which item is under the mouse (translated)
+					dropX := int(win.ContRgn.Left) - int(g.osScrollX) + 30
 					dropW := 150
-					dropY := int(win.ContRgn.Top) + 20
+					dropY := int(win.ContRgn.Top) - int(g.osScrollY) + 20
 					
 					if mx >= dropX && mx < dropX+dropW {
 						itemIdx := (my - dropY - 2) / 18
@@ -783,8 +879,11 @@ func (g *Game) Update() error {
 		mBtn |= 4
 	}
 	if mBtn != 0 {
+		viewW, viewH := g.Layout(ebiten.WindowSize())
+		osW := int(g.machine.System.ScreenWidth())
+		osH := int(g.machine.System.ScreenHeight())
 		windows := g.machine.System.Services.ListWindowsSorted()
-		hit := g.wm.HitTest(mx, my, TopBarHeight, windows)
+		hit := g.wm.HitTest(mx, my, TopBarHeight, viewW, viewH, osW, osH, windows, g.osScrollX, g.osScrollY)
 		if hit.Zone == HitZoneContent {
 			g.machine.Services().QueueMouseButton(int32(hit.LocalX), int32(hit.LocalY), mBtn, true)
 		}
@@ -844,19 +943,19 @@ func (g *Game) Update() error {
 
 func (g *Game) Draw(screen *ebiten.Image) {
 	// Get current dimensions from system
-	sw := int(g.machine.System.ScreenWidth())
-	sh := int(g.machine.System.ScreenHeight())
+	viewW, viewH := screen.Bounds().Dx(), screen.Bounds().Dy()
 
 	if g.bootTimer > 0 {
 		screen.Fill(g.clearColor)
 		// Center "CLOISTER"
 		w := measureSystemFontText("CLOISTER", 1)
-		drawText(screen, "CLOISTER", (sw-w)/2, (sh-shellFontH)/2, color.White)
+		drawText(screen, "CLOISTER", (viewW-w)/2, (viewH-shellFontH)/2, color.White)
 		return
 	}
 
 	// Fill background (solid color or patterned tile fill)
-	g.drawDeskTopBackground(screen, sw, sh)
+	// Anchor background to the OS resolution and translate with viewport
+	g.drawDeskTopBackground(screen, viewW, viewH, g.osScrollX, g.osScrollY)
 
 	// Get all windows for sync but only render visible panes
 	windows := g.machine.System.Services.ListWindowsSorted()
@@ -886,37 +985,56 @@ func (g *Game) Draw(screen *ebiten.Image) {
 			continue
 		}
 		
-		// Draw window content from cached image
+		// Draw window content from cached image, offset by OS scroll
 		if img := g.wm.ContentImage(win.ID); img != nil {
+			// Window-level scrolling: select visible slice of the internal port
+			srcRect := image.Rect(int(win.ScrollX), int(win.ScrollY),
+				int(win.ScrollX)+int(win.ContRgn.Width()),
+				int(win.ScrollY)+int(win.ContRgn.Height()))
+
+			// Clamp srcRect to image bounds to avoid panic
+			imgBounds := img.Bounds()
+			if srcRect.Max.X > imgBounds.Max.X {
+				srcRect.Max.X = imgBounds.Max.X
+			}
+			if srcRect.Max.Y > imgBounds.Max.Y {
+				srcRect.Max.Y = imgBounds.Max.Y
+			}
+
+			visibleImg := img.SubImage(srcRect).(*ebiten.Image)
+
 			op := &ebiten.DrawImageOptions{}
-			op.GeoM.Translate(float64(win.ContRgn.Left), float64(win.ContRgn.Top))
-			screen.DrawImage(img, op)
+			op.GeoM.Translate(float64(win.ContRgn.Left)-g.osScrollX, float64(win.ContRgn.Top)-g.osScrollY)
+			screen.DrawImage(visibleImg, op)
 		}
 
 		// Draw window menu bar (if present)
 		if app := g.luxAppForWinID(win.ID); app != nil && win.MenuTablePtr != 0 {
-			g.drawWindowMenuBar(screen, win, app)
+			g.drawWindowMenuBarTranslated(screen, win, app, g.osScrollX, g.osScrollY)
 		}
 
 		// Draw open menu dropdown (if one is open on this window)
 		if app := g.luxAppForWinID(win.ID); app != nil && g.openMenuWinID == win.ID {
-			g.drawOpenMenuDropdown(screen, win, app)
+			g.drawOpenMenuDropdownTranslated(screen, win, app, g.osScrollX, g.osScrollY)
 		}
 	}
 
-	// Draw Mac-style Top menubar
-	ebitenutil.DrawRect(screen, 0, 0, float64(sw), float64(TopBarHeight), color.White)
-	ebitenutil.DrawLine(screen, 0, float64(TopBarHeight), float64(sw), float64(TopBarHeight), color.Black)
+	// Draw OS Scrollbars
+	g.drawOSScrollbars(screen, viewW, viewH)
+
+	// Draw Mac-style Top menubar (Fixed at physical top)
+	ebitenutil.DrawRect(screen, 0, 0, float64(viewW), float64(TopBarHeight), color.White)
+	ebitenutil.DrawLine(screen, 0, float64(TopBarHeight), float64(viewW), float64(TopBarHeight), color.Black)
 	textY := (TopBarHeight - shellFontH) / 2
 	drawShellText(screen, "~", 4, textY, color.Black)
 
 	winName := "Cloister"
-
-	nameX := (sw - measureSystemFontText(winName, 1)) / 2
+	nameX := (viewW - measureSystemFontText(winName, 1)) / 2
 	drawShellText(screen, winName, nameX, textY, color.Black)
 
+	// Clock
 	timeStr := time.Now().Format(clockFormatString(g.clockFormat))
-	drawShellText(screen, timeStr, sw-measureSystemFontText(timeStr, 1)-4, textY, color.Black)
+	drawShellText(screen, timeStr, viewW-measureSystemFontText(timeStr, 1)-4, textY, color.Black)
 
 	// Draw shell/modal overlays
 	switch g.shellMode {
@@ -965,7 +1083,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 }
 
-func (g *Game) drawWindowMenuBar(screen *ebiten.Image, win *system.WindowRecord, app *LuxApp) {
+func (g *Game) drawWindowMenuBarTranslated(screen *ebiten.Image, win *system.WindowRecord, app *LuxApp, scrollX, scrollY float64) {
 	if win.MenuTablePtr == 0 || app == nil {
 		return
 	}
@@ -979,8 +1097,8 @@ func (g *Game) drawWindowMenuBar(screen *ebiten.Image, win *system.WindowRecord,
 
 	// Menu bar is integrated into the chrome (title bar).
 	// Chrome is at struc.Top, 20px tall.
-	menuBarY := int(win.StrucRgn.Top)
-	menuBarX := int(win.StrucRgn.Left) + 30 // Offset by 30 to avoid Lux close button
+	menuBarY := int(win.StrucRgn.Top) - int(scrollY)
+	menuBarX := int(win.StrucRgn.Left) - int(scrollX) + 30 // Offset by 30 to avoid Lux close button
 
 	// Draw menu title on the left of the chrome
 	titleX := menuBarX
@@ -995,8 +1113,9 @@ func (g *Game) drawWindowMenuBar(screen *ebiten.Image, win *system.WindowRecord,
 	} else {
 		drawShellText(screen, title, titleX, titleY, color.Black)
 	}
-	}
-func (g *Game) drawOpenMenuDropdown(screen *ebiten.Image, win *system.WindowRecord, app *LuxApp) {
+}
+
+func (g *Game) drawOpenMenuDropdownTranslated(screen *ebiten.Image, win *system.WindowRecord, app *LuxApp, scrollX, scrollY float64) {
 	if g.openMenuWinID != win.ID || app == nil {
 		return
 	}
@@ -1009,8 +1128,8 @@ func (g *Game) drawOpenMenuDropdown(screen *ebiten.Image, win *system.WindowReco
 	}
 
 	// Dropdown box: white background with black border, items spaced vertically
-	dropX := int(win.ContRgn.Left) + 30
-	dropY := int(win.ContRgn.Top) + 20
+	dropX := int(win.ContRgn.Left) - int(scrollX) + 30
+	dropY := int(win.ContRgn.Top) - int(scrollY) + 20
 	dropW := 150
 	dropH := len(items)*18 + 4
 
@@ -1075,6 +1194,105 @@ func (g *Game) getScrollGeometry(win *system.WindowRecord) (trackY, trackH, thum
 	}
 
 	return
+}
+
+func (g *Game) getOSScrollGeometry(viewW, viewH int) (trackY, trackH, thumbY, thumbH, trackX, trackW, thumbX, thumbW int) {
+	osW := int(g.machine.System.ScreenWidth())
+	osH := int(g.machine.System.ScreenHeight())
+	sbSize := system.WinScrollbarSize
+
+	// Vertical
+	trackH = viewH - TopBarHeight - sbSize - 2*WinScrollArrowH
+	trackY = TopBarHeight + WinScrollArrowH
+
+	if osH <= viewH {
+		thumbY, thumbH = trackY, trackH
+	} else {
+		thumbH = int(float64(viewH) / float64(osH) * float64(trackH))
+		if thumbH < 10 {
+			thumbH = 10
+		}
+		maxScroll := float64(osH - viewH)
+		scrollPct := g.osScrollY / maxScroll
+		thumbY = trackY + int(scrollPct*float64(trackH-thumbH))
+	}
+
+	// Horizontal
+	trackW = viewW - sbSize - 2*WinScrollArrowH
+	trackX = WinScrollArrowH
+
+	if osW <= viewW {
+		thumbX, thumbW = trackX, trackW
+	} else {
+		thumbW = int(float64(viewW) / float64(osW) * float64(trackW))
+		if thumbW < 10 {
+			thumbW = 10
+		}
+		maxScrollX := float64(osW - viewW)
+		scrollPctX := g.osScrollX / maxScrollX
+		thumbX = trackX + int(scrollPctX*float64(trackW-thumbW))
+	}
+
+	return
+}
+
+func (g *Game) drawOSScrollbars(screen *ebiten.Image, viewW, viewH int) {
+	osW := int(g.machine.System.ScreenWidth())
+	osH := int(g.machine.System.ScreenHeight())
+	if osW <= viewW && osH <= viewH {
+		return
+	}
+
+	black := color.RGBA{0, 0, 0, 255}
+	gray := color.RGBA{170, 170, 170, 255}
+	white := color.RGBA{255, 255, 255, 255}
+	sbSize := system.WinScrollbarSize
+
+	_, _, thumbYRel, thumbH, _, _, thumbXRel, thumbW := g.getOSScrollGeometry(viewW, viewH)
+
+	// Vertical
+	if osH > viewH {
+		vbX := viewW - sbSize
+		vbY := TopBarHeight
+		vbH := viewH - sbSize - TopBarHeight
+		ebitenutil.DrawRect(screen, float64(vbX), float64(vbY), float64(sbSize), float64(vbH), white)
+		drawDitherFill(screen, vbX, vbY+WinScrollArrowH, sbSize, vbH-2*WinScrollArrowH)
+
+		ebitenutil.DrawRect(screen, float64(vbX), float64(vbY), float64(sbSize), float64(WinScrollArrowH), gray)
+		ebitenutil.DrawRect(screen, float64(vbX), float64(vbY+vbH-WinScrollArrowH), float64(sbSize), float64(WinScrollArrowH), gray)
+		drawShellText(screen, "^", vbX+4, vbY+1, black)
+		drawShellText(screen, "v", vbX+4, vbY+vbH-WinScrollArrowH+1, black)
+
+		ebitenutil.DrawRect(screen, float64(vbX+1), float64(thumbYRel), float64(sbSize-2), float64(thumbH), gray)
+		strokeRect(screen, float32(vbX+1), float32(thumbYRel), float32(sbSize-2), float32(thumbH), black)
+		ebitenutil.DrawLine(screen, float64(vbX), float64(vbY), float64(vbX), float64(vbY+vbH), black)
+	}
+
+	// Horizontal
+	if osW > viewW {
+		hbX := 0
+		hbY := viewH - sbSize
+		hbW := viewW - sbSize
+		ebitenutil.DrawRect(screen, float64(hbX), float64(hbY), float64(hbW), float64(sbSize), white)
+		drawDitherFill(screen, hbX+WinScrollArrowH, hbY, hbW-2*WinScrollArrowH, sbSize)
+
+		ebitenutil.DrawRect(screen, float64(hbX), float64(hbY), float64(WinScrollArrowH), float64(sbSize), gray)
+		ebitenutil.DrawRect(screen, float64(hbX+hbW-WinScrollArrowH), float64(hbY), float64(WinScrollArrowH), float64(sbSize), gray)
+		drawShellText(screen, "<", hbX+4, hbY+1, black)
+		drawShellText(screen, ">", hbX+hbW-WinScrollArrowH+4, hbY+1, black)
+
+		ebitenutil.DrawRect(screen, float64(thumbXRel), float64(hbY+1), float64(thumbW), float64(sbSize-2), gray)
+		strokeRect(screen, float32(thumbXRel), float32(hbY+1), float32(thumbW), float32(sbSize-2), black)
+		ebitenutil.DrawLine(screen, float64(hbX), float64(hbY), float64(hbX+hbW), float64(hbY), black)
+	}
+
+	// Corner
+	if osW > viewW || osH > viewH {
+		gbX := viewW - sbSize
+		gbY := viewH - sbSize
+		ebitenutil.DrawRect(screen, float64(gbX), float64(gbY), float64(sbSize), float64(sbSize), gray)
+		strokeRect(screen, float32(gbX), float32(gbY), float32(sbSize), float32(sbSize), black)
+	}
 }
 
 // drawWindowScrollbars paints the Right-edge vertical track + arrows, the
@@ -1261,11 +1479,10 @@ func (r rect) contains(x, y int) bool {
 // settingsModalGeom describes the modal frame and the close-button hit rect.
 // Both the renderer and the input handler call this so they can't drift apart.
 func (g *Game) settingsModalGeom() (modalX, modalY, modalW, modalH int, closeBtn rect) {
-	sw := int(g.machine.System.ScreenWidth())
-	sh := int(g.machine.System.ScreenHeight())
+	viewW, viewH := g.Layout(ebiten.WindowSize())
 	modalW, modalH = 280, 240
-	modalX = (sw - modalW) / 2
-	modalY = (sh - modalH) / 2
+	modalX = (viewW - modalW) / 2
+	modalY = (viewH - modalH) / 2
 	closeBtn = rect{x: modalX + modalW - 18, y: modalY + 5, w: 12, h: 12}
 	return
 }
@@ -1518,11 +1735,10 @@ func (g *Game) handleQuitConfirmInput(justPressed bool) {
 
 	// The drawn modal is 240x120 centered (drawQuitConfirm); mirror that geometry
 	// so the hit rects don't drift if the layout changes in one place but not the other.
-	sw := int(g.machine.System.ScreenWidth())
-	sh := int(g.machine.System.ScreenHeight())
+	viewW, viewH := g.Layout(ebiten.WindowSize())
 	modalW, modalH := 240, 120
-	modalX := (sw - modalW) / 2
-	modalY := (sh - modalH) / 2
+	modalX := (viewW - modalW) / 2
+	modalY := (viewH - modalH) / 2
 	quitBtnX := modalX + 20
 	cancelBtnX := modalX + 130
 	btnY := modalY + 60
@@ -1640,8 +1856,7 @@ func (g *Game) drawPill(screen *ebiten.Image, r rect, label string) {
 }
 
 func (g *Game) drawWindowsModal(screen *ebiten.Image) {
-	sw := int(g.machine.System.ScreenWidth())
-	sh := int(g.machine.System.ScreenHeight())
+	viewW, viewH := screen.Bounds().Dx(), screen.Bounds().Dy()
 
 	wins := g.machine.Services().ListWindowsSorted()
 
@@ -1649,8 +1864,8 @@ func (g *Game) drawWindowsModal(screen *ebiten.Image) {
 	if modalH > 300 {
 		modalH = 300
 	}
-	modalX := (sw - modalW) / 2
-	modalY := (sh - modalH) / 2
+	modalX := (viewW - modalW) / 2
+	modalY := (viewH - modalH) / 2
 
 	ebitenutil.DrawRect(screen, float64(modalX), float64(modalY), float64(modalW), float64(modalH), color.RGBA{200, 200, 200, 255})
 	strokeRect(screen, float32(modalX), float32(modalY), float32(modalW), float32(modalH), color.Black)
@@ -1678,12 +1893,11 @@ func (g *Game) drawWindowsModal(screen *ebiten.Image) {
 }
 
 func (g *Game) drawQuitConfirm(screen *ebiten.Image) {
-	sw := int(g.machine.System.ScreenWidth())
-	sh := int(g.machine.System.ScreenHeight())
+	viewW, viewH := screen.Bounds().Dx(), screen.Bounds().Dy()
 
 	modalW, modalH := 240, 120
-	modalX := (sw - modalW) / 2
-	modalY := (sh - modalH) / 2
+	modalX := (viewW - modalW) / 2
+	modalY := (viewH - modalH) / 2
 
 	ebitenutil.DrawRect(screen, float64(modalX), float64(modalY), float64(modalW), float64(modalH), color.RGBA{200, 200, 200, 255})
 	strokeRect(screen, float32(modalX), float32(modalY), float32(modalW), float32(modalH), color.Black)
@@ -1846,21 +2060,42 @@ func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
 		outsideHeight = minHeight
 	}
 
-	// If the user resized the window, we update the internal resolution.
-	// We scale down the outside dimensions by screenScale to get logical pixels.
+	// Viewport size in logical pixels
 	w := outsideWidth / screenScale
 	h := outsideHeight / screenScale
-	if w > 0 && h > 0 {
-		// Enforce minimum internal resolution as well
-		if w < 100 {
-			w = 100
+
+	// Dynamically calculate the logical OS dimensions based on the viewport
+	// and the maximum extent of all open windows.
+	maxW := int32(w)
+	maxH := int32(h)
+
+	windows := g.machine.Services().ListWindowsSorted()
+	for _, win := range windows {
+		if win.StrucRgn.Right > maxW {
+			maxW = win.StrucRgn.Right
 		}
-		if h < 75 {
-			h = 75
+		if win.StrucRgn.Bottom > maxH {
+			maxH = win.StrucRgn.Bottom
 		}
-		g.machine.System.SetOSResolution(int32(w), int32(h))
 	}
-	return int(g.machine.System.ScreenWidth()), int(g.machine.System.ScreenHeight())
+
+	g.machine.System.SetOSResolution(maxW, maxH)
+
+	// Clamp scroll offsets
+	if g.osScrollX > float64(maxW-int32(w)) {
+		g.osScrollX = float64(maxW - int32(w))
+	}
+	if g.osScrollX < 0 {
+		g.osScrollX = 0
+	}
+	if g.osScrollY > float64(maxH-int32(h)) {
+		g.osScrollY = float64(maxH - int32(h))
+	}
+	if g.osScrollY < 0 {
+		g.osScrollY = 0
+	}
+
+	return w, h
 }
 
 type clipboardBus struct {

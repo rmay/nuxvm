@@ -34,6 +34,13 @@ const (
 	HitZoneScrollTrackH // horizontal track
 	HitZoneGrowBox
 	HitZoneMenuBar
+	HitZoneOSScrollUp
+	HitZoneOSScrollDown
+	HitZoneOSScrollTrack
+	HitZoneOSScrollLeft
+	HitZoneOSScrollRight
+	HitZoneOSScrollTrackH
+	HitZoneOSCorner
 )
 
 type HitResult struct {
@@ -113,8 +120,56 @@ func (wm *WindowManager) ContentImage(id system.WindowID) *ebiten.Image {
 
 // HitTest determines which window zone (if any) contains the screen point (x, y).
 // TopBarH is the global menu bar height (24px) that's already consumed.
+// viewW, viewH are the logical viewport dimensions (host window).
+// osW, osH are the logical OS dimensions.
 // windows must be in ascending Z-order (back to front); hit test walks in reverse.
-func (wm *WindowManager) HitTest(x, y, TopBarH int, windows []*system.WindowRecord) HitResult {
+func (wm *WindowManager) HitTest(x, y, TopBarH, viewW, viewH, osW, osH int, windows []*system.WindowRecord, scrollX, scrollY float64) HitResult {
+	// 1. Check Desktop/Master Scrollbars (Physical edges)
+	sbSize := system.WinScrollbarSize
+
+	// Corner Check (if both bars exist)
+	if osH > viewH && osW > viewW {
+		if x >= viewW-sbSize && y >= viewH-sbSize {
+			return HitResult{Zone: HitZoneOSCorner}
+		}
+	}
+
+	// Vertical Master Scrollbar
+	if osH > viewH {
+		vbX := viewW - sbSize
+		if x >= vbX && y >= TopBarH && x < viewW {
+			if y < TopBarH+WinScrollArrowH {
+				return HitResult{Zone: HitZoneOSScrollUp}
+			}
+			if y >= viewH-sbSize-WinScrollArrowH && y < viewH-sbSize {
+				return HitResult{Zone: HitZoneOSScrollDown}
+			}
+			if y < viewH-sbSize {
+				return HitResult{Zone: HitZoneOSScrollTrack}
+			}
+		}
+	}
+
+	// Horizontal Master Scrollbar
+	if osW > viewW {
+		hbY := viewH - sbSize
+		if y >= hbY && y < viewH && x < viewW-sbSize {
+			if x < WinScrollArrowH {
+				return HitResult{Zone: HitZoneOSScrollLeft}
+			}
+			if x >= viewW-sbSize-WinScrollArrowH && x < viewW-sbSize {
+				return HitResult{Zone: HitZoneOSScrollRight}
+			}
+			if x < viewW-sbSize {
+				return HitResult{Zone: HitZoneOSScrollTrackH}
+			}
+		}
+	}
+
+	// 2. Adjust mouse for desktop scrolling
+	osX := x + int(scrollX)
+	osY := y + int(scrollY)
+
 	// Iterate in reverse Z-order (highest ZOrder = Topmost = first to hit)
 	for i := len(windows) - 1; i >= 0; i-- {
 		win := windows[i]
@@ -122,30 +177,30 @@ func (wm *WindowManager) HitTest(x, y, TopBarH int, windows []*system.WindowReco
 			continue
 		}
 
-		// Check if (x, y) is inside the structural region (full window frame)
-		if x < int(win.StrucRgn.Left) || x >= int(win.StrucRgn.Right) || y < int(win.StrucRgn.Top) || y >= int(win.StrucRgn.Bottom) {
+		// Check if (osX, osY) is inside the structural region (full window frame)
+		if osX < int(win.StrucRgn.Left) || osX >= int(win.StrucRgn.Right) || osY < int(win.StrucRgn.Top) || osY >= int(win.StrucRgn.Bottom) {
 			continue
 		}
 
 		// We hit this window. Determine which zone.
 
 		// Virtual Chrome check (Title bar and buttons drawn by Lux)
-		if y < int(win.StrucRgn.Top)+20 {
+		if osY < int(win.StrucRgn.Top)+20 {
 			// Close button: top-left 16x16
-			if x < int(win.StrucRgn.Left)+16 {
-				return HitResult{WinID: win.ID, Zone: HitZoneCloseButton, LocalX: x - int(win.StrucRgn.Left), LocalY: y - int(win.StrucRgn.Top)}
+			if osX < int(win.StrucRgn.Left)+16 {
+				return HitResult{WinID: win.ID, Zone: HitZoneCloseButton, LocalX: osX - int(win.StrucRgn.Left), LocalY: osY - int(win.StrucRgn.Top)}
 			}
 			// Menu bar check
-			if win.MenuTablePtr != 0 && x >= int(win.StrucRgn.Left)+30 {
-				return HitResult{WinID: win.ID, Zone: HitZoneMenuBar, LocalX: x - int(win.StrucRgn.Left), LocalY: y - int(win.StrucRgn.Top)}
+			if win.MenuTablePtr != 0 && osX >= int(win.StrucRgn.Left)+30 {
+				return HitResult{WinID: win.ID, Zone: HitZoneMenuBar, LocalX: osX - int(win.StrucRgn.Left), LocalY: osY - int(win.StrucRgn.Top)}
 			}
 			// Rest of title bar: draggable
-			return HitResult{WinID: win.ID, Zone: HitZoneTitleBar, LocalX: x - int(win.StrucRgn.Left), LocalY: y - int(win.StrucRgn.Top)}
+			return HitResult{WinID: win.ID, Zone: HitZoneTitleBar, LocalX: osX - int(win.StrucRgn.Left), LocalY: osY - int(win.StrucRgn.Top)}
 		}
 
 		// Content area or scrollbars
-		localX := x - int(win.ContRgn.Left)
-		localY := y - int(win.ContRgn.Top)
+		localX := osX - int(win.ContRgn.Left)
+		localY := osY - int(win.ContRgn.Top)
 		contentW := int(win.ContRgn.Width())
 		contentH := int(win.ContRgn.Height())
 

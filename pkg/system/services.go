@@ -709,22 +709,31 @@ func (sm *ServiceManager) applyLayout() {
 				pane.X + pane.W,
 				pane.Y + pane.H + TopBarHeight,
 			}
-			win.Port.PortRect = rect{0, 0, win.ContRgn.Width(), win.ContRgn.Height()}
+
+			// Decouple Port size from Content area size.
+			// If win.ContentWidth/Height are not set, default PortRect to the pane size.
+			// If they ARE set, we keep the PortRect at the preferred size.
+			if win.ContentWidth <= 0 || win.ContentHeight <= 0 {
+				win.Port.PortRect = rect{0, 0, win.ContRgn.Width(), win.ContRgn.Height()}
+				win.ContentWidth = win.ContRgn.Width()
+				win.ContentHeight = win.ContRgn.Height()
+			}
+			// ClipRgn always matches PortRect (internal drawing context)
 			win.Port.ClipRgn = win.Port.PortRect
 
-			newW := win.ContRgn.Width()
-			newH := win.ContRgn.Height()
+			newW := win.Port.PortRect.Width()
+			newH := win.Port.PortRect.Height()
 
-			// Reallocate framebuffer if size changed
-			if oldW != newW || oldH != newH {
+			// Reallocate framebuffer if PORT size changed
+			if oldW != win.ContRgn.Width() || oldH != win.ContRgn.Height() || len(win.FrameBuf) == 0 {
 				win.FrameBuf = make([]byte, newW*newH*4)
-				// Emit resize event
+				// Emit resize event to notify app of the new PANE size
 				select {
 				case sm.inputQueue <- &InputEvent{
 					Type:    InputResize,
 					WinID:   pane.WinID,
-					ResizeW: newW,
-					ResizeH: newH,
+					ResizeW: win.ContRgn.Width(),
+					ResizeH: win.ContRgn.Height(),
 				}:
 				default:
 				}

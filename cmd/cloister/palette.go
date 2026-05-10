@@ -58,12 +58,11 @@ func (g *Game) openCommandPalette() {
 
 // drawCommandPalette renders the palette overlay. Centered, ~200x200.
 func (g *Game) drawCommandPalette(screen *ebiten.Image) {
-	sw := int(g.machine.System.ScreenWidth())
-	sh := int(g.machine.System.ScreenHeight())
+	viewW, viewH := screen.Bounds().Dx(), screen.Bounds().Dy()
 	modalW := 220
 	modalH := 30 + len(paletteCommands)*22
-	modalX := (sw - modalW) / 2
-	modalY := (sh - modalH) / 2
+	modalX := (viewW - modalW) / 2
+	modalY := (viewH - modalH) / 2
 
 	ebitenutil.DrawRect(screen, float64(modalX), float64(modalY), float64(modalW), float64(modalH), color.RGBA{200, 200, 200, 255})
 	strokeRect(screen, float32(modalX), float32(modalY), float32(modalW), float32(modalH), color.Black)
@@ -112,12 +111,11 @@ func (g *Game) handleCommandPaletteInput(justPressed bool) {
 	}
 
 	mx, my := ebiten.CursorPosition()
-	sw := int(g.machine.System.ScreenWidth())
-	sh := int(g.machine.System.ScreenHeight())
+	viewW, viewH := g.Layout(ebiten.WindowSize())
 	modalW := 220
 	modalH := 30 + len(paletteCommands)*22
-	modalX := (sw - modalW) / 2
-	modalY := (sh - modalH) / 2
+	modalX := (viewW - modalW) / 2
+	modalY := (viewH - modalH) / 2
 	for i := range paletteCommands {
 		rowY := modalY + 26 + i*22
 		if mx >= modalX+8 && mx < modalX+modalW-8 && my >= rowY && my < rowY+20 {
