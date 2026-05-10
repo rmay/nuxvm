@@ -1,9 +1,9 @@
 package system
 
 import (
+	"github.com/rmay/nuxvm/pkg/lux"
 	"os"
 	"testing"
-	"github.com/rmay/nuxvm/pkg/lux"
 )
 
 func repoRoot(t *testing.T) string {
@@ -38,8 +38,8 @@ IMPORT WINDOW
 @test-start
     init-locals
 	DIALOG::clear-items
-	F"Item 1" 6 DIALOG::add-item
-	F"Item 2" 6 DIALOG::add-item
+	T"Item 1" 6 DIALOG::add-item
+	T"Item 2" 6 DIALOG::add-item
 	DIALOG::DIALOG_LIST_BASE 4 + LOADI ( count )
 ;
 test-start
@@ -95,7 +95,7 @@ IMPORT WINDOW
 @test-start
     init-locals
     0 CALLBACK_FLAG STOREI
-    F"` + tempDir + `" F".txt" RESULT_BUF [ on-open ] FILE-DIALOG::show
+    T"` + tempDir + `" T".txt" RESULT_BUF [ on-open ] FILE-DIALOG::show
     
     ( Force DRAW to set w and h )
     FILE-DIALOG::DRAW-FILE-DIALOG
@@ -156,7 +156,7 @@ IMPORT WINDOW
 @test-start
     init-locals
     0 CALLBACK_FLAG STOREI
-    F"." F".txt" RESULT_BUF [ on-open ] FILE-DIALOG::show
+    T"." T".txt" RESULT_BUF [ on-open ] FILE-DIALOG::show
     
     FILE-DIALOG::DRAW-FILE-DIALOG
     
@@ -213,7 +213,7 @@ IMPORT WINDOW
 @test-start
     init-locals
     0 CALLBACK_FLAG STOREI
-    F"." F".txt" RESULT_BUF [ on-open ] FILE-DIALOG::show
+    T"." T".txt" RESULT_BUF [ on-open ] FILE-DIALOG::show
     
     27 0x1004C STOREI ( Escape key )
     FILE-DIALOG::ON-FILE-KEY

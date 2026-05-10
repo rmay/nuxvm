@@ -26,14 +26,7 @@ const (
 	HitZonePrevButton
 	HitZoneNextButton
 	HitZoneContent
-	HitZoneScrollUp
-	HitZoneScrollDown
-	HitZoneScrollTrack // vertical track (between arrows)
-	HitZoneScrollLeft
-	HitZoneScrollRight
-	HitZoneScrollTrackH // horizontal track
 	HitZoneGrowBox
-	HitZoneMenuBar
 	HitZoneOSScrollUp
 	HitZoneOSScrollDown
 	HitZoneOSScrollTrack
@@ -53,14 +46,12 @@ type HitResult struct {
 type WindowManager struct {
 	sm     *system.ServiceManager
 	images map[system.WindowID]*ebiten.Image
-	dirty  map[system.WindowID]bool
 }
 
 func NewWindowManager(sm *system.ServiceManager) *WindowManager {
 	return &WindowManager{
 		sm:     sm,
 		images: make(map[system.WindowID]*ebiten.Image),
-		dirty:  make(map[system.WindowID]bool),
 	}
 }
 
@@ -79,7 +70,6 @@ func (wm *WindowManager) SyncImages(windows []*system.WindowRecord) {
 	for id := range wm.images {
 		if !currentIDs[id] {
 			delete(wm.images, id)
-			delete(wm.dirty, id)
 		}
 	}
 
@@ -95,14 +85,14 @@ func (wm *WindowManager) SyncImages(windows []*system.WindowRecord) {
 
 		if needsResize {
 			wm.images[win.ID] = ebiten.NewImage(int(win.Port.PortRect.Width()), int(win.Port.PortRect.Height()))
-			wm.dirty[win.ID] = true
+			win.Dirty = true
 		}
 
 		// Upload FrameBuf if dirty
-		if wm.dirty[win.ID] {
+		if win.Dirty {
 			if img := wm.images[win.ID]; img != nil && len(win.FrameBuf) > 0 {
 				img.WritePixels(win.FrameBuf)
-				wm.dirty[win.ID] = false
+				win.Dirty = false
 			}
 		}
 	}
@@ -110,7 +100,9 @@ func (wm *WindowManager) SyncImages(windows []*system.WindowRecord) {
 
 // MarkDirty marks a window's image as needing FrameBuf re-upload.
 func (wm *WindowManager) MarkDirty(id system.WindowID) {
-	wm.dirty[id] = true
+	if win := wm.sm.GetWindowByID(id); win != nil {
+		win.Dirty = true
+	}
 }
 
 // ContentImage returns the cached ebiten.Image for a window's content area.
@@ -126,43 +118,53 @@ func (wm *WindowManager) ContentImage(id system.WindowID) *ebiten.Image {
 func (wm *WindowManager) HitTest(x, y, TopBarH, viewW, viewH, osW, osH int, windows []*system.WindowRecord, scrollX, scrollY float64) HitResult {
 	// 1. Check Desktop/Master Scrollbars (Physical edges)
 	sbSize := system.WinScrollbarSize
+	hasV := osH > viewH
+	hasH := osW > viewW
 
 	// Corner Check (if both bars exist)
-	if osH > viewH && osW > viewW {
+	if hasV && hasH {
 		if x >= viewW-sbSize && y >= viewH-sbSize {
 			return HitResult{Zone: HitZoneOSCorner}
 		}
 	}
 
 	// Vertical Master Scrollbar
-	if osH > viewH {
+	if hasV {
 		vbX := viewW - sbSize
-		if x >= vbX && y >= TopBarH && x < viewW {
+		// If horizontal bar is missing, vertical goes all the way to bottom
+		limitY := viewH
+		if hasH {
+			limitY = viewH - sbSize
+		}
+
+		if x >= vbX && y >= TopBarH && x < viewW && y < limitY {
 			if y < TopBarH+WinScrollArrowH {
 				return HitResult{Zone: HitZoneOSScrollUp}
 			}
-			if y >= viewH-sbSize-WinScrollArrowH && y < viewH-sbSize {
+			if y >= limitY-WinScrollArrowH {
 				return HitResult{Zone: HitZoneOSScrollDown}
 			}
-			if y < viewH-sbSize {
-				return HitResult{Zone: HitZoneOSScrollTrack}
-			}
+			return HitResult{Zone: HitZoneOSScrollTrack}
 		}
 	}
 
 	// Horizontal Master Scrollbar
-	if osW > viewW {
+	if hasH {
 		hbY := viewH - sbSize
-		if y >= hbY && y < viewH && x < viewW-sbSize {
+		// If vertical bar is missing, horizontal goes all the way to right
+		limitX := viewW
+		if hasV {
+			limitX = viewW - sbSize
+		}
+
+		if y >= hbY && y < viewH && x < limitX {
 			if x < WinScrollArrowH {
 				return HitResult{Zone: HitZoneOSScrollLeft}
 			}
-			if x >= viewW-sbSize-WinScrollArrowH && x < viewW-sbSize {
+			if x >= limitX-WinScrollArrowH {
 				return HitResult{Zone: HitZoneOSScrollRight}
 			}
-			if x < viewW-sbSize {
-				return HitResult{Zone: HitZoneOSScrollTrackH}
-			}
+			return HitResult{Zone: HitZoneOSScrollTrackH}
 		}
 	}
 
@@ -183,55 +185,31 @@ func (wm *WindowManager) HitTest(x, y, TopBarH, viewW, viewH, osW, osH int, wind
 		}
 
 		// We hit this window. Determine which zone.
+		localX := osX - int(win.StrucRgn.Left)
+		localY := osY - int(win.StrucRgn.Top)
 
 		// Virtual Chrome check (Title bar and buttons drawn by Lux)
-		if osY < int(win.StrucRgn.Top)+20 {
-			// Close button: top-left 16x16
-			if osX < int(win.StrucRgn.Left)+16 {
-				return HitResult{WinID: win.ID, Zone: HitZoneCloseButton, LocalX: osX - int(win.StrucRgn.Left), LocalY: osY - int(win.StrucRgn.Top)}
+		if osY < int(win.StrucRgn.Top)+24 {
+			// Close button is at x=8, y=4, size=12x12
+			if localX >= 8 && localX <= 20 && localY >= 4 && localY <= 16 {
+				return HitResult{WinID: win.ID, Zone: HitZoneCloseButton, LocalX: localX, LocalY: localY}
 			}
-			// Menu bar check
-			if win.MenuTablePtr != 0 && osX >= int(win.StrucRgn.Left)+30 {
-				return HitResult{WinID: win.ID, Zone: HitZoneMenuBar, LocalX: osX - int(win.StrucRgn.Left), LocalY: osY - int(win.StrucRgn.Top)}
-			}
-			// Rest of title bar: draggable
-			return HitResult{WinID: win.ID, Zone: HitZoneTitleBar, LocalX: osX - int(win.StrucRgn.Left), LocalY: osY - int(win.StrucRgn.Top)}
+			// Rest of title bar (including menu bar) is draggable
+			return HitResult{WinID: win.ID, Zone: HitZoneTitleBar, LocalX: localX, LocalY: localY}
 		}
 
-		// Content area or scrollbars
-		localX := osX - int(win.ContRgn.Left)
-		localY := osY - int(win.ContRgn.Top)
+		// Content area or scrollbars (now handled by Lux app)
+		contentX := osX - int(win.ContRgn.Left)
+		contentY := osY - int(win.ContRgn.Top)
 		contentW := int(win.ContRgn.Width())
 		contentH := int(win.ContRgn.Height())
 
 		// Bottom-Right grow box (visual only in v1)
-		if localX >= contentW-system.WinScrollbarSize && localY >= contentH-system.WinScrollbarSize {
+		if contentX >= contentW-system.WinScrollbarSize && contentY >= contentH-system.WinScrollbarSize {
 			return HitResult{WinID: win.ID, Zone: HitZoneGrowBox}
 		}
 
-		// Vertical scrollbar (Right gutter, excluding the grow corner)
-		if localX >= contentW-system.WinScrollbarSize {
-			if localY < WinScrollArrowH {
-				return HitResult{WinID: win.ID, Zone: HitZoneScrollUp}
-			}
-			if localY >= contentH-system.WinScrollbarSize-WinScrollArrowH {
-				return HitResult{WinID: win.ID, Zone: HitZoneScrollDown}
-			}
-			return HitResult{WinID: win.ID, Zone: HitZoneScrollTrack}
-		}
-
-		// Horizontal scrollbar (Bottom gutter, excluding the grow corner)
-		if localY >= contentH-system.WinScrollbarSize {
-			if localX < WinScrollArrowH {
-				return HitResult{WinID: win.ID, Zone: HitZoneScrollLeft}
-			}
-			if localX >= contentW-system.WinScrollbarSize-WinScrollArrowH {
-				return HitResult{WinID: win.ID, Zone: HitZoneScrollRight}
-			}
-			return HitResult{WinID: win.ID, Zone: HitZoneScrollTrackH}
-		}
-
-		return HitResult{WinID: win.ID, Zone: HitZoneContent, LocalX: localX, LocalY: localY}
+		return HitResult{WinID: win.ID, Zone: HitZoneContent, LocalX: contentX, LocalY: contentY}
 	}
 
 	return HitResult{Zone: HitZoneNone}

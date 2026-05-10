@@ -65,6 +65,7 @@ type WindowRecord struct {
 	ContentHeight int32
 	FrameBuf      []byte
 	MenuTablePtr  uint32 // pointer to menu table in VM memory (0 = no menu)
+	Dirty         bool   // true if framebuffer has changed since last GPU upload
 }
 
 // ============= Input Manager =============
@@ -239,6 +240,14 @@ func (sm *ServiceManager) GetActiveWindowFramebuf() []byte {
 		return win.FrameBuf
 	}
 	return nil
+}
+
+func (sm *ServiceManager) MarkActiveWindowDirty() {
+	sm.windowMu.Lock()
+	defer sm.windowMu.Unlock()
+	if win := sm.windows[sm.activeWinID]; win != nil {
+		win.Dirty = true
+	}
 }
 
 // SetWindowMenu sets the menu table pointer for a window and adjusts its content rect.
@@ -726,7 +735,26 @@ func (sm *ServiceManager) applyLayout() {
 
 			// Reallocate framebuffer if PORT size changed
 			if oldW != win.ContRgn.Width() || oldH != win.ContRgn.Height() || len(win.FrameBuf) == 0 {
+				oldFB := win.FrameBuf
 				win.FrameBuf = make([]byte, newW*newH*4)
+				
+				// Copy old content if possible to avoid wiping black
+				if len(oldFB) > 0 {
+					minW := oldW
+					if newW < minW {
+						minW = newW
+					}
+					minH := oldH
+					if newH < minH {
+						minH = newH
+					}
+					for row := int32(0); row < minH; row++ {
+						srcStart := row * oldW * 4
+						dstStart := row * newW * 4
+						copy(win.FrameBuf[dstStart:dstStart+minW*4], oldFB[srcStart:srcStart+minW*4])
+					}
+				}
+
 				// Emit resize event to notify app of the new PANE size
 				select {
 				case sm.inputQueue <- &InputEvent{

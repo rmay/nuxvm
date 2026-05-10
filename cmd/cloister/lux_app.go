@@ -100,7 +100,6 @@ func (g *Game) tickLuxApps() {
 		if !running {
 			toClose = append(toClose, app.winID)
 		}
-		g.wm.MarkDirty(app.winID)
 	}
 	services.SetRenderTarget(saved)
 

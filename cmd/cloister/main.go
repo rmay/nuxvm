@@ -58,8 +58,6 @@ type Game struct {
 	dragWinID       system.WindowID
 	dragOffX        int
 	dragOffY        int
-	draggingScroll  bool
-	draggingScrollH bool
 	scrollGrabY     int
 	scrollGrabX     int
 	wasLeftDown     bool
@@ -100,6 +98,10 @@ type Game struct {
 	// Open menu state (for app window menus)
 	openMenuWinID system.WindowID // 0 if no menu is open
 	openMenuIdx   int              // which menu item is hovered (-1 if none)
+
+	// Mouse capture
+	capturedWinID system.WindowID
+	isCapturing   bool
 }
 
 // luxKeyCodeFromEbiten maps ebiten key codes to Lux key codes (ASCII where applicable)
@@ -450,10 +452,34 @@ func (g *Game) Update() error {
 		return nil
 	}
 
+	// Global mouse state
+	mx, my := ebiten.CursorPosition()
 	LeftDown := ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft)
 	justPressed := LeftDown && !g.wasLeftDown
 	justReleased := !LeftDown && g.wasLeftDown
 	g.wasLeftDown = LeftDown
+
+	// Clear drag/capture state if user released somewhere
+	if justReleased {
+		if g.dragging {
+			g.dragging = false
+			g.dragWinID = 0
+		}
+		if g.isCapturing {
+			// Final release event to the captured window
+			if win := g.machine.Services().GetWindowByID(g.capturedWinID); win != nil {
+				localX := mx - int(win.ContRgn.Left) + int(g.osScrollX)
+				localY := my - int(win.ContRgn.Top) + int(g.osScrollY)
+				if app := g.luxAppForWinID(g.capturedWinID); app != nil {
+					app.machine.QueueMouseButton(int32(localX), int32(localY), 0, false)
+				} else {
+					g.machine.Services().QueueMouseButton(int32(localX), int32(localY), 0, false)
+				}
+			}
+			g.isCapturing = false
+			g.capturedWinID = 0
+		}
+	}
 
 	// Shell/menu input takes priority
 	if g.shellMode != ShellNormal {
@@ -462,36 +488,16 @@ func (g *Game) Update() error {
 		return nil
 	}
 
-	// Clear drag state if user clicked somewhere
-	if justPressed && (g.dragging || g.draggingScroll || g.draggingScrollH) {
-		g.dragging = false
-		g.draggingScroll = false
-		g.draggingScrollH = false
-		g.dragWinID = 0
-	}
-
-	// Drag release
-	if justReleased && (g.dragging || g.draggingScroll || g.draggingScrollH) {
-		g.dragging = false
-		g.draggingScroll = false
-		g.draggingScrollH = false
-		g.dragWinID = 0
-	}
-
-	// Clicking the % glyph opens the apple menu, even when no shell is active.
-	// Without this, the click falls through to wm.HitTest and grabs the
-	// underlying window's title bar (since the window frame extends under the
-	// menubar).
-	mxPre, myPre := ebiten.CursorPosition()
-	if justPressed && menubarHitTest(mxPre, myPre) {
-		g.shellMode = ShellAppleMenu
-		g.appleIdx = 0
-		return nil
-	}
-
 	// Toggle debug overlay
 	if inpututil.IsKeyJustPressed(ebiten.KeyF1) {
 		g.showDebug = !g.showDebug
+	}
+
+	// Clicking the % glyph opens the apple menu, even when no shell is active.
+	if justPressed && menubarHitTest(mx, my) {
+		g.shellMode = ShellAppleMenu
+		g.appleIdx = 0
+		return nil
 	}
 
 	// Ctrl+P opens the command palette against the active window. Held in the
@@ -563,73 +569,19 @@ func (g *Game) Update() error {
 	}
 
 	// Mouse input with hit-testing and window routing
-	mx, my := ebiten.CursorPosition()
 	g.mouseX, g.mouseY = mx, my
 
 	// Drag move (window)
 	if g.dragging && LeftDown {
-		newX := int32(mx - g.dragOffX)
-		newY := int32(my - TopBarHeight - g.dragOffY)
-		if newY < 0 {
-			newY = 0
+		osX := mx + int(g.osScrollX)
+		osY := my + int(g.osScrollY)
+		newX := int32(osX - g.dragOffX)
+		newY := int32(osY - g.dragOffY)
+		if newY < int32(TopBarHeight) {
+			newY = int32(TopBarHeight)
 		}
+		// DirectMoveWindow expects OS-space coordinates
 		g.machine.Services().DirectMoveWindow(g.dragWinID, newX, newY)
-	}
-
-	// Drag move (scroll)
-	if g.draggingScroll && LeftDown {
-		if win := g.machine.Services().GetWindowByID(g.dragWinID); win != nil {
-			trackYRel, trackH, _, thumbH, _, _, _, _ := g.getScrollGeometry(win)
-			trackTop := int(win.ContRgn.Top) + trackYRel
-
-			// New thumb Top position based on mouse and grab offset
-			newThumbY := my - g.scrollGrabY
-
-			// Clamp thumb Top to track bounds
-			if newThumbY < trackTop {
-				newThumbY = trackTop
-			}
-			if newThumbY > trackTop+trackH-thumbH {
-				newThumbY = trackTop + trackH - thumbH
-			}
-
-			// Map thumb position to ScrollY
-			relThumbPos := float64(newThumbY - trackTop)
-			scrollPct := 1.0 - (relThumbPos / float64(trackH-thumbH))
-
-			maxScroll := win.ContentHeight - win.ContRgn.Height()
-			if maxScroll < 0 {
-				maxScroll = 0
-			}
-			win.ScrollY = int32(scrollPct * float64(maxScroll))
-			g.wm.MarkDirty(g.dragWinID)
-		}
-	}
-
-	// Drag move (scroll H)
-	if g.draggingScrollH && LeftDown {
-		if win := g.machine.Services().GetWindowByID(g.dragWinID); win != nil {
-			_, _, _, _, trackXRel, trackW, _, thumbW := g.getScrollGeometry(win)
-			trackLeft := int(win.ContRgn.Left) + trackXRel
-
-			newThumbX := mx - g.scrollGrabX
-			if newThumbX < trackLeft {
-				newThumbX = trackLeft
-			}
-			if newThumbX > trackLeft+trackW-thumbW {
-				newThumbX = trackLeft + trackW - thumbW
-			}
-
-			relThumbPos := float64(newThumbX - trackLeft)
-			scrollPct := relThumbPos / float64(trackW-thumbW)
-
-			maxScrollX := win.ContentWidth - win.ContRgn.Width()
-			if maxScrollX < 0 {
-				maxScrollX = 0
-			}
-			win.ScrollX = int32(scrollPct * float64(maxScrollX))
-			g.wm.MarkDirty(g.dragWinID)
-		}
 	}
 
 	// Drag move (OS scroll)
@@ -675,7 +627,7 @@ func (g *Game) Update() error {
 	}
 
 	// Hit test on new click or for mouse move
-	if !g.dragging && !g.draggingScroll && !g.draggingScrollH && !g.draggingOSScroll && !g.draggingOSScrollH {
+	if !g.dragging && !g.draggingOSScroll && !g.draggingOSScrollH && !g.isCapturing {
 		viewW, viewH := g.Layout(ebiten.WindowSize())
 		osW := int(g.machine.System.ScreenWidth())
 		osH := int(g.machine.System.ScreenHeight())
@@ -720,6 +672,30 @@ func (g *Game) Update() error {
 				}
 			case HitZoneTitleBar:
 				g.focusAndShow(hit.WinID)
+
+				// Check if clicking the window's application menu title
+				if app := g.luxAppForWinID(hit.WinID); app != nil {
+					if win := g.machine.Services().GetWindowByID(hit.WinID); win != nil && win.MenuTablePtr != 0 {
+						mem := app.machine.CPU.Memory()
+						title, _ := readMenuFromMem(mem, win.MenuTablePtr)
+						titleW := measureSystemFontText(title, 1) + 12
+						// Menu is at x=30 in the chrome
+						if hit.LocalX >= 30 && hit.LocalX < 30+titleW {
+							if g.openMenuWinID == hit.WinID {
+								g.openMenuWinID = 0
+								g.openMenuIdx = -1
+							} else {
+								g.openMenuWinID = hit.WinID
+								g.openMenuIdx = -1
+							}
+							return nil
+						}
+					}
+				}
+
+				// Otherwise, start dragging the window and close any open menu
+				g.openMenuWinID = 0
+				g.openMenuIdx = -1
 				g.dragging = true
 				g.dragWinID = hit.WinID
 				// Drag offsets must be in OS space relative to window top-left
@@ -735,59 +711,8 @@ func (g *Game) Update() error {
 				g.cycleFocus(-1)
 			case HitZoneNextButton:
 				g.cycleFocus(+1)
-			case HitZoneScrollUp:
-				g.adjustScroll(hit.WinID, +WinScrollLineStep, 0)
-			case HitZoneScrollDown:
-				g.adjustScroll(hit.WinID, -WinScrollLineStep, 0)
-			case HitZoneScrollLeft:
-				g.adjustScroll(hit.WinID, 0, -WinScrollLineStep)
-			case HitZoneScrollRight:
-				g.adjustScroll(hit.WinID, 0, +WinScrollLineStep)
-			case HitZoneScrollTrack:
-				if win := g.machine.System.Services.GetWindowByID(hit.WinID); win != nil {
-					_, _, thumbYRel, thumbH, _, _, _, _ := g.getScrollGeometry(win)
-					thumbY := int(win.ContRgn.Top) + thumbYRel
-					if my >= thumbY && my < thumbY+thumbH {
-						g.draggingScroll = true
-						g.dragWinID = hit.WinID
-						g.scrollGrabY = my - thumbY
-					}
-				}
-			case HitZoneScrollTrackH:
-				if win := g.machine.System.Services.GetWindowByID(hit.WinID); win != nil {
-					_, _, _, _, _, _, thumbXRel, thumbW := g.getScrollGeometry(win)
-					thumbX := int(win.ContRgn.Left) + thumbXRel
-					if mx >= thumbX && mx < thumbX+thumbW {
-						g.draggingScrollH = true
-						g.dragWinID = hit.WinID
-						g.scrollGrabX = mx - thumbX
-					}
-				}
 			case HitZoneGrowBox:
 				// no-op in v1
-			case HitZoneMenuBar:
-				// If clicking the title, toggle the menu
-				if app := g.luxAppForWinID(hit.WinID); app != nil {
-					if win := g.machine.Services().GetWindowByID(hit.WinID); win != nil {
-						mem := app.machine.CPU.Memory()
-						title, _ := readMenuFromMem(mem, win.MenuTablePtr)
-						titleW := measureSystemFontText(title, 1) + 12
-						if hit.LocalX >= 30 && hit.LocalX < 30+titleW {
-							if g.openMenuWinID == hit.WinID {
-								g.openMenuWinID = 0
-								g.openMenuIdx = -1
-							} else {
-								g.openMenuWinID = hit.WinID
-								g.openMenuIdx = -1
-							}
-							g.wm.MarkDirty(hit.WinID)
-							return nil
-						}
-					}
-				}
-				// Otherwise, close any open menu
-				g.openMenuWinID = 0
-				g.openMenuIdx = -1
 			case HitZoneContent:
 				// If a menu item is hovered, execute it
 				if g.openMenuWinID == hit.WinID && g.openMenuIdx >= 0 {
@@ -801,7 +726,6 @@ func (g *Game) Update() error {
 								app.machine.CPU.TriggerVector(system.MenuVectorIdx)
 								g.openMenuWinID = 0
 								g.openMenuIdx = -1
-								g.wm.MarkDirty(hit.WinID)
 								return nil
 							}
 						}
@@ -819,18 +743,16 @@ func (g *Game) Update() error {
 				} else if g.shellApp != nil && hit.WinID == g.shellApp.winID {
 					// Shell windows are host-rendered; don't forward clicks
 					// into the VM input queue.
-				} else if app := g.luxAppForWinID(hit.WinID); app != nil {
-					app.machine.QueueMouseButton(int32(hit.LocalX), int32(hit.LocalY), 1, true)
 				} else {
-					g.machine.Services().QueueMouseButton(int32(hit.LocalX), int32(hit.LocalY), 1, true)
-				}
-			}
-		} else if justReleased {
-			if hit.Zone == HitZoneContent {
-				if app := g.luxAppForWinID(hit.WinID); app != nil {
-					app.machine.QueueMouseButton(int32(hit.LocalX), int32(hit.LocalY), 0, false)
-				} else {
-					g.machine.Services().QueueMouseButton(int32(hit.LocalX), int32(hit.LocalY), 0, false)
+					// Start mouse capture for this window
+					g.isCapturing = true
+					g.capturedWinID = hit.WinID
+
+					if app := g.luxAppForWinID(hit.WinID); app != nil {
+						app.machine.QueueMouseButton(int32(hit.LocalX), int32(hit.LocalY), 1, true)
+					} else {
+						g.machine.Services().QueueMouseButton(int32(hit.LocalX), int32(hit.LocalY), 1, true)
+					}
 				}
 			}
 		} else if g.openMenuWinID != 0 && hit.WinID == g.openMenuWinID {
@@ -858,7 +780,7 @@ func (g *Game) Update() error {
 				}
 			}
 		} else if hit.Zone == HitZoneContent {
-			// Mouse move within content area of hit window
+			// Normal mouse move (not capturing)
 			activeID := g.machine.Services().GetActiveWindowID()
 			if hit.WinID == activeID {
 				if app := g.luxAppForWinID(hit.WinID); app != nil {
@@ -866,6 +788,17 @@ func (g *Game) Update() error {
 				} else {
 					g.machine.Services().QueueMouseMove(int32(hit.LocalX), int32(hit.LocalY))
 				}
+			}
+		}
+	} else if g.isCapturing {
+		// Mouse move while capturing: always route to capturedWinID
+		if win := g.machine.Services().GetWindowByID(g.capturedWinID); win != nil {
+			localX := mx - int(win.ContRgn.Left) + int(g.osScrollX)
+			localY := my - int(win.ContRgn.Top) + int(g.osScrollY)
+			if app := g.luxAppForWinID(g.capturedWinID); app != nil {
+				app.machine.QueueMouseMove(int32(localX), int32(localY))
+			} else {
+				g.machine.Services().QueueMouseMove(int32(localX), int32(localY))
 			}
 		}
 	}
@@ -903,8 +836,18 @@ func (g *Game) Update() error {
 	if sw != g.screenWidth || sh != g.screenHeight {
 		g.screenWidth = sw
 		g.screenHeight = sh
-		// If we have panes, clear them to force a re-layout at the bottom of Update
-		g.machine.Services().ClearPanes()
+
+		// If we have panes, resize them to the new resolution.
+		// For a single pane, we just re-run LayoutSingle.
+		panes := g.machine.Services().ListPanes()
+		if len(panes) == 1 {
+			contentH := int32(sh - TopBarHeight)
+			g.machine.Services().LayoutSingle(panes[0].WinID, 0, 0, int32(sw), contentH)
+		} else if len(panes) > 1 {
+			// For multi-pane, just clear and let the recovery logic below handle it.
+			// (Future: better multi-pane resize logic).
+			g.machine.Services().ClearPanes()
+		}
 	}
 
 	// Tick the machine (runs until YIELD or HALT)
@@ -916,9 +859,6 @@ func (g *Game) Update() error {
 	if !running {
 		g.machine.CPU.ClearYield()
 	}
-
-	// Mark active window dirty so next Draw() uploads the framebuffer
-	g.wm.MarkDirty(g.machine.Services().GetActiveWindowID())
 
 	// Tick every spawned Lux app under its own render target. Each app's
 	// machine writes to its own window's framebuffer; the helper handles
@@ -1157,55 +1097,21 @@ func (g *Game) drawWindowChrome(screen *ebiten.Image, win *system.WindowRecord, 
 	// Function intentionally empty. Lux apps draw their own chrome now.
 }
 
-// getScrollGeometry calculates the track and thumb positions for a window.
-// trackY/trackX are relative to cont.Top / cont.Left.
-func (g *Game) getScrollGeometry(win *system.WindowRecord) (trackY, trackH, thumbY, thumbH, trackX, trackW, thumbX, thumbW int) {
-	// Vertical
-	trackH = int(win.ContRgn.Height()) - system.WinScrollbarSize - 2*WinScrollArrowH
-	trackY = WinScrollArrowH
-
-	if win.ContentHeight <= win.ContRgn.Height() {
-		thumbY, thumbH = trackY, trackH
-	} else {
-		thumbH = int(float64(win.ContRgn.Height()) / float64(win.ContentHeight) * float64(trackH))
-		if thumbH < 10 {
-			thumbH = 10
-		}
-		maxScroll := float64(win.ContentHeight - win.ContRgn.Height())
-		scrollPct := float64(win.ScrollY) / maxScroll
-		thumbY = trackY + int((1.0-scrollPct)*float64(trackH-thumbH))
-	}
-
-	// Horizontal
-	trackW = int(win.ContRgn.Width()) - system.WinScrollbarSize - 2*WinScrollArrowH
-	trackX = WinScrollArrowH
-
-	if win.ContentWidth <= win.ContRgn.Width() {
-		thumbX, thumbW = trackX, trackW
-	} else {
-		thumbW = int(float64(win.ContRgn.Width()) / float64(win.ContentWidth) * float64(trackW))
-		if thumbW < 10 {
-			thumbW = 10
-		}
-		maxScrollX := float64(win.ContentWidth - win.ContRgn.Width())
-		scrollPctX := float64(win.ScrollX) / maxScrollX
-		// 0% scroll -> Left of track, 100% scroll -> Right of track
-		thumbX = trackX + int(scrollPctX*float64(trackW-thumbW))
-	}
-
-	return
-}
-
 func (g *Game) getOSScrollGeometry(viewW, viewH int) (trackY, trackH, thumbY, thumbH, trackX, trackW, thumbX, thumbW int) {
 	osW := int(g.machine.System.ScreenWidth())
 	osH := int(g.machine.System.ScreenHeight())
 	sbSize := system.WinScrollbarSize
+	hasV := osH > viewH
+	hasH := osW > viewW
 
 	// Vertical
-	trackH = viewH - TopBarHeight - sbSize - 2*WinScrollArrowH
+	trackH = viewH - TopBarHeight - 2*WinScrollArrowH
+	if hasH {
+		trackH -= sbSize
+	}
 	trackY = TopBarHeight + WinScrollArrowH
 
-	if osH <= viewH {
+	if !hasV {
 		thumbY, thumbH = trackY, trackH
 	} else {
 		thumbH = int(float64(viewH) / float64(osH) * float64(trackH))
@@ -1218,10 +1124,13 @@ func (g *Game) getOSScrollGeometry(viewW, viewH int) (trackY, trackH, thumbY, th
 	}
 
 	// Horizontal
-	trackW = viewW - sbSize - 2*WinScrollArrowH
+	trackW = viewW - 2*WinScrollArrowH
+	if hasV {
+		trackW -= sbSize
+	}
 	trackX = WinScrollArrowH
 
-	if osW <= viewW {
+	if !hasH {
 		thumbX, thumbW = trackX, trackW
 	} else {
 		thumbW = int(float64(viewW) / float64(osW) * float64(trackW))
@@ -1239,7 +1148,9 @@ func (g *Game) getOSScrollGeometry(viewW, viewH int) (trackY, trackH, thumbY, th
 func (g *Game) drawOSScrollbars(screen *ebiten.Image, viewW, viewH int) {
 	osW := int(g.machine.System.ScreenWidth())
 	osH := int(g.machine.System.ScreenHeight())
-	if osW <= viewW && osH <= viewH {
+	hasV := osH > viewH
+	hasH := osW > viewW
+	if !hasV && !hasH {
 		return
 	}
 
@@ -1251,10 +1162,13 @@ func (g *Game) drawOSScrollbars(screen *ebiten.Image, viewW, viewH int) {
 	_, _, thumbYRel, thumbH, _, _, thumbXRel, thumbW := g.getOSScrollGeometry(viewW, viewH)
 
 	// Vertical
-	if osH > viewH {
+	if hasV {
 		vbX := viewW - sbSize
 		vbY := TopBarHeight
-		vbH := viewH - sbSize - TopBarHeight
+		vbH := viewH - TopBarHeight
+		if hasH {
+			vbH -= sbSize
+		}
 		ebitenutil.DrawRect(screen, float64(vbX), float64(vbY), float64(sbSize), float64(vbH), white)
 		drawDitherFill(screen, vbX, vbY+WinScrollArrowH, sbSize, vbH-2*WinScrollArrowH)
 
@@ -1262,17 +1176,28 @@ func (g *Game) drawOSScrollbars(screen *ebiten.Image, viewW, viewH int) {
 		ebitenutil.DrawRect(screen, float64(vbX), float64(vbY+vbH-WinScrollArrowH), float64(sbSize), float64(WinScrollArrowH), gray)
 		drawShellText(screen, "^", vbX+4, vbY+1, black)
 		drawShellText(screen, "v", vbX+4, vbY+vbH-WinScrollArrowH+1, black)
+// Thumb
+ebitenutil.DrawRect(screen, float64(vbX+1), float64(thumbYRel), float64(sbSize-2), float64(thumbH), white)
+strokeRect(screen, float32(vbX+1), float32(thumbYRel), float32(sbSize-2), float32(thumbH), black)
 
-		ebitenutil.DrawRect(screen, float64(vbX+1), float64(thumbYRel), float64(sbSize-2), float64(thumbH), gray)
-		strokeRect(screen, float32(vbX+1), float32(thumbYRel), float32(sbSize-2), float32(thumbH), black)
+// Add System 6 thumb stripes (vertical thumb, horizontal stripes)
+if thumbH > 10 {
+	midY := thumbYRel + thumbH/2
+	for i := -3; i <= 3; i += 2 {
+		ebitenutil.DrawLine(screen, float64(vbX+3), float64(midY+i), float64(vbX+sbSize-4), float64(midY+i), black)
+	}
+}
 		ebitenutil.DrawLine(screen, float64(vbX), float64(vbY), float64(vbX), float64(vbY+vbH), black)
 	}
 
 	// Horizontal
-	if osW > viewW {
+	if hasH {
 		hbX := 0
 		hbY := viewH - sbSize
-		hbW := viewW - sbSize
+		hbW := viewW
+		if hasV {
+			hbW -= sbSize
+		}
 		ebitenutil.DrawRect(screen, float64(hbX), float64(hbY), float64(hbW), float64(sbSize), white)
 		drawDitherFill(screen, hbX+WinScrollArrowH, hbY, hbW-2*WinScrollArrowH, sbSize)
 
@@ -1280,74 +1205,30 @@ func (g *Game) drawOSScrollbars(screen *ebiten.Image, viewW, viewH int) {
 		ebitenutil.DrawRect(screen, float64(hbX+hbW-WinScrollArrowH), float64(hbY), float64(WinScrollArrowH), float64(sbSize), gray)
 		drawShellText(screen, "<", hbX+4, hbY+1, black)
 		drawShellText(screen, ">", hbX+hbW-WinScrollArrowH+4, hbY+1, black)
+// Thumb
+ebitenutil.DrawRect(screen, float64(thumbXRel), float64(hbY+1), float64(thumbW), float64(sbSize-2), white)
+strokeRect(screen, float32(thumbXRel), float32(hbY+1), float32(thumbW), float32(sbSize-2), black)
 
-		ebitenutil.DrawRect(screen, float64(thumbXRel), float64(hbY+1), float64(thumbW), float64(sbSize-2), gray)
-		strokeRect(screen, float32(thumbXRel), float32(hbY+1), float32(thumbW), float32(sbSize-2), black)
+// Add System 6 thumb stripes (horizontal thumb, vertical stripes)
+if thumbW > 10 {
+	midX := thumbXRel + thumbW/2
+	for i := -3; i <= 3; i += 2 {
+		ebitenutil.DrawLine(screen, float64(midX+i), float64(hbY+3), float64(midX+i), float64(hbY+sbSize-4), black)
+	}
+}
 		ebitenutil.DrawLine(screen, float64(hbX), float64(hbY), float64(hbX+hbW), float64(hbY), black)
 	}
 
 	// Corner
-	if osW > viewW || osH > viewH {
+	if hasV && hasH {
 		gbX := viewW - sbSize
 		gbY := viewH - sbSize
-		ebitenutil.DrawRect(screen, float64(gbX), float64(gbY), float64(sbSize), float64(sbSize), gray)
+		ebitenutil.DrawRect(screen, float64(gbX), float64(gbY), float64(sbSize), float64(sbSize), white)
 		strokeRect(screen, float32(gbX), float32(gbY), float32(sbSize), float32(sbSize), black)
 	}
 }
 
-// drawWindowScrollbars paints the Right-edge vertical track + arrows, the
-// Bottom-edge horizontal track, and the grow box.
-func (g *Game) drawWindowScrollbars(screen *ebiten.Image, win *system.WindowRecord) {
-	cont := win.ContRgn
-	black := color.RGBA{0, 0, 0, 255}
-	gray := color.RGBA{170, 170, 170, 255}
-	white := color.RGBA{255, 255, 255, 255}
-
-	_, _, thumbYRel, thumbH, _, _, thumbXRel, thumbW := g.getScrollGeometry(win)
-
-	// Vertical scrollbar gutter (excluding grow box and arrows)
-	vbX := int(cont.Right) - system.WinScrollbarSize
-	vbY := int(cont.Top)
-	vbH := int(cont.Height()) - system.WinScrollbarSize - 1
-	ebitenutil.DrawRect(screen, float64(vbX), float64(vbY), float64(system.WinScrollbarSize), float64(vbH), white)
-	drawDitherFill(screen, vbX, vbY+WinScrollArrowH, system.WinScrollbarSize, vbH-2*WinScrollArrowH)
-	// Up/down arrow buttons
-	ebitenutil.DrawRect(screen, float64(vbX), float64(vbY), float64(system.WinScrollbarSize), float64(WinScrollArrowH), gray)
-	ebitenutil.DrawRect(screen, float64(vbX), float64(vbY+vbH-WinScrollArrowH), float64(system.WinScrollbarSize), float64(WinScrollArrowH), gray)
-	// Arrow glyphs
-	drawShellText(screen, "^", vbX+4, vbY+1, black)
-	drawShellText(screen, "v", vbX+4, vbY+vbH-WinScrollArrowH+1, black)
-
-	thumbY := int(cont.Top) + thumbYRel
-	ebitenutil.DrawRect(screen, float64(vbX+1), float64(thumbY), float64(system.WinScrollbarSize-2), float64(thumbH), gray)
-	strokeRect(screen, float32(vbX+1), float32(thumbY), float32(system.WinScrollbarSize-2), float32(thumbH), black)
-
-	// Border between content and scrollbar
-	ebitenutil.DrawLine(screen, float64(vbX), float64(vbY), float64(vbX), float64(vbY+vbH), black)
-
-	// Horizontal scrollbar gutter (excluding grow box)
-	hbX := int(cont.Left)
-	hbY := int(cont.Bottom) - system.WinScrollbarSize - 1
-	hbW := int(cont.Width()) - system.WinScrollbarSize
-	ebitenutil.DrawRect(screen, float64(hbX), float64(hbY), float64(hbW), float64(system.WinScrollbarSize), white)
-	drawDitherFill(screen, hbX+WinScrollArrowH, hbY, hbW-2*WinScrollArrowH, system.WinScrollbarSize)
-	ebitenutil.DrawRect(screen, float64(hbX), float64(hbY), float64(WinScrollArrowH), float64(system.WinScrollbarSize), gray)
-	ebitenutil.DrawRect(screen, float64(hbX+hbW-WinScrollArrowH), float64(hbY), float64(WinScrollArrowH), float64(system.WinScrollbarSize), gray)
-	drawShellText(screen, "<", hbX+4, hbY+1, black)
-	drawShellText(screen, ">", hbX+hbW-WinScrollArrowH+4, hbY+1, black)
-
-	thumbX := int(cont.Left) + thumbXRel
-	ebitenutil.DrawRect(screen, float64(thumbX), float64(hbY+1), float64(thumbW), float64(system.WinScrollbarSize-2), gray)
-	strokeRect(screen, float32(thumbX), float32(hbY+1), float32(thumbW), float32(system.WinScrollbarSize-2), black)
-
-	ebitenutil.DrawLine(screen, float64(hbX), float64(hbY), float64(hbX+hbW), float64(hbY), black)
-
-	// Grow box (Bottom-Right corner, decorative)
-	gbX := int(cont.Right) - system.WinScrollbarSize
-	gbY := int(cont.Bottom) - system.WinScrollbarSize
-	ebitenutil.DrawRect(screen, float64(gbX), float64(gbY), float64(system.WinScrollbarSize), float64(system.WinScrollbarSize), gray)
-	strokeRect(screen, float32(gbX), float32(gbY), float32(system.WinScrollbarSize), float32(system.WinScrollbarSize), black)
-}
+// drawDitherFill
 
 // drawDitherFill paints a 50%-gray dither pattern over the rect. Used for
 // scrollbar tracks to mimic the System 6 / SE look.
@@ -1921,40 +1802,6 @@ func (g *Game) drawButton(screen *ebiten.Image, x, y int, label string) {
 	drawShellText(screen, label, textX, y+(btnH-shellFontH)/2, color.Black)
 }
 
-// adjustScroll bumps the target window's ScrollY or ScrollX by delta.
-func (g *Game) adjustScroll(id system.WindowID, deltaY, deltaX int32) {
-	win := g.machine.Services().GetWindowByID(id)
-	if win == nil {
-		return
-	}
-	if deltaY != 0 {
-		win.ScrollY += deltaY
-		maxScroll := win.ContentHeight - win.ContRgn.Height()
-		if maxScroll < 0 {
-			maxScroll = 0
-		}
-		if win.ScrollY > maxScroll {
-			win.ScrollY = maxScroll
-		}
-		if win.ScrollY < 0 {
-			win.ScrollY = 0
-		}
-	}
-	if deltaX != 0 {
-		win.ScrollX += deltaX
-		maxScrollX := win.ContentWidth - win.ContRgn.Width()
-		if maxScrollX < 0 {
-			maxScrollX = 0
-		}
-		if win.ScrollX > maxScrollX {
-			win.ScrollX = maxScrollX
-		}
-		if win.ScrollX < 0 {
-			win.ScrollX = 0
-		}
-	}
-	g.wm.MarkDirty(id)
-}
 
 // focusAndShow moves user focus to winID and, if the window isn't already a
 // visible pane, replaces the layout with a single full-screen pane on it.

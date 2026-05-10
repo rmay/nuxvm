@@ -177,9 +177,9 @@ MODULE DIALOG
     result_ptr!
     init-locals
     clear-items
-    F"Dialog" title!
-    F"OK" ok-label!
-    F"Cancel" cancel-label!
+    T"Dialog" title!
+    T"OK" ok-label!
+    T"Cancel" cancel-label!
     
     0x10020 LOADI saved_screen!
     0x10040 LOADI saved_ctrl!
@@ -319,7 +319,7 @@ MODULE FILE-DIALOG
             
             ( Avoid double slash if at root )
             CURRENT_PATH strlen 1 > [
-                F"/" SELECTED_DIR strcat
+                T"/" SELECTED_DIR strcat
             ] ?
             
             SELECTED_DIR strcat
@@ -336,7 +336,7 @@ MODULE FILE-DIALOG
             
             ( Avoid double slash if at root )
             CURRENT_PATH strlen 1 > [
-                F"/" DIALOG::result_ptr@ strcat
+                T"/" DIALOG::result_ptr@ strcat
             ] ?
             
             DIALOG::result_ptr@ strcat
@@ -456,9 +456,9 @@ MODULE FILE-DIALOG
     0 dropdown-open!
     0 mouse-down-handled!
     load-files
-    F"Select a file:" DIALOG::title!
-    F"Open" DIALOG::ok-label!
-    F"Cancel" DIALOG::cancel-label!
+    T"Select a file:" DIALOG::title!
+    T"Open" DIALOG::ok-label!
+    T"Cancel" DIALOG::cancel-label!
     
     0x10020 LOADI DIALOG::saved_screen!
     0x10040 LOADI DIALOG::saved_ctrl!

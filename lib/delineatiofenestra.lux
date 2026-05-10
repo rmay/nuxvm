@@ -107,6 +107,10 @@ MODULE DELINEATIOFENESTRA
     TEXT::emit
 ;
 
+@draw-text ( ptr -- )
+    [ dup load-byte dup 0 > ] [ DF::draw-char 1 + ] |: drop
+;
+
 ( --- Pixels --- )
 
 @y-ok? ( y -- bool )

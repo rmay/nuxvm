@@ -63,7 +63,6 @@ type Compiler struct {
 }
 
 const fileStringHeapBase = 0x700000
-const textCharRegAddr = 0x1009C
 
 var builtins = map[string]byte{
 	"DUP":    vm.OpDup,
@@ -385,24 +384,10 @@ func (c *Compiler) compileToken(t Token) error {
 		return c.compileQuotation()
 	case TokenString:
 		c.emitFileString(t.Value)
-	case TokenFileString:
-		c.emitFileString(t.Value)
-	case TokenTextString:
-		c.emitTextString(t.Value)
 	case TokenRBracket:
 		return fmt.Errorf("unexpected ]")
 	}
 	return nil
-}
-
-func (c *Compiler) emitTextString(s string) {
-	for _, ch := range s {
-		c.emit(vm.OpPush)
-		c.emit(vm.EncodeInt32(int32(ch))...)
-		c.emit(vm.OpPush)
-		c.emit(vm.EncodeInt32(textCharRegAddr)...)
-		c.emit(vm.OpStoreI)
-	}
 }
 
 func (c *Compiler) compileWordDefinition() error {
@@ -770,7 +755,7 @@ func (c *Compiler) handleIncludeDirective() error {
 	if c.trace {
 		fmt.Fprintf(os.Stderr, "Lexer: handleIncludeDirective: token type=%d, value=%s\n", t.Type, t.Value)
 	}
-	if t.Type != TokenFileString && t.Type != TokenWord && t.Type != TokenString {
+	if t.Type != TokenWord && t.Type != TokenString {
 		return fmt.Errorf("expected file path, got type %d", t.Type)
 	}
 	data, err := os.ReadFile(t.Value)

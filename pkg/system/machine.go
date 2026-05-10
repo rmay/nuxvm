@@ -196,13 +196,17 @@ func (m *Machine) QueueMouseMove(x, y int32) {
 // DrainInputEvents polls and dispatches all pending input events to the VM.
 // Called each frame before machine.Tick() to feed buffered input to the VM.
 func (m *Machine) DrainInputEvents() {
+	var mouseChanged bool
+	mouseX, mouseY := m.System.mouseX, m.System.mouseY
+	mouseBtn := m.System.MouseButton()
+
 	for {
 		var evt *InputEvent
 		select {
 		case e := <-m.inputQueue:
 			evt = &e
 		default:
-			return
+			goto done
 		}
 
 		if evt == nil {
@@ -217,12 +221,19 @@ func (m *Machine) DrainInputEvents() {
 			m.System.SetKey(0) // clear key on release
 			_ = m.CPU.TriggerVector(ControllerVectorIdx)
 		case InputMouseMove:
-			m.System.SetMouse(evt.MouseX, evt.MouseY, m.System.MouseButton())
-			_ = m.CPU.TriggerVector(MouseVectorIdx)
+			mouseX, mouseY = evt.MouseX, evt.MouseY
+			mouseChanged = true
 		case InputMouseDown, InputMouseUp:
-			m.System.SetMouse(evt.MouseX, evt.MouseY, evt.MouseBtn)
-			_ = m.CPU.TriggerVector(MouseVectorIdx)
+			mouseX, mouseY = evt.MouseX, evt.MouseY
+			mouseBtn = evt.MouseBtn
+			mouseChanged = true
 		}
+	}
+
+done:
+	if mouseChanged {
+		m.System.SetMouse(mouseX, mouseY, mouseBtn)
+		_ = m.CPU.TriggerVector(MouseVectorIdx)
 	}
 }
 

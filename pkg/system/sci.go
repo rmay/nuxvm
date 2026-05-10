@@ -115,6 +115,11 @@ func (s *System) handleSCIMoveWin(winID int32, position int32) {
 // handleSCIDrawRect(winID, rectData)
 // Drawing primitives are handled by direct framebuffer access for now
 func (s *System) handleSCIDrawRect(winID int32, rectData int32) {
+	if s.Services != nil {
+		if win := s.Services.GetWindowByID(WindowID(winID)); win != nil {
+			win.Dirty = true
+		}
+	}
 	s.sciResult = 0
 }
 
@@ -146,6 +151,7 @@ func (s *System) handleSCISetPixel(winID int32, pixelData int32) {
 			win.FrameBuf[offset+1] = byte((color >> 8) & 0xFF)    // G
 			win.FrameBuf[offset+2] = byte(color & 0xFF)            // B
 			win.FrameBuf[offset+3] = 255                           // A
+			win.Dirty = true
 		}
 	}
 	s.sciResult = 0
@@ -310,6 +316,7 @@ func (s *System) handleSCIDrawText(winID int32, textPtr int32) {
 	for _, c := range []byte(text) {
 		s.drawCharToWindow(win, c)
 	}
+	win.Dirty = true
 	s.sciResult = 0
 }
 
@@ -399,5 +406,10 @@ func (s *System) handleSCIDrawCFF(fontPtr int32, data int32) {
 	}
 
 	s.drawCFF(uint32(fontPtr), char, x, y, color, tileSize)
+	if s.Services != nil {
+		if win := s.Services.GetActiveWindow(); win != nil {
+			win.Dirty = true
+		}
+	}
 	s.sciResult = 0
 }

@@ -174,8 +174,49 @@ MODULE CONTROLS
         0 local@ ( max ) /
         3 local@ ( y ) + 16 + ( thumb y )
 
-        0x555555 ( dark gray ) 4 local@ SWAP 16 16 DF::fill-rect
+        -1 ( white ) 4 local@ SWAP 16 16 DF::fill-rect
         0 ( black ) 4 local@ ROT 16 16 DF::frame-rect
+        
+        ( Stripes )
+        0 4 local@ 3 + OVER 4 + 10 1 DF::fill-rect
+        0 4 local@ 3 + OVER 6 + 10 1 DF::fill-rect
+        0 4 local@ 3 + OVER 8 + 10 1 DF::fill-rect
+        0 4 local@ 3 + OVER 10 + 10 1 DF::fill-rect
+        drop
+    ] ?
+
+    5 unframe!
+;
+
+@scrollbar-h ( x y w scroll max -- )
+    5 frame!
+
+    ( Track )
+    4 local@ 3 local@ 2 local@ 16 draw-gray-pattern
+    0 4 local@ 3 local@ 2 local@ 16 DF::frame-rect
+
+    ( Arrows )
+    -1 4 local@ 3 local@ 16 16 DF::fill-rect
+    0 4 local@ 3 local@ 16 16 DF::frame-rect
+    ( TODO: draw triangle left )
+
+    -1 4 local@ 2 local@ + 16 - 3 local@ 16 16 DF::fill-rect
+    0 4 local@ 2 local@ + 16 - 3 local@ 16 16 DF::frame-rect
+    ( TODO: draw triangle right )
+
+    ( Thumb )
+    0 local@ 0 > [
+        2 local@ 48 - ( track-area-w )
+        1 local@ * 0 local@ /
+        4 local@ + 16 + ( thumb x )
+        -1 OVER 3 local@ 16 16 DF::fill-rect
+        0 OVER 3 local@ 16 16 DF::frame-rect
+        ( Stripes )
+        0 OVER 4 + 3 local@ 3 + 1 10 DF::fill-rect
+        0 OVER 6 + 3 local@ 3 + 1 10 DF::fill-rect
+        0 OVER 8 + 3 local@ 3 + 1 10 DF::fill-rect
+        0 OVER 10 + 3 local@ 3 + 1 10 DF::fill-rect
+        drop
     ] ?
 
     5 unframe!
