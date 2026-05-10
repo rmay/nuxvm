@@ -92,32 +92,36 @@ MODULE ILLUMINATOR
 ;
 
 @DRAW-ZOOM-GRID
-    0xC0C0C0 ( darker gray for visibility )
-    0 [ ( i color )
-        OVER ( i )
-        8 * 20 + ( pos )
+    0xA0A0A0 ( darker gray )
+    0 [ ( color i )
+        2 frame! ( 0:i, 1:color )
         
-        ( stack: color i pos )
+        0 local@ 10 * 20 + ( pos )
+        
         ( Draw vertical line: rgb x y len )
-        2 PICK ( color ) 1 PICK ( pos ) 20 128 DF::v-line
+        1 local@ ( color ) 0 local@ 10 * 20 + ( x ) 20 ( y ) 160 ( len ) DF::v-line
         
         ( Draw horizontal line: rgb x y len )
-        2 PICK ( color ) 20 1 PICK ( pos ) 128 DF::h-line
+        1 local@ ( color ) 20 ( x ) 0 local@ 10 * 20 + ( y ) 160 ( len ) DF::h-line
         
-        drop ( pos )
-        1 + ( i++ )
-    ] 17 #: drop ( 17 lines for 16 cells )
-    drop ( color )
+        ( Loop maintenance: push color and next i )
+        1 local@ ( color )
+        0 local@ 1 + ( i+1 )
+        2 unframe!
+    ] 17 #: drop drop
 ;
 
 @DRAW-ZOOM
-    4 24 preview_h + app_w@ 2 / 4 - app_h@ 28 - preview_h - DF::use-rect
+    4 24 preview_h + 
+    app_w@ 45 * 100 / 4 - ( w )
+    app_h@ 28 - preview_h - ( h )
+    DF::use-rect
     -1 DF::clear-screen
     0 0 0 DF::pane-w@ DF::pane-h@ DF::frame-rect ( border )
     
     DRAW-ZOOM-GRID
     
-    8 DF::set-text-scale
+    10 DF::set-text-scale
     0 TEXT::color!
     
     picker_sel@ ( cp )
@@ -130,7 +134,11 @@ MODULE ILLUMINATOR
 ;
 
 @DRAW-PICKER
-    app_w@ 2 / 24 preview_h + app_w@ 2 / 4 - app_h@ 28 - preview_h - DF::use-rect
+    app_w@ 45 * 100 / ( x )
+    24 preview_h +
+    app_w@ app_w@ 45 * 100 / - 4 - ( w )
+    app_h@ 28 - preview_h - ( h )
+    DF::use-rect
     -1 DF::clear-screen
     0 0 0 DF::pane-w@ DF::pane-h@ DF::frame-rect ( border )
     
@@ -139,22 +147,22 @@ MODULE ILLUMINATOR
     0 [ ( cp )
         dup 16 MOD 16 * 8 + ( rel-x )
         OVER 16 / 16 * 8 + ( rel-y )
-        ( stack: cp x y )
+        3 frame! ( 0:rel-y, 1:rel-x, 2:cp )
         
-        2 PICK ( cp ) picker_sel@ = [
+        2 local@ picker_sel@ = [
             ( highlight )
             0x808080 ( gray )
-            2 PICK ( x ) 2 - 2 PICK ( y ) 2 - 18 18 DF::frame-rect
+            1 local@ 2 - 0 local@ 2 - 18 18 DF::frame-rect
         ] ?
         
         WIDTH_TABLE
-        3 PICK ( cp )
-        3 PICK ( x ) DF::pane-x@ +
-        3 PICK ( y ) DF::pane-y@ +
+        2 local@ ( cp )
+        1 local@ DF::pane-x@ + ( x )
+        0 local@ DF::pane-y@ + ( y )
         SCI::DRAW-CFF
         
-        drop drop ( x y )
-        1 + ( next cp )
+        2 local@ 1 + ( next cp )
+        3 unframe!
     ] 256 #: drop
 ;
 
@@ -179,20 +187,20 @@ MODULE ILLUMINATOR
         MOUSE::x@ MOUSE::y@ ( x y )
         ( Is it in the picker pane? )
         dup 24 preview_h + >= [ ( y >= picker top )
-            OVER app_w@ 2 / >= [ ( x >= picker left )
+            OVER app_w@ 45 * 100 / >= [ ( x >= picker left )
                 ( rel coordinates )
-                swap app_w@ 2 / - ( y rel-x )
+                swap app_w@ 45 * 100 / - ( y rel-x )
                 swap 24 preview_h + - ( rel-x rel-y )
                 
                 ( 8px padding, 16px per cell )
-                8 - 16 / ( col )
-                swap 8 - 16 / ( row )
+                8 - 16 / ( col? no, rel-y index is row )
+                swap 8 - 16 / ( row col )
                 
                 ( bounds check )
                 dup 0 >= [ dup 16 < ] [ 0 ] ?: [
                     OVER 0 >= [ OVER 16 < ] [ 0 ] ?: [
                         ( valid click )
-                        swap 16 * + ( cp = row*16 + col )
+                        swap 16 * + ( row*16 + col )
                         picker_sel!
                         0 drawing!
                     ] [ drop drop ] ?:
