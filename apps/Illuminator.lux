@@ -10,6 +10,7 @@ IMPORT TEXT
 IMPORT FILE
 IMPORT MENU
 IMPORT CTRL
+IMPORT MOUSE
 IMPORT DELINEATIOFENESTRA AS DF
 IMPORT FILE-DIALOG
 IMPORT SCI
@@ -21,6 +22,7 @@ IMPORT CONTROLS
 MODULE ILLUMINATOR
 
 ( --- Constants --- )
+@SAMPLE_TEXT  T"The Quick Brown Fox Jumped Over The Lazy Dog." ;
 @WIDTH_TABLE  0x800000 ;
 @GLYPH_DATA   0x800100 ;
 @FILENAME_BUF 0x810000 ;
@@ -54,22 +56,95 @@ MODULE ILLUMINATOR
 
 ( --- Rendering --- )
 
-@DRAW-ONE-GLYPH ( cp -- cp )
+@DRAW-STRING-CFF ( ptr x y -- )
+    3 frame! ( 0:y, 1:x, 2:ptr )
+    [ 2 local@ load-byte dup 0 > ] [
+        ( char )
+        WIDTH_TABLE OVER ( ptr-cff char )
+        1 local@ 0 local@ ( ptr-cff char x y )
+        SCI::DRAW-CFF ( char )
+        
+        ( Advance x by width )
+        WIDTH_TABLE + load-byte ( width )
+        TEXT::attr@ 24 RSHIFT 0x7F AND * ( width*scale )
+        1 local@ + 1 local!
+        
+        2 local@ 1 + 2 local!
+    ] |: drop
+    3 unframe!
+;
+
+@preview_h 64 ;
+
+@DRAW-PREVIEW
+    4 24 app_w@ 8 - preview_h DF::use-rect
+    0 TEXT::color!
+    1 DF::set-text-scale
+    10 4 DF::move-to
+    T"PREVIEW" DF::draw-text
+    
+    2 DF::set-text-scale
+    SAMPLE_TEXT
+    DF::pane-x@ 10 +
+    DF::pane-y@ 24 +
+    DRAW-STRING-CFF
+;
+
+@DRAW-ZOOM
+    4 24 preview_h + app_w@ 2 / 4 - app_h@ 28 - preview_h - DF::use-rect
+    -1 DF::clear-screen
+    0 0 0 DF::pane-w@ DF::pane-h@ DF::frame-rect ( border )
+    
+    8 DF::set-text-scale
+    0 TEXT::color!
+    
+    picker_sel@ ( cp )
     dup WIDTH_TABLE + load-byte 0 > [
-        dup WIDTH_TABLE SWAP
-        dup 16 MOD 38 * 10 + ( x offset )
-        OVER 16 / 38 * 35 + ( y offset )
+        WIDTH_TABLE SWAP ( ptr cp )
+        DF::pane-x@ 20 + ( x )
+        DF::pane-y@ 20 + ( y )
         SCI::DRAW-CFF
-    ] ?
+    ] [ drop ] ?:
+;
+
+@DRAW-PICKER
+    app_w@ 2 / 24 preview_h + app_w@ 2 / 4 - app_h@ 28 - preview_h - DF::use-rect
+    -1 DF::clear-screen
+    0 0 0 DF::pane-w@ DF::pane-h@ DF::frame-rect ( border )
+    
+    1 DF::set-text-scale
+    0 TEXT::color!
+    0 [
+        ( cp )
+        dup 16 MOD 16 * 8 + ( rel-x )
+        OVER 16 / 16 * 8 + ( rel-y )
+        
+        TWO-DUP ( rel-x rel-y rel-x rel-y )
+        4 PICK ( cp ) picker_sel@ = [
+            ( highlight )
+            0 DF::pane-x@ 4 PICK + 2 -
+            DF::pane-y@ 3 PICK + 2 -
+            18 18 DF::frame-rect
+        ] ?
+        
+        DF::pane-x@ + ( rel-y abs-x )
+        swap DF::pane-y@ + ( abs-x abs-y )
+        
+        WIDTH_TABLE ( ptr )
+        3 PICK ( cp )
+        3 PICK ( abs-x )
+        3 PICK ( abs-y )
+        SCI::DRAW-CFF
+        
+        drop drop drop ( abs-y abs-x cp )
+        1 +
+    ] 256 #: drop
 ;
 
 @DRAW-GRID
-    get-tile-dim TEXT::cell-size!
-    0 TEXT::color!
-    0 [
-        DRAW-ONE-GLYPH
-        1 +
-    ] 256 #: drop
+    DRAW-PREVIEW
+    DRAW-ZOOM
+    DRAW-PICKER
 ;
 
 @load-data ( ptr -- )
@@ -82,11 +157,42 @@ MODULE ILLUMINATOR
     T"." T"" FILENAME_BUF [ 0 drawing! FILENAME_BUF load-data ] FILE-DIALOG::show
 ;
 
+@on-mouse
+    MOUSE::btns@ 1 AND [ ( Left click )
+        MOUSE::x@ MOUSE::y@ ( x y )
+        ( Is it in the picker pane? )
+        dup 24 preview_h + >= [ ( y >= picker top )
+            OVER app_w@ 2 / >= [ ( x >= picker left )
+                ( rel coordinates )
+                swap app_w@ 2 / - ( y rel-x )
+                swap 24 preview_h + - ( rel-x rel-y )
+                
+                ( 8px padding, 16px per cell )
+                8 - 16 / ( rel-x row )
+                swap 8 - 16 / ( row col )
+                
+                ( bounds check )
+                dup 0 >= [ dup 16 < ] [ 0 ] ?: [
+                    OVER 0 >= [ OVER 16 < ] [ 0 ] ?: [
+                        ( valid click )
+                        swap 16 * + ( cp = row*16 + col )
+                        picker_sel!
+                        0 drawing!
+                    ] [ drop drop ] ?:
+                ] [ drop drop ] ?:
+            ] [ drop drop ] ?:
+        ] [ drop drop ] ?:
+    ] ?
+;
+
 @on-key
     CTRL::key@
     dup 111 = [ on-open ] ?
+    dup 17 = [ ( Up ) picker_sel@ 16 - 255 AND picker_sel! 0 drawing! ] ?
+    dup 18 = [ ( Down ) picker_sel@ 16 + 255 AND picker_sel! 0 drawing! ] ?
+    dup 19 = [ ( Left ) picker_sel@ 1 - 255 AND picker_sel! 0 drawing! ] ?
+    dup 20 = [ ( Right ) picker_sel@ 1 + 255 AND picker_sel! 0 drawing! ] ?
     drop
-    0 drawing!
 ;
 
 @DRAW-ALL
@@ -116,6 +222,7 @@ MODULE ILLUMINATOR
     [ CALL ] MENU::vector!
     [ DRAW-ALL ] SCREEN::vector!
     [ on-key ] CTRL::vector!
+    [ on-mouse ] MOUSE::vector!
     YIELD keep-alive
 ;
 

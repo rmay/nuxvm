@@ -143,6 +143,11 @@ func (s *System) drawChar(c byte) {
 	}
 
 	s.text.cursorX += uint16(cellW)
+	if s.Services != nil {
+		if win := s.Services.GetActiveWindow(); win != nil {
+			win.Dirty = true
+		}
+	}
 }
 
 func (s *System) drawCharCFF(c byte) {
@@ -177,14 +182,24 @@ func (s *System) drawCharCFF(c byte) {
 
 	s.drawCFFRaw(ChicagoCFF, c, int32(s.text.cursorX), int32(s.text.cursorY), s.text.color, 16, scale)
 	s.text.cursorX += uint16(width * scale)
+	if s.Services != nil {
+		if win := s.Services.GetActiveWindow(); win != nil {
+			win.Dirty = true
+		}
+	}
 }
 
 // drawCFF renders a character from a Cloister Font Format (CFF) font in memory.
 func (s *System) drawCFF(fontPtr uint32, char byte, x, y int32, color uint32, tileSize int) {
+	s.drawCFFMagnified(fontPtr, char, x, y, color, tileSize, 1)
+}
+
+// drawCFFMagnified renders a character from a CFF font with optional scaling.
+func (s *System) drawCFFMagnified(fontPtr uint32, char byte, x, y int32, color uint32, tileSize int, scale int) {
 	if fontPtr == 0 || int(fontPtr)+256 >= len(s.memory) {
 		return
 	}
-	s.drawCFFRaw(s.memory[fontPtr:], char, x, y, color, tileSize, 1)
+	s.drawCFFRaw(s.memory[fontPtr:], char, x, y, color, tileSize, scale)
 }
 
 // drawCFFRaw renders a character from a CFF data slice.

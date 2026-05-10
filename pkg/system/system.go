@@ -841,6 +841,11 @@ func (s *System) Write(address uint32, value int32) error {
 			return nil
 		}
 		binary.BigEndian.PutUint32(fb[offset:offset+4], (uint32(value)<<8)|0xFF)
+		if s.Services != nil {
+			if win := s.Services.GetActiveWindow(); win != nil {
+				win.Dirty = true
+			}
+		}
 		return nil
 	}
 

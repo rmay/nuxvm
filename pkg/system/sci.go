@@ -388,24 +388,19 @@ func (s *System) handleSCIGetActiveWin() {
 
 // handleSCIDrawCFF(fontPtr, packedData)
 // packedData: char in 31..24, x in 23..12, y in 11..0
-// Uses current text color and scale (as tile size: 1=8, 2=16, 3=24)
+// Uses current text color and scale (magnification).
+// Tile size is hardcoded to 16 for Chicago compatibility.
 func (s *System) handleSCIDrawCFF(fontPtr int32, data int32) {
 	char := byte((uint32(data) >> 24) & 0xFF)
 	x := int32((uint32(data) >> 12) & 0xFFF)
 	y := int32(uint32(data) & 0xFFF)
 	color := s.text.color
+	scale := int(s.text.scale)
 
+	// Chicago12x12 is stored in 16x16 tiles.
 	tileSize := 16
-	switch s.text.scale {
-	case 1:
-		tileSize = 8
-	case 2:
-		tileSize = 16
-	case 3:
-		tileSize = 24
-	}
 
-	s.drawCFF(uint32(fontPtr), char, x, y, color, tileSize)
+	s.drawCFFMagnified(uint32(fontPtr), char, x, y, color, tileSize, scale)
 	if s.Services != nil {
 		if win := s.Services.GetActiveWindow(); win != nil {
 			win.Dirty = true
