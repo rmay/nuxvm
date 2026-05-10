@@ -58,8 +58,9 @@ MODULE ILLUMINATOR
 
 @DRAW-STRING-CFF ( ptr x y -- )
     3 frame! ( 0:y, 1:x, 2:ptr )
-    [ 2 local@ load-byte dup 0 > ] [
-        ( char )
+    [ 2 local@ load-byte 0 > ]
+    [
+        2 local@ load-byte ( char )
         WIDTH_TABLE OVER ( ptr-cff char )
         1 local@ 0 local@ ( ptr-cff char x y )
         SCI::DRAW-CFF ( char )
@@ -70,7 +71,7 @@ MODULE ILLUMINATOR
         1 local@ + 1 local!
         
         2 local@ 1 + 2 local!
-    ] |: drop
+    ] |:
     3 unframe!
 ;
 
@@ -90,10 +91,30 @@ MODULE ILLUMINATOR
     DRAW-STRING-CFF
 ;
 
+@DRAW-ZOOM-GRID
+    0xE0E0E0 ( color )
+    0 [ ( i color )
+        OVER ( i )
+        8 * 20 + ( pos )
+        
+        ( Draw vertical line: rgb x y len )
+        1 PICK ( color ) 1 PICK ( pos ) 20 128 DF::v-line
+        
+        ( Draw horizontal line: rgb x y len )
+        1 PICK ( color ) 20 1 PICK ( pos ) 128 DF::h-line
+        
+        drop ( pos )
+        1 + ( i++ )
+    ] 17 #: drop ( 17 lines for 16 cells )
+    drop ( color )
+;
+
 @DRAW-ZOOM
     4 24 preview_h + app_w@ 2 / 4 - app_h@ 28 - preview_h - DF::use-rect
     -1 DF::clear-screen
     0 0 0 DF::pane-w@ DF::pane-h@ DF::frame-rect ( border )
+    
+    DRAW-ZOOM-GRID
     
     8 DF::set-text-scale
     0 TEXT::color!
@@ -114,30 +135,25 @@ MODULE ILLUMINATOR
     
     1 DF::set-text-scale
     0 TEXT::color!
-    0 [
-        ( cp )
+    0 [ ( cp )
         dup 16 MOD 16 * 8 + ( rel-x )
         OVER 16 / 16 * 8 + ( rel-y )
+        ( stack: cp x y )
         
-        TWO-DUP ( rel-x rel-y rel-x rel-y )
-        4 PICK ( cp ) picker_sel@ = [
+        2 PICK ( cp ) picker_sel@ = [
             ( highlight )
-            0 DF::pane-x@ 4 PICK + 2 -
-            DF::pane-y@ 3 PICK + 2 -
-            18 18 DF::frame-rect
+            0x808080 ( gray )
+            2 PICK ( x ) 2 - 2 PICK ( y ) 2 - 18 18 DF::frame-rect
         ] ?
         
-        DF::pane-x@ + ( rel-y abs-x )
-        swap DF::pane-y@ + ( abs-x abs-y )
-        
-        WIDTH_TABLE ( ptr )
+        WIDTH_TABLE
         3 PICK ( cp )
-        3 PICK ( abs-x )
-        3 PICK ( abs-y )
+        3 PICK ( x ) DF::pane-x@ +
+        3 PICK ( y ) DF::pane-y@ +
         SCI::DRAW-CFF
         
-        drop drop drop ( abs-y abs-x cp )
-        1 +
+        drop drop ( x y )
+        1 + ( next cp )
     ] 256 #: drop
 ;
 
@@ -168,14 +184,14 @@ MODULE ILLUMINATOR
                 swap 24 preview_h + - ( rel-x rel-y )
                 
                 ( 8px padding, 16px per cell )
-                8 - 16 / ( rel-x row )
-                swap 8 - 16 / ( row col )
+                8 - 16 / ( col )
+                swap 8 - 16 / ( row )
                 
                 ( bounds check )
                 dup 0 >= [ dup 16 < ] [ 0 ] ?: [
                     OVER 0 >= [ OVER 16 < ] [ 0 ] ?: [
                         ( valid click )
-                        swap 16 * + ( cp = row*16 + col )
+                        16 * + ( cp = row*16 + col )
                         picker_sel!
                         0 drawing!
                     ] [ drop drop ] ?:
