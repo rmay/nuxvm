@@ -1,8 +1,8 @@
 package lux
 
 import (
-	"testing"
 	"github.com/rmay/nuxvm/pkg/vm"
+	"testing"
 )
 
 func TestCombinatorIf(t *testing.T) {
@@ -78,8 +78,8 @@ func TestCombinatorIfElse(t *testing.T) {
 }
 
 func TestCombinatorNested(t *testing.T) {
-	// Nested loop and if: 
-    // Push 42 five times using nested ?: and |:
+	// Nested loop and if:
+	// Push 42 five times using nested ?: and |:
 	source := `
 @test 0 5 [ dup 0 > ] [
     1 [ 42 ] [ 0 ] ?:
@@ -104,8 +104,8 @@ test
 }
 
 func TestCombinatorDeepNesting(t *testing.T) {
-    // REAL Nested loops
-    source := `
+	// REAL Nested loops
+	source := `
 @test 0 3 [ dup 0 > ] [
     1 -
     SWAP

@@ -198,7 +198,6 @@ func TestCompileMultipleStrings(t *testing.T) {
 	}
 }
 
-
 func TestCompileFileStringPushesAddress(t *testing.T) {
 	bytecode, err := Compile(`T"abc"`)
 	if err != nil {

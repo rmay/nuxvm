@@ -1,22 +1,22 @@
 package system
 
 import (
-	"testing"
 	"github.com/rmay/nuxvm/pkg/vm"
+	"testing"
 )
 
 func TestMachinePushKeyAndMouse(t *testing.T) {
 	program := []byte{vm.OpHalt}
 	machine := NewMachine(program, 0)
-	
+
 	// Set vector 4 (Controller) and vector 5 (Mouse)
 	controllerHandlerAddr := uint32(0x1000)
 	mouseHandlerAddr := uint32(0x2000)
 	machine.CPU.WriteVector(4, controllerHandlerAddr)
 	machine.CPU.WriteVector(5, mouseHandlerAddr)
-	
+
 	machine.CPU.Halt()
-	
+
 	// Test PushKey
 	err := machine.PushKey(65) // 'A'
 	if err != nil {
@@ -32,9 +32,9 @@ func TestMachinePushKeyAndMouse(t *testing.T) {
 	if !machine.CPU.Running() {
 		t.Error("Expected VM to be running after PushKey")
 	}
-	
+
 	machine.CPU.Halt()
-	
+
 	// Test MoveMouse
 	err = machine.MoveMouse(100, 200)
 	if err != nil {
@@ -52,11 +52,11 @@ func TestMachineVBlank(t *testing.T) {
 	// Program that just yields
 	program := []byte{vm.OpYield, vm.OpHalt}
 	machine := NewMachine(program, 0)
-	
+
 	// Set vector 2 (Screen)
 	screenHandlerAddr := uint32(0x1000)
 	machine.CPU.WriteVector(2, screenHandlerAddr)
-	
+
 	// Start the machine, it should yield immediately
 	running, err := machine.Tick()
 	if err != nil {
@@ -71,9 +71,8 @@ func TestMachineVBlank(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VBlank failed: %v", err)
 	}
-	
+
 	if machine.CPU.PC() != screenHandlerAddr {
 		t.Errorf("Expected PC to jump to screen handler 0x%X, got 0x%X", screenHandlerAddr, machine.CPU.PC())
 	}
 }
-

@@ -21,8 +21,12 @@ const (
 	rngPort        = vm.DeviceMemoryOffset + 0x0080
 	textPort       = vm.DeviceMemoryOffset + 0x0090
 	windowPort     = vm.DeviceMemoryOffset + 0x00B0
+	wheelPort      = vm.DeviceMemoryOffset + 0x00A0
+	resizePort     = vm.DeviceMemoryOffset + 0x00C0
+	panePort       = vm.DeviceMemoryOffset + 0x00E0
 	sciPort        = vm.DeviceMemoryOffset + 0x00D0
 	menuPort       = vm.DeviceMemoryOffset + 0x00F0
+	gpuPort        = vm.DeviceMemoryOffset + 0x0100
 
 	controllerStatusAddr = controllerPort + 4
 	controllerButtonAddr = controllerPort + 8
@@ -38,34 +42,59 @@ const (
 	sciCommandAddr       = sciPort + 4
 	sciArg1Addr          = sciPort + 8
 	sciArg2Addr          = sciPort + 12
+	mouseWheelYAddr      = vm.DeviceMemoryOffset + 0x00A4
+	windowResizeWAddr    = resizePort + 4
+	windowResizeHAddr    = resizePort + 8
+	gpuXAddr             = gpuPort + 0
+	gpuYAddr             = gpuPort + 4
+	gpuDXAddr            = gpuPort + 8
+	gpuDYAddr            = gpuPort + 12
+	gpuColorAddr         = gpuPort + 16
+	gpuPixelAddr         = gpuPort + 20
+	gpuSpriteAddr        = gpuPort + 24
+	gpuFlagsAddr         = gpuPort + 28
 
 	// Vector indices (exported for machine.go use)
 	ScreenVectorIdx     = (screenPort - vm.DeviceMemoryOffset) / 16     // 2
 	AudioVectorIdx      = (audioPort - vm.DeviceMemoryOffset) / 16      // 3
 	ControllerVectorIdx = (controllerPort - vm.DeviceMemoryOffset) / 16 // 4
 	MouseVectorIdx      = (mousePort - vm.DeviceMemoryOffset) / 16      // 5
-	SCIVectorIdx        = (sciPort - vm.DeviceMemoryOffset) / 16        // 6
+	WheelVectorIdx      = (wheelPort - vm.DeviceMemoryOffset) / 16      // 10
+	WindowVectorIdx      = (windowPort - vm.DeviceMemoryOffset) / 16     // 11
+	ResizeVectorIdx      = (resizePort - vm.DeviceMemoryOffset) / 16     // 12
+	SCIVectorIdx         = (sciPort - vm.DeviceMemoryOffset) / 16        // 13
 	MenuVectorIdx       = (menuPort - vm.DeviceMemoryOffset) / 16       // 7
+	GPUVectorIdx        = (gpuPort - vm.DeviceMemoryOffset) / 16        // 16
 
-	// SCI Command codes
-	SCICreateWin    = 1
-	SCICloseWin     = 2
-	SCIMoveWin      = 3
-	SCIDrawRect     = 4
-	SCIDrawText     = 5
-	SCISetPixel     = 6
-	SCIGetWinSize   = 7
-	SCIFocusWin     = 8
-	SCIPollEvent    = 9
-	SCIOpenFile     = 10
-	SCIReadFile     = 11
-	SCIWriteFile    = 12
-	SCICloseFile    = 13
+	// VFS SCI Command codes
+	SCIVFSOpen  = 1
+	SCIVFSClose = 2
+	SCIVFSRead  = 3
+	SCIVFSWrite = 4
+	SCIVFSBind  = 5
+
+	// Legacy SCI Command codes (deprecated)
+	/*
+		SCICreateWin    = 1
+		SCICloseWin     = 2
+		SCIMoveWin      = 3
+		SCIDrawRect     = 4
+		SCIDrawText     = 5
+		SCISetPixel     = 6
+		SCIGetWinSize   = 7
+		SCIFocusWin     = 8
+		SCIPollEvent    = 9
+		SCIOpenFile     = 10
+		SCIReadFile     = 11
+		SCIWriteFile    = 12
+		SCICloseFile    = 13
+	*/
 	SCIPlaySound    = 14
 	SCIYield        = 15
 	SCIGetPID       = 16
 	SCIGetActiveWin = 17
 	SCIDrawCFF      = 18
+	SCIDebugPrint   = 19
 )
 
 // fileState tracks an open file or directory for the File device.
@@ -113,6 +142,13 @@ type System struct {
 	mouseX           int32
 	mouseY           int32
 	mouseButton      uint32
+	mouseWheelY      int32
+	resizeW          int32
+	resizeH          int32
+	paneX            int32
+	paneY            int32
+	paneW            int32
+	paneH            int32
 
 	// File device state
 	sandboxRoot    string // canonical path; all file ops must stay within
@@ -133,6 +169,14 @@ type System struct {
 	sciArg2    int32
 	sciResult  int32
 
+	// GPU device state
+	gpuX     int32
+	gpuY     int32
+	gpuDX    int32
+	gpuDY    int32
+	gpuColor uint32
+	gpuFlags uint32
+
 	// Vector callbacks (wired by Machine layer)
 	getVector func(index int) uint32
 	setVector func(index int, addr uint32)
@@ -142,20 +186,36 @@ type System struct {
 
 	// OS Services (goroutine-based)
 	Services *ServiceManager
+
+	// VFS (Virtual File System)
+	vfs        *VFS
+	inputQueue chan InputEvent // Per-system input queue (buffered, cap 64)
+
+	// Child VM management
+	childMachines map[int32]*Machine
+	nextMachineID int32
+
+	yielded bool
 }
 
 func NewSystem() *System {
 	s := &System{
 		screenWidth:  800,
 		screenHeight: 600,
+		paneW:        800,
+		paneH:        600,
 		screenPixels: make([]byte, vm.VideoMaxBufferSize),
 		rngState:     uint32(time.Now().UnixNano()),
 		text: textState{
-			scale:  1,
-			color:  0xFFFFFF,
-			useCFF: true,
+			fontSize: 18,
+			color:    0xFFFFFF,
+			useCFF:   true,
 		},
-		Services: NewServiceManager(),
+		Services:      NewServiceManager(),
+		vfs:           NewVFS(),
+		inputQueue:    make(chan InputEvent, 64),
+		childMachines: make(map[int32]*Machine),
+		nextMachineID: 1,
 	}
 	// Default the sandbox root to the process cwd so tests and ad-hoc use
 	// keep working. cmd/cloister overrides this explicitly at startup.
@@ -172,13 +232,19 @@ func NewSystemNoFallback() *System {
 	s := &System{
 		screenWidth:  800,
 		screenHeight: 600,
+		paneW:        800,
+		paneH:        600,
 		rngState:     uint32(time.Now().UnixNano()),
 		text: textState{
-			scale:  1,
-			color:  0xFFFFFF,
-			useCFF: true,
+			fontSize: 18,
+			color:    0xFFFFFF,
+			useCFF:   true,
 		},
-		Services: NewServiceManager(),
+		Services:      NewServiceManager(),
+		vfs:           NewVFS(),
+		inputQueue:    make(chan InputEvent, 64),
+		childMachines: make(map[int32]*Machine),
+		nextMachineID: 1,
 	}
 	// Note: screenPixels is left nil. getActiveFramebuffer MUST return nil
 	// if there is no active window window, causing writes to be dropped.
@@ -189,15 +255,30 @@ func NewSystemNoFallback() *System {
 	return s
 }
 
+// ScreenPixels returns the raw RGBA pixels of the screen.
+func (s *System) ScreenPixels() []byte {
+	return s.screenPixels
+}
+
+// ScreenWidth returns the width of the screen in pixels.
+func (s *System) ScreenWidth() int32 {
+	return s.screenWidth
+}
+
+// ScreenHeight returns the height of the screen in pixels.
+func (s *System) ScreenHeight() int32 {
+	return s.screenHeight
+}
+
 // SetVectorCallbacks wires vector register read/write to the CPU (used by Machine).
 func (s *System) SetVectorCallbacks(get func(int) uint32, set func(int, uint32)) {
 	s.getVector = get
 	s.setVector = set
 }
 
-// TextScale returns the current text rendering scale.
-func (s *System) TextScale() int {
-	return int(s.text.scale)
+// FontSize returns the current text rendering size in points.
+func (s *System) FontSize() int {
+	return int(s.text.fontSize)
 }
 
 // SetSandboxRoot pins the filesystem sandbox to dir. All subsequent file
@@ -314,10 +395,6 @@ func (s *System) setResolution(w, h int32) {
 		s.screenHeight = h
 		if s.Services != nil {
 			s.Services.ResizeActiveWindow(w, h)
-		} else if w*h*4 <= int32(len(s.screenPixels)) {
-			// In standalone mode, we already updated s.screenWidth/Height above.
-			// No extra work needed here unless we wanted to resize s.screenPixels,
-			// but it's already max-sized at VideoMaxBufferSize.
 		}
 	}
 }
@@ -336,14 +413,6 @@ func (s *System) SetOSResolution(w, h int32) {
 
 func (s *System) SetResolution(w, h int32) {
 	s.setResolution(w, h)
-}
-
-func (s *System) ScreenWidth() int32 {
-	return s.screenWidth
-}
-
-func (s *System) ScreenHeight() int32 {
-	return s.screenHeight
 }
 
 // SetMemory provides the system with access to the VM's memory slice.
@@ -606,6 +675,10 @@ func (s *System) Read(address uint32) (int32, error) {
 }
 
 func (s *System) read(address uint32) (int32, error) {
+	if address == sciPort {
+		return s.sciResult, nil
+	}
+
 	// Port vector registers (offset+0 of any 16-byte device block)
 	if address >= vm.DeviceMemoryOffset && address < vm.DeviceMemoryOffset+vm.DeviceMemorySize {
 		offset := address - vm.DeviceMemoryOffset
@@ -786,6 +859,56 @@ func (s *System) read(address uint32) (int32, error) {
 		return s.sciArg2, nil
 	}
 
+	if address == mouseWheelYAddr {
+		return s.mouseWheelY, nil
+	}
+	if address == windowResizeWAddr {
+		return s.resizeW, nil
+	}
+	if address == windowResizeHAddr {
+		return s.resizeH, nil
+	}
+
+	// Pane device:
+	if address == panePort+4 {
+		return s.paneX, nil
+	}
+	if address == panePort+8 {
+		return s.paneY, nil
+	}
+	if address == panePort+12 {
+		return s.paneW, nil
+	}
+	if address == panePort+16 {
+		return s.paneH, nil
+	}
+
+	// GPU device:
+	if address == gpuXAddr {
+		return s.gpuX, nil
+	}
+	if address == gpuYAddr {
+		return s.gpuY, nil
+	}
+	if address == gpuDXAddr {
+		return s.gpuDX, nil
+	}
+	if address == gpuDYAddr {
+		return s.gpuDY, nil
+	}
+	if address == gpuColorAddr {
+		return int32(s.gpuColor), nil
+	}
+	if address == gpuPixelAddr {
+		return int32(s.gpuColor), nil
+	}
+	if address == gpuSpriteAddr {
+		return 0, nil
+	}
+	if address == gpuFlagsAddr {
+		return int32(s.gpuFlags), nil
+	}
+
 	// MENU device: (menuPort+0) returns current menu vector
 	if address == menuPort {
 		if s.getVector != nil {
@@ -806,14 +929,17 @@ func (s *System) read(address uint32) (int32, error) {
 func (s *System) Write(address uint32, value int32) error {
 	// SCI (System Call Interface) device:
 	if address == sciCommandAddr {
+		fmt.Fprintf(os.Stderr, "System: Writing SCI_CMD: %d\n", value)
 		s.sciCommand = value
 		return nil
 	}
 	if address == sciArg1Addr {
+		fmt.Fprintf(os.Stderr, "System: Writing SCI_ARG1: %d\n", value)
 		s.sciArg1 = value
 		return nil
 	}
 	if address == sciArg2Addr {
+		fmt.Fprintf(os.Stderr, "System: Writing SCI_ARG2: %d\n", value)
 		s.sciArg2 = value
 		// Trigger SCI command handler when arg2 is written
 		s.handleSCICommand()
@@ -856,6 +982,29 @@ func (s *System) Write(address uint32, value int32) error {
 	}
 	if address == screenHeightAddr {
 		s.setResolution(s.getScreenWidth(), value)
+		return nil
+	}
+
+	// Optimized Screen Clear
+	if address == screenPort+12 {
+		fb := s.getActiveFramebuffer()
+		if fb == nil {
+			return nil
+		}
+		r := byte(value >> 16)
+		g := byte(value >> 8)
+		b := byte(value)
+		for i := 0; i < len(fb); i += 4 {
+			fb[i] = r
+			fb[i+1] = g
+			fb[i+2] = b
+			fb[i+3] = 0xFF
+		}
+		if s.Services != nil {
+			if win := s.Services.GetActiveWindow(); win != nil {
+				win.Dirty = true
+			}
+		}
 		return nil
 	}
 
@@ -953,6 +1102,24 @@ func (s *System) Write(address uint32, value int32) error {
 		return nil
 	}
 
+	// Pane registers
+	if address == panePort+4 {
+		s.paneX = value
+		return nil
+	}
+	if address == panePort+8 {
+		s.paneY = value
+		return nil
+	}
+	if address == panePort+12 {
+		s.paneW = value
+		return nil
+	}
+	if address == panePort+16 {
+		s.paneH = value
+		return nil
+	}
+
 	// Mouse registers: allow writing for tests/scripts
 	if address == mousePort+4 {
 		s.mouseX = value
@@ -992,17 +1159,60 @@ func (s *System) Write(address uint32, value int32) error {
 
 	// SCI (System Call Interface) device:
 	if address == sciCommandAddr {
+		fmt.Fprintf(os.Stderr, "System: Writing SCI_CMD: %d\n", value)
 		s.sciCommand = value
 		return nil
 	}
 	if address == sciArg1Addr {
+		fmt.Fprintf(os.Stderr, "System: Writing SCI_ARG1: %d\n", value)
 		s.sciArg1 = value
 		return nil
 	}
 	if address == sciArg2Addr {
+		fmt.Fprintf(os.Stderr, "System: Writing SCI_ARG2: %d\n", value)
 		s.sciArg2 = value
 		// Trigger SCI command handler when arg2 is written
 		s.handleSCICommand()
+		return nil
+	}
+
+	// GPU device:
+	if address == gpuXAddr {
+		s.gpuX = value
+		return nil
+	}
+	if address == gpuYAddr {
+		s.gpuY = value
+		return nil
+	}
+	if address == gpuDXAddr {
+		s.gpuDX = value
+		return nil
+	}
+	if address == gpuDYAddr {
+		s.gpuDY = value
+		return nil
+	}
+	if address == gpuColorAddr {
+		s.gpuColor = uint32(value)
+		return nil
+	}
+	if address == gpuPixelAddr {
+		// If value is non-zero, use it as color and update s.gpuColor
+		if value != 0 {
+			s.gpuColor = uint32(value)
+		}
+		s.gpuDrawPixel(s.gpuX, s.gpuY, s.gpuColor)
+		s.gpuX += s.gpuDX
+		s.gpuY += s.gpuDY
+		return nil
+	}
+	if address == gpuSpriteAddr {
+		s.handleGPUSprite(uint32(value))
+		return nil
+	}
+	if address == gpuFlagsAddr {
+		s.gpuFlags = uint32(value)
 		return nil
 	}
 
@@ -1026,6 +1236,57 @@ func (s *System) Write(address uint32, value int32) error {
 	return fmt.Errorf("system: unhandled write at 0x%04X", address)
 }
 
+func (s *System) gpuDrawPixel(x, y int32, color uint32) {
+	fb := s.getActiveFramebuffer()
+	w := s.getScreenWidth()
+	h := s.getScreenHeight()
+	
+	px := x + s.paneX
+	py := y + s.paneY
+
+	if px < 0 || px >= w || py < 0 || py >= h {
+		return
+	}
+	offset := (py*w + px) * 4
+	if offset+4 > int32(len(fb)) {
+		return
+	}
+	binary.BigEndian.PutUint32(fb[offset:offset+4], (color<<8)|0xFF)
+	if s.Services != nil {
+		if win := s.Services.GetActiveWindow(); win != nil {
+			win.Dirty = true
+		}
+	}
+}
+
+func (s *System) handleGPUSprite(addr uint32) {
+	if addr+8 > uint32(len(s.memory)) {
+		return
+	}
+	sprite := s.memory[addr : addr+8]
+	flipX := s.gpuFlags&1 != 0
+	flipY := s.gpuFlags&2 != 0
+
+	for j := 0; j < 8; j++ {
+		y := int32(j)
+		if flipY {
+			y = 7 - y
+		}
+		row := sprite[j]
+		for i := 0; i < 8; i++ {
+			x := int32(i)
+			if flipX {
+				x = 7 - x
+			}
+			if (row >> (7 - i) & 1) != 0 {
+				s.gpuDrawPixel(s.gpuX+x, s.gpuY+y, s.gpuColor)
+			}
+		}
+	}
+	s.gpuX += s.gpuDX
+	s.gpuY += s.gpuDY
+}
+
 // Host Methods to set state
 
 func (s *System) SetKey(key int32) {
@@ -1036,11 +1297,21 @@ func (s *System) SetButton(mask uint32) {
 	s.controllerButton = mask
 }
 
-func (s *System) SetMouse(x, y int32, button uint32) {
+func (s *System) SetMouse(x, y int32, btn uint32) {
 	s.mouseX = x
 	s.mouseY = y
-	s.mouseButton = button
+	s.mouseButton = btn
 }
+
+func (s *System) SetWheel(y int32) {
+	s.mouseWheelY = y
+}
+
+func (s *System) SetResize(w, h int32) {
+	s.resizeW = w
+	s.resizeH = h
+}
+
 
 func (s *System) MouseButton() uint32 {
 	return s.mouseButton
@@ -1092,6 +1363,11 @@ func (s *System) MMIORegisters() []struct {
 		{"TEXT_ATTR", int32(s.text.attrPacked())},
 		{"TEXT_CUR", int32(s.text.cursorPacked())},
 		{"TEXT_CHAR", int32(s.text.lastChar)},
+		{"GPU_X", s.gpuX},
+		{"GPU_Y", s.gpuY},
+		{"GPU_DX", s.gpuDX},
+		{"GPU_DY", s.gpuDY},
+		{"GPU_COLOR", int32(s.gpuColor)},
 		{"RNG_DATA", int32(s.rngState)},
 	}
 }

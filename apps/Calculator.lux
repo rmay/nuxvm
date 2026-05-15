@@ -1,0 +1,41 @@
+( --- Calculator App --- )
+
+INCLUDE "lib/vfs.lux"
+INCLUDE "lib/draw.lux"
+
+MODULE CALC
+
+@dfd_addr 0x8D0000 ;
+@dfd@ dfd_addr LOADI ; @dfd! dfd_addr STOREI ;
+
+@draw-digit ( fd x y val -- )
+    4 frame! ( 0:val, 1:y, 2:x, 3:fd )
+    ( Convert digit to ASCII )
+    0 local@ 48 +
+    3 local@ 2 local@ 1 local@ rot 0xFFFFFF DRAW::draw-char
+    4 unframe!
+;
+
+@draw-ui
+    ( Background )
+    dfd@ 10 10 120 160 0xCCCCCC DRAW::fill-rect
+    ( Buttons )
+    dfd@ 20 40 40 30 0x999999 DRAW::fill-rect
+    dfd@ 70 40 40 30 0x999999 DRAW::fill-rect
+    dfd@ 20 80 40 30 0x999999 DRAW::fill-rect
+    dfd@ 70 80 40 30 0x999999 DRAW::fill-rect
+;
+
+@start
+    ( 1. Open Hardware )
+    T"/dev/draw" VFS::open dfd!
+    
+    ( 2. Main Loop )
+    [ 1 ] [
+        draw-ui
+        VFS::yield DROP
+    ] |:
+;
+
+CALC::start
+HALT

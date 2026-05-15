@@ -1,0 +1,61 @@
+( Virtual File System (VFS) Word Definitions )
+
+MODULE VFS
+
+( SCI Port Addresses )
+@SCI-PORT 0x100D0 ;
+@SCI-CMD  0x100D4 ;
+@SCI-ARG1 0x100D8 ;
+@SCI-ARG2 0x100DC ;
+
+( VFS SCI Command Codes )
+@CMD_OPEN  1 ;
+@CMD_CLOSE 2 ;
+@CMD_READ  3 ;
+@CMD_WRITE 4 ;
+@CMD_BIND  5 ;
+@CMD_YIELD 15 ;
+
+( Helper: Execute an SCI command )
+@EXEC ( cmd arg1 arg2 -- result )
+    ROT SCI-CMD STOREI
+    SWAP SCI-ARG1 STOREI
+    SCI-ARG2 STOREI
+    SCI-PORT LOADI
+;
+
+( VFS Primitives )
+
+@open ( path-ptr -- fd )
+    CMD_OPEN swap 0 EXEC
+;
+
+@close ( fd -- status )
+    CMD_CLOSE swap 0 EXEC
+;
+
+@read ( fd buf-ptr len -- bytes-read )
+    3 frame! ( 0:len, 1:buf, 2:fd )
+    CMD_READ
+    2 local@ 16 LSHIFT 0 local@ 0xFFFF AND OR ( arg1: fd << 16 | len )
+    1 local@ ( arg2: buf )
+    EXEC
+    3 unframe!
+;
+
+@write ( fd buf-ptr len -- bytes-written )
+    3 frame! ( 0:len, 1:buf, 2:fd )
+    CMD_WRITE
+    2 local@ 16 LSHIFT 0 local@ 0xFFFF AND OR ( arg1: fd << 16 | len )
+    1 local@ ( arg2: buf )
+    EXEC
+    3 unframe!
+;
+
+@bind ( fd target-path-ptr -- status )
+    CMD_BIND rot rot EXEC
+;
+
+@yield ( -- status )
+    CMD_YIELD 0 0 EXEC
+;

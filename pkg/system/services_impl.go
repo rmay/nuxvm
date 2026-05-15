@@ -2,6 +2,7 @@ package system
 
 import (
 	"fmt"
+	"os"
 )
 
 // StartWindowManager starts the window management service goroutine.
@@ -188,21 +189,22 @@ func (sm *ServiceManager) StartSoundServer() {
 		}
 	}()
 }
-
 func (sm *ServiceManager) handleSoundMessage(msg SoundMsg) SoundReply {
 	switch msg.Command {
 	case "play_sound":
-		// TODO: Delegate to actual audio system
+		if sm.SoundHandler != nil {
+			sm.SoundHandler(msg.SoundID)
+		}
 		return SoundReply{Success: true}
 
 	case "stop_sound":
-		// TODO: Delegate to actual audio system
 		return SoundReply{Success: true}
 
 	default:
 		return SoundReply{Success: false, Error: "unknown command"}
 	}
 }
+
 
 // StartFileSystemManager starts the file system management service goroutine.
 // It handles file I/O operations within the sandbox.
@@ -218,11 +220,29 @@ func (sm *ServiceManager) StartFileSystemManager() {
 func (sm *ServiceManager) handleFileMessage(msg FileMsg) FileReply {
 	switch msg.Op {
 	case FileOpOpen:
+		if sm.sandboxResolver == nil {
+			return FileReply{Success: false, Error: "sandbox resolver not set"}
+		}
+		path, err := sm.sandboxResolver(msg.Path)
+		if err != nil {
+			return FileReply{Success: false, Error: err.Error()}
+		}
+
+		mode := os.O_RDWR | os.O_CREATE
+		if msg.Flags&1 != 0 {
+			mode |= os.O_APPEND
+		}
+		f, err := os.OpenFile(path, mode, 0644)
+		if err != nil {
+			return FileReply{Success: false, Error: err.Error()}
+		}
+
 		handle := sm.nextFileHandle
 		sm.nextFileHandle++
 		sm.openFiles[handle] = &OSFile{
 			Handle: handle,
-			Path:   msg.Path,
+			Path:   path,
+			file:   f,
 		}
 		return FileReply{
 			Success: true,
@@ -230,42 +250,81 @@ func (sm *ServiceManager) handleFileMessage(msg FileMsg) FileReply {
 		}
 
 	case FileOpClose:
-		delete(sm.openFiles, msg.Handle)
-		return FileReply{Success: true}
+		if f, ok := sm.openFiles[msg.Handle]; ok {
+			if f.file != nil {
+				f.file.Close()
+			}
+			delete(sm.openFiles, msg.Handle)
+			return FileReply{Success: true}
+		}
+		return FileReply{Success: false, Error: "invalid handle"}
 
 	case FileOpRead:
-		file, ok := sm.openFiles[msg.Handle]
-		if !ok {
+		f, ok := sm.openFiles[msg.Handle]
+		if !ok || f.file == nil {
 			return FileReply{Success: false, Error: "invalid file handle"}
 		}
-		// TODO: Implement actual file reading
-		_ = file
-		return FileReply{Success: true}
+		buf := make([]byte, len(msg.Data))
+		n, err := f.file.Read(buf)
+		if err != nil && n == 0 {
+			return FileReply{Success: false, Error: err.Error()}
+		}
+		return FileReply{Success: true, Data: buf[:n]}
 
 	case FileOpWrite:
-		file, ok := sm.openFiles[msg.Handle]
-		if !ok {
+		f, ok := sm.openFiles[msg.Handle]
+		if !ok || f.file == nil {
 			return FileReply{Success: false, Error: "invalid file handle"}
 		}
-		// TODO: Implement actual file writing
-		_ = file
-		return FileReply{Success: true}
+		n, err := f.file.Write(msg.Data)
+		if err != nil {
+			return FileReply{Success: false, Error: err.Error()}
+		}
+		return FileReply{Success: true, Handle: int32(n)}
 
 	case FileOpSeek:
-		file, ok := sm.openFiles[msg.Handle]
-		if !ok {
+		f, ok := sm.openFiles[msg.Handle]
+		if !ok || f.file == nil {
 			return FileReply{Success: false, Error: "invalid file handle"}
 		}
-		// TODO: Implement actual file seeking
-		_ = file
+		_, err := f.file.Seek(msg.Offset, 0) // From start for now
+		if err != nil {
+			return FileReply{Success: false, Error: err.Error()}
+		}
 		return FileReply{Success: true}
 
 	case FileOpStat:
-		// TODO: Implement actual file stat
-		return FileReply{Success: true}
+		if sm.sandboxResolver == nil {
+			return FileReply{Success: false, Error: "sandbox resolver not set"}
+		}
+		path, err := sm.sandboxResolver(msg.Path)
+		if err != nil {
+			return FileReply{Success: false, Error: err.Error()}
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return FileReply{Success: false, Error: err.Error()}
+		}
+		return FileReply{
+			Success: true,
+			Info: map[string]interface{}{
+				"size":  info.Size(),
+				"isDir": info.IsDir(),
+			},
+		}
 
 	case FileOpDelete:
-		// TODO: Implement actual file deletion
+		if sm.sandboxResolver == nil {
+			return FileReply{Success: false, Error: "sandbox resolver not set"}
+		}
+		path, err := sm.sandboxResolver(msg.Path)
+		if err != nil {
+			return FileReply{Success: false, Error: err.Error()}
+		}
+		err = os.Remove(path)
+		if err != nil {
+			return FileReply{Success: false, Error: err.Error()}
+		}
 		return FileReply{Success: true}
 
 	default:

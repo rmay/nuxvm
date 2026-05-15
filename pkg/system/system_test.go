@@ -13,9 +13,9 @@ import (
 // fileTestRig sets up a System sandboxed to a temporary directory with a VM
 // memory slice big enough for name and buffer pointers at fixed offsets.
 type fileTestRig struct {
-	sys     *System
-	mem     []byte
-	tempDir string
+	sys      *System
+	mem      []byte
+	tempDir  string
 	nameAddr uint32
 	bufAddr  uint32
 }
@@ -66,7 +66,7 @@ func (r *fileTestRig) result() int32 {
 
 func TestDateTime(t *testing.T) {
 	sys := NewSystem()
-	
+
 	// Test Unix timestamp
 	ts, err := sys.Read(dateTimeAddr)
 	if err != nil {
@@ -100,12 +100,12 @@ func TestFileReadWrite(t *testing.T) {
 	defer os.Chdir(origDir)
 
 	sys := NewSystem()
-	mem := make([]byte, vm.UserMemoryOffset+1024) 
+	mem := make([]byte, vm.UserMemoryOffset+1024)
 	sys.SetMemory(mem)
 
 	filename := "testfile.txt"
 	content := "Hello CLOISTER!"
-	
+
 	// Use addresses relative to UserMemoryOffset for safety
 	nameAddr := uint32(vm.UserMemoryOffset) + 100
 	bufAddr := uint32(vm.UserMemoryOffset) + 200
@@ -125,8 +125,8 @@ func TestFileReadWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("File Write command failed: %v", err)
 	}
-	
-	res, _ := sys.Read(filePort+12)
+
+	res, _ := sys.Read(filePort + 12)
 	if res != int32(len(content)) {
 		t.Errorf("Expected write result %d, got %d", len(content), res)
 	}
@@ -139,22 +139,24 @@ func TestFileReadWrite(t *testing.T) {
 	// 2. Test Stat
 	cmdStat := (uint32(3) << 24)
 	sys.Write(filePort+12, int32(cmdStat))
-	resStat, _ := sys.Read(filePort+12)
+	resStat, _ := sys.Read(filePort + 12)
 	if resStat != int32(len(content)) {
 		t.Errorf("Expected stat result %d, got %d", len(content), resStat)
 	}
 
 	// 3. Test Read
 	// Clear memory first
-	for i := bufAddr; i < bufAddr+100; i++ { mem[i] = 0 }
-	
+	for i := bufAddr; i < bufAddr+100; i++ {
+		mem[i] = 0
+	}
+
 	cmdRead := (uint32(1) << 24) | uint32(len(content))
 	sys.Write(filePort+12, int32(cmdRead))
-	resRead, _ := sys.Read(filePort+12)
+	resRead, _ := sys.Read(filePort + 12)
 	if resRead != int32(len(content)) {
 		t.Errorf("Expected read result %d, got %d", len(content), resRead)
 	}
-	
+
 	readContent := string(mem[bufAddr : bufAddr+uint32(len(content))])
 	if readContent != content {
 		t.Errorf("Expected read content %q, got %q", content, readContent)
@@ -163,11 +165,11 @@ func TestFileReadWrite(t *testing.T) {
 	// 4. Test Delete
 	cmdDel := (uint32(4) << 24)
 	sys.Write(filePort+12, int32(cmdDel))
-	resDel, _ := sys.Read(filePort+12)
+	resDel, _ := sys.Read(filePort + 12)
 	if resDel != 0 {
 		t.Errorf("Expected delete result 0, got %d", resDel)
 	}
-	
+
 	if _, err := os.Stat(filename); !os.IsNotExist(err) {
 		t.Errorf("File still exists after delete")
 	}
@@ -356,7 +358,7 @@ func TestFileDirectoryListing(t *testing.T) {
 }
 
 // TestBootLuxStartupConfig verifies that the SCREEN::width!/height! setters
-// and TEXT::cell-size!/color! helpers from lib/system.lux write the
+// and TEXT::font-size!/color! helpers from lib/system.lux write the
 // corresponding MMIO registers as boot.lux expects. We exercise just the
 // startup-config block (via a targeted fixture that ends in HALT) because
 // boot.lux's own `[ 1 ] [ YIELD ] |:` keep-alive loop is a separate concern.
@@ -372,7 +374,7 @@ IMPORT TEXT
 @main
     256 SCREEN::width!
     192 SCREEN::height!
-    2   TEXT::cell-size!
+    32  TEXT::font-size!
     16777215 TEXT::color!
     HALT
 ;
@@ -390,8 +392,8 @@ main
 		t.Errorf("screen: got %dx%d, want 256x192", w, h)
 	}
 	attr, _ := m.System.Read(textAttrAddr)
-	if scale := int(uint32(attr) >> 24); scale != 2 {
-		t.Errorf("text scale: got %d, want 2", scale)
+	if size := int(uint32(attr) >> 24); size != 32 {
+		t.Errorf("text size: got %d, want 32", size)
 	}
 	if color := uint32(attr) & 0xFFFFFF; color != 0xFFFFFF {
 		t.Errorf("text color: got 0x%06X, want 0xFFFFFF", color)
@@ -405,8 +407,8 @@ func TestTextDeviceDrawsGlyph(t *testing.T) {
 	sys := NewSystem()
 	sys.SetResolution(64, 64)
 
-	// Scale 1, opaque red (0xFF0000).
-	sys.Write(textAttrAddr, int32((uint32(1)<<24)|0xFF0000))
+	// Size 18 (1.0x), opaque red (0xFF0000).
+	sys.Write(textAttrAddr, int32((uint32(18)<<24)|0xFF0000))
 	sys.Write(textCursorAddr, 0) // cell (0,0)
 
 	sys.Write(textCharAddr, int32('A'))
@@ -437,12 +439,12 @@ func TestTextDeviceDrawsGlyph(t *testing.T) {
 	}
 }
 
-// TestTextDeviceScale verifies that a scale>1 paints a scale*scale block per
+// TestTextDeviceScale verifies that a size>18 paints a larger block per
 // source pixel.
 func TestTextDeviceScale(t *testing.T) {
 	sys := NewSystem()
 	sys.SetResolution(64, 64)
-	sys.Write(textAttrAddr, int32((uint32(2)<<24)|0x00FF00)) // green, scale 2
+	sys.Write(textAttrAddr, int32((uint32(32)<<24)|0x00FF00)) // green, size 32 (2.0x)
 	sys.Write(textCursorAddr, 0)
 	sys.Write(textCharAddr, int32('A'))
 
@@ -464,7 +466,7 @@ func TestTextDeviceScale(t *testing.T) {
 func TestTextCursorWraps(t *testing.T) {
 	sys := NewSystem()
 	sys.SetResolution(32, 32)
-	sys.Write(textAttrAddr, int32((uint32(1)<<24)|0xFFFFFF)) // white
+	sys.Write(textAttrAddr, int32((uint32(18)<<24)|0xFFFFFF)) // white
 	sys.Write(textCursorAddr, int32(28<<16))                 // cell (28,0) — near right edge
 
 	sys.Write(textCharAddr, int32('X'))
@@ -480,7 +482,7 @@ func TestTextCursorWraps(t *testing.T) {
 func TestTextNewlineResetsColumn(t *testing.T) {
 	sys := NewSystem()
 	sys.SetResolution(32, 32)
-	sys.Write(textAttrAddr, int32((uint32(1)<<24)|0xFFFFFF))
+	sys.Write(textAttrAddr, int32((uint32(18)<<24)|0xFFFFFF))
 	sys.Write(textCursorAddr, int32(2<<16)) // cell (2,0)
 
 	sys.Write(textCharAddr, int32('\n'))

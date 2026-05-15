@@ -2,8 +2,8 @@ package system
 
 import (
 	"encoding/binary"
-	"strings"
 	"github.com/rmay/nuxvm/pkg/vm"
+	"strings"
 )
 
 // RenderFramebuffer returns a string representation of the framebuffer for terminal display.

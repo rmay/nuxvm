@@ -114,6 +114,14 @@ IMPORT MEMORY
 
 @init-locals ( -- ) ;
 
+@type ( ptr -- )
+    [ dup load-byte dup 0 > ] [
+        dup load-byte emit
+        1 +
+    ] |:
+    drop
+;
+
 @frame!   FRAME!   ;
 @unframe! UNFRAME! ;
 @local@   LOCAL@   ;

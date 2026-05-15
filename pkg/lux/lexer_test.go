@@ -13,8 +13,8 @@ func TestLexerCombinators(t *testing.T) {
 	}
 
 	expected := []struct {
-		typ   TokenType
-		val   string
+		typ TokenType
+		val string
 	}{
 		{TokenLBracket, "["},
 		{TokenNumber, "42"},

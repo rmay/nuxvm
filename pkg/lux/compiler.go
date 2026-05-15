@@ -40,6 +40,7 @@ type UnresolvedReference struct {
 	Line    int
 	Column  int
 	QuotIdx int
+	Module  string
 }
 
 type Compiler struct {
@@ -59,62 +60,64 @@ type Compiler struct {
 	unresolved     []UnresolvedReference
 	patchRequests  []PatchRequest
 	includeDepth   int
+	includedFiles  map[string]bool
 	trace          bool
 }
 
 const fileStringHeapBase = 0x700000
 
 var builtins = map[string]byte{
-	"DUP":    vm.OpDup,
-	"DROP":   vm.OpPop,
-	"SWAP":   vm.OpSwap,
-	"ROT":    vm.OpRot,
-	"OVER":   vm.OpOver,
-	"PICK":   vm.OpPick,
-	"LOAD":   vm.OpLoad,
-	"STORE":  vm.OpStore,
-	"LOADI":  vm.OpLoadI,
-	"STOREI": vm.OpStoreI,
-	"EXIT":   vm.OpRet,
-	"HALT":   vm.OpHalt,
-	"YIELD":  vm.OpYield,
-	"JNZ":    vm.OpJnz,
-	"NEGATE": vm.OpNeg,
-	"ADD":    vm.OpAdd,
-	"+":      vm.OpAdd,
-	"SUB":    vm.OpSub,
-	"-":      vm.OpSub,
-	"MUL":    vm.OpMul,
-	"*":      vm.OpMul,
-	"DIV":    vm.OpDiv,
-	"/":      vm.OpDiv,
-	"MOD":    vm.OpMod,
-	"INC":    vm.OpInc,
-	"DEC":    vm.OpDec,
-	"AND":    vm.OpAnd,
-	"OR":     vm.OpOr,
-	"XOR":    vm.OpXor,
-	"NOT":    vm.OpNot,
-	"SHL":    vm.OpShl,
-	"LSHIFT": vm.OpShl,
-	"SHR":    vm.OpShr,
-	"SAR":    vm.OpSar,
-	"RSHIFT": vm.OpShr,
-	"EQ":     vm.OpEq,
-	"=":      vm.OpEq,
-	"LT":     vm.OpLt,
-	"<":      vm.OpLt,
-	"GT":     vm.OpGt,
-	">":      vm.OpGt,
-	"NEQ":    vm.OpNeq,
-	"LTE":    vm.OpLte,
-	"<=":     vm.OpLte,
-	"GTE":    vm.OpGte,
-	">=":     vm.OpGte,
-	"ABS":    vm.OpAbs,
-	"MIN":    vm.OpMin,
-	"MAX":    vm.OpMax,
-	"DIVMOD": vm.OpDivmod,
+	"DUP":      vm.OpDup,
+	"DROP":     vm.OpPop,
+	"SWAP":     vm.OpSwap,
+	"ROT":      vm.OpRot,
+	"OVER":     vm.OpOver,
+	"PICK":     vm.OpPick,
+	"LOAD":     vm.OpLoad,
+	"STORE":    vm.OpStore,
+	"LOADI":    vm.OpLoadI,
+	"STOREI":   vm.OpStoreI,
+	"EXIT":     vm.OpRet,
+	"HALT":     vm.OpHalt,
+	"YIELD":    vm.OpYield,
+	"JNZ":      vm.OpJnz,
+	"NEGATE":   vm.OpNeg,
+	"ADD":      vm.OpAdd,
+	"+":        vm.OpAdd,
+	"SUB":      vm.OpSub,
+	"-":        vm.OpSub,
+	"MUL":      vm.OpMul,
+	"*":        vm.OpMul,
+	"DIV":      vm.OpDiv,
+	"/":        vm.OpDiv,
+	"MOD":      vm.OpMod,
+	"INC":      vm.OpInc,
+	"DEC":      vm.OpDec,
+	"AND":      vm.OpAnd,
+	"OR":       vm.OpOr,
+	"XOR":      vm.OpXor,
+	"NOT":      vm.OpNot,
+	"SHL":      vm.OpShl,
+	"LSHIFT":   vm.OpShl,
+	"SHR":      vm.OpShr,
+	"SAR":      vm.OpSar,
+	"RSHIFT":   vm.OpShr,
+	"EQ":       vm.OpEq,
+	"=":        vm.OpEq,
+	"LT":       vm.OpLt,
+	"<":        vm.OpLt,
+	"GT":       vm.OpGt,
+	">":        vm.OpGt,
+	"NEQ":      vm.OpNeq,
+	"<>":       vm.OpNeq,
+	"LTE":      vm.OpLte,
+	"<=":       vm.OpLte,
+	"GTE":      vm.OpGte,
+	">=":       vm.OpGte,
+	"ABS":      vm.OpAbs,
+	"MIN":      vm.OpMin,
+	"MAX":      vm.OpMax,
+	"DIVMOD":   vm.OpDivmod,
 	"FRAME!":   vm.OpFrame,
 	"UNFRAME!": vm.OpUnframe,
 	"LOCAL@":   vm.OpLocalGet,
@@ -132,10 +135,11 @@ func NewCompiler(tokens []Token, trace ...bool) *Compiler {
 	}
 	return &Compiler{
 		tokens: tokens, dictionary: make(map[string]Word), imports: make(map[string]string),
+		includedFiles:  make(map[string]bool),
 		quotationStack: make([]int, 0),
-		activeQuotIdx: -1, baseAddr: int32(vm.UserMemoryOffset), nextStringHeap: fileStringHeapBase,
+		activeQuotIdx:  -1, baseAddr: int32(vm.UserMemoryOffset), nextStringHeap: fileStringHeapBase,
 		tempAlloc: 0x8000,
-		trace: tr,
+		trace:     tr,
 	}
 }
 
@@ -286,6 +290,7 @@ func (c *Compiler) compile() ([]byte, error) {
 	}
 
 	for _, u := range c.unresolved {
+		c.currentModule = u.Module
 		w, ok := c.resolveWord(u.Word)
 		if !ok {
 			return nil, fmt.Errorf("unknown word '%s' at line %d", u.Word, u.Line)
@@ -378,7 +383,7 @@ func (c *Compiler) compileToken(t Token) error {
 			return nil
 		}
 		off := c.currentOffset()
-		c.unresolved = append(c.unresolved, UnresolvedReference{Word: t.Value, Offset: off, Line: t.Line, Column: t.Column, QuotIdx: c.activeQuotIdx})
+		c.unresolved = append(c.unresolved, UnresolvedReference{Word: t.Value, Offset: off, Line: t.Line, Column: t.Column, QuotIdx: c.activeQuotIdx, Module: c.currentModule})
 		c.emit(vm.OpPush, 0, 0, 0, 0)
 	case TokenLBracket:
 		return c.compileQuotation()
@@ -490,11 +495,11 @@ func (c *Compiler) compileCombinator(name string, line int) error {
 		} else {
 			c.emit(vm.OpCallStack)
 		}
-		
+
 		c.emit(vm.OpJmp)
 		jmpAt := c.currentOffset()
 		c.emit(0, 0, 0, 0)
-		
+
 		// False branch: [ addr_if addr_else ]
 		elseAt := c.currentAddress()
 		c.emit(vm.OpSwap, vm.OpPop) // -> [ addr_else ]
@@ -511,7 +516,7 @@ func (c *Compiler) compileCombinator(name string, line int) error {
 			binary.BigEndian.PutUint32(getBuf()[jmpAt:jmpAt+4], uint32(endAt))
 		}
 		return nil // Finished ?:
-		case "?":
+	case "?":
 		if len(c.quotationStack) < 1 {
 			return fmt.Errorf("if requires one quotation")
 		}
@@ -530,7 +535,7 @@ func (c *Compiler) compileCombinator(name string, line int) error {
 			c.emit(vm.OpJmp)
 			jmpAt := c.currentOffset()
 			c.emit(0, 0, 0, 0)
-			
+
 			// False branch: [ addr ]
 			skipAt := c.currentAddress()
 			c.emit(vm.OpPop)
@@ -582,7 +587,7 @@ func (c *Compiler) compileCombinator(name string, line int) error {
 			return fmt.Errorf("while requires two quotations")
 		}
 		c.quotationStack = c.quotationStack[:len(c.quotationStack)-2]
-		
+
 		// At runtime: [ ... cond body ]
 		c.emit(vm.OpPushR) // body to R
 		c.emit(vm.OpPushR) // cond to R
@@ -609,7 +614,7 @@ func (c *Compiler) compileCombinator(name string, line int) error {
 		c.emit(vm.OpPopR) // body
 		c.emit(vm.OpPop)  // drop cond
 		c.emit(vm.OpPop)  // drop body
-		
+
 		if c.activeQuotIdx >= 0 {
 			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, exit}, InternalJump{jmpAt, start})
 		} else {
@@ -618,16 +623,16 @@ func (c *Compiler) compileCombinator(name string, line int) error {
 		}
 	case "#:":
 		c.quotationStack = c.quotationStack[:len(c.quotationStack)-1]
-		
+
 		// At runtime: [ ... addr count ]
 		c.emit(vm.OpPushR) // count to R
 		c.emit(vm.OpPushR) // addr to R
 
 		start := c.currentAddress()
 
-		c.emit(vm.OpPopR)  // addr
-		c.emit(vm.OpPopR)  // count
-		
+		c.emit(vm.OpPopR) // addr
+		c.emit(vm.OpPopR) // count
+
 		// Terminate if count <= 0
 		c.emit(vm.OpDup)
 		c.emit(vm.OpPush)
@@ -647,9 +652,9 @@ func (c *Compiler) compileCombinator(name string, line int) error {
 		c.emit(0, 0, 0, 0)
 
 		exit := c.currentAddress()
-		c.emit(vm.OpPop)       // pops extra count (0)
-		c.emit(vm.OpPop)       // pops extra addr
-		
+		c.emit(vm.OpPop) // pops extra count (0)
+		c.emit(vm.OpPop) // pops extra addr
+
 		if c.activeQuotIdx >= 0 {
 			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, exit}, InternalJump{jmpAt, start})
 		} else {
@@ -758,7 +763,17 @@ func (c *Compiler) handleIncludeDirective() error {
 	if t.Type != TokenWord && t.Type != TokenString {
 		return fmt.Errorf("expected file path, got type %d", t.Type)
 	}
-	data, err := os.ReadFile(t.Value)
+
+	path := t.Value
+	if c.includedFiles[path] {
+		// Already included, remove the INCLUDE token and path from the stream
+		c.tokens = append(c.tokens[:c.pos-2], c.tokens[c.pos:]...)
+		c.pos -= 2
+		return nil
+	}
+	c.includedFiles[path] = true
+
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("include failed: %v", err)
 	}

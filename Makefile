@@ -1,4 +1,4 @@
-.PHONY: all build test clean install run examples vmbuild cloisterbuild luxbuild replbuild buildall help
+.PHONY: all build test clean install run examples vmbuild cloisterbuild luxbuild replbuild buildall help appsbuild
 
 # Default: build the full toolchain into bin/.
 all: buildall
@@ -11,9 +11,8 @@ vmbuild:
 cloisterbuild:
 	go build -o bin/cloister ./cmd/cloister
 
-# Run tests
-vmtest:
-	cd pkg/vm && go test -v
+test:
+	go test ./...
 
 # Run tests with coverage
 vmcoverage:
@@ -45,10 +44,17 @@ png2cff:
 buildall:
 	mkdir -p bin
 	go build -o bin/nux ./cmd/nux
-	go build -o bin/cloister ./cmd/cloister
 	go build -o bin/luxc ./cmd/luxc
 	go build -o bin/luxrepl ./cmd/luxrepl
+	go build -o bin/cloister ./cmd/cloister
+	$(MAKE) appsbuild
 
+appsbuild: bin/luxc
+	@echo "Building apps..."
+	@for f in apps/*.lux; do \
+		./bin/luxc $$f; \
+	done
+	
 luxbuild:
 	go build -o bin/luxc cmd/luxc/main.go
 
@@ -68,7 +74,7 @@ lint:
 	golangci-lint run
 
 # Run all checks
-check: fmt test
+check: fmt test appsbuild
 
 # Help
 help:

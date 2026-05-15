@@ -1,0 +1,24 @@
+( --- Hello World App --- )
+
+INCLUDE "lib/vfs.lux"
+INCLUDE "lib/draw.lux"
+
+MODULE HELLO
+
+@dfd_addr 0x8E0000 ;
+@dfd@ dfd_addr LOADI ; @dfd! dfd_addr STOREI ;
+
+@start
+    ( 1. Open /dev/draw )
+    T"/dev/draw" VFS::open dfd!
+    
+    ( 2. Main Loop )
+    [ 1 ] [
+        ( Draw a green rectangle )
+        dfd@ 20 20 100 100 0x00FF00 DRAW::fill-rect
+        VFS::yield DROP
+    ] |:
+;
+
+HELLO::start
+HALT

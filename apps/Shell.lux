@@ -1,0 +1,118 @@
+( --- NUXVM Master Shell --- )
+
+INCLUDE "lib/vfs.lux"
+INCLUDE "lib/draw.lux"
+
+MODULE SHELL
+
+@dfd_addr 0x8E0000 ;
+@mfd_addr 0x8E0004 ;
+@cfd_addr 0x8E0008 ; ( Child Draw FD )
+@win_x_addr 0x8E000C ;
+@win_y_addr 0x8E0010 ;
+@dragging_addr 0x8E0014 ;
+@last_mx_addr 0x8E0018 ;
+@last_my_addr 0x8E001C ;
+
+@dfd@ dfd_addr LOADI ; @dfd! dfd_addr STOREI ;
+@mfd@ mfd_addr LOADI ; @mfd! mfd_addr STOREI ;
+@cfd@ cfd_addr LOADI ; @cfd! cfd_addr STOREI ;
+@win_x@ win_x_addr LOADI ; @win_x! win_x_addr STOREI ;
+@win_y@ win_y_addr LOADI ; @win_y! win_y_addr STOREI ;
+@dragging@ dragging_addr LOADI ; @dragging! dragging_addr STOREI ;
+@last_mx@ last_mx_addr LOADI ; @last_mx! last_mx_addr STOREI ;
+@last_my@ last_my_addr LOADI ; @last_my! last_my_addr STOREI ;
+
+@mbuf 0x8D2000 ;
+@mx 0x8D2008 ; @my 0x8D200C ;
+@pbuf 0x8D1000 ;
+@idx_addr 0x8D1400 ;
+@id_buf 0x8D0000 ;
+
+@draw-welcome
+    dfd@ win_x@ 50 + win_y@ 10 + 78 0xFFFFFF DRAW::draw-char ( N )
+    dfd@ win_x@ 58 + win_y@ 10 + 85 0xFFFFFF DRAW::draw-char ( U )
+    dfd@ win_x@ 66 + win_y@ 10 + 88 0xFFFFFF DRAW::draw-char ( X )
+;
+
+@handle-mouse
+    mfd@ mbuf 8 VFS::read ( n )
+    8 = [
+        mbuf load-byte ( type )
+        dup 2 = [ ( MouseMove )
+            mbuf 2 + DRAW::load-word-le mx STOREI
+            mbuf 4 + DRAW::load-word-le my STOREI
+            
+            dragging@ [
+                ( Update window position )
+                win_x@ mx LOADI last_mx@ - + win_x!
+                win_y@ my LOADI last_my@ - + win_y!
+                1 ( dirty )
+            ] [ 0 ] ?:
+            
+            mx LOADI last_mx!
+            my LOADI last_my!
+            drop
+        ] [
+            dup 3 = [ ( MouseDown )
+                1 dragging!
+            ] [
+                dup 4 = [ ( MouseUp )
+                    0 dragging!
+                ] ?
+            ] ?:
+        ] ?:
+        drop
+    ] ?
+;
+
+@proxy-draw
+    cfd@ pbuf 1024 VFS::read ( n )
+    dup 0 > [
+        ( Pass through commands directly for verification )
+        dfd@ pbuf rot VFS::write drop
+    ] [ 
+        drop VFS::yield DROP 
+    ] ?:
+;
+
+@launch-hello
+    0 1 frame!
+    T"/sys/vm/new" VFS::open 0 local!
+    T"apps/Hello.lux" dup strlen 0 local@ swap rot VFS::write drop
+    
+    0 local@ id_buf 4 VFS::read drop
+    
+    T"/sys/vm/1/draw" VFS::open cfd!
+    0 local@ VFS::close drop
+    1 unframe!
+;
+
+@start
+    ( 1. Open Hardware )
+    T"/sys/draw" VFS::open dfd!
+    T"/sys/mouse" VFS::open mfd!
+
+    ( 2. Initial State )
+    100 win_x!
+    100 win_y!
+    0 dragging!
+    0 last_mx!
+    0 last_my!
+
+    ( 3. Clear Screen )
+    dfd@ 0 0 1024 768 0x000044 DRAW::fill-rect
+
+    ( 4. Launch Child )
+    launch-hello
+
+    ( 5. Main Loop )
+    [ 1 ] [
+        handle-mouse
+        proxy-draw
+        VFS::yield DROP
+    ] |:
+;
+
+SHELL::start
+HALT

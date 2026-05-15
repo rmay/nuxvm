@@ -9,9 +9,8 @@ import (
 
 // Machine represents the complete virtual computer (VM + Hardware).
 type Machine struct {
-	CPU       *vm.VM
-	System    *System
-	inputQueue chan InputEvent // Per-machine input queue (buffered, cap 64)
+	CPU    *vm.VM
+	System *System
 }
 
 func NewMachine(program []byte, memSize uint32, trace ...bool) *Machine {
@@ -44,16 +43,15 @@ func NewMachine(program []byte, memSize uint32, trace ...bool) *Machine {
 		// Non-blocking send to sound server
 		select {
 		case sys.Services.soundChan <- SoundMsg{Command: "play_sound", SoundID: soundID}:
-			// Don't wait for reply to avoid blocking the VM
+		// Don't wait for reply to avoid blocking the VM
 		default:
 			// SoundServer busy or not running, drop event
 		}
 	}
 
 	return &Machine{
-		CPU:        cpu,
-		System:     sys,
-		inputQueue: make(chan InputEvent, 64),
+		CPU:    cpu,
+		System: sys,
 	}
 }
 
@@ -92,9 +90,8 @@ func NewMachineSharedServices(program []byte, memSize uint32, services *ServiceM
 	}
 
 	return &Machine{
-		CPU:        cpu,
-		System:     sys,
-		inputQueue: make(chan InputEvent, 64),
+		CPU:    cpu,
+		System: sys,
 	}
 }
 
@@ -106,9 +103,10 @@ func (m *Machine) Tick() (bool, error) {
 	}
 
 	m.CPU.ClearYield()
-	
+	m.System.yielded = false
+
 	// Run until yield or halt
-	for m.CPU.Running() && !m.CPU.Yielded() {
+	for m.CPU.Running() && !m.CPU.Yielded() && !m.System.yielded {
 		_, err := m.CPU.Step()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Machine: Tick error at PC=0x%X: %v\n", m.CPU.PC(), err)
@@ -116,7 +114,15 @@ func (m *Machine) Tick() (bool, error) {
 			return false, err
 		}
 	}
-	
+
+	// Tick children
+	for _, child := range m.System.childMachines {
+		_, err := child.Tick()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Child Machine Tick error: %v\n", err)
+		}
+	}
+
 	return !m.CPU.Halted(), nil
 }
 
@@ -167,7 +173,7 @@ func (m *Machine) Services() *ServiceManager {
 // QueueKeyDown queues a keyboard event for this machine.
 func (m *Machine) QueueKeyDown(keyCode int32) {
 	select {
-	case m.inputQueue <- InputEvent{Type: InputKeyDown, KeyCode: keyCode}:
+	case m.System.inputQueue <- InputEvent{Type: InputKeyDown, KeyCode: keyCode}:
 	default:
 		// queue full, drop event
 	}
@@ -180,7 +186,7 @@ func (m *Machine) QueueMouseButton(x, y int32, btn uint32, down bool) {
 		evtType = InputMouseDown
 	}
 	select {
-	case m.inputQueue <- InputEvent{Type: evtType, MouseX: x, MouseY: y, MouseBtn: btn}:
+	case m.System.inputQueue <- InputEvent{Type: evtType, MouseX: x, MouseY: y, MouseBtn: btn}:
 	default:
 	}
 }
@@ -188,7 +194,15 @@ func (m *Machine) QueueMouseButton(x, y int32, btn uint32, down bool) {
 // QueueMouseMove queues a mouse move event for this machine.
 func (m *Machine) QueueMouseMove(x, y int32) {
 	select {
-	case m.inputQueue <- InputEvent{Type: InputMouseMove, MouseX: x, MouseY: y}:
+	case m.System.inputQueue <- InputEvent{Type: InputMouseMove, MouseX: x, MouseY: y}:
+	default:
+	}
+}
+
+// QueueWheel queues a mouse wheel event for this machine.
+func (m *Machine) QueueWheel(dx, dy float64) {
+	select {
+	case m.System.inputQueue <- InputEvent{Type: InputWheel, WheelX: dx, WheelY: dy}:
 	default:
 	}
 }
@@ -203,7 +217,7 @@ func (m *Machine) DrainInputEvents() {
 	for {
 		var evt *InputEvent
 		select {
-		case e := <-m.inputQueue:
+		case e := <-m.System.inputQueue:
 			evt = &e
 		default:
 			goto done
@@ -227,6 +241,12 @@ func (m *Machine) DrainInputEvents() {
 			mouseX, mouseY = evt.MouseX, evt.MouseY
 			mouseBtn = evt.MouseBtn
 			mouseChanged = true
+		case InputWheel:
+			m.System.SetWheel(int32(evt.WheelY))
+			_ = m.CPU.TriggerVector(WheelVectorIdx)
+		case InputResize:
+			m.System.SetResize(evt.ResizeW, evt.ResizeH)
+			_ = m.CPU.TriggerVector(ResizeVectorIdx)
 		}
 	}
 
@@ -236,4 +256,3 @@ done:
 		_ = m.CPU.TriggerVector(MouseVectorIdx)
 	}
 }
-

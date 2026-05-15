@@ -1,0 +1,59 @@
+( Graphics Command Packing for /sys/draw )
+
+INCLUDE "lib/vfs.lux"
+INCLUDE "lib/core.lux"
+
+MODULE DRAW
+
+@BUF 0x8F0000 ; ( Static buffer for command packing )
+
+@store-word-le ( val addr -- )
+    2 frame!
+    1 local@ 255 AND 0 local@ store-byte
+    1 local@ 8 SHR 255 AND 0 local@ 1 + store-byte
+    2 unframe!
+;
+
+@store-int-le ( val addr -- )
+    2 frame!
+    1 local@ 255 AND 0 local@ store-byte
+    1 local@ 8 SHR 255 AND 0 local@ 1 + store-byte
+    1 local@ 16 SHR 255 AND 0 local@ 2 + store-byte
+    1 local@ 24 SHR 255 AND 0 local@ 3 + store-byte
+    2 unframe!
+;
+
+@load-word-le ( addr -- val )
+    dup load-byte ( LSB )
+    swap 1 + load-byte 8 LSHIFT ( MSB )
+    OR
+;
+
+@fill-rect ( fd x y w h color -- )
+    6 frame! ( 0:color, 1:h, 2:w, 3:y, 4:x, 5:fd )
+    
+    0 BUF store-byte ( Cmd 0: FillRect )
+    4 local@ BUF 1 + store-word-le
+    3 local@ BUF 3 + store-word-le
+    2 local@ BUF 5 + store-word-le
+    1 local@ BUF 7 + store-word-le
+    0 local@ BUF 9 + store-int-le
+    
+    5 local@ BUF 13 VFS::write drop ( 1 type + 8 coords + 4 color = 13 bytes )
+    
+    6 unframe!
+;
+
+@draw-char ( fd x y char color -- )
+    5 frame! ( 0:color, 1:char, 2:y, 3:x, 4:fd )
+    
+    1 BUF store-byte ( Cmd 1: DrawChar )
+    3 local@ BUF 1 + store-word-le
+    2 local@ BUF 3 + store-word-le
+    1 local@ BUF 5 + store-byte
+    0 local@ BUF 6 + store-int-le
+    
+    4 local@ BUF 10 VFS::write drop ( 1 type + 4 coords + 1 char + 4 color = 10 bytes )
+    
+    5 unframe!
+;

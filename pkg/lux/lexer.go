@@ -13,15 +13,15 @@ import (
 type TokenType int
 
 const (
-	TokenNumber     TokenType = iota // 42, -17, 0xFF
-	TokenWord                        // +, DUP, square, MATH::SQUARE
-	TokenAtSign                      // @
-	TokenSemicolon                   // ;
-	TokenComment                     // ( ... )
-	TokenString                      // "chars" or T"chars" — emits string bytes to heap at compile-time, pushes address
-	TokenLBracket                    // [ - start quotation
-	TokenRBracket                    // ] - end quotation
-	TokenEOF                         // End of file
+	TokenNumber    TokenType = iota // 42, -17, 0xFF
+	TokenWord                       // +, DUP, square, MATH::SQUARE
+	TokenAtSign                     // @
+	TokenSemicolon                  // ;
+	TokenComment                    // ( ... )
+	TokenString                     // "chars" or T"chars" — emits string bytes to heap at compile-time, pushes address
+	TokenLBracket                   // [ - start quotation
+	TokenRBracket                   // ] - end quotation
+	TokenEOF                        // End of file
 )
 
 // Token represents a single lexical element

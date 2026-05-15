@@ -66,4 +66,3 @@ func TestOSKeyboard(t *testing.T) {
 		t.Errorf("Unexpected output: %q, expected it to contain '65'", got)
 	}
 }
-

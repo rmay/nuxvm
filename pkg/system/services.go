@@ -29,12 +29,12 @@ type WindowReply struct {
 
 // Window chrome geometry constants (moved from wm.go)
 const (
-	TopBarHeight      = 24
-	WinChromeHeight   = 0 // title bar height per window (Lux handles this now)
-	WinMenuBarHeight  = 18 // menu bar height (if present)
-	WinBorderWidth    = 0  // 1px border all sides
-	WindowInset       = 4  // standard inset for windows from edges
-	WinScrollbarSize  = 15 // vertical and horizontal scrollbar thickness
+	TopBarHeight     = 24
+	WinChromeHeight  = 0  // title bar height per window (Lux handles this now)
+	WinMenuBarHeight = 18 // menu bar height (if present)
+	WinBorderWidth   = 0  // 1px border all sides
+	WindowInset      = 4  // standard inset for windows from edges
+	WinScrollbarSize = 15 // vertical and horizontal scrollbar thickness
 )
 
 type rect struct {
@@ -78,6 +78,7 @@ const (
 	InputMouseMove
 	InputMouseDown
 	InputMouseUp
+	InputWheel
 	InputResize
 )
 
@@ -87,6 +88,8 @@ type InputEvent struct {
 	MouseX    int32 // for mouse events
 	MouseY    int32
 	MouseBtn  uint32
+	WheelX    float64
+	WheelY    float64
 	Timestamp int64
 	WinID     WindowID // for resize events
 	ResizeW   int32    // for resize events
@@ -151,9 +154,9 @@ type FileReply struct {
 // ============= Layout System =============
 
 type Pane struct {
-	WinID  WindowID
-	X, Y   int32
-	W, H   int32
+	WinID WindowID
+	X, Y  int32
+	W, H  int32
 }
 
 // ============= Service Manager =============
@@ -162,28 +165,29 @@ type ServiceManager struct {
 	windowMu sync.RWMutex // protects windows map and activeWinID
 
 	// Window management
-	windowChan chan WindowMsg
+	windowChan  chan WindowMsg
 	windowReply chan WindowReply
-	windows    map[WindowID]*WindowRecord
-	nextWinID  WindowID
+	windows     map[WindowID]*WindowRecord
+	nextWinID   WindowID
 	activeWinID WindowID
 
 	// Layout management
 	panes []Pane // list of visible window panes (typically 1 or 2)
 
 	// Input management
-	inputChan chan InputMsg
+	inputChan  chan InputMsg
 	inputReply chan InputReply
 	inputQueue chan *InputEvent // buffered channel, lock-free
 
 	// Sound management
-	soundChan chan SoundMsg
-	soundReply chan SoundReply
+	soundChan    chan SoundMsg
+	soundReply   chan SoundReply
+	SoundHandler func(soundID int32)
 
 	// File system management
-	fileChan chan FileMsg
-	fileReply chan FileReply
-	openFiles map[int32]*OSFile
+	fileChan       chan FileMsg
+	fileReply      chan FileReply
+	openFiles      map[int32]*OSFile
 	nextFileHandle int32
 
 	// Sandbox enforcement (file device)
@@ -195,27 +199,27 @@ type ServiceManager struct {
 type OSFile struct {
 	Handle int32
 	Path   string
-	// Will add actual file handle when we implement
+	file   *os.File
 }
 
 func NewServiceManager() *ServiceManager {
 	sm := &ServiceManager{
-		windowChan: make(chan WindowMsg, 16),
+		windowChan:  make(chan WindowMsg, 16),
 		windowReply: make(chan WindowReply, 16),
-		windows: make(map[WindowID]*WindowRecord),
-		nextWinID: 1,
+		windows:     make(map[WindowID]*WindowRecord),
+		nextWinID:   1,
 		activeWinID: 1,
 
-		inputChan: make(chan InputMsg, 16),
+		inputChan:  make(chan InputMsg, 16),
 		inputReply: make(chan InputReply, 16),
 		inputQueue: make(chan *InputEvent, 64), // lock-free event queue
 
-		soundChan: make(chan SoundMsg, 16),
+		soundChan:  make(chan SoundMsg, 16),
 		soundReply: make(chan SoundReply, 16),
 
-		fileChan: make(chan FileMsg, 16),
-		fileReply: make(chan FileReply, 16),
-		openFiles: make(map[int32]*OSFile),
+		fileChan:       make(chan FileMsg, 16),
+		fileReply:      make(chan FileReply, 16),
+		openFiles:      make(map[int32]*OSFile),
 		nextFileHandle: 1,
 
 		panes: make([]Pane, 0),
@@ -366,8 +370,8 @@ func (sm *ServiceManager) CreateWindow(name string, width, height int32) (Window
 	msg := WindowMsg{
 		Command: "create",
 		Data: map[string]interface{}{
-			"name": name,
-			"width": width,
+			"name":   name,
+			"width":  width,
 			"height": height,
 		},
 	}
@@ -382,7 +386,7 @@ func (sm *ServiceManager) CreateWindow(name string, width, height int32) (Window
 func (sm *ServiceManager) CloseWindow(winID WindowID) error {
 	msg := WindowMsg{
 		Command: "close",
-		WinID: winID,
+		WinID:   winID,
 	}
 	sm.windowChan <- msg
 	<-sm.windowReply
@@ -392,7 +396,7 @@ func (sm *ServiceManager) CloseWindow(winID WindowID) error {
 func (sm *ServiceManager) MoveWindow(winID WindowID, x, y int32) error {
 	msg := WindowMsg{
 		Command: "move",
-		WinID: winID,
+		WinID:   winID,
 		Data: map[string]interface{}{
 			"x": x,
 			"y": y,
@@ -420,7 +424,6 @@ func (sm *ServiceManager) PollEvent() *InputEvent {
 	}
 }
 
-
 // ============= Sound Service Operations =============
 
 func (sm *ServiceManager) PlaySound(soundID int32) error {
@@ -437,7 +440,7 @@ func (sm *ServiceManager) PlaySound(soundID int32) error {
 
 func (sm *ServiceManager) OpenFile(path string) (int32, error) {
 	msg := FileMsg{
-		Op: FileOpOpen,
+		Op:   FileOpOpen,
 		Path: path,
 	}
 	sm.fileChan <- msg
@@ -448,9 +451,37 @@ func (sm *ServiceManager) OpenFile(path string) (int32, error) {
 	return -1, nil
 }
 
+func (sm *ServiceManager) ReadFile(handle int32, length int32) ([]byte, error) {
+	msg := FileMsg{
+		Op:     FileOpRead,
+		Handle: handle,
+		Data:   make([]byte, length), // use Data field to pass requested length
+	}
+	sm.fileChan <- msg
+	reply := <-sm.fileReply
+	if reply.Success {
+		return reply.Data, nil
+	}
+	return nil, fmt.Errorf("%s", reply.Error)
+}
+
+func (sm *ServiceManager) WriteFile(handle int32, data []byte) (int32, error) {
+	msg := FileMsg{
+		Op:     FileOpWrite,
+		Handle: handle,
+		Data:   data,
+	}
+	sm.fileChan <- msg
+	reply := <-sm.fileReply
+	if reply.Success {
+		return reply.Handle, nil // Handle field used for bytes written in reply
+	}
+	return -1, fmt.Errorf("%s", reply.Error)
+}
+
 func (sm *ServiceManager) CloseFile(handle int32) error {
 	msg := FileMsg{
-		Op: FileOpClose,
+		Op:     FileOpClose,
 		Handle: handle,
 	}
 	sm.fileChan <- msg
@@ -737,7 +768,7 @@ func (sm *ServiceManager) applyLayout() {
 			if oldW != win.ContRgn.Width() || oldH != win.ContRgn.Height() || len(win.FrameBuf) == 0 {
 				oldFB := win.FrameBuf
 				win.FrameBuf = make([]byte, newW*newH*4)
-				
+
 				// Copy old content if possible to avoid wiping black
 				if len(oldFB) > 0 {
 					minW := oldW

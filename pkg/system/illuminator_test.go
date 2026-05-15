@@ -41,7 +41,7 @@ func TestIlluminatorApp(t *testing.T) {
 	}
 
 	// DO NOT ENABLE TRACE HERE THE OUTPUT IS TOO LARGE
-	app := system.NewMachineSharedServices(bytecode, 12*1024*1024, services)
+	app := system.NewMachineSharedServices(bytecode, 16*1024*1024, services)
 
 	saved := services.GetActiveWindowID()
 	services.SetRenderTarget(winID)

@@ -1,5 +1,10 @@
 package system
 
+import (
+	"fmt"
+	"os"
+)
+
 // System Call Interface (SCI) command handlers
 // These implement the Lux SCI word interface for interacting with OS services
 
@@ -12,37 +17,27 @@ func (s *System) handleSCICommand() {
 	s.sciResult = 0
 
 	switch cmd {
-	// Window Management
-	case SCICreateWin:
-		s.handleSCICreateWin(arg1, arg2)
-	case SCICloseWin:
-		s.handleSCICloseWin(arg1)
-	case SCIMoveWin:
-		s.handleSCIMoveWin(arg1, arg2)
-	case SCIDrawRect:
-		s.handleSCIDrawRect(arg1, arg2)
-	case SCIDrawText:
-		s.handleSCIDrawText(arg1, arg2)
-	case SCISetPixel:
-		s.handleSCISetPixel(arg1, arg2)
-	case SCIGetWinSize:
-		s.handleSCIGetWinSize(arg1)
-	case SCIFocusWin:
-		s.handleSCIFocusWin(arg1)
-
-	// Input
-	case SCIPollEvent:
-		s.handleSCIPollEvent()
-
-	// File I/O
-	case SCIOpenFile:
-		s.handleSCIOpenFile(arg1)
-	case SCIReadFile:
-		s.handleSCIReadFile(arg1, arg2)
-	case SCIWriteFile:
-		s.handleSCIWriteFile(arg1, arg2)
-	case SCICloseFile:
-		s.handleSCICloseFile(arg1)
+	// VFS Primitives
+	case SCIVFSOpen:
+		s.handleSCIVFSOpen(arg1)
+	case SCIVFSClose:
+		s.handleSCIVFSClose(arg1)
+	case SCIVFSRead:
+		// arg1: fd (high 16) | length (low 16)
+		// arg2: buffer pointer
+		fd := arg1 >> 16
+		length := arg1 & 0xFFFF
+		s.handleSCIVFSRead(fd, arg2, length)
+	case SCIVFSWrite:
+		// arg1: fd (high 16) | length (low 16)
+		// arg2: buffer pointer
+		fd := arg1 >> 16
+		length := arg1 & 0xFFFF
+		s.handleSCIVFSWrite(fd, arg2, length)
+	case SCIVFSBind:
+		// arg1: fd
+		// arg2: target path pointer
+		s.handleSCIVFSBind(arg1, arg2)
 
 	// Sound
 	case SCIPlaySound:
@@ -57,7 +52,72 @@ func (s *System) handleSCICommand() {
 		s.handleSCIGetActiveWin()
 	case SCIDrawCFF:
 		s.handleSCIDrawCFF(arg1, arg2)
+	case SCIDebugPrint:
+		s.handleSCIDebugPrint(arg1)
 	}
+}
+
+// VFS Handlers
+
+func (s *System) handleSCIVFSOpen(pathPtr int32) {
+	path := s.cstring(uint32(pathPtr))
+	fd, err := s.vfs.Open(s, path)
+	if err != nil {
+		s.sciResult = -1
+		return
+	}
+	s.sciResult = fd
+}
+
+func (s *System) handleSCIVFSClose(fd int32) {
+	err := s.vfs.Close(fd)
+	if err != nil {
+		s.sciResult = -1
+		return
+	}
+	s.sciResult = 0
+}
+
+func (s *System) handleSCIVFSRead(fd int32, bufPtr int32, length int32) {
+	if length <= 0 || bufPtr < 0 || int(bufPtr)+int(length) > len(s.memory) {
+		s.sciResult = -1
+		return
+	}
+
+	buf := s.memory[bufPtr : bufPtr+length]
+	n, err := s.vfs.Read(fd, buf)
+	if err != nil && err.Error() != "EOF" {
+		s.sciResult = -1
+		return
+	}
+	s.sciResult = int32(n)
+}
+
+func (s *System) handleSCIVFSWrite(fd int32, bufPtr int32, length int32) {
+	if length <= 0 || bufPtr < 0 || int(bufPtr)+int(length) > len(s.memory) {
+		s.sciResult = -1
+		return
+	}
+
+	buf := s.memory[bufPtr : bufPtr+length]
+	n, err := s.vfs.Write(fd, buf)
+	if err != nil {
+		s.sciResult = -1
+		return
+	}
+	s.sciResult = int32(n)
+}
+
+func (s *System) handleSCIVFSBind(fd int32, pathPtr int32) {
+	// TODO: Implement BIND logic in vfs.go
+	s.sciResult = -1
+}
+
+// handleSCIDebugPrint(ptr) prints a null-terminated string to host stderr
+func (s *System) handleSCIDebugPrint(ptr int32) {
+	str := s.cstring(uint32(ptr))
+	fmt.Fprintf(os.Stderr, "[LUX-DEBUG] %s\n", str)
+	s.sciResult = 0
 }
 
 // Window Management Handlers
@@ -147,10 +207,10 @@ func (s *System) handleSCISetPixel(winID int32, pixelData int32) {
 	if x >= 0 && x < winW && y >= 0 && y < winH {
 		offset := (int(y)*int(winW) + int(x)) * 4
 		if offset+4 <= len(win.FrameBuf) {
-			win.FrameBuf[offset] = byte((color >> 16) & 0xFF)     // R
-			win.FrameBuf[offset+1] = byte((color >> 8) & 0xFF)    // G
-			win.FrameBuf[offset+2] = byte(color & 0xFF)            // B
-			win.FrameBuf[offset+3] = 255                           // A
+			win.FrameBuf[offset] = byte((color >> 16) & 0xFF)  // R
+			win.FrameBuf[offset+1] = byte((color >> 8) & 0xFF) // G
+			win.FrameBuf[offset+2] = byte(color & 0xFF)        // B
+			win.FrameBuf[offset+3] = 255                       // A
 			win.Dirty = true
 		}
 	}
@@ -239,14 +299,52 @@ func (s *System) handleSCIOpenFile(pathPtr int32) {
 
 // handleSCIReadFile(fileHandle, length) -> bytesRead
 func (s *System) handleSCIReadFile(fileHandle int32, length int32) {
-	// This would be implemented with actual file reading
-	s.sciResult = 0
+	if s.Services == nil {
+		s.sciResult = -1
+		return
+	}
+
+	// s.sciArg2 should contain the buffer pointer in VM memory
+	bufPtr := uint32(s.sciArg2)
+	if bufPtr+uint32(length) > uint32(len(s.memory)) {
+		s.sciResult = -1
+		return
+	}
+
+	data, err := s.Services.ReadFile(fileHandle, length)
+	if err != nil {
+		s.sciResult = -1
+		return
+	}
+
+	copy(s.memory[bufPtr:], data)
+	s.sciResult = int32(len(data))
 }
 
 // handleSCIWriteFile(fileHandle, length) -> bytesWritten
 func (s *System) handleSCIWriteFile(fileHandle int32, length int32) {
-	// This would be implemented with actual file writing
-	s.sciResult = 0
+	if s.Services == nil {
+		s.sciResult = -1
+		return
+	}
+
+	// s.sciArg2 should contain the buffer pointer in VM memory
+	bufPtr := uint32(s.sciArg2)
+	if bufPtr+uint32(length) > uint32(len(s.memory)) {
+		s.sciResult = -1
+		return
+	}
+
+	data := make([]byte, length)
+	copy(data, s.memory[bufPtr:bufPtr+uint32(length)])
+
+	n, err := s.Services.WriteFile(fileHandle, data)
+	if err != nil {
+		s.sciResult = -1
+		return
+	}
+
+	s.sciResult = n
 }
 
 // handleSCICloseFile(fileHandle) -> status
@@ -278,7 +376,7 @@ func (s *System) handleSCIPlaySound(soundID int32) {
 
 // handleSCIYield() - yields control back to the host
 func (s *System) handleSCIYield() {
-	// Yielding is handled at the CPU level; this is a no-op at the System level
+	s.yielded = true
 	s.sciResult = 0
 }
 
@@ -322,39 +420,55 @@ func (s *System) handleSCIDrawText(winID int32, textPtr int32) {
 
 // drawCharToWindow renders a character into a window's framebuffer at the current cursor position
 func (s *System) drawCharToWindow(win *WindowRecord, c byte) {
-	// ...
 	glyph := Font[c]
-	x := int(s.text.cursorX) * 6
-	y := int(s.text.cursorY) * 8
+	scale := s.text.getScale()
 
-	winW := win.ContRgn.Width()
-	winH := win.ContRgn.Height()
+	originX := int(s.text.cursorX)
+	originY := int(s.text.cursorY)
+
+	winW := int(win.ContRgn.Width())
+	winH := int(win.ContRgn.Height())
 
 	// Bounds check: stay within window framebuffer
-	if x+6 >= int(winW) || y+8 >= int(winH) {
+	if originX >= winW || originY >= winH {
 		s.advanceCursorInWindow(win)
 		return
 	}
 
-	// Draw character glyph into window framebuffer (6px wide x 8px tall, black text)
-	for row := 0; row < 8; row++ {
+	r := byte(s.text.color >> 16)
+	g := byte(s.text.color >> 8)
+	b := byte(s.text.color)
+
+	for row := 0; row < 13; row++ {
 		bits := glyph[row]
 		if bits == 0 {
 			continue
 		}
-		for col := 0; col < 8; col++ {
-			if (bits & (1 << col)) == 0 {
+		startY := float64(row) * scale
+		endY := float64(row+1) * scale
+		for py := int(startY); py < int(endY); py++ {
+			y := originY + py
+			if y < 0 || y >= winH {
 				continue
 			}
-			px := x + col
-			py := y + row
-			if px < int(winW) && py < int(winH) {
-				offset := (py*int(winW) + px) * 4
-				if offset+4 <= len(win.FrameBuf) {
-					win.FrameBuf[offset] = 0     // R
-					win.FrameBuf[offset+1] = 0   // G
-					win.FrameBuf[offset+2] = 0   // B
-					win.FrameBuf[offset+3] = 255 // A
+			for col := 0; col < 7; col++ {
+				if bits&(1<<col) == 0 {
+					continue
+				}
+				startX := float64(col) * scale
+				endX := float64(col+1) * scale
+				for px := int(startX); px < int(endX); px++ {
+					x := originX + px
+					if x < 0 || x >= winW {
+						continue
+					}
+					offset := (y*winW + x) * 4
+					if offset+4 <= len(win.FrameBuf) {
+						win.FrameBuf[offset] = r
+						win.FrameBuf[offset+1] = g
+						win.FrameBuf[offset+2] = b
+						win.FrameBuf[offset+3] = 255
+					}
 				}
 			}
 		}
@@ -365,15 +479,15 @@ func (s *System) drawCharToWindow(win *WindowRecord, c byte) {
 
 // advanceCursorInWindow moves cursor one cell right, wrapping at window edge
 func (s *System) advanceCursorInWindow(win *WindowRecord) {
-	winW := win.ContRgn.Width()
-	charsPerRow := int(winW) / 6
-	if charsPerRow < 1 {
-		charsPerRow = 1
-	}
-	s.text.cursorX++
-	if int(s.text.cursorX) >= charsPerRow {
+	winW := int(win.ContRgn.Width())
+	scale := s.text.getScale()
+	cellW := int(7 * scale)
+	cellH := int(13 * scale)
+
+	s.text.cursorX += uint16(cellW)
+	if int(s.text.cursorX)+cellW > winW {
 		s.text.cursorX = 0
-		s.text.cursorY++
+		s.text.cursorY += uint16(cellH)
 	}
 }
 
@@ -388,14 +502,14 @@ func (s *System) handleSCIGetActiveWin() {
 
 // handleSCIDrawCFF(fontPtr, packedData)
 // packedData: char in 31..24, x in 23..12, y in 11..0
-// Uses current text color and scale (magnification).
+// Uses current text color and font size (scaling).
 // Tile size is hardcoded to 16 for Chicago compatibility.
 func (s *System) handleSCIDrawCFF(fontPtr int32, data int32) {
 	char := byte((uint32(data) >> 24) & 0xFF)
 	x := int32((uint32(data) >> 12) & 0xFFF)
 	y := int32(uint32(data) & 0xFFF)
 	color := s.text.color
-	scale := int(s.text.scale)
+	scale := s.text.getScale()
 
 	// Chicago12x12 is stored in 16x16 tiles.
 	tileSize := 16

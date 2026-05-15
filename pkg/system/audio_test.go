@@ -1,8 +1,8 @@
 package system
 
 import (
-	"testing"
 	"github.com/rmay/nuxvm/pkg/vm"
+	"testing"
 )
 
 func TestAudioSoundHandler(t *testing.T) {
@@ -13,7 +13,7 @@ func TestAudioSoundHandler(t *testing.T) {
 	program = append(program, vm.OpHalt)
 
 	machine := NewMachine(program, 0)
-	
+
 	var playedSoundID int32
 	machine.System.SoundHandler = func(soundID int32) {
 		playedSoundID = soundID
