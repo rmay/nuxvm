@@ -60,9 +60,9 @@ const (
 	ControllerVectorIdx = (controllerPort - vm.DeviceMemoryOffset) / 16 // 4
 	MouseVectorIdx      = (mousePort - vm.DeviceMemoryOffset) / 16      // 5
 	WheelVectorIdx      = (wheelPort - vm.DeviceMemoryOffset) / 16      // 10
-	WindowVectorIdx      = (windowPort - vm.DeviceMemoryOffset) / 16     // 11
-	ResizeVectorIdx      = (resizePort - vm.DeviceMemoryOffset) / 16     // 12
-	SCIVectorIdx         = (sciPort - vm.DeviceMemoryOffset) / 16        // 13
+	WindowVectorIdx     = (windowPort - vm.DeviceMemoryOffset) / 16     // 11
+	ResizeVectorIdx     = (resizePort - vm.DeviceMemoryOffset) / 16     // 12
+	SCIVectorIdx        = (sciPort - vm.DeviceMemoryOffset) / 16        // 13
 	MenuVectorIdx       = (menuPort - vm.DeviceMemoryOffset) / 16       // 7
 	GPUVectorIdx        = (gpuPort - vm.DeviceMemoryOffset) / 16        // 16
 
@@ -73,22 +73,6 @@ const (
 	SCIVFSWrite = 4
 	SCIVFSBind  = 5
 
-	// Legacy SCI Command codes (deprecated)
-	/*
-		SCICreateWin    = 1
-		SCICloseWin     = 2
-		SCIMoveWin      = 3
-		SCIDrawRect     = 4
-		SCIDrawText     = 5
-		SCISetPixel     = 6
-		SCIGetWinSize   = 7
-		SCIFocusWin     = 8
-		SCIPollEvent    = 9
-		SCIOpenFile     = 10
-		SCIReadFile     = 11
-		SCIWriteFile    = 12
-		SCICloseFile    = 13
-	*/
 	SCIPlaySound    = 14
 	SCIYield        = 15
 	SCIGetPID       = 16
@@ -188,8 +172,11 @@ type System struct {
 	Services *ServiceManager
 
 	// VFS (Virtual File System)
-	vfs        *VFS
-	inputQueue chan InputEvent // Per-system input queue (buffered, cap 64)
+	vfs         *VFS
+	inputQueue  chan InputEvent // Per-system input queue (buffered, cap 64)
+	mouseEvents chan InputEvent // Per-device queue for /dev/mouse readers
+	kbdEvents   chan InputEvent // Per-device queue for /dev/kbd readers
+	lastChan    VFSFile         // Peer end of a newly created channel pair
 
 	// Child VM management
 	childMachines map[int32]*Machine
@@ -214,6 +201,8 @@ func NewSystem() *System {
 		Services:      NewServiceManager(),
 		vfs:           NewVFS(),
 		inputQueue:    make(chan InputEvent, 64),
+		mouseEvents:   make(chan InputEvent, 64),
+		kbdEvents:     make(chan InputEvent, 64),
 		childMachines: make(map[int32]*Machine),
 		nextMachineID: 1,
 	}
@@ -243,6 +232,8 @@ func NewSystemNoFallback() *System {
 		Services:      NewServiceManager(),
 		vfs:           NewVFS(),
 		inputQueue:    make(chan InputEvent, 64),
+		mouseEvents:   make(chan InputEvent, 64),
+		kbdEvents:     make(chan InputEvent, 64),
 		childMachines: make(map[int32]*Machine),
 		nextMachineID: 1,
 	}
@@ -929,17 +920,14 @@ func (s *System) read(address uint32) (int32, error) {
 func (s *System) Write(address uint32, value int32) error {
 	// SCI (System Call Interface) device:
 	if address == sciCommandAddr {
-		fmt.Fprintf(os.Stderr, "System: Writing SCI_CMD: %d\n", value)
 		s.sciCommand = value
 		return nil
 	}
 	if address == sciArg1Addr {
-		fmt.Fprintf(os.Stderr, "System: Writing SCI_ARG1: %d\n", value)
 		s.sciArg1 = value
 		return nil
 	}
 	if address == sciArg2Addr {
-		fmt.Fprintf(os.Stderr, "System: Writing SCI_ARG2: %d\n", value)
 		s.sciArg2 = value
 		// Trigger SCI command handler when arg2 is written
 		s.handleSCICommand()
@@ -1240,7 +1228,7 @@ func (s *System) gpuDrawPixel(x, y int32, color uint32) {
 	fb := s.getActiveFramebuffer()
 	w := s.getScreenWidth()
 	h := s.getScreenHeight()
-	
+
 	px := x + s.paneX
 	py := y + s.paneY
 
@@ -1311,7 +1299,6 @@ func (s *System) SetResize(w, h int32) {
 	s.resizeW = w
 	s.resizeH = h
 }
-
 
 func (s *System) MouseButton() uint32 {
 	return s.mouseButton

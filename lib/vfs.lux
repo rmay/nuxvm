@@ -16,6 +16,14 @@ MODULE VFS
 @CMD_BIND  5 ;
 @CMD_YIELD 15 ;
 
+( Standard Paths )
+@PATH_CHAN_NEW  T"/sys/chan/new" ;
+@PATH_CHAN_PEER T"/sys/chan/peer" ;
+@PATH_VM_NEW    T"/sys/vm/new" ;
+@PATH_DRAW      T"/sys/draw" ;
+@PATH_MOUSE     T"/sys/mouse" ;
+@PATH_KBD       T"/sys/kbd" ;
+
 ( Helper: Execute an SCI command )
 @EXEC ( cmd arg1 arg2 -- result )
     ROT SCI-CMD STOREI

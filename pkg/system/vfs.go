@@ -22,24 +22,43 @@ type VFS struct {
 	fds    map[int32]VFSFile
 	nextFD int32
 
-	// Proxies for inter-VM communication
-	proxies       map[string]VFSFile
-	parentProxies map[string]VFSFile
+	// Mount table for per-process namespace
+	mounts map[string]VFSFile
 }
 
 func NewVFS() *VFS {
 	return &VFS{
-		fds:           make(map[int32]VFSFile),
-		nextFD:        100,
-		proxies:       make(map[string]VFSFile),
-		parentProxies: make(map[string]VFSFile),
+		fds:    make(map[int32]VFSFile),
+		nextFD: 100,
+		mounts: make(map[string]VFSFile),
 	}
 }
 
 func (v *VFS) Open(s *System, path string) (int32, error) {
 	fmt.Fprintf(os.Stderr, "VFS: Open called for %q\n", path)
+	
+	file, err := v.openFile(s, path)
+	if err != nil {
+		return -1, err
+	}
+
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	fd := v.nextFD
+	v.nextFD++
+	v.fds[fd] = file
+	fmt.Fprintf(os.Stderr, "VFS: Open %q success -> fd %d\n", path, fd)
+	return fd, nil
+}
+
+func (v *VFS) openFile(s *System, path string) (VFSFile, error) {
+	v.mu.RLock()
+	// 1. Check mount table first
+	if file, ok := v.mounts[path]; ok {
+		v.mu.RUnlock()
+		return file, nil
+	}
+	v.mu.RUnlock()
 
 	var file VFSFile
 	switch {
@@ -49,8 +68,20 @@ func (v *VFS) Open(s *System, path string) (int32, error) {
 		file = &kbdFile{s: s}
 	case path == "/sys/mouse":
 		file = &mouseFile{s: s}
+	case path == "/sys/audio":
+		file = &audioFile{s: s}
 	case path == "/sys/debug":
 		file = &debugFile{}
+	case path == "/sys/chan/new":
+		c1, c2 := newChannelPair()
+		s.lastChan = c2
+		file = c1
+	case path == "/sys/chan/peer":
+		if s.lastChan == nil {
+			return nil, fmt.Errorf("no peer channel available")
+		}
+		file = s.lastChan
+		s.lastChan = nil
 	case strings.HasPrefix(path, "/sys/vm/"):
 		parts := strings.Split(strings.TrimPrefix(path, "/sys/vm/"), "/")
 		if parts[0] == "new" {
@@ -64,37 +95,60 @@ func (v *VFS) Open(s *System, path string) (int32, error) {
 			}
 			file = &vmFile{s: s, id: id, kind: kind}
 		}
-	case strings.HasPrefix(path, "/dev/"):
-		// Check for proxies registered by parent
-		name := strings.TrimPrefix(path, "/dev/")
-		if proxy, ok := v.proxies[name]; ok {
-			fmt.Fprintf(os.Stderr, "VFS: Found proxy for /dev/%s\n", name)
-			file = proxy
-		} else {
-			fmt.Fprintf(os.Stderr, "VFS: No proxy for /dev/%s, using inline fallback to /sys/\n", name)
-			// Fallback: map /dev/* to /sys/* for standalone apps running as root
-			switch name {
-			case "draw":
-				file = &drawFile{s: s}
-			case "kbd":
-				file = &kbdFile{s: s}
-			case "mouse":
-				file = &mouseFile{s: s}
-			default:
-				fmt.Fprintf(os.Stderr, "VFS: Fallback failed, device not found: %s\n", path)
-				return -1, fmt.Errorf("device not found: %s", path)
-			}
+	case strings.HasPrefix(path, "/sys/file/"):
+		filePath := strings.TrimPrefix(path, "/sys/file/")
+		if s.Services == nil {
+			return nil, fmt.Errorf("services not available")
 		}
+		handle, err := s.Services.OpenFile(filePath)
+		if err != nil {
+			return nil, err
+		}
+		file = &hostFile{s: s, handle: handle}
+	case strings.HasPrefix(path, "/dev/"):
+		// Fallback: map /dev/* to /sys/* for standalone apps
+		name := strings.TrimPrefix(path, "/dev/")
+		return v.openFile(s, "/sys/"+name)
 	default:
 		fmt.Fprintf(os.Stderr, "VFS: File not found: %s\n", path)
-		return -1, fmt.Errorf("file not found: %s", path)
+		return nil, fmt.Errorf("file not found: %s", path)
 	}
 
-	fd := v.nextFD
-	v.nextFD++
-	v.fds[fd] = file
-	fmt.Fprintf(os.Stderr, "VFS: Open %q success -> fd %d\n", path, fd)
-	return fd, nil
+	return file, nil
+}
+
+func (v *VFS) Bind(s *System, fd int32, path string) error {
+	v.mu.RLock()
+	file, ok := v.fds[fd]
+	v.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("invalid file descriptor: %d", fd)
+	}
+
+	return v.BindFile(s, file, path)
+}
+
+func (v *VFS) BindFile(s *System, file VFSFile, path string) error {
+	// Handle binding into child namespaces: /sys/vm/[id]/ns/[path]
+	if strings.HasPrefix(path, "/sys/vm/") {
+		parts := strings.Split(strings.TrimPrefix(path, "/sys/vm/"), "/")
+		if len(parts) >= 3 && parts[1] == "ns" {
+			var id int32
+			fmt.Sscanf(parts[0], "%d", &id)
+			child := s.childMachines[id]
+			if child == nil {
+				return fmt.Errorf("vm %d not found", id)
+			}
+			childPath := "/" + strings.Join(parts[2:], "/")
+			return child.System.vfs.BindFile(child.System, file, childPath)
+		}
+	}
+
+	v.mu.Lock()
+	v.mounts[path] = file
+	v.mu.Unlock()
+	return nil
 }
 
 func (v *VFS) Close(fd int32) error {
@@ -144,8 +198,6 @@ func (f *drawFile) Read(p []byte) (n int, err error) {
 }
 
 func (f *drawFile) Write(p []byte) (int, error) {
-	// Debug print
-	fmt.Fprintf(os.Stderr, "VFS: drawFile Write len=%d\n", len(p))
 	i := 0
 	for i < len(p) {
 		cmd := p[i]
@@ -160,20 +212,19 @@ func (f *drawFile) Write(p []byte) (int, error) {
 			w := int32(int16(binary.LittleEndian.Uint16(p[i+4 : i+6])))
 			h := int32(int16(binary.LittleEndian.Uint16(p[i+6 : i+8])))
 			color := binary.LittleEndian.Uint32(p[i+8 : i+12])
-			fmt.Fprintf(os.Stderr, "  VFS: FillRect %d,%d %dx%d col=%X\n", x, y, w, h, color)
 			f.s.fillRect(x, y, w, h, color)
 			i += 12
 		case 1: // DrawChar
-			if i+9 > len(p) {
+			if i+10 > len(p) {
 				return i - 1, io.ErrShortWrite
 			}
 			x := int32(int16(binary.LittleEndian.Uint16(p[i : i+2])))
 			y := int32(int16(binary.LittleEndian.Uint16(p[i+2 : i+4])))
 			char := p[i+4]
 			color := binary.LittleEndian.Uint32(p[i+5 : i+9])
-			fmt.Fprintf(os.Stderr, "  VFS: DrawChar %d,%d char=%c col=%X\n", x, y, char, color)
-			f.s.drawCharVFS(x, y, char, color)
-			i += 9
+			scale := p[i+9]
+			f.s.drawCharVFS(x, y, char, color, scale)
+			i += 10
 		default:
 			return i - 1, fmt.Errorf("unknown draw command: %d", cmd)
 		}
@@ -194,6 +245,58 @@ type mouseFile struct{ s *System }
 func (f *mouseFile) Write(p []byte) (n int, err error) { return 0, io.ErrShortWrite }
 func (f *mouseFile) Close() error                    { return nil }
 
+// audioFile handles audio playback via /sys/audio
+type audioFile struct{ s *System }
+
+func (f *audioFile) Read(p []byte) (n int, err error) { return 0, io.EOF }
+func (f *audioFile) Write(p []byte) (int, error) {
+	if len(p) < 4 {
+		return 0, io.ErrShortWrite
+	}
+	soundID := int32(binary.LittleEndian.Uint32(p[0:4]))
+	if f.s.Services != nil {
+		f.s.Services.PlaySound(soundID)
+	}
+	return 4, nil
+}
+func (f *audioFile) Close() error { return nil }
+
+// hostFile handles standard file I/O via /sys/file/
+type hostFile struct {
+	s      *System
+	handle int32
+}
+
+func (f *hostFile) Read(p []byte) (int, error) {
+	if f.s.Services == nil {
+		return 0, io.EOF
+	}
+	data, err := f.s.Services.ReadFile(f.handle, int32(len(p)))
+	if err != nil {
+		return 0, err
+	}
+	copy(p, data)
+	return len(data), nil
+}
+
+func (f *hostFile) Write(p []byte) (int, error) {
+	if f.s.Services == nil {
+		return 0, io.ErrShortWrite
+	}
+	n, err := f.s.Services.WriteFile(f.handle, p)
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
+func (f *hostFile) Close() error {
+	if f.s.Services != nil {
+		return f.s.Services.CloseFile(f.handle)
+	}
+	return nil
+}
+
 // vmFile handles child VM management via /sys/vm/
 type vmFile struct {
 	s    *System
@@ -210,13 +313,6 @@ func (f *vmFile) Read(p []byte) (n int, err error) {
 		binary.LittleEndian.PutUint32(p[0:4], uint32(f.lastCreatedID))
 		f.lastCreatedID = 0 // Reset after read
 		return 4, nil
-	}
-	if f.kind == "draw" || f.kind == "mouse" || f.kind == "kbd" {
-		child := f.s.childMachines[f.id]
-		if child == nil {
-			return 0, fmt.Errorf("vm %d not found", f.id)
-		}
-		return child.System.vfs.parentProxies[f.kind].Read(p)
 	}
 	return 0, io.EOF
 }
@@ -235,29 +331,8 @@ func (f *vmFile) Write(p []byte) (n int, err error) {
 		child := NewMachine(bytecode, 32*1024*1024)
 		f.s.childMachines[id] = child
 
-		// Create proxy pairs
-		parentDraw, childDraw := newBufferFilePair()
-		parentMouse, childMouse := newBufferFilePair()
-		parentKbd, childKbd := newBufferFilePair()
-
-		child.System.vfs.proxies["draw"] = childDraw
-		child.System.vfs.proxies["mouse"] = childMouse
-		child.System.vfs.proxies["kbd"] = childKbd
-
-		child.System.vfs.parentProxies["draw"] = parentDraw
-		child.System.vfs.parentProxies["mouse"] = parentMouse
-		child.System.vfs.parentProxies["kbd"] = parentKbd
-
 		f.lastCreatedID = id
 		return len(p), nil
-	}
-
-	if f.kind == "draw" || f.kind == "mouse" || f.kind == "kbd" {
-		child := f.s.childMachines[f.id]
-		if child == nil {
-			return 0, fmt.Errorf("vm %d not found", f.id)
-		}
-		return child.System.vfs.parentProxies[f.kind].Write(p)
 	}
 
 	return 0, io.ErrShortWrite
@@ -265,49 +340,66 @@ func (f *vmFile) Write(p []byte) (n int, err error) {
 
 func (f *vmFile) Close() error { return nil }
 
-// bufferFile implements VFSFile using a non-blocking byte buffer
-type bufferFile struct {
-	mu  sync.Mutex
-	buf []byte
+// channelFile implements a bidirectional, message-oriented VFS pipe.
+type channelFile struct {
+	readChan  chan []byte
+	writeChan chan []byte
+	closed    chan struct{}
+	mu        sync.Mutex
 }
 
-func (f *bufferFile) Read(p []byte) (int, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(f.buf) == 0 {
-		return 0, nil
+func (f *channelFile) Read(p []byte) (int, error) {
+	select {
+	case msg := <-f.readChan:
+		n := copy(p, msg)
+		return n, nil
+	case <-f.closed:
+		return 0, io.EOF
 	}
-	n := copy(p, f.buf)
-	f.buf = f.buf[n:]
-	return n, nil
 }
 
-func (f *bufferFile) Write(p []byte) (int, error) {
+func (f *channelFile) Write(p []byte) (int, error) {
+	// Preserve message boundaries by sending a copy of the buffer.
+	msg := make([]byte, len(p))
+	copy(msg, p)
+
+	select {
+	case f.writeChan <- msg:
+		return len(p), nil
+	case <-f.closed:
+		return 0, io.ErrClosedPipe
+	}
+}
+
+func (f *channelFile) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.buf = append(f.buf, p...)
-	return len(p), nil
+	select {
+	case <-f.closed:
+		// already closed
+	default:
+		close(f.closed)
+	}
+	return nil
 }
 
-func (f *bufferFile) Close() error { return nil }
+func newChannelPair() (VFSFile, VFSFile) {
+	c1 := make(chan []byte, 64)
+	c2 := make(chan []byte, 64)
+	closed := make(chan struct{})
 
-func newBufferFilePair() (VFSFile, VFSFile) {
-	// A pair of buffers for bidirectional communication
-	// Parent writes to B1, Child reads from B1
-	// Child writes to B2, Parent reads from B2
-	b1 := &bufferFile{}
-	b2 := &bufferFile{}
-	return &proxyPair{readBuf: b2, writeBuf: b1}, &proxyPair{readBuf: b1, writeBuf: b2}
+	endpoint1 := &channelFile{
+		readChan:  c1,
+		writeChan: c2,
+		closed:    closed,
+	}
+	endpoint2 := &channelFile{
+		readChan:  c2,
+		writeChan: c1,
+		closed:    closed,
+	}
+	return endpoint1, endpoint2
 }
-
-type proxyPair struct {
-	readBuf  *bufferFile
-	writeBuf *bufferFile
-}
-
-func (p *proxyPair) Read(b []byte) (int, error)  { return p.readBuf.Read(b) }
-func (p *proxyPair) Write(b []byte) (int, error) { return p.writeBuf.Write(b) }
-func (p *proxyPair) Close() error               { return nil }
 
 // debugFile is a simple mock file that prints to host stdout.
 type debugFile struct{}

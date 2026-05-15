@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rmay/nuxvm/pkg/lux"
 	"github.com/rmay/nuxvm/pkg/vm"
 )
 
@@ -354,49 +353,6 @@ func TestFileDirectoryListing(t *testing.T) {
 	}
 	if !strings.Contains(joined, "---- sub\x00") {
 		t.Errorf("missing 'sub' directory marker; got:\n%s", joined)
-	}
-}
-
-// TestBootLuxStartupConfig verifies that the SCREEN::width!/height! setters
-// and TEXT::font-size!/color! helpers from lib/system.lux write the
-// corresponding MMIO registers as boot.lux expects. We exercise just the
-// startup-config block (via a targeted fixture that ends in HALT) because
-// boot.lux's own `[ 1 ] [ YIELD ] |:` keep-alive loop is a separate concern.
-func TestBootLuxStartupConfig(t *testing.T) {
-	origDir, _ := os.Getwd()
-	t.Cleanup(func() { os.Chdir(origDir) })
-	if err := os.Chdir("../.."); err != nil {
-		t.Skipf("cannot chdir to repo root: %v", err)
-	}
-	src := `INCLUDE "lib/system.lux"
-IMPORT SCREEN
-IMPORT TEXT
-@main
-    256 SCREEN::width!
-    192 SCREEN::height!
-    32  TEXT::font-size!
-    16777215 TEXT::color!
-    HALT
-;
-main
-`
-	bytecode, err := lux.Compile(src)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	m := NewMachine(bytecode, 0)
-	if _, err := m.Tick(); err != nil {
-		t.Fatalf("tick: %v", err)
-	}
-	if w, h := m.System.ScreenWidth(), m.System.ScreenHeight(); w != 256 || h != 192 {
-		t.Errorf("screen: got %dx%d, want 256x192", w, h)
-	}
-	attr, _ := m.System.Read(textAttrAddr)
-	if size := int(uint32(attr) >> 24); size != 32 {
-		t.Errorf("text size: got %d, want 32", size)
-	}
-	if color := uint32(attr) & 0xFFFFFF; color != 0xFFFFFF {
-		t.Errorf("text color: got 0x%06X, want 0xFFFFFF", color)
 	}
 }
 

@@ -1,0 +1,509 @@
+( === Snake Game (VFS) === )
+
+INCLUDE "lib/vfs.lux"
+INCLUDE "lib/draw.lux"
+
+MODULE SNAKE
+
+( Constants )
+@GRID_W    20 ; 
+@GRID_H    20 ;
+@MAX_SEGS  400 ; ( 20 * 20 )
+@Y_OFFSET  40 ;
+
+@CLR_BG    0x000000 ;
+@CLR_SNAKE 0x00FF00 ;
+@CLR_FOOD  0xFF0000 ;
+@CLR_TEXT  0xFFFFFF ;
+
+( State Addresses in RAM )
+@SNAKE_HEAD_IDX 0x800000 ;
+@SNAKE_LEN      0x800004 ;
+@SNAKE_DIR      0x800008 ; ( 0:Up, 1:Right, 2:Down, 3:Left )
+@NEXT_DIR       0x80000C ;
+@FOOD_X         0x800010 ;
+@FOOD_Y         0x800014 ;
+@GAME_OVER      0x800018 ;
+@FRAME_COUNT    0x80001C ;
+@SPEED          0x800020 ;
+@SCORE          0x800024 ;
+@HIGH_SCORE     0x800028 ;
+@GAME_STATE     0x80002C ; ( 0: Start Screen, 1: Playing, 2: Game Over )
+@DIRTY          0x800030 ;
+@SCREEN_W       0x800034 ;
+@SCREEN_H       0x800038 ;
+@TILE_SIZE      0x80003C ;
+@X_OFFSET       0x800040 ;
+
+( FDs )
+@dfd_addr       0x800050 ; @dfd@ dfd_addr LOADI ; @dfd! dfd_addr STOREI ;
+@mfd_addr       0x800054 ; @mfd@ mfd_addr LOADI ; @mfd! mfd_addr STOREI ;
+@kfd_addr       0x800058 ; @kfd@ kfd_addr LOADI ; @kfd! kfd_addr STOREI ;
+@afd_addr       0x80005C ; @afd@ afd_addr LOADI ; @afd! afd_addr STOREI ;
+@hfd_addr       0x800060 ; @hfd@ hfd_addr LOADI ; @hfd! hfd_addr STOREI ;
+
+( Buffers )
+@mbuf           0x800100 ; ( 8 bytes for mouse )
+@kbuf           0x800110 ; ( 4 bytes for kbd )
+@abuf           0x800120 ; ( 4 bytes for audio )
+@hbuf           0x800130 ; ( 4 bytes for hi-score )
+
+( Circular buffer for segments: 400 max tiles * 2 words each = 800 words )
+@SNAKE_DATA     0x801000 ; 
+
+( --- Helpers --- )
+
+@head-idx@ SNAKE_HEAD_IDX LOADI ;
+@head-idx! SNAKE_HEAD_IDX STOREI ;
+@len@      SNAKE_LEN LOADI ;
+@len!      SNAKE_LEN STOREI ;
+@dir@      SNAKE_DIR LOADI ;
+@dir!      SNAKE_DIR STOREI ;
+@next-dir@ NEXT_DIR LOADI ;
+@next-dir! NEXT_DIR STOREI ;
+@food-x@   FOOD_X LOADI ;
+@food-x!   FOOD_X STOREI ;
+@food-y@   FOOD_Y LOADI ;
+@food-y!   FOOD_Y STOREI ;
+@over?     GAME_OVER LOADI ;
+@over!     GAME_OVER STOREI ;
+@frames@   FRAME_COUNT LOADI ;
+@frames!   FRAME_COUNT STOREI ;
+@speed@    SPEED LOADI ;
+@speed!    SPEED STOREI ;
+@score@    SCORE LOADI ;
+@score!    SCORE STOREI ;
+@hi-score@ HIGH_SCORE LOADI ;
+@hi-score! HIGH_SCORE STOREI ;
+@state@    GAME_STATE LOADI ;
+@state!    GAME_STATE STOREI ;
+@dirty@    DIRTY LOADI ;
+@dirty!    DIRTY STOREI ;
+@screen-w@ SCREEN_W LOADI ;
+@screen-w! SCREEN_W STOREI ;
+@screen-h@ SCREEN_H LOADI ;
+@screen-h! SCREEN_H STOREI ;
+@tile-size@ TILE_SIZE LOADI ;
+@tile-size! TILE_SIZE STOREI ;
+@x-offset@ X_OFFSET LOADI ;
+@x-offset! X_OFFSET STOREI ;
+
+( Persistence )
+@HI_FILENAME    T"/dev/file/.snake_hi" ;
+
+@load-hi-score
+    HI_FILENAME VFS::open hfd!
+    hfd@ 0 >= [
+        hfd@ HIGH_SCORE 4 VFS::read drop
+    ] [ 0 hi-score! ] ?:
+;
+
+@save-hi-score
+    hfd@ 0 >= [
+        hfd@ HIGH_SCORE 4 VFS::write drop
+    ] [ ] ?:
+;
+
+@random ( max -- n )
+    0x10084 LOADI ( raw random )
+    0x7FFFFFFF AND ( ensure positive )
+    swap MOD
+;
+
+@draw-tile ( gx gy color -- )
+    ( gx gy color )
+    dfd@ 
+    ( gx gy color dfd )
+    3 pick ( gx ) tile-size@ * x-offset@ + ( x )
+    3 pick ( gy ) tile-size@ * Y_OFFSET + ( y )
+    tile-size@ tile-size@
+    5 pick ( color )
+    DRAW::fill-rect
+    drop drop drop ( gx gy color )
+;
+
+@WRAP ( idx -- idx' )
+    MAX_SEGS MOD
+    dup 0 < [ MAX_SEGS + ] ?
+;
+
+@get-seg ( idx -- x y )
+    WRAP
+    8 * SNAKE_DATA + ( addr )
+    dup LOADI ( x )
+    swap 4 + LOADI ( y )
+;
+
+@set-seg! ( x y idx -- )
+    WRAP
+    8 * SNAKE_DATA + ( addr )
+    ( x y addr )
+    rot OVER STOREI ( pops addr, pops x. Mem[addr]=x. Stack: y addr )
+    4 + STOREI      ( pops addr+4, pops y. Mem[addr+4]=y. )
+;
+
+@play-sound ( id -- )
+    abuf DRAW::store-int-le
+    afd@ abuf 4 VFS::write drop
+;
+
+@spawn_valid 0x800074 ;
+
+@spawn-food
+    [
+        GRID_W random food-x!
+        GRID_H random food-y!
+
+        ( Ensure no collision with snake )
+        1 spawn_valid STOREI
+        
+        len@ 0 ( i )
+        [ dup len@ < ] [
+            head-idx@ OVER - get-seg ( sx sy )
+            food-y@ = [ 
+                food-x@ = [ 0 spawn_valid STOREI ] ?
+            ] [ 
+                drop 
+            ] ?:
+            1 +
+        ] |:
+        drop ( i )
+        
+        ( Loop if invalid )
+        spawn_valid LOADI 0 =
+    ] [ ] |:
+;
+@init-game
+    10 head-idx!
+    3 len!
+    1 dir!
+    1 next-dir!
+    0 frames!
+    15 speed!
+    0 score!
+
+    ( Init snake body )
+    10 10 10 set-seg!
+     9 10  9 set-seg!
+     8 10  8 set-seg!
+
+    spawn-food
+    1 dirty!
+;
+
+@save-hi-if-new
+    score@ hi-score@ > [
+        score@ hi-score!
+        save-hi-score
+    ] ?
+;
+
+@new_x 0x800068 ;
+@new_y 0x80006C ;
+
+@move-snake
+    next-dir@ dir!
+    head-idx@ get-seg ( x y )
+    
+    dir@ 0 = [ 1 - ] ? ( Up )
+    dir@ 2 = [ 1 + ] ? ( Down )
+    swap
+    dir@ 3 = [ 1 - ] ? ( Left )
+    dir@ 1 = [ 1 + ] ? ( Right )
+    swap ( new_x new_y )
+    
+    new_y STOREI
+    new_x STOREI
+
+    ( Wall Collision )
+    new_x LOADI 0 < [ 1 ] [ new_x LOADI GRID_W >= ] ?:
+    new_y LOADI 0 < [ 1 ] [ new_y LOADI GRID_H >= ] ?:
+    OR [
+        2 state! ( Game Over )
+        save-hi-if-new
+        110 play-sound
+        1 dirty!
+        exit
+    ] ?
+
+    ( Self Collision )
+    len@ 0 ( i )
+    [ dup len@ < ] [
+        head-idx@ OVER - get-seg ( sx sy )
+        new_y LOADI = [ new_x LOADI = ] [ drop 0 ] ?: [
+            2 state! ( Game Over )
+            save-hi-if-new
+            110 play-sound
+            1 dirty!
+            drop exit
+        ] ?
+        1 +
+    ] |:
+    drop ( i )
+
+    ( Update Head Index )
+    head-idx@ 1 + head-idx!
+    new_x LOADI new_y LOADI head-idx@ set-seg!
+    
+    ( Food check )
+    food-x@ new_x LOADI = [ food-y@ new_y LOADI = ] [ 0 ] ?: [
+        len@ 1 + len!
+        score@ 1 + score!
+        
+        ( Increase speed every 5 points )
+        score@ 5 MOD 0 = [
+            speed@ 1 - 2 MAX speed!
+        ] ?
+        
+        spawn-food
+        440 play-sound
+    ] [
+        ( Erase Tail )
+        head-idx@ len@ - get-seg
+        CLR_BG draw-tile
+    ] ?:
+
+    ( Draw Head )
+    new_x LOADI new_y LOADI CLR_SNAKE draw-tile
+    food-x@ food-y@ CLR_FOOD draw-tile
+;
+
+@dn_n 0x800060 ;
+@dn_x 0x800064 ;
+
+@draw-number ( fd x y n color -- )
+    ( fd x y n color )
+    ( Indices: 0:color, 1:n, 2:y, 3:x, 4:fd )
+    1 pick 10 >= [
+        4 pick ( fd )
+        4 pick ( x )
+        4 pick ( y )
+        4 pick 10 / ( n/10 )
+        4 pick ( color )
+        draw-number
+        ( Update x for second digit )
+        ( fd x y n color )
+        4 pick ( fd )
+        4 pick 8 + ( x+8 )
+        4 pick ( y )
+        4 pick 10 MOD ( digit )
+        48 + ( char )
+        4 pick ( color )
+        1 DRAW::draw-char
+    ] [
+        4 pick ( fd )
+        4 pick ( x )
+        4 pick ( y )
+        4 pick 48 + ( char )
+        4 pick ( color )
+        1 DRAW::draw-char
+    ] ?:
+    drop drop drop drop drop
+;
+
+
+@DRAW-SCORE-BAR
+    dfd@ 0 0 screen-w@ Y_OFFSET 0xEEEEEE DRAW::fill-rect
+    
+    ( Text: Score )
+    dfd@ 5 10 83 0x000000 1 DRAW::draw-char ( S )
+    dfd@ 13 10 99 0x000000 1 DRAW::draw-char ( c )
+    dfd@ 21 10 111 0x000000 1 DRAW::draw-char ( o )
+    dfd@ 29 10 114 0x000000 1 DRAW::draw-char ( r )
+    dfd@ 37 10 101 0x000000 1 DRAW::draw-char ( e )
+    dfd@ 45 10 58 0x000000 1 DRAW::draw-char ( : )
+    
+    dfd@ 55 10 score@ 0x000000 draw-number
+    
+    ( Best - Right aligned ish )
+    dfd@ screen-w@ 120 - 10 66 0x000000 1 DRAW::draw-char ( B )
+    dfd@ screen-w@ 112 - 10 101 0x000000 1 DRAW::draw-char ( e )
+    dfd@ screen-w@ 104 - 10 115 0x000000 1 DRAW::draw-char ( s )
+    dfd@ screen-w@ 96 - 10 116 0x000000 1 DRAW::draw-char ( t )
+    dfd@ screen-w@ 88 - 10 58 0x000000 1 DRAW::draw-char ( : )
+    dfd@ screen-w@ 78 - 10 hi-score@ 0x000000 draw-number
+;
+
+@DRAW-BORDER
+    ( Field origin and size in pixels )
+    ( fx = x-offset, fy = Y_OFFSET, fw = tile-size*GRID_W, fh = tile-size*GRID_H )
+    ( Draw 4 thin rectangles as a border, 2 pixels thick, inset by 2 outside the field )
+
+    ( Top )
+    dfd@ x-offset@ 2 - Y_OFFSET 2 - tile-size@ GRID_W * 4 + 2 0x808080 DRAW::fill-rect
+    ( Bottom )
+    dfd@ x-offset@ 2 - Y_OFFSET tile-size@ GRID_H * + tile-size@ GRID_W * 4 + 2 0x808080 DRAW::fill-rect
+    ( Left )
+    dfd@ x-offset@ 2 - Y_OFFSET 2 - 2 tile-size@ GRID_H * 4 + 0x808080 DRAW::fill-rect
+    ( Right )
+    dfd@ x-offset@ tile-size@ GRID_W * + Y_OFFSET 2 - 2 tile-size@ GRID_H * 4 + 0x808080 DRAW::fill-rect
+;
+
+@DRAW-GAME-AREA
+    dfd@ 0 Y_OFFSET screen-w@ screen-h@ Y_OFFSET - CLR_BG DRAW::fill-rect
+
+    DRAW-BORDER
+
+    ( Draw full snake )
+    len@ 0 ( i )
+    [ dup len@ < ] [
+        head-idx@ OVER - get-seg ( sx sy )
+        CLR_SNAKE draw-tile
+        1 +
+    ] |:
+    drop
+
+    ( Draw food )
+    food-x@ food-y@ CLR_FOOD draw-tile
+;
+
+@box_x 0x800078 ;
+@box_y 0x80007C ;
+
+@DRAW-START-SCREEN
+    ( Centered White Box )
+    screen-w@ 200 - 2 / box_x STOREI
+    screen-h@ 150 - 2 / box_y STOREI
+
+    dfd@ box_x LOADI box_y LOADI 200 150 0xFFFFFF DRAW::fill-rect
+    
+    state@ 0 = [
+        dfd@ box_x LOADI 60 + box_y LOADI 30 + 83 0x000000 1 DRAW::draw-char ( S )
+        dfd@ box_x LOADI 68 + box_y LOADI 30 + 78 0x000000 1 DRAW::draw-char ( N )
+        dfd@ box_x LOADI 76 + box_y LOADI 30 + 65 0x000000 1 DRAW::draw-char ( A )
+        dfd@ box_x LOADI 84 + box_y LOADI 30 + 75 0x000000 1 DRAW::draw-char ( K )
+        dfd@ box_x LOADI 92 + box_y LOADI 30 + 69 0x000000 1 DRAW::draw-char ( E )
+    ] [
+        dfd@ box_x LOADI 40 + box_y LOADI 30 + 71 0x000000 1 DRAW::draw-char ( G )
+        dfd@ box_x LOADI 48 + box_y LOADI 30 + 65 0x000000 1 DRAW::draw-char ( A )
+        dfd@ box_x LOADI 56 + box_y LOADI 30 + 77 0x000000 1 DRAW::draw-char ( M )
+        dfd@ box_x LOADI 64 + box_y LOADI 30 + 69 0x000000 1 DRAW::draw-char ( E )
+        
+        dfd@ box_x LOADI 80 + box_y LOADI 30 + 79 0x000000 1 DRAW::draw-char ( O )
+        dfd@ box_x LOADI 88 + box_y LOADI 30 + 86 0x000000 1 DRAW::draw-char ( V )
+        dfd@ box_x LOADI 96 + box_y LOADI 30 + 69 0x000000 1 DRAW::draw-char ( E )
+        dfd@ box_x LOADI 104 + box_y LOADI 30 + 82 0x000000 1 DRAW::draw-char ( R )
+    ] ?:
+    
+    ( Start Button Rectangle: 100x30 )
+    dfd@ box_x LOADI 50 + box_y LOADI 80 + 100 30 0xDDDDDD DRAW::fill-rect
+    dfd@ box_x LOADI 75 + box_y LOADI 88 + 83 0x000000 1 DRAW::draw-char ( S )
+    dfd@ box_x LOADI 83 + box_y LOADI 88 + 84 0x000000 1 DRAW::draw-char ( T )
+    dfd@ box_x LOADI 91 + box_y LOADI 88 + 65 0x000000 1 DRAW::draw-char ( A )
+    dfd@ box_x LOADI 99 + box_y LOADI 88 + 82 0x000000 1 DRAW::draw-char ( R )
+    dfd@ box_x LOADI 107 + box_y LOADI 88 + 84 0x000000 1 DRAW::draw-char ( T )
+;
+
+@DRAW-ALL
+    dirty@ [
+        0 dirty!
+        DRAW-SCORE-BAR
+        DRAW-GAME-AREA
+        state@ 1 <> [ DRAW-START-SCREEN ] ?
+    ] ?
+;
+
+@mx 0x800070 ;
+@my 0x800074 ;
+
+@handle-mouse
+    mfd@ mbuf 8 VFS::read 8 = [
+        mbuf load-byte ( type )
+        dup 3 = [ ( MouseDown )
+            state@ 1 <> [
+                mbuf 2 + DRAW::load-word-le mx STOREI
+                mbuf 4 + DRAW::load-word-le my STOREI
+                
+                ( box-x ) screen-w@ 200 - 2 /
+                ( box-y ) screen-h@ 150 - 2 /
+                
+                ( Check button hit: box-x+50, box-y+80, 100x30 )
+                ( Stack: box-x box-y )
+                
+                ( X check: mx >= box-x+50 AND mx <= box-x+150 )
+                mx LOADI OVER 50 + >= [ 
+                    mx LOADI 2 pick 150 + <= 
+                ] [ 0 ] ?: [
+                    ( Y check: my >= box-y+80 AND my <= box-y+110 )
+                    my LOADI OVER 80 + >= [ 
+                        my LOADI 1 pick 110 + <= 
+                    ] [ 0 ] ?: [
+                        ( Clicked Start )
+                        init-game
+                        1 state!
+                        1 dirty!
+                    ] ?
+                ] ?
+                drop drop ( box-x box-y )
+            ] ?
+        ] ?
+        drop
+    ] ?
+;
+
+@handle-kbd
+    kfd@ kbuf 4 VFS::read 4 = [
+        kbuf load-byte ( type )
+        0 = [ ( KeyDown )
+            kbuf 2 + DRAW::load-word-le ( code )
+            
+            dup 17 = [ ( Up )    dir@ 2 <> [ 0 next-dir! ] ? ] ?
+            dup 18 = [ ( Down )  dir@ 0 <> [ 2 next-dir! ] ? ] ?
+            dup 19 = [ ( Left )  dir@ 1 <> [ 3 next-dir! ] ? ] ?
+            dup 20 = [ ( Right ) dir@ 3 <> [ 1 next-dir! ] ? ] ?
+            
+            ( WASD )
+            dup 119 = [ dir@ 2 <> [ 0 next-dir! ] ? ] ? ( w )
+            dup 115 = [ dir@ 0 <> [ 2 next-dir! ] ? ] ? ( s )
+            dup 97  = [ dir@ 1 <> [ 3 next-dir! ] ? ] ? ( a )
+            dup 100 = [ dir@ 3 <> [ 1 next-dir! ] ? ] ? ( d )
+            drop
+        ] ?
+    ] ?
+;
+
+@init-layout
+    0x10024 LOADI screen-w!
+    0x10028 LOADI screen-h!
+    
+    ( Calculate tile-size )
+    screen-w@ screen-h@ Y_OFFSET - < [ screen-w@ ] [ screen-h@ Y_OFFSET - ] ?:
+    4 - GRID_W / tile-size!
+    
+    ( Calculate x-offset )
+    screen-w@ tile-size@ GRID_W * - 2 / x-offset!
+;
+
+@start
+    ( 1. Open Hardware )
+    T"/dev/draw"  VFS::open dfd!
+    T"/dev/mouse" VFS::open mfd!
+    T"/dev/kbd"   VFS::open kfd!
+    T"/dev/audio" VFS::open afd!
+    
+    init-layout
+    load-hi-score
+    0 state!
+    1 dirty!
+
+    ( 2. Main Loop )
+    [ 1 ] [
+        handle-mouse
+        handle-kbd
+        
+        state@ 1 = [
+            frames@ 1 + frames!
+            frames@ speed@ >= [
+                0 frames!
+                move-snake
+                DRAW-SCORE-BAR
+            ] ?
+        ] ?
+        
+        DRAW-ALL
+        VFS::yield DROP
+    ] |:
+;
+
+SNAKE::start
+HALT

@@ -42,17 +42,18 @@ I picked Go over something like C because of:
 - [Examples](#examples)
 - [Module System](#module-system)
 - [Development](#development)
+- [Cloister](#cloister)
 - [The Why](#the-why)
 
 ---
 
 ## Overview
 
-**NUX** is a 45-opcode stack-based virtual machine with a simple instruction set, designed for learning and experimentation. It features:
+**NUX** is a stack-based virtual machine with a simple instruction set, designed for learning and experimentation. It features:
 
 - **32-bit integer stack** with overflow protection (8192 elements max)
 - **Separate return stack** for clean subroutine calls (1024 elements max)
-- **45 opcodes** covering stack ops, arithmetic, bitwise, comparisons, and control flow
+- **55 opcodes** covering stack ops, arithmetic, bitwise, comparisons, and control flow
 - **Big-endian bytecode** format
 - **Memory-mapped program and data space**
 
@@ -243,41 +244,65 @@ Define reusable functions with `@name ... ;`
 
 ### Reserved symbols and words
 
-| Category       | Word     | Meaning|
-|----------------|----------|--|
-| Stack Operations | DUP     ||
-| Stack Operations | DROP    ||
-| Stack Operations | SWAP    ||
-| Stack Operations | OVER    ||
-| Stack Operations | ROT     ||
-| Arithmetic     | +       ||
-| Arithmetic     | -       ||
-| Arithmetic     | *       ||
-| Arithmetic     | /       ||
-| Arithmetic     | MOD     ||
-| Arithmetic     | INC     ||
-| Arithmetic     | DEC     ||
-| Arithmetic     | NEGATE  ||
-| Bitwise        | AND     ||
-| Bitwise        | OR      ||
-| Bitwise        | XOR     ||
-| Bitwise        | NOT     ||
-| Bitwise        | LSHIFT  ||
-| Comparison     | =       ||
-| Comparison     | <       ||
-| Comparison     | >       ||
-| Control Flow   | EXIT    ||
-| Combinators    | ?:      | IF-ELSE |
-| Combinators    | ?       | IF |
-| Combinators    | !:      | UNLESS |
-| Combinators    | \|:      | WHILE |
-| Combinators    | #:      | TIMES |
-| Combinators    | CALL    ||
-| Combinators    | DIP     ||
-| Combinators    | KEEP    ||
-| Directives     | MODULE  ||
-| Directives     | IMPORT  ||
-| Directives     | INCLUDE ||
+| Category       | Word          | Meaning / Alias          |
+|----------------|---------------|--------------------------|
+| Stack          | DUP           |                          |
+| Stack          | DROP          |                          |
+| Stack          | SWAP          |                          |
+| Stack          | OVER          |                          |
+| Stack          | ROT           |                          |
+| Stack          | PICK          |                          |
+| Stack          | ROLL          |                          |
+| Memory         | LOAD          |                          |
+| Memory         | STORE         |                          |
+| Memory         | LOADI         | indirect load            |
+| Memory         | STOREI        | indirect store           |
+| Arithmetic     | + / ADD       |                          |
+| Arithmetic     | - / SUB       |                          |
+| Arithmetic     | * / MUL       |                          |
+| Arithmetic     | / / DIV       |                          |
+| Arithmetic     | MOD           |                          |
+| Arithmetic     | INC           |                          |
+| Arithmetic     | DEC           |                          |
+| Arithmetic     | NEGATE        |                          |
+| Arithmetic     | ABS           |                          |
+| Arithmetic     | MIN           |                          |
+| Arithmetic     | MAX           |                          |
+| Arithmetic     | DIVMOD        | quotient + remainder     |
+| Bitwise        | AND           |                          |
+| Bitwise        | OR            |                          |
+| Bitwise        | XOR           |                          |
+| Bitwise        | NOT           |                          |
+| Bitwise        | SHL / LSHIFT  | left shift               |
+| Bitwise        | SHR / RSHIFT  | logical right shift      |
+| Bitwise        | SAR           | arithmetic right shift   |
+| Comparison     | = / EQ        |                          |
+| Comparison     | < / LT        |                          |
+| Comparison     | > / GT        |                          |
+| Comparison     | <> / NEQ      | not equal                |
+| Comparison     | <= / LTE      |                          |
+| Comparison     | >= / GTE      |                          |
+| Control Flow   | EXIT          | return from word         |
+| Control Flow   | HALT          | stop VM                  |
+| Control Flow   | YIELD         | cooperative yield        |
+| Control Flow   | JNZ           | jump if non-zero         |
+| Combinators    | ?:            | IF-ELSE                  |
+| Combinators    | ?             | IF                       |
+| Combinators    | !:            | UNLESS                   |
+| Combinators    | \|:           | WHILE                    |
+| Combinators    | #:            | TIMES                    |
+| Combinators    | CALL          |                          |
+| Combinators    | DIP           |                          |
+| Combinators    | KEEP          |                          |
+| Frame/Local    | FRAME!        | push local frame         |
+| Frame/Local    | UNFRAME!      | pop local frame          |
+| Frame/Local    | LOCAL@        | read local variable      |
+| Frame/Local    | LOCAL!        | write local variable     |
+| I/O            | .             | print top of stack       |
+| I/O            | EMIT          | print as character       |
+| Directives     | MODULE        |                          |
+| Directives     | IMPORT        |                          |
+| Directives     | INCLUDE       |                          |
 ---
 
 ## Module System
@@ -335,53 +360,105 @@ The compiler resolves words in this order:
 
 ### Opcode Reference
 
+**Stack Manipulation**
+
 | Hex  | Mnemonic  | Stack Effect | Description |
 |------|-----------|--------------|-------------|
-| 0x00 | PUSH      | `[] → [value]` | Push 32-bit immediate value (5 bytes) |
-| 0x01 | POP       | `[a] → []`         | Discard top of stack |
-| 0x02 | DUP       | `[a] → [a a]`   | Duplicate top |
-| 0x03 | SWAP      | `[a b] → [b a]`  | Swap top two |
-| 0x04 | OVER      | `[a b] → [a b a]` | Over nth element to top |
-| 0x05 | ROT       | `[a b c] → [b c a]` | Rotate top three |
-| 0x06 | ADD       | `[a b] → [a + b]` | Add |
-| 0x07 | SUB       | `[a b] → [a - b]` | Subtract |
-| 0x08 | MUL       | `[a b] → [a * b]` | Multiply |
-| 0x09 | DIV       | `[a b] → [a / b]` | Integer divide |
-| 0x0A | MOD       | `[a b] → [a % b]` | Modulus |
-| 0x0B | INC       | `[a] → [a + 1]`   | Increment |
-| 0x0C | DEC       | `[a] → [a - 1]`   | Decrement |
-| 0x0D | AND       | `[a b] → [a & b]` | Bitwise AND |
-| 0x0E | OR        | `[a b] → [a \| b]` | Bitwise OR |
-| 0x0F | XOR       | `[a b] → [a ^ b]` | Bitwise XOR |
-| 0x10 | NOT       | `[a] → [~a]` | Bitwise NOT |
-| 0x11 | SHL       | `[a b] → [a<<b]` | Left shift (b mod 32) |
-| 0x12 | EQ        | `[a b] → [a==b ? 1 : 0]` | Equal (1 or 0) |
-| 0x13 | LT        | `[a b] → [a<b ? 1 : 0]` | Less than |
-| 0x14 | CALLSTACK | `[addr] → [...]` | Pop address, push return addr to return stack, jump (for quotations) |
-| 0x15 | JMP       | `[] → []`  | Unconditional jump to address (5 bytes) |
-| 0x16 | JZ        | `[cond] → []` | Jump if zero (pops condition) |
-| 0x17 | CALL      | `[] → []` | Call subroutine at inline address (pushes return addr to return stack) |
-| 0x18 | RET       | `[] → []` | Return from subroutine (pops return stack) |
-| 0x19 | LOAD      | `[] → [mem[addr]]` | Load from inline address (5 bytes) |
-| 0x1A | STORE     | `[value] → []` | Store to inline address (5 bytes) |
-| 0x1B | OUT       | `[format value] → []` | Output value (format: 0=number, 1=char) |
-| 0x1C | HALT      | --    | Stop execution |
-| 0x1D | YIELD     | --    | Yield to host (calls YieldHandler) |
-| 0x1E | LOADI     | `[addr] → [mem[addr]]` | Indirect load — pop address, push value |
-| 0x1F | STOREI    | `[addr value] → []` | Indirect store — pop address and value, store |
-| 0x20 | SHR       | `[a b] → [a>>>(b%32)]` | Logical right shift (unsigned, fills with 0s) |
-| 0x21 | SAR       | `[a b] → [a>>(b%32)]` | Arithmetic right shift (signed, sign-extends) |
-| 0x22 | JNZ       | `[cond] → []` | Jump if non-zero (pops condition, inverse of JZ) |
-| 0x23 | NEG       | `[a] → [-a]` | Negate (multiply by -1) |
-| 0x24 | GT        | `[a b] → [a>b ? 1 : 0]` | Greater than |
-| 0x25 | NEQ       | `[a b] → [a!=b ? 1 : 0]` | Not equal |
-| 0x26 | LTE       | `[a b] → [a<=b ? 1 : 0]` | Less than or equal |
-| 0x27 | GTE       | `[a b] → [a>=b ? 1 : 0]` | Greater than or equal |
-| 0x28 | PICK      | `[...n] → [...]` | Pop index n, copy nth stack element (0=top) to top |
-| 0x29 | DIVMOD    | `[a b] → [a/b a%b]` | Divide and modulus (pushes quotient, then remainder) |
-| 0x2A | ABS       | `[a] → [\|a\|]` | Absolute value |
-| 0x2B | MIN       | `[a b] → [min(a,b)]` | Minimum of two values |
-| 0x2C | MAX       | `[a b] → [max(a,b)]` | Maximum of two values |
+| 0x00 | PUSH      | `[] → [value]` | Push 32-bit immediate (5-byte encoding) |
+| 0x01 | POP       | `[a] → []` | Discard top of stack |
+| 0x02 | DUP       | `[a] → [a, a]` | Duplicate top |
+| 0x03 | SWAP      | `[a, b] → [b, a]` | Swap top two |
+| 0x04 | OVER      | `[a, b] → [a, b, a]` | Copy second to top |
+| 0x05 | ROT       | `[a, b, c] → [b, c, a]` | Rotate top three |
+| 0x06 | PICK      | `[... n] → [... stack[n]]` | Copy nth element (0=top) to top |
+| 0x07 | ROLL      | `[... n] → [...]` | Move nth element to top (destructive) |
+
+**Arithmetic**
+
+| Hex  | Mnemonic | Stack Effect | Description |
+|------|----------|--------------|-------------|
+| 0x08 | ADD      | `[a, b] → [a+b]` | Add |
+| 0x09 | SUB      | `[a, b] → [a-b]` | Subtract |
+| 0x0A | MUL      | `[a, b] → [a*b]` | Multiply |
+| 0x0B | DIV      | `[a, b] → [a/b]` | Integer divide |
+| 0x0C | MOD      | `[a, b] → [a%b]` | Modulus |
+| 0x0D | INC      | `[a] → [a+1]` | Increment |
+| 0x0E | DEC      | `[a] → [a-1]` | Decrement |
+| 0x0F | NEG      | `[a] → [-a]` | Negate |
+| 0x10 | ABS      | `[a] → [\|a\|]` | Absolute value |
+| 0x11 | DIVMOD   | `[a, b] → [a/b, a%b]` | Divide and modulus (quotient, then remainder) |
+| 0x12 | MIN      | `[a, b] → [min(a,b)]` | Minimum |
+| 0x13 | MAX      | `[a, b] → [max(a,b)]` | Maximum |
+
+**Bitwise & Shifts**
+
+| Hex  | Mnemonic | Stack Effect | Description |
+|------|----------|--------------|-------------|
+| 0x14 | AND      | `[a, b] → [a&b]` | Bitwise AND |
+| 0x15 | OR       | `[a, b] → [a\|b]` | Bitwise OR |
+| 0x16 | XOR      | `[a, b] → [a^b]` | Bitwise XOR |
+| 0x17 | NOT      | `[a] → [~a]` | Bitwise NOT |
+| 0x18 | SHL      | `[a, b] → [a<<(b%32)]` | Left shift |
+| 0x19 | SHR      | `[a, b] → [a>>>(b%32)]` | Logical right shift (fills with 0) |
+| 0x1A | SAR      | `[a, b] → [a>>(b%32)]` | Arithmetic right shift (sign-extends) |
+
+**Comparison**
+
+| Hex  | Mnemonic | Stack Effect | Description |
+|------|----------|--------------|-------------|
+| 0x1B | EQ       | `[a, b] → [a==b ? 1 : 0]` | Equal |
+| 0x1C | NEQ      | `[a, b] → [a!=b ? 1 : 0]` | Not equal |
+| 0x1D | LT       | `[a, b] → [a<b ? 1 : 0]` | Less than |
+| 0x1E | LTE      | `[a, b] → [a<=b ? 1 : 0]` | Less than or equal |
+| 0x1F | GT       | `[a, b] → [a>b ? 1 : 0]` | Greater than |
+| 0x20 | GTE      | `[a, b] → [a>=b ? 1 : 0]` | Greater than or equal |
+
+**Control Flow**
+
+| Hex  | Mnemonic  | Stack Effect | Description |
+|------|-----------|--------------|-------------|
+| 0x21 | JMP       | `[] → []` | Unconditional jump to inline address (5-byte encoding) |
+| 0x22 | JZ        | `[cond] → []` | Jump if zero; pops condition (5-byte encoding) |
+| 0x23 | JNZ       | `[cond] → []` | Jump if non-zero; pops condition (5-byte encoding) |
+| 0x24 | CALL      | `[] → []` | Call inline address; pushes return addr to return stack (5-byte encoding) |
+| 0x25 | RET       | `[] → []` | Return from call; pops return stack |
+| 0x26 | CALLSTACK | `[addr] → [...]` | Call address from stack (for quotations) |
+| 0x27 | JMPSTACK  | `[addr] → []` | Jump to address from stack (tail calls) |
+
+**Memory**
+
+| Hex  | Mnemonic | Stack Effect | Description |
+|------|----------|--------------|-------------|
+| 0x28 | LOAD     | `[] → [mem[addr]]` | Load from inline address (5-byte encoding) |
+| 0x29 | STORE    | `[value] → []` | Store to inline address (5-byte encoding) |
+| 0x2A | LOADI    | `[addr] → [mem[addr]]` | Indirect load — pop address, push value |
+| 0x2B | STOREI   | `[value, addr] → []` | Indirect store — addr on top, value below |
+
+**Loop Stack**
+
+| Hex  | Mnemonic | Stack Effect | Description |
+|------|----------|--------------|-------------|
+| 0x2C | PUSHR    | `[a] → []` | Push from main stack to loop stack |
+| 0x2D | POPR     | `[] → [a]` | Pop from loop stack to main stack |
+| 0x2E | PEEKR    | `[] → [a]` | Copy top of loop stack (non-destructive) |
+| 0x2F | PEEKR2   | `[] → [a, b]` | Copy top two of loop stack to main stack |
+
+**Frame & Local Variables**
+
+| Hex  | Mnemonic  | Stack Effect | Description |
+|------|-----------|--------------|-------------|
+| 0x30 | FRAME     | `[n, v_n...v1] → []` | Save FP, copy n locals into frame (v1 becomes local[0]) |
+| 0x31 | UNFRAME   | `[n] → []` | Pop n, restore frame pointer |
+| 0x32 | LOCALGET  | `[offset] → [val]` | Load local variable at FP+offset |
+| 0x33 | LOCALSET  | `[val, offset] → []` | Store local variable at FP+offset (offset on top) |
+
+**I/O & System**
+
+| Hex  | Mnemonic | Stack Effect | Description |
+|------|----------|--------------|-------------|
+| 0x34 | OUT      | `[format, value] → []` | Console output (format: 0=number, 1=char) |
+| 0x35 | HALT     | — | Stop execution |
+| 0x36 | YIELD    | — | Yield to host (calls YieldHandler) |
 
 You can see where I went back and added more op codes because while 32 opcodes, my original plan, was a good idea, it wasn't enough. It's never enough. Scope creep. But now I have it down. *Really*.
 
@@ -396,7 +473,7 @@ PUSH 42:     00 00 00 00 2A
              ^^ opcode
                 ^^^^^^^^^^ 32-bit immediate
 
-JMP 0x100:   15 00 00 01 00
+JMP 0x100:   21 00 00 01 00
              ^^ opcode
                 ^^^^^^^^^^ 32-bit address
 ```
@@ -641,26 +718,39 @@ lux> .s
 
 ```
 nuxvm/
+├── apps/           - Sample Lux applications
 ├── cmd/
 │   ├── nux/        - VM console runner
-│   ├── cloister/   - Graphical tiny os
-│   ├── luxc/       - LUX compiler
+│   ├── cloister/   - Graphical tiny OS
+│   ├── luxc/       - Lux compiler
 │   └── luxrepl/    - Interactive REPL
-├── lib/
-│   ├── system.lux  - System library (MMIO helpers)
-│   └── boot.lux    - Default boot program
+├── docs/           - Extended documentation
+├── examples/       - Example Lux programs and modules
+├── lib/            - Lux standard library
+│   ├── core.lux
+│   ├── draw.lux
+│   ├── file.lux
+│   ├── log.lux
+│   ├── memory.lux
+│   ├── time.lux
+│   └── vfs.lux
 ├── pkg/
 │   ├── vm/         - Virtual machine implementation
 │   │   ├── vm.go       - Core VM
 │   │   ├── opcodes.go  - Opcode definitions
-│   │   └── vm_test.go  - VM tests
-│   ├── system/     - Hardware abstraction
+│   │   ├── bus.go      - Device bus
+│   │   └── display.go  - Display device
+│   ├── system/     - Hardware abstraction layer
 │   │   ├── machine.go  - Machine (CPU + System)
-│   │   └── system.go   - MMIO and devices
-│   └── lux/        - LUX language implementation
+│   │   ├── system.go   - MMIO and devices
+│   │   ├── vfs.go      - Virtual filesystem
+│   │   └── sci.go      - System call interface
+│   ├── luxrepl/    - REPL implementation
+│   └── lux/        - Lux language implementation
 │       ├── lexer.go    - Tokenizer
 │       ├── compiler.go - Bytecode compiler
-│       └── *_test.go   - Tests
+│       └── load.go     - File loading
+├── resources/      - Static assets (fonts, etc.)
 └── README.md
 ```
 
@@ -723,6 +813,14 @@ Contributions welcome! Areas for improvement:
 - Stack operations are very fast
 - Subroutine calls use return stack (efficient)
 - Suitable for educational purposes and small programs
+
+---
+
+# Cloister
+
+Cloister is the tiny OS running on top of Nux. Cloister is my attempt at a tiny Plan9 running on a virtual machine using Actors.
+
+It's very much a work-in-progress.
 
 ---
 

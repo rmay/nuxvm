@@ -44,16 +44,17 @@ MODULE DRAW
     6 unframe!
 ;
 
-@draw-char ( fd x y char color -- )
-    5 frame! ( 0:color, 1:char, 2:y, 3:x, 4:fd )
-    
+@draw-char ( fd x y char color scale -- )
+    6 frame! ( 0:scale, 1:color, 2:char, 3:y, 4:x, 5:fd )
+
     1 BUF store-byte ( Cmd 1: DrawChar )
-    3 local@ BUF 1 + store-word-le
-    2 local@ BUF 3 + store-word-le
-    1 local@ BUF 5 + store-byte
-    0 local@ BUF 6 + store-int-le
-    
-    4 local@ BUF 10 VFS::write drop ( 1 type + 4 coords + 1 char + 4 color = 10 bytes )
-    
-    5 unframe!
+    4 local@ BUF 1 + store-word-le
+    3 local@ BUF 3 + store-word-le
+    2 local@ BUF 5 + store-byte
+    1 local@ BUF 6 + store-int-le
+    0 local@ BUF 10 + store-byte
+
+    5 local@ BUF 11 VFS::write drop ( 1 type + 4 coords + 1 char + 4 color + 1 scale = 11 bytes )
+
+    6 unframe!
 ;

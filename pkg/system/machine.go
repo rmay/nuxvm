@@ -231,16 +231,32 @@ func (m *Machine) DrainInputEvents() {
 		case InputKeyDown:
 			m.System.SetKey(evt.KeyCode)
 			_ = m.CPU.TriggerVector(ControllerVectorIdx)
+			select {
+			case m.System.kbdEvents <- *evt:
+			default:
+			}
 		case InputKeyUp:
 			m.System.SetKey(0) // clear key on release
 			_ = m.CPU.TriggerVector(ControllerVectorIdx)
+			select {
+			case m.System.kbdEvents <- *evt:
+			default:
+			}
 		case InputMouseMove:
 			mouseX, mouseY = evt.MouseX, evt.MouseY
 			mouseChanged = true
+			select {
+			case m.System.mouseEvents <- *evt:
+			default:
+			}
 		case InputMouseDown, InputMouseUp:
 			mouseX, mouseY = evt.MouseX, evt.MouseY
 			mouseBtn = evt.MouseBtn
 			mouseChanged = true
+			select {
+			case m.System.mouseEvents <- *evt:
+			default:
+			}
 		case InputWheel:
 			m.System.SetWheel(int32(evt.WheelY))
 			_ = m.CPU.TriggerVector(WheelVectorIdx)

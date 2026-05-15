@@ -1,21 +1,44 @@
-( --- Hello World App --- )
+( --- Hello World App (Modernized) --- )
 
 INCLUDE "lib/vfs.lux"
 INCLUDE "lib/draw.lux"
 
 MODULE HELLO
 
-@dfd_addr 0x8E0000 ;
-@dfd@ dfd_addr LOADI ; @dfd! dfd_addr STOREI ;
+@dfd_addr  0x8E0000 ;
+@dfd@  dfd_addr  LOADI ; @dfd!  dfd_addr  STOREI ;
+
+@SCREEN_W  0x8E0004 ;
+@SCREEN_H  0x8E0008 ;
+@tx_addr   0x8E000C ;
+@ty_addr   0x8E0010 ;
+@tx@  tx_addr LOADI ; @tx!  tx_addr STOREI ;
+@ty@  ty_addr LOADI ; @ty!  ty_addr STOREI ;
 
 @start
     ( 1. Open /dev/draw )
     T"/dev/draw" VFS::open dfd!
-    
-    ( 2. Main Loop )
+
+    ( 2. Get Resolution )
+    0x10024 LOADI SCREEN_W STOREI
+    0x10028 LOADI SCREEN_H STOREI
+
+    ( 3. Compute centered origin: "Hello" at scale 2 is 64px wide, 32px tall )
+    SCREEN_W LOADI 64 - 2 / tx!
+    SCREEN_H LOADI 32 - 2 / ty!
+
+    ( 4. Main Loop )
     [ 1 ] [
-        ( Draw a green rectangle )
-        dfd@ 20 20 100 100 0x00FF00 DRAW::fill-rect
+        ( Clear to black )
+        dfd@ 0 0 SCREEN_W LOADI SCREEN_H LOADI 0x000000 DRAW::fill-rect
+
+        ( Draw "Hello" in white at 2x scale using Chicago 12x12 CFF )
+        dfd@ tx@       ty@  72 0xFFFFFF 2 DRAW::draw-char  ( H )
+        dfd@ tx@ 16 +  ty@ 101 0xFFFFFF 2 DRAW::draw-char  ( e )
+        dfd@ tx@ 32 +  ty@ 108 0xFFFFFF 2 DRAW::draw-char  ( l )
+        dfd@ tx@ 40 +  ty@ 108 0xFFFFFF 2 DRAW::draw-char  ( l )
+        dfd@ tx@ 48 +  ty@ 111 0xFFFFFF 2 DRAW::draw-char  ( o )
+
         VFS::yield DROP
     ] |:
 ;

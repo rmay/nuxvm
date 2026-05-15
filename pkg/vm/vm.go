@@ -722,6 +722,28 @@ func (vm *VM) Pick() error {
 	return vm.Push(val)
 }
 
+func (vm *VM) Roll() error {
+	if len(vm.stack) < 1 {
+		return fmt.Errorf("stack underflow: need index for ROLL")
+	}
+	n, err := vm.Pop()
+	if err != nil {
+		return err
+	}
+	if n < 0 || int(n) >= len(vm.stack) {
+		return fmt.Errorf("roll: index %d out of range (stack depth %d)", n, len(vm.stack))
+	}
+	if n == 0 {
+		return nil
+	}
+	// Stack is [... stack[n] ... top]; we want to rotate stack[n] to top
+	realIdx := len(vm.stack) - 1 - int(n)
+	val := vm.stack[realIdx]
+	copy(vm.stack[realIdx:], vm.stack[realIdx+1:])
+	vm.stack[len(vm.stack)-1] = val
+	return nil
+}
+
 // Divmod performs division and modulo, pushing both quotient and remainder.
 func (vm *VM) Divmod() error {
 	if len(vm.stack) < 2 {
@@ -1167,6 +1189,10 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 	case OpPick:
 		if err := vm.Pick(); err != nil {
 			return currentPC, fmt.Errorf("pick failed: %v", err)
+		}
+	case OpRoll:
+		if err := vm.Roll(); err != nil {
+			return currentPC, fmt.Errorf("roll failed: %v", err)
 		}
 	case OpDivmod:
 		if err := vm.Divmod(); err != nil {

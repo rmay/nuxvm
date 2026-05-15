@@ -73,6 +73,7 @@ var builtins = map[string]byte{
 	"ROT":      vm.OpRot,
 	"OVER":     vm.OpOver,
 	"PICK":     vm.OpPick,
+	"ROLL":     vm.OpRoll,
 	"LOAD":     vm.OpLoad,
 	"STORE":    vm.OpStore,
 	"LOADI":    vm.OpLoadI,

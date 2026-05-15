@@ -123,7 +123,7 @@ With no argument, CLOISTER tries to load `lib/boot.lux` relative to the current 
 | `-mem N`  | 32      | RAM size in MB. Capped at 128.                                           |
 | `-w N`    | —       | Screen width override. Wins over whatever boot.lux wrote via MMIO.       |
 | `-h N`    | —       | Screen height override.                                                  |
-| `-scale N`| —       | Window pixel-scale override (otherwise derived from `TEXT::cell-size`).  |
+| `-scale N`| —       | Window pixel-scale override (otherwise derived from `TEXT::font-size!`).  |
 
 Example:
 
@@ -176,7 +176,7 @@ lux> .s
 `lib/boot.lux` is the default boot program. It:
 
 - Configures the screen (`SCREEN::width!`, `SCREEN::height!`, `SCREEN::clear`).
-- Configures text rendering (`TEXT::cell-size!`, `TEXT::color!`).
+- Configures text rendering (`TEXT::font-size!`, `TEXT::color!`).
 - Installs `on-key` as the controller vector.
 - Prints `"CLOISTER Booted."` via `emit`.
 - Drops into `keep-alive`, a `YIELD`-tail-recursive loop that returns control to the host every frame.
@@ -211,7 +211,7 @@ IMPORT CTRL
 main
 ```
 
-The first tick after launch runs until `YIELD` or `HALT`. CLOISTER then reads `SCR_W`, `SCR_H`, and the `TEXT` scale back from MMIO to size the window (`cmd/cloister/main.go:443-473`), so boot code that writes those registers controls the initial window geometry.
+The first tick after launch runs until `YIELD` or `HALT`. CLOISTER then reads `SCR_W`, `SCR_H`, and the `TEXT` font size back from MMIO to size the window (`cmd/cloister/main.go:443-473`), so boot code that writes those registers controls the initial window geometry.
 
 ### Using the system library
 
@@ -242,7 +242,7 @@ For example, to draw a single pixel:
 - **`read <path>: no such file`** from CLOISTER at launch — the path is resolved relative to your working directory. Running from outside the repo root means `lib/boot.lux` isn't found; CLOISTER falls back to a HALT and enters REPL mode. Either `cd` into the repo or pass an explicit path.
 - **File-device calls return `-1`** — the path escaped the sandbox root (`..`, absolute path, or a symlink). Relative paths under the launch directory are the safe bet.
 - **REPL seems to ignore input** — most often an unterminated `@word` definition. Close it with `;` and re-enter. The REPL logs `Defined word` on success and `Compile error: ...` otherwise.
-- **Window geometry looks wrong** — boot code writes `SCR_W`/`SCR_H`/`TEXT::cell-size` during the first tick; CLOISTER reads those to size the window. Use `-w`, `-h`, `-scale` to override.
+- **Window geometry looks wrong** — boot code writes `SCR_W`/`SCR_H`/`TEXT::font-size!` during the first tick; CLOISTER reads those to size the window. Use `-w`, `-h`, `-scale` to override.
 
 ## Further reading
 

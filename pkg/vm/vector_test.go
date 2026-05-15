@@ -16,8 +16,8 @@ func TestVectorAssignment(t *testing.T) {
 	}
 
 	// Test out-of-bounds vector access
-	vm.SetVector(16, 0x5000) // Should be ignored
-	if vm.GetVector(16) != 0 {
+	vm.SetVector(32, 0x5000) // Should be ignored
+	if vm.GetVector(32) != 0 {
 		t.Errorf("Expected out-of-bounds vector access to return 0")
 	}
 
@@ -31,20 +31,20 @@ func TestTriggerVector(t *testing.T) {
 	// Program that just halts
 	program := []byte{OpHalt}
 	vm := NewVM(program)
-	
+
 	// Set vector 0 (System) to UserMemoryOffset (start of program)
-	expectedPC := vm.UserMemoryStart() 
+	expectedPC := vm.UserMemoryStart()
 	vm.vectors[0] = expectedPC // Set vector 0 to start of program
-	
+
 	// Halt the VM first to simulate an interrupted state
-	vm.running = false 
+	vm.running = false
 	vm.pc = 0 // Reset PC to ensure it changes
-	
+
 	err := vm.TriggerVector(0)
 	if err != nil {
 		t.Fatalf("TriggerVector failed: %v", err)
 	}
-	
+
 	if !vm.running {
 		t.Error("Expected VM to be running after TriggerVector")
 	}
@@ -75,11 +75,11 @@ func TestTriggerVectorPushesReturnAddr(t *testing.T) {
 
 func TestTriggerVectorEdgeCases(t *testing.T) {
 	vm := NewVM([]byte{OpHalt}) // Minimal program
-	
+
 	// Test invalid vector index
-	err := vm.TriggerVector(16)
+	err := vm.TriggerVector(32)
 	if err == nil {
-		t.Error("Expected error for invalid vector index (16)")
+		t.Error("Expected error for invalid vector index (32)")
 	}
 	err = vm.TriggerVector(-1)
 	if err == nil {
@@ -122,4 +122,3 @@ func TestDeviceReadVector(t *testing.T) {
 		t.Errorf("Expected unset vector to be 0")
 	}
 }
-

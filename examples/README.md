@@ -64,13 +64,14 @@ func ex1_GCD() {
     
     // Loop: while b != 0
     loop := int32(len(prog))
-    prog = append(prog, 0x02) // DUP
+    prog = append(prog, vm.OpDup)
     prog = append(prog, jz(endAddr)...)
     
     // ... algorithm ...
     
     prog = append(prog, jmp(loop)...)
-    prog = append(prog, 0x1B, 0x1C) // OUT, HALT
+    prog = append(prog, vm.OutNumber()...)
+    prog = append(prog, vm.OpHalt)
     
     // Run it!
     vm := NewVM(prog)
@@ -99,71 +100,82 @@ func myExample() {
     // 1. Initialize values
     prog = append(prog, push(42)...)
     
-    // 2. Your algorithm
-    // Use opcodes: 0x00=PUSH, 0x01=POP, 0x02=DUP, 0x03=SWAP
-    //              0x04=ROLL, 0x05=ROT, 0x06=ADD, etc.
+    // 2. Your algorithm — always use named constants, never raw hex values
+    prog = append(prog, vm.OpDup)
+    prog = append(prog, vm.OpAdd)
     
     // 3. Output and halt
-    prog = append(prog, 0x1B) // OUT
-    prog = append(prog, 0x1C) // HALT
+    prog = append(prog, vm.OutNumber()...)
+    prog = append(prog, vm.OpHalt)
     
     // 4. Run
     fmt.Print("Result: ")
-    vm := NewVM(prog)
-    vm.Run()
+    vm.NewVM(prog).Run()
     fmt.Println()
 }
 ```
 
 ## Opcode Quick Reference
 
+The canonical reference is [`docs/opcodes.md`](../docs/opcodes.md). Quick summary:
+
 | Hex  | Name      | Action |
 |------|-----------|--------|
-| 0x00 | PUSH      | Push 32-bit value |
+| 0x00 | PUSH      | Push 32-bit value (5 bytes) |
 | 0x01 | POP       | Pop and discard |
 | 0x02 | DUP       | Duplicate top |
 | 0x03 | SWAP      | Swap top two |
-| 0x04 | OVER      | Over nth element to top |
+| 0x04 | OVER      | Copy second-from-top to top |
 | 0x05 | ROT       | Rotate top 3 |
-| 0x06 | ADD       | Add top two |
-| 0x07 | SUB       | Subtract |
-| 0x08 | MUL       | Multiply |
-| 0x09 | DIV       | Divide |
-| 0x0A | MOD       | Modulus |
-| 0x0B | INC       | Increment |
-| 0x0C | DEC       | Decrement |
-| 0x0D | AND       | Bitwise AND |
-| 0x0E | OR        | Bitwise OR |
-| 0x0F | XOR       | Bitwise XOR |
-| 0x10 | NOT       | Bitwise NOT |
-| 0x11 | SHL       | Left shift |
-| 0x12 | EQ        | Equal? (1 or 0) |
-| 0x13 | LT        | Less than? |
-| 0x14 | CALLSTACK | Call address from stack |
-| 0x15 | JMP       | Jump to address |
-| 0x16 | JZ        | Jump if zero |
-| 0x17 | CALL      | Call inline address |
-| 0x18 | RET       | Return from call |
-| 0x19 | LOAD      | Load from inline address |
-| 0x1A | STORE     | Store to inline address |
-| 0x1B | OUT       | Output value (format + value) |
-| 0x1C | HALT      | Stop |
-| 0x1D | YIELD     | Yield to host |
-| 0x1E | LOADI     | Indirect load (address from stack) |
-| 0x1F | STOREI    | Indirect store (address from stack) |
-| 0x20 | SHR       | Logical right shift (unsigned, fills with 0s) |
-| 0x21 | SAR       | Arithmetic right shift (signed, sign-extends) |
-| 0x22 | JNZ       | Jump if non-zero (pops condition, inverse of JZ) |
-| 0x23 | NEG       | Negate (multiply by -1) |
-| 0x24 | GT        | Greater than |
-| 0x25 | NEQ       | Not equal |
-| 0x26 | LTE       | Less than or equal |
-| 0x27 | GTE       | Greater than or equal |
-| 0x28 | PICK      | Pop index n, copy nth stack element (0=top) to top |
-| 0x29 | DIVMOD    | Divide and modulus (pushes quotient, then remainder) |
-| 0x2A | ABS       | Absolute value |
-| 0x2B | MIN       | Minimum of two values |
-| 0x2C | MAX       | Maximum of two values |
+| 0x06 | PICK      | Copy nth element (0=top) to top |
+| 0x07 | ROLL      | Move nth element to top (destructive) |
+| 0x08 | ADD       | Add top two |
+| 0x09 | SUB       | Subtract (second - top) |
+| 0x0A | MUL       | Multiply |
+| 0x0B | DIV       | Divide |
+| 0x0C | MOD       | Modulus |
+| 0x0D | INC       | Increment |
+| 0x0E | DEC       | Decrement |
+| 0x0F | NEG       | Negate |
+| 0x10 | ABS       | Absolute value |
+| 0x11 | DIVMOD    | Divide and modulus (pushes quotient, then remainder) |
+| 0x12 | MIN       | Minimum of two values |
+| 0x13 | MAX       | Maximum of two values |
+| 0x14 | AND       | Bitwise AND |
+| 0x15 | OR        | Bitwise OR |
+| 0x16 | XOR       | Bitwise XOR |
+| 0x17 | NOT       | Bitwise NOT |
+| 0x18 | SHL       | Left shift |
+| 0x19 | SHR       | Logical right shift (unsigned) |
+| 0x1A | SAR       | Arithmetic right shift (signed) |
+| 0x1B | EQ        | Equal? (1 or 0) |
+| 0x1C | NEQ       | Not equal? |
+| 0x1D | LT        | Less than? |
+| 0x1E | LTE       | Less than or equal? |
+| 0x1F | GT        | Greater than? |
+| 0x20 | GTE       | Greater than or equal? |
+| 0x21 | JMP       | Jump to address (5 bytes) |
+| 0x22 | JZ        | Jump if zero (5 bytes) |
+| 0x23 | JNZ       | Jump if non-zero (5 bytes) |
+| 0x24 | CALL      | Call inline address (5 bytes) |
+| 0x25 | RET       | Return from call |
+| 0x26 | CALLSTACK | Call address from stack |
+| 0x27 | JMPSTACK  | Jump to address from stack (tail call) |
+| 0x28 | LOAD      | Load from inline address (5 bytes) |
+| 0x29 | STORE     | Store to inline address (5 bytes) |
+| 0x2A | LOADI     | Indirect load (address from stack) |
+| 0x2B | STOREI    | Indirect store (address from stack) |
+| 0x2C | PUSHR     | Push to loop stack |
+| 0x2D | POPR      | Pop from loop stack |
+| 0x2E | PEEKR     | Copy top of loop stack |
+| 0x2F | PEEKR2    | Copy top two of loop stack |
+| 0x30 | FRAME     | Set up local variable frame |
+| 0x31 | UNFRAME   | Tear down frame |
+| 0x32 | LOCALGET  | Load local variable |
+| 0x33 | LOCALSET  | Store local variable |
+| 0x34 | OUT       | Output value (format + value) |
+| 0x35 | HALT      | Stop |
+| 0x36 | YIELD     | Yield to host |
 
 ## Stack Notation
 
@@ -183,13 +195,14 @@ ADD
 
 ### Loop Pattern
 ```go
-loop := int32(len(prog))
-prog = append(prog, 0x02)          // DUP counter
+loop := vm.UserMemoryOffset + uint32(len(prog))
+prog = append(prog, vm.OpDup)      // DUP counter
 endPH := len(prog)
 prog = append(prog, jz(0)...)      // Exit when 0
 // ... loop body ...
 prog = append(prog, jmp(loop)...)
-copy(prog[endPH+1:], enc(int32(len(prog)))) // Patch address
+endAddr := vm.UserMemoryOffset + int32(len(prog))
+copy(prog[endPH+1:], enc(endAddr)) // Patch address
 ```
 
 ### If-Else Pattern

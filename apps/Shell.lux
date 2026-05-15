@@ -1,4 +1,4 @@
-( --- NUXVM Master Shell --- )
+( --- NUXVM Master Shell (Actor 9) --- )
 
 INCLUDE "lib/vfs.lux"
 INCLUDE "lib/draw.lux"
@@ -7,7 +7,7 @@ MODULE SHELL
 
 @dfd_addr 0x8E0000 ;
 @mfd_addr 0x8E0004 ;
-@cfd_addr 0x8E0008 ; ( Child Draw FD )
+@cfd_addr 0x8E0008 ; ( Parent end of Child Draw Channel )
 @win_x_addr 0x8E000C ;
 @win_y_addr 0x8E0010 ;
 @dragging_addr 0x8E0014 ;
@@ -26,14 +26,7 @@ MODULE SHELL
 @mbuf 0x8D2000 ;
 @mx 0x8D2008 ; @my 0x8D200C ;
 @pbuf 0x8D1000 ;
-@idx_addr 0x8D1400 ;
 @id_buf 0x8D0000 ;
-
-@draw-welcome
-    dfd@ win_x@ 50 + win_y@ 10 + 78 0xFFFFFF DRAW::draw-char ( N )
-    dfd@ win_x@ 58 + win_y@ 10 + 85 0xFFFFFF DRAW::draw-char ( U )
-    dfd@ win_x@ 66 + win_y@ 10 + 88 0xFFFFFF DRAW::draw-char ( X )
-;
 
 @handle-mouse
     mfd@ mbuf 8 VFS::read ( n )
@@ -44,7 +37,6 @@ MODULE SHELL
             mbuf 4 + DRAW::load-word-le my STOREI
             
             dragging@ [
-                ( Update window position )
                 win_x@ mx LOADI last_mx@ - + win_x!
                 win_y@ my LOADI last_my@ - + win_y!
                 1 ( dirty )
@@ -66,32 +58,62 @@ MODULE SHELL
     ] ?
 ;
 
+@offset-draw ( buf len -- )
+    2 frame!
+    1 local@ 0 > [
+        1 local@ load-byte ( type )
+        dup 0 = [ ( FillRect: x=1, y=3 )
+            1 local@ 1 + dup DRAW::load-word-le win_x@ + swap DRAW::store-word-le
+            1 local@ 3 + dup DRAW::load-word-le win_y@ + swap DRAW::store-word-le
+        ] [
+            dup 1 = [ ( DrawChar: x=1, y=3 )
+                1 local@ 1 + dup DRAW::load-word-le win_x@ + swap DRAW::store-word-le
+                1 local@ 3 + dup DRAW::load-word-le win_y@ + swap DRAW::store-word-le
+            ] ?
+        ] ?:
+        drop
+        dfd@ 1 local@ 0 local@ VFS::write drop
+    ] [ drop ] ?:
+    2 unframe!
+;
+
 @proxy-draw
     cfd@ pbuf 1024 VFS::read ( n )
     dup 0 > [
-        ( Pass through commands directly for verification )
-        dfd@ pbuf rot VFS::write drop
+        pbuf swap offset-draw
     ] [ 
         drop VFS::yield DROP 
     ] ?:
 ;
 
 @launch-hello
-    0 1 frame!
-    T"/sys/vm/new" VFS::open 0 local!
-    T"apps/Hello.lux" dup strlen 0 local@ swap rot VFS::write drop
+    0 0 2 frame!
+    ( 1. Create Draw Channel )
+    VFS::PATH_CHAN_NEW VFS::open cfd!
+    VFS::PATH_CHAN_PEER VFS::open 0 local! ( child draw end )
+
+    ( 2. Spawn Child VM )
+    VFS::PATH_VM_NEW VFS::open 1 local! ( vm ctl )
+    1 local@ T"apps/Hello.lux" dup strlen VFS::write drop
     
-    0 local@ id_buf 4 VFS::read drop
+    ( 3. Get Child ID )
+    1 local@ id_buf 4 VFS::read drop
+    id_buf LOADI ( child-id )
     
-    T"/sys/vm/1/draw" VFS::open cfd!
+    ( 4. Bind Draw into Child Namespace )
+    0 local@ ( child-end fd )
+    T"/sys/vm/1/ns/dev/draw" VFS::bind drop
+    
+    ( 5. Cleanup )
     0 local@ VFS::close drop
-    1 unframe!
+    1 local@ VFS::close drop
+    2 unframe!
 ;
 
 @start
     ( 1. Open Hardware )
-    T"/sys/draw" VFS::open dfd!
-    T"/sys/mouse" VFS::open mfd!
+    VFS::PATH_DRAW VFS::open dfd!
+    VFS::PATH_MOUSE VFS::open mfd!
 
     ( 2. Initial State )
     100 win_x!
@@ -101,7 +123,7 @@ MODULE SHELL
     0 last_my!
 
     ( 3. Clear Screen )
-    dfd@ 0 0 1024 768 0x000044 DRAW::fill-rect
+    dfd@ 0 0 1024 768 0x222222 DRAW::fill-rect
 
     ( 4. Launch Child )
     launch-hello

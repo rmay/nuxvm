@@ -109,8 +109,14 @@ func (s *System) handleSCIVFSWrite(fd int32, bufPtr int32, length int32) {
 }
 
 func (s *System) handleSCIVFSBind(fd int32, pathPtr int32) {
-	// TODO: Implement BIND logic in vfs.go
-	s.sciResult = -1
+	path := s.cstring(uint32(pathPtr))
+	err := s.vfs.Bind(s, fd, path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "SCI: Bind failed: %v\n", err)
+		s.sciResult = -1
+		return
+	}
+	s.sciResult = 0
 }
 
 // handleSCIDebugPrint(ptr) prints a null-terminated string to host stderr

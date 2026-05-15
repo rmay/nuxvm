@@ -5,62 +5,80 @@ import (
 	"fmt"
 )
 
-// Opcode constants — 32 original opcodes (0x00–0x1F) + new opcodes (0x20+).
+// Opcode constants — 55 opcodes (0x00–0x36), grouped by function.
 const (
-	OpPush      = 0x00 // [] → [value]
-	OpPop       = 0x01 // [a] → []
-	OpDup       = 0x02 // [a] → [a, a]
-	OpSwap      = 0x03 // [a, b] → [b, a]
-	OpOver      = 0x04 // [a, b] → [a, b, a]
-	OpRot       = 0x05 // [a, b, c] → [b, c, a]
-	OpAdd       = 0x06 // [a, b] → [a+b]
-	OpSub       = 0x07 // [a, b] → [a-b]
-	OpMul       = 0x08 // [a, b] → [a*b]
-	OpDiv       = 0x09 // [a, b] → [a/b]
-	OpMod       = 0x0A // [a, b] → [a%b]
-	OpInc       = 0x0B // [a] → [a+1]
-	OpDec       = 0x0C // [a] → [a-1]
-	OpAnd       = 0x0D // [a, b] → [a&b]
-	OpOr        = 0x0E // [a, b] → [a|b]
-	OpXor       = 0x0F // [a, b] → [a^b]
-	OpNot       = 0x10 // [a] → [~a]
-	OpShl       = 0x11 // [a, b] → [a << (b%32)]
-	OpEq        = 0x12 // [a, b] → [a==b ? 1 : 0]
-	OpLt        = 0x13 // [a, b] → [a<b ? 1 : 0]
-	OpCallStack = 0x14 // [addr] → [...]
-	OpJmp       = 0x15 // unconditional jump
-	OpJz        = 0x16 // [cond] → [], jump if zero
-	OpCall      = 0x17 // call inline address
-	OpRet       = 0x18 // return from call
-	OpLoad      = 0x19 // [] → [mem[addr]]
-	OpStore     = 0x1A // [value] → []
-	OpOut       = 0x1B // [format, value] → []
-	OpHalt      = 0x1C // stop
-	OpYield     = 0x1D // Yield to host; triggers YieldHandler if set
-	OpLoadI     = 0x1E // [addr] → [mem[addr]] Pop addr from stack, push memory[addr]
-	OpStoreI    = 0x1F // [addr, value] → [] Pop addr from stack, pop value, store value at addr
-	OpShr       = 0x20 // [a, b] → [a >>> (b%32)] Logical right shift
-	OpSar       = 0x21 // [a, b] → [a >> (b%32)] Arithmetic right shift, with sign extension
-	OpJnz       = 0x22 // [cond] → [] Jump if non-zero, jump if cond != 0
-	OpNeg       = 0x23 // [a] → [-a]
-	OpGt        = 0x24 // [a, b] → [a > b ? 1 : 0]
-	OpNeq       = 0x25 // [a, b] → [a != b ? 1 : 0]
-	OpLte       = 0x26 // [a, b] → [a <= b ? 1 : 0]
-	OpGte       = 0x27 // [a, b] → [a >= b ? 1 : 0]
-	OpPick      = 0x28 // Pick: [... n] → [... stack[n]]; copies nth element (0=top) to top
-	OpDivmod    = 0x29 // [a, b] → [a/b, a%b] Divide with modulus
-	OpAbs       = 0x2A // [a] → [|a|]
-	OpMin       = 0x2B // [a, b] → [min(a, b)]
-	OpMax       = 0x2C // [a, b] → [max(a, b)]
-	OpJmpStack  = 0x2D // [addr] → [], pc = addr
-	OpPushR     = 0x2E // [a] → [], LoopStack += a
-	OpPopR      = 0x2F // [] → [a], a = LoopStack.Pop()
-	OpPeekR     = 0x30 // [] → [a], a = LoopStack.Top()
-	OpFrame     = 0x31 // [n, v_n...v1] → [], save old FP, FP=SP, copy n items
-	OpUnframe   = 0x32 // [] → [], SP=FP, FP=[SP]
-	OpLocalGet  = 0x33 // [offset] → [val], val = Frame[FP+offset]
-	OpLocalSet  = 0x34 // [offset, val] → [], Frame[FP+offset] = val
-	OpPeekR2    = 0x35 // [] → [a, b], a = LoopStack.Top-1, b = LoopStack.Top
+	// Stack Manipulation: 0x00–0x07
+	OpPush  = 0x00 // [] → [value]; 5-byte encoding (opcode + 4-byte big-endian immediate)
+	OpPop   = 0x01 // [a] → []
+	OpDup   = 0x02 // [a] → [a, a]
+	OpSwap  = 0x03 // [a, b] → [b, a]
+	OpOver  = 0x04 // [a, b] → [a, b, a]
+	OpRot   = 0x05 // [a, b, c] → [b, c, a]
+	OpPick  = 0x06 // [... n] → [... stack[n]]; pops n, copies nth element (0=top) to top
+	OpRoll  = 0x07 // [... x_n...x_0 n] → [... x_{n-1}...x_0 x_n]; rotates nth element to top
+
+	// Arithmetic: 0x08–0x13
+	OpAdd    = 0x08 // [a, b] → [a+b]
+	OpSub    = 0x09 // [a, b] → [a-b]
+	OpMul    = 0x0A // [a, b] → [a*b]
+	OpDiv    = 0x0B // [a, b] → [a/b]
+	OpMod    = 0x0C // [a, b] → [a%b]
+	OpInc    = 0x0D // [a] → [a+1]
+	OpDec    = 0x0E // [a] → [a-1]
+	OpNeg    = 0x0F // [a] → [-a]
+	OpAbs    = 0x10 // [a] → [|a|]
+	OpDivmod = 0x11 // [a, b] → [a/b, a%b]; pushes quotient then remainder
+	OpMin    = 0x12 // [a, b] → [min(a, b)]
+	OpMax    = 0x13 // [a, b] → [max(a, b)]
+
+	// Bitwise & Shifts: 0x14–0x1A
+	OpAnd = 0x14 // [a, b] → [a&b]
+	OpOr  = 0x15 // [a, b] → [a|b]
+	OpXor = 0x16 // [a, b] → [a^b]
+	OpNot = 0x17 // [a] → [~a]
+	OpShl = 0x18 // [a, b] → [a << (b%32)]
+	OpShr = 0x19 // [a, b] → [a >>> (b%32)]; logical (unsigned) right shift
+	OpSar = 0x1A // [a, b] → [a >> (b%32)]; arithmetic right shift, sign-extended
+
+	// Comparison: 0x1B–0x20
+	OpEq  = 0x1B // [a, b] → [a==b ? 1 : 0]
+	OpNeq = 0x1C // [a, b] → [a!=b ? 1 : 0]
+	OpLt  = 0x1D // [a, b] → [a<b ? 1 : 0]
+	OpLte = 0x1E // [a, b] → [a<=b ? 1 : 0]
+	OpGt  = 0x1F // [a, b] → [a>b ? 1 : 0]
+	OpGte = 0x20 // [a, b] → [a>=b ? 1 : 0]
+
+	// Control Flow: 0x21–0x27
+	OpJmp       = 0x21 // unconditional jump; 5-byte encoding
+	OpJz        = 0x22 // [cond] → []; jump if zero; 5-byte encoding
+	OpJnz       = 0x23 // [cond] → []; jump if non-zero; 5-byte encoding
+	OpCall      = 0x24 // call inline address; 5-byte encoding; pushes return addr to return stack
+	OpRet       = 0x25 // return from call; pops return stack
+	OpCallStack = 0x26 // [addr] → [...]; call address from stack (quotations)
+	OpJmpStack  = 0x27 // [addr] → []; jump to address from stack (tail calls)
+
+	// Memory: 0x28–0x2B
+	OpLoad   = 0x28 // [] → [mem[addr]]; inline address, 5-byte encoding
+	OpStore  = 0x29 // [value] → []; inline address, 5-byte encoding
+	OpLoadI  = 0x2A // [addr] → [mem[addr]]; address from stack
+	OpStoreI = 0x2B // [value, addr] → []; address from stack
+
+	// Loop Stack: 0x2C–0x2F
+	OpPushR  = 0x2C // [a] → []; push to loop stack
+	OpPopR   = 0x2D // [] → [a]; pop from loop stack to main stack
+	OpPeekR  = 0x2E // [] → [a]; copy top of loop stack (non-destructive)
+	OpPeekR2 = 0x2F // [] → [a, b]; copy top two of loop stack to main stack
+
+	// Frame & Local Variables: 0x30–0x33
+	OpFrame    = 0x30 // [n, v_n...v1] → []; save FP, set FP=SP, copy n locals into frame
+	OpUnframe  = 0x31 // [] → []; restore SP=FP, restore old FP
+	OpLocalGet = 0x32 // [offset] → [val]; load local variable at FP+offset
+	OpLocalSet = 0x33 // [offset, val] → []; store local variable at FP+offset
+
+	// I/O & System: 0x34–0x36
+	OpOut   = 0x34 // [format, value] → []; console output (format: 0=number, 1=char)
+	OpHalt  = 0x35 // stop execution
+	OpYield = 0x36 // yield to host; calls YieldHandler if set
 )
 
 func PushInstruction(v int32) []byte {
@@ -222,6 +240,8 @@ func OpcodeName(op byte) string {
 		return "LOCALSET"
 	case OpPeekR2:
 		return "PEEKR2"
+	case OpRoll:
+		return "ROLL"
 	default:
 		return fmt.Sprintf("UNKNOWN(0x%02X)", op)
 	}

@@ -18,7 +18,7 @@ func TestTraceLimit(t *testing.T) {
 	}
 
 	vm := NewVM(program, true)
-	
+
 	// Capture stderr
 	oldStderr := os.Stderr
 	r, w, _ := os.Pipe()
