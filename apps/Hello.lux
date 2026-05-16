@@ -33,11 +33,7 @@ MODULE HELLO
         dfd@ 0 0 SCREEN_W LOADI SCREEN_H LOADI 0x000000 DRAW::fill-rect
 
         ( Draw "Hello" in white at 2x scale using Chicago 12x12 CFF )
-        dfd@ tx@       ty@  72 0xFFFFFF 2 DRAW::draw-char  ( H )
-        dfd@ tx@ 16 +  ty@ 101 0xFFFFFF 2 DRAW::draw-char  ( e )
-        dfd@ tx@ 32 +  ty@ 108 0xFFFFFF 2 DRAW::draw-char  ( l )
-        dfd@ tx@ 40 +  ty@ 108 0xFFFFFF 2 DRAW::draw-char  ( l )
-        dfd@ tx@ 48 +  ty@ 111 0xFFFFFF 2 DRAW::draw-char  ( o )
+        dfd@ tx@ ty@ T"Hello, World!" 0xFFFFFF 2 DRAW::draw-str
 
         VFS::yield DROP
     ] |:

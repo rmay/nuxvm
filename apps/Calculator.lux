@@ -1,4 +1,4 @@
-( --- Calculator App --- )
+( --- Calculator App (Modernized) --- )
 
 INCLUDE "lib/vfs.lux"
 INCLUDE "lib/draw.lux"
@@ -8,31 +8,238 @@ MODULE CALC
 @dfd_addr 0x8D0000 ;
 @dfd@ dfd_addr LOADI ; @dfd! dfd_addr STOREI ;
 
-@draw-digit ( fd x y val -- )
-    4 frame! ( 0:val, 1:y, 2:x, 3:fd )
-    ( Convert digit to ASCII )
-    0 local@ 48 +
-    3 local@ 2 local@ 1 local@ rot 0xFFFFFF DRAW::draw-char
+@SCREEN_W 0x8D0004 ;
+@SCREEN_H 0x8D0008 ;
+@CALC_X   0x8D000C ;
+@CALC_Y   0x8D0010 ;
+@mfd_addr 0x8D0014 ; @mfd@ mfd_addr LOADI ; @mfd! mfd_addr STOREI ;
+@kfd_addr 0x8D0018 ; @kfd@ kfd_addr LOADI ; @kfd! kfd_addr STOREI ;
+
+( --- Calculator State --- )
+@CUR_VAL  0x8D0020 ; ( Current input being typed )
+@ACC_VAL  0x8D0024 ; ( Accumulator for operations )
+@PEND_OP  0x8D0028 ; ( 0=None, 1=Add, 2=Sub, 3=Mul, 4=Div )
+@DIRTY    0x8D002C ; ( 1 if needs redraw )
+@NEW_NUM  0x8D0030 ; ( 1 if next digit should clear CUR_VAL )
+
+@mbuf     0x8D0100 ; ( 8 bytes )
+@kbuf     0x8D0110 ; ( 4 bytes )
+
+@draw-digit ( fd x y val color -- )
+    5 frame! ( 0:color, 1:val, 2:y, 3:x, 4:fd )
+    4 local@ 3 local@ 2 local@ 
+    1 local@ 48 + ( char )
+    0 local@ ( color )
+    3 ( scale )
+    DRAW::draw-char
+    5 unframe!
+;
+
+@draw-number ( fd x y val color -- )
+    5 frame! ( 0:color, 1:val, 2:y, 3:x, 4:fd )
+    
+    1 local@ 0 = [
+        4 local@ 3 local@ 2 local@ 0 0 local@ draw-digit
+    ] [
+        1 local@ 0 < [
+            1 local@ NEGATE 1 local!
+            [ 1 local@ 0 > ] [
+                4 local@ 3 local@ 2 local@ 1 local@ 10 MOD 0 local@ draw-digit
+                3 local@ 24 - 3 local! ( Increased spacing for scale 3 )
+                1 local@ 10 / 1 local!
+            ] |:
+            4 local@ 3 local@ 2 local@ 45 0 local@ 3 DRAW::draw-char
+        ] [
+            [ 1 local@ 0 > ] [
+                4 local@ 3 local@ 2 local@ 1 local@ 10 MOD 0 local@ draw-digit
+                3 local@ 24 - 3 local! ( Increased spacing for scale 3 )
+                1 local@ 10 / 1 local!
+            ] |:
+        ] ?:
+    ] ?:
+    
+    5 unframe!
+;
+
+@draw-btn ( x y label highlight -- )
+    4 frame! ( 0:highlight, 1:label, 2:y, 3:x )
+    ( Outline )
+    dfd@ 3 local@ 2 local@ 48 48 0x000000 DRAW::fill-rect
+    ( Inner )
+    dfd@ 3 local@ 1 + 2 local@ 1 + 46 46 
+    0 local@ [ 0xAAAAAA ] [ 0xFFFFFF ] ?: DRAW::fill-rect
+    ( Text )
+    dfd@ 3 local@ 12 + 2 local@ 6 + 1 local@ 0x000000 3 DRAW::draw-char
     4 unframe!
 ;
 
 @draw-ui
-    ( Background )
-    dfd@ 10 10 120 160 0xCCCCCC DRAW::fill-rect
+    CALC_X LOADI CALC_Y LOADI 2 frame! ( 0:by, 1:bx )
+    
+    ( Window Background & Border )
+    dfd@ 1 local@ 0 local@ 220 280 0x000000 DRAW::fill-rect
+    dfd@ 1 local@ 1 + 0 local@ 1 + 218 278 0xFFFFFF DRAW::fill-rect
+    
+    ( Display Box )
+    dfd@ 1 local@ 10 + 0 local@ 10 + 200 45 0x000000 DRAW::fill-rect
+    dfd@ 1 local@ 11 + 0 local@ 11 + 198 43 0xFFFFFF DRAW::fill-rect
+    
+    ( Display Text )
+    dfd@ 1 local@ 190 + 0 local@ 16 + CUR_VAL LOADI 0x000000 draw-number
+    
     ( Buttons )
-    dfd@ 20 40 40 30 0x999999 DRAW::fill-rect
-    dfd@ 70 40 40 30 0x999999 DRAW::fill-rect
-    dfd@ 20 80 40 30 0x999999 DRAW::fill-rect
-    dfd@ 70 80 40 30 0x999999 DRAW::fill-rect
+    ( Row 1 )
+    1 local@ 10 + 0 local@ 65 + 55 0 draw-btn ( 7 )
+    1 local@ 62 + 0 local@ 65 + 56 0 draw-btn ( 8 )
+    1 local@ 114 + 0 local@ 65 + 57 0 draw-btn ( 9 )
+    1 local@ 166 + 0 local@ 65 + 47 PEND_OP LOADI 4 = draw-btn ( / )
+    
+    ( Row 2 )
+    1 local@ 10 + 0 local@ 117 + 52 0 draw-btn ( 4 )
+    1 local@ 62 + 0 local@ 117 + 53 0 draw-btn ( 5 )
+    1 local@ 114 + 0 local@ 117 + 54 0 draw-btn ( 6 )
+    1 local@ 166 + 0 local@ 117 + 42 PEND_OP LOADI 3 = draw-btn ( * )
+    
+    ( Row 3 )
+    1 local@ 10 + 0 local@ 169 + 49 0 draw-btn ( 1 )
+    1 local@ 62 + 0 local@ 169 + 50 0 draw-btn ( 2 )
+    1 local@ 114 + 0 local@ 169 + 51 0 draw-btn ( 3 )
+    1 local@ 166 + 0 local@ 169 + 45 PEND_OP LOADI 2 = draw-btn ( - )
+    
+    ( Row 4 )
+    1 local@ 10 + 0 local@ 221 + 67 0 draw-btn ( C )
+    1 local@ 62 + 0 local@ 221 + 48 0 draw-btn ( 0 )
+    1 local@ 114 + 0 local@ 221 + 61 0 draw-btn ( = )
+    1 local@ 166 + 0 local@ 221 + 43 PEND_OP LOADI 1 = draw-btn ( + )
+
+    2 unframe!
+;
+
+@clear
+    0 CUR_VAL STOREI
+    0 ACC_VAL STOREI
+    0 PEND_OP STOREI
+    0 NEW_NUM STOREI
+    1 DIRTY STOREI
+;
+
+@append-digit ( n -- )
+    NEW_NUM LOADI [
+        0 CUR_VAL STOREI
+        0 NEW_NUM STOREI
+    ] ?
+    CUR_VAL LOADI 10 * + CUR_VAL STOREI
+    1 DIRTY STOREI
+;
+
+@calculate
+    PEND_OP LOADI 0 = [ ] [
+        PEND_OP LOADI 1 = [ ACC_VAL LOADI CUR_VAL LOADI + ACC_VAL STOREI ] ?
+        PEND_OP LOADI 2 = [ ACC_VAL LOADI CUR_VAL LOADI - ACC_VAL STOREI ] ?
+        PEND_OP LOADI 3 = [ ACC_VAL LOADI CUR_VAL LOADI * ACC_VAL STOREI ] ?
+        PEND_OP LOADI 4 = [ CUR_VAL LOADI 0 = [ 0 ] [ ACC_VAL LOADI CUR_VAL LOADI / ] ?: ACC_VAL STOREI ] ?
+        
+        ACC_VAL LOADI CUR_VAL STOREI
+        0 PEND_OP STOREI
+        1 NEW_NUM STOREI
+        1 DIRTY STOREI
+    ] ?:
+;
+
+@set-op ( op -- )
+    PEND_OP LOADI 0 <> [ calculate ] ?
+    PEND_OP STOREI
+    CUR_VAL LOADI ACC_VAL STOREI
+    1 NEW_NUM STOREI
+    1 DIRTY STOREI
+;
+
+@process-key ( char -- )
+    dup 48 >= [ dup 57 <= ] [ 0 ] ?: [ 48 - append-digit ] [
+        dup 43 = [ 1 set-op ] ? ( + )
+        dup 45 = [ 2 set-op ] ? ( - )
+        dup 42 = [ 3 set-op ] ? ( * )
+        dup 47 = [ 4 set-op ] ? ( / )
+        dup 61 = [ calculate ] ? ( = )
+        dup 13 = [ calculate ] ? ( Enter )
+        dup 67 = [ clear ] ?     ( C )
+        dup 99 = [ clear ] ?     ( c )
+        drop
+    ] ?:
+;
+
+@handle-mouse
+    mfd@ mbuf 8 VFS::read 8 = [
+        mbuf load-byte 3 = [ ( MouseDown )
+            mbuf 2 + DRAW::load-word-le ( mx )
+            mbuf 4 + DRAW::load-word-le ( my )
+            
+            swap CALC_X LOADI - ( my rx )
+            swap CALC_Y LOADI - ( rx ry )
+            
+            ( Check rows )
+            dup 65 >= [ dup 113 <= ] [ 0 ] ?: [
+                over 10 >= [ over 58 <= ] [ 0 ] ?: [ 55 process-key ] ? ( 7 )
+                over 62 >= [ over 110 <= ] [ 0 ] ?: [ 56 process-key ] ? ( 8 )
+                over 114 >= [ over 162 <= ] [ 0 ] ?: [ 57 process-key ] ? ( 9 )
+                over 166 >= [ over 214 <= ] [ 0 ] ?: [ 47 process-key ] ? ( / )
+            ] ?
+            dup 117 >= [ dup 165 <= ] [ 0 ] ?: [
+                over 10 >= [ over 58 <= ] [ 0 ] ?: [ 52 process-key ] ? ( 4 )
+                over 62 >= [ over 110 <= ] [ 0 ] ?: [ 53 process-key ] ? ( 5 )
+                over 114 >= [ over 162 <= ] [ 0 ] ?: [ 54 process-key ] ? ( 6 )
+                over 166 >= [ over 214 <= ] [ 0 ] ?: [ 42 process-key ] ? ( * )
+            ] ?
+            dup 169 >= [ dup 217 <= ] [ 0 ] ?: [
+                over 10 >= [ over 58 <= ] [ 0 ] ?: [ 49 process-key ] ? ( 1 )
+                over 62 >= [ over 110 <= ] [ 0 ] ?: [ 50 process-key ] ? ( 2 )
+                over 114 >= [ over 162 <= ] [ 0 ] ?: [ 51 process-key ] ? ( 3 )
+                over 166 >= [ over 214 <= ] [ 0 ] ?: [ 45 process-key ] ? ( - )
+            ] ?
+            dup 221 >= [ dup 269 <= ] [ 0 ] ?: [
+                over 10 >= [ over 58 <= ] [ 0 ] ?: [ 67 process-key ] ? ( C )
+                over 62 >= [ over 110 <= ] [ 0 ] ?: [ 48 process-key ] ? ( 0 )
+                over 114 >= [ over 162 <= ] [ 0 ] ?: [ 61 process-key ] ? ( = )
+                over 166 >= [ over 214 <= ] [ 0 ] ?: [ 43 process-key ] ? ( + )
+            ] ?
+            drop drop
+        ] ?
+    ] ?
+;
+
+@handle-kbd
+    kfd@ kbuf 4 VFS::read 4 = [
+        kbuf load-byte 0 = [ ( KeyDown )
+            kbuf 2 + DRAW::load-word-le process-key
+        ] ?
+    ] ?
 ;
 
 @start
     ( 1. Open Hardware )
     T"/dev/draw" VFS::open dfd!
+    T"/dev/mouse" VFS::open mfd!
+    T"/dev/kbd" VFS::open kfd!
     
-    ( 2. Main Loop )
+    ( 2. Get Resolution )
+    0x10024 LOADI SCREEN_W STOREI
+    0x10028 LOADI SCREEN_H STOREI
+    
+    SCREEN_W LOADI 220 - 2 / CALC_X STOREI
+    SCREEN_H LOADI 280 - 2 / CALC_Y STOREI
+    
+    1 DIRTY STOREI
+    
+    ( 3. Main Loop )
     [ 1 ] [
-        draw-ui
+        handle-mouse
+        handle-kbd
+        
+        DIRTY LOADI [
+            draw-ui
+            0 DIRTY STOREI
+        ] ?
+        
         VFS::yield DROP
     ] |:
 ;

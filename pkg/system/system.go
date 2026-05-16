@@ -194,7 +194,7 @@ func NewSystem() *System {
 		screenPixels: make([]byte, vm.VideoMaxBufferSize),
 		rngState:     uint32(time.Now().UnixNano()),
 		text: textState{
-			fontSize: 18,
+			fontSize: 12,
 			color:    0xFFFFFF,
 			useCFF:   true,
 		},
@@ -225,7 +225,7 @@ func NewSystemNoFallback() *System {
 		paneH:        600,
 		rngState:     uint32(time.Now().UnixNano()),
 		text: textState{
-			fontSize: 18,
+			fontSize: 12,
 			color:    0xFFFFFF,
 			useCFF:   true,
 		},

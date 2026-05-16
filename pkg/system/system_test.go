@@ -363,8 +363,8 @@ func TestTextDeviceDrawsGlyph(t *testing.T) {
 	sys := NewSystem()
 	sys.SetResolution(64, 64)
 
-	// Size 18 (1.0x), opaque red (0xFF0000).
-	sys.Write(textAttrAddr, int32((uint32(18)<<24)|0xFF0000))
+	// Size 12 (1.0x), opaque red (0xFF0000).
+	sys.Write(textAttrAddr, int32((uint32(12)<<24)|0xFF0000))
 	sys.Write(textCursorAddr, 0) // cell (0,0)
 
 	sys.Write(textCharAddr, int32('A'))
@@ -395,12 +395,12 @@ func TestTextDeviceDrawsGlyph(t *testing.T) {
 	}
 }
 
-// TestTextDeviceScale verifies that a size>18 paints a larger block per
+// TestTextDeviceScale verifies that a size>12 paints a larger block per
 // source pixel.
 func TestTextDeviceScale(t *testing.T) {
 	sys := NewSystem()
 	sys.SetResolution(64, 64)
-	sys.Write(textAttrAddr, int32((uint32(32)<<24)|0x00FF00)) // green, size 32 (2.0x)
+	sys.Write(textAttrAddr, int32((uint32(24)<<24)|0x00FF00)) // green, size 24 (2.0x)
 	sys.Write(textCursorAddr, 0)
 	sys.Write(textCharAddr, int32('A'))
 
@@ -422,7 +422,7 @@ func TestTextDeviceScale(t *testing.T) {
 func TestTextCursorWraps(t *testing.T) {
 	sys := NewSystem()
 	sys.SetResolution(32, 32)
-	sys.Write(textAttrAddr, int32((uint32(18)<<24)|0xFFFFFF)) // white
+	sys.Write(textAttrAddr, int32((uint32(12)<<24)|0xFFFFFF)) // white
 	sys.Write(textCursorAddr, int32(28<<16))                 // cell (28,0) — near right edge
 
 	sys.Write(textCharAddr, int32('X'))
@@ -438,7 +438,7 @@ func TestTextCursorWraps(t *testing.T) {
 func TestTextNewlineResetsColumn(t *testing.T) {
 	sys := NewSystem()
 	sys.SetResolution(32, 32)
-	sys.Write(textAttrAddr, int32((uint32(18)<<24)|0xFFFFFF))
+	sys.Write(textAttrAddr, int32((uint32(12)<<24)|0xFFFFFF))
 	sys.Write(textCursorAddr, int32(2<<16)) // cell (2,0)
 
 	sys.Write(textCharAddr, int32('\n'))

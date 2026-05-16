@@ -225,6 +225,30 @@ func (f *drawFile) Write(p []byte) (int, error) {
 			scale := p[i+9]
 			f.s.drawCharVFS(x, y, char, color, scale)
 			i += 10
+		case 2: // DrawString
+			if i+11 > len(p) {
+				return i - 1, io.ErrShortWrite
+			}
+			x := int32(int16(binary.LittleEndian.Uint16(p[i : i+2])))
+			y := int32(int16(binary.LittleEndian.Uint16(p[i+2 : i+4])))
+			color := binary.LittleEndian.Uint32(p[i+4 : i+8])
+			scale := p[i+8]
+			strLen := int(binary.LittleEndian.Uint16(p[i+9 : i+11]))
+			i += 11
+			if i+strLen > len(p) {
+				return i - 11, io.ErrShortWrite
+			}
+			cx := x
+			for j := 0; j < strLen; j++ {
+				char := p[i+j]
+				f.s.drawCharVFS(cx, y, char, color, scale)
+				charWidth := int32(ChicagoCFF[char])
+				if charWidth == 0 {
+					charWidth = 4
+				}
+				cx += charWidth * int32(scale)
+			}
+			i += strLen
 		default:
 			return i - 1, fmt.Errorf("unknown draw command: %d", cmd)
 		}

@@ -58,3 +58,46 @@ MODULE DRAW
 
     6 unframe!
 ;
+
+@draw-string ( fd x y ptr len color scale -- )
+    7 frame! ( 0:scale, 1:color, 2:len, 3:ptr, 4:y, 5:x, 6:fd )
+
+    2 BUF store-byte                    ( Cmd 2: DrawString )
+    5 local@ BUF 1 + store-word-le      ( x )
+    4 local@ BUF 3 + store-word-le      ( y )
+    1 local@ BUF 5 + store-int-le       ( color )
+    0 local@ BUF 9 + store-byte         ( scale )
+    2 local@ BUF 10 + store-word-le     ( len )
+
+    ( Copy string bytes into BUF+12 )
+    3 local@ MEMORY::CTRL_TEMP STOREI
+    BUF 12 + MEMORY::CTRL_BASE STOREI
+    2 local@
+    [ dup 0 > ] [
+        MEMORY::CTRL_TEMP LOADI load-byte
+        MEMORY::CTRL_BASE LOADI store-byte
+        MEMORY::CTRL_TEMP LOADI 1 + MEMORY::CTRL_TEMP STOREI
+        MEMORY::CTRL_BASE LOADI 1 + MEMORY::CTRL_BASE STOREI
+        1 -
+    ] |:
+    drop
+
+    6 local@ BUF 12 2 local@ + VFS::write drop
+
+    7 unframe!
+;
+
+@draw-str ( fd x y ptr color scale -- )
+    6 frame! ( 0:scale, 1:color, 2:ptr, 3:y, 4:x, 5:fd )
+
+    5 local@
+    4 local@
+    3 local@
+    2 local@
+    2 local@ strlen
+    1 local@
+    0 local@
+    draw-string
+
+    6 unframe!
+;

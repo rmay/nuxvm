@@ -38,7 +38,7 @@ func (t *textState) getScale() float64 {
 	if t.fontSize == 0 {
 		return 1.0
 	}
-	return float64(t.fontSize) / 18.0
+	return float64(t.fontSize) / 12.0
 }
 
 // setAttr decodes an attr-register write.
@@ -46,7 +46,7 @@ func (t *textState) setAttr(v uint32) {
 	t.useCFF = (v & 0x80000000) != 0
 	fontSize := (v >> 24) & 0x7F
 	if fontSize == 0 {
-		fontSize = 18
+		fontSize = 12
 	}
 	t.fontSize = uint8(fontSize)
 	t.color = v & 0xFFFFFF
