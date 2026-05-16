@@ -249,6 +249,17 @@ func (f *drawFile) Write(p []byte) (int, error) {
 				cx += charWidth * int32(scale)
 			}
 			i += strLen
+		case 3: // DrawRect
+			if i+12 > len(p) {
+				return i - 1, io.ErrShortWrite
+			}
+			x := int32(int16(binary.LittleEndian.Uint16(p[i : i+2])))
+			y := int32(int16(binary.LittleEndian.Uint16(p[i+2 : i+4])))
+			w := int32(int16(binary.LittleEndian.Uint16(p[i+4 : i+6])))
+			h := int32(int16(binary.LittleEndian.Uint16(p[i+6 : i+8])))
+			color := binary.LittleEndian.Uint32(p[i+8 : i+12])
+			f.s.drawRect(x, y, w, h, color)
+			i += 12
 		default:
 			return i - 1, fmt.Errorf("unknown draw command: %d", cmd)
 		}

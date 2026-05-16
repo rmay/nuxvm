@@ -46,7 +46,7 @@ func translateKey(k ebiten.Key) (int32, bool) {
 	case ebiten.KeyEscape:
 		return 27, true
 	case ebiten.KeyBackspace, ebiten.KeyDelete:
-		return 'c', true
+		return 8, true
 	case ebiten.KeyMinus, ebiten.KeyNumpadSubtract:
 		return '-', true
 	case ebiten.KeySlash, ebiten.KeyNumpadDivide:

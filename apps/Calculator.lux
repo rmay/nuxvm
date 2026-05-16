@@ -128,7 +128,15 @@ MODULE CALC
         0 CUR_VAL STOREI
         0 NEW_NUM STOREI
     ] ?
-    CUR_VAL LOADI 10 * + CUR_VAL STOREI
+    CUR_VAL LOADI 99999999 > [ drop ] [
+        CUR_VAL LOADI 10 * + CUR_VAL STOREI
+        1 DIRTY STOREI
+    ] ?:
+;
+
+@backspace
+    CUR_VAL LOADI 10 / CUR_VAL STOREI
+    0 NEW_NUM STOREI
     1 DIRTY STOREI
 ;
 
@@ -164,6 +172,7 @@ MODULE CALC
         dup 13 = [ calculate ] ? ( Enter )
         dup 67 = [ clear ] ?     ( C )
         dup 99 = [ clear ] ?     ( c )
+        dup 8 = [ backspace ] ?  ( Backspace )
         drop
     ] ?:
 ;

@@ -34,6 +34,21 @@ func (s *System) fillRect(x, y, w, h int32, color uint32) {
 	}
 }
 
+// drawRect draws a 1px border rectangle.
+func (s *System) drawRect(x, y, w, h int32, color uint32) {
+	if w <= 0 || h <= 0 {
+		return
+	}
+	// Top
+	s.fillRect(x, y, w, 1, color)
+	// Bottom
+	s.fillRect(x, y+h-1, w, 1, color)
+	// Left
+	s.fillRect(x, y, 1, h, color)
+	// Right
+	s.fillRect(x+w-1, y, 1, h, color)
+}
+
 // drawCharVFS renders a character using the Chicago 12×12 CFF font at the given integer scale.
 func (s *System) drawCharVFS(x, y int32, char byte, color uint32, scale byte) {
 	sc := float64(scale)
