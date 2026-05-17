@@ -21,6 +21,9 @@ MODULE OUR_FATHER
 @TEXT_PAD 10 ;
 
 @start
+    ( 0. Set Window Title )
+    T"Our Father" VFS::set-window-title
+
     ( 1. Open /dev/draw )
     T"/dev/draw" VFS::open dfd!
 

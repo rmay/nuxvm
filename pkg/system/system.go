@@ -90,6 +90,7 @@ const (
 	SCIDrawCFF        = 19
 	SCIDebugPrint     = 20
 	SCIOpenFileDialog = 21
+	SCISetWindowTitle = 22
 )
 
 // fileState tracks an open file or directory for the File device.

@@ -208,6 +208,9 @@ type ServiceManager struct {
 	soundReply   chan SoundReply
 	SoundHandler func(soundID int32)
 
+	// Host integration
+	TitleHandler func(string)
+
 	// File system management
 	fileChan       chan FileMsg
 	fileReply      chan FileReply

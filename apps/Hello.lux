@@ -16,6 +16,9 @@ MODULE HELLO
 @ty@  ty_addr LOADI ; @ty!  ty_addr STOREI ;
 
 @start
+    ( 0. Set Window Title )
+    T"Hello from Lux!" VFS::set-window-title
+
     ( 1. Open /dev/draw )
     T"/dev/draw" VFS::open dfd!
 

@@ -570,6 +570,9 @@ MODULE SNAKE
 ;
 
 @start
+    ( 0. Set Window Title )
+    T"Snake" VFS::set-window-title
+
     ( 1. Open Hardware )
     T"/dev/draw"  VFS::open dfd!
     T"/dev/mouse" VFS::open mfd!

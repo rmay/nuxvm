@@ -23,6 +23,7 @@ MODULE VFS
 
 @CMD_YIELD 16 ;
 @CMD_FILE_DIALOG 21 ;
+@CMD_SET_WINDOW_TITLE 22 ;
 
 ( Standard Paths )
 @PATH_CHAN_NEW  T"/sys/chan/new" ;
@@ -86,4 +87,8 @@ MODULE VFS
 
 @poll-event ( -- event )
     CMD_POLL_EVENT 0 0 EXEC
+;
+
+@set-window-title ( title-ptr -- )
+    CMD_SET_WINDOW_TITLE swap 0 EXEC drop
 ;

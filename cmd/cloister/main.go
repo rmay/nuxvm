@@ -159,6 +159,7 @@ func (g *Game) Update() error {
 	}
 	if !running {
 		g.launcherMode = true
+		ebiten.SetWindowTitle("NuxVM / Actor 9")
 		return nil
 	}
 	return nil
@@ -242,6 +243,9 @@ func (g *Game) loadApp(appPath string) error {
 
 	if svc := machine.System.Services; svc != nil {
 		svc.SoundHandler = newSoundHandler(g.audioCtx)
+		svc.TitleHandler = func(title string) {
+			ebiten.SetWindowTitle(title)
+		}
 	}
 
 	g.machine = machine

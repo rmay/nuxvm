@@ -75,9 +75,19 @@ func (s *System) handleSCICommand() {
 		s.handleSCIDebugPrint(arg1)
 	case SCIOpenFileDialog:
 		s.handleSCIOpenFileDialog(arg1, arg2)
+	case SCISetWindowTitle:
+		s.handleSCISetWindowTitle(arg1)
 	default:
 		fmt.Fprintf(os.Stderr, "SCI: unknown command %d\n", cmd)
 	}
+}
+
+func (s *System) handleSCISetWindowTitle(ptr int32) {
+	if s.Services == nil || s.Services.TitleHandler == nil {
+		return
+	}
+	title := s.cstring(uint32(ptr))
+	s.Services.TitleHandler(title)
 }
 
 func (s *System) handleSCIOpenFileDialog(mode int32, bufPtr int32) {
