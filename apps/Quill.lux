@@ -46,6 +46,9 @@ IMPORT FILE
 @cursor     0x910018 ;   ( byte index into FILE_BUF )
 @last-key   0x910024 ;   ( unix seconds, for autosave debounce )
 @kpkt       0x910030 ;   ( 4-byte kbd packet scratch )
+@caret-x    0x910034 ;
+@caret-y    0x910038 ;
+@target-x   0x91003C ;
 
 ( --- Font width lookup --- )
 ( Using the system proportional font widths from /sys/font/widths. )
@@ -136,6 +139,46 @@ IMPORT FILE
     4 unframe!
 ;
 
+( Simulate layout to find the character on visual row 'ty' closest to 'target-x' )
+@find-index-by-y ( ty -- idx )
+    dup PANE_Y < [ drop 0 EXIT ] ?
+    PANE_Y PANE_X 0 0 10000 5 frame!
+    ( 0:best-diff 1:best-i 2:i 3:x 4:y )
+
+    [ 2 local@ file-len LOADI <= ] [
+        4 local@ OVER = [
+            ( We are on the target line )
+            3 local@ target-x LOADI - dup 0 < [ 0 swap - ] ? ( abs diff )
+            dup 0 local@ < [
+                0 local!
+                2 local@ 1 local!
+            ] [ drop ] ?:
+        ] ?
+
+        ( Advance x, y )
+        2 local@ file-len LOADI < [
+            FILE_BUF 2 local@ + load-byte
+            dup 10 = [
+                drop
+                PANE_X 3 local!
+                4 local@ LINE_H + 4 local!
+            ] [
+                dup char-w
+                3 local@ OVER + PANE_RIGHT > [
+                    PANE_X 3 local!
+                    4 local@ LINE_H + 4 local!
+                ] ?
+                3 local@ + 3 local!
+                drop
+            ] ?:
+        ] ?
+        2 local@ 1 + 2 local!
+    ] |:
+    1 local@
+    5 unframe!
+    swap drop ( ty )
+;
+
 ( Walk the buffer once, accumulating a run of chars per visual line.
   At each newline / wrap point, flush the run with one DrawString call.
   The host's per-char advance keeps glyph positions aligned with the
@@ -149,6 +192,8 @@ IMPORT FILE
         0 local@ cursor LOADI = [
             2 local@ 5 local!
             1 local@ 6 local!
+            2 local@ caret-x STOREI
+            1 local@ caret-y STOREI
         ] ?
 
         ( 2. Handle char-driven x,y updates )
@@ -229,20 +274,38 @@ IMPORT FILE
 @handle-key ( keycode -- )
     dup 8 = [
         drop delete-char refresh
+        caret-x LOADI target-x STOREI
     ] [
-        dup 13 = [
-            drop 10 insert-char refresh
+        dup 9 = [
+            drop 32 insert-char 32 insert-char 32 insert-char 32 insert-char refresh
+            caret-x LOADI target-x STOREI
         ] [
-            dup 19 = [
-                drop cursor-left refresh
+            dup 13 = [
+                drop 10 insert-char refresh
+                caret-x LOADI target-x STOREI
             ] [
-                dup 20 = [
-                    drop cursor-right refresh
+                dup 17 = [
+                    drop caret-y LOADI LINE_H - find-index-by-y cursor STOREI refresh
                 ] [
-                    dup printable? [
-                        insert-char refresh
+                    dup 18 = [
+                        drop caret-y LOADI LINE_H + find-index-by-y cursor STOREI refresh
                     ] [
-                        drop
+                        dup 19 = [
+                            drop cursor-left refresh
+                            caret-x LOADI target-x STOREI
+                        ] [
+                            dup 20 = [
+                                drop cursor-right refresh
+                                caret-x LOADI target-x STOREI
+                            ] [
+                                dup printable? [
+                                    insert-char refresh
+                                    caret-x LOADI target-x STOREI
+                                ] [
+                                    drop
+                                ] ?:
+                            ] ?:
+                        ] ?:
                     ] ?:
                 ] ?:
             ] ?:
@@ -285,6 +348,8 @@ IMPORT FILE
     TIME::unix@ last-key STOREI
 
     refresh
+    caret-x LOADI target-x STOREI
+
     [ 1 ] [
         handle-kbd
         ( Autosave after 2s of inactivity )

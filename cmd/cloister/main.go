@@ -52,36 +52,52 @@ func translateKey(k ebiten.Key) (int32, bool) {
 		return 20, true
 	case ebiten.KeySpace:
 		return 32, true
+	case ebiten.KeyTab:
+		return 9, true
 	case ebiten.KeyEnter, ebiten.KeyNumpadEnter:
 		return 13, true
 	case ebiten.KeyEscape:
 		return 27, true
 	case ebiten.KeyBackspace, ebiten.KeyDelete:
 		return 8, true
-	case ebiten.KeyMinus, ebiten.KeyNumpadSubtract:
-		return '-', true
-	case ebiten.KeySlash, ebiten.KeyNumpadDivide:
-		return '/', true
-	case ebiten.KeyNumpadMultiply:
-		return '*', true
-	case ebiten.KeyNumpadAdd:
-		return '+', true
-	case ebiten.KeyEqual:
-		if shift {
-			return '+', true
-		}
-		return '=', true
 	}
 
 	if k >= ebiten.KeyA && k <= ebiten.KeyZ {
+		if shift {
+			return int32(k-ebiten.KeyA) + 'A', true
+		}
 		return int32(k-ebiten.KeyA) + 'a', true
 	}
+
 	if k >= ebiten.KeyDigit0 && k <= ebiten.KeyDigit9 {
-		if shift && k == ebiten.KeyDigit8 {
-			return '*', true
+		if shift {
+			shifted := ")!@#$%^&*("
+			return int32(shifted[k-ebiten.KeyDigit0]), true
 		}
 		return int32(k-ebiten.KeyDigit0) + '0', true
 	}
+
+	symbolMap := map[ebiten.Key]struct{ un, sh int32 }{
+		ebiten.KeyMinus:        {'-', '_'},
+		ebiten.KeyEqual:        {'=', '+'},
+		ebiten.KeyLeftBracket:  {'[', '{'},
+		ebiten.KeyRightBracket: {']', '}'},
+		ebiten.KeyBackslash:    {'\\', '|'},
+		ebiten.KeySemicolon:    {';', ':'},
+		ebiten.KeyQuote:        {'\'', '"'},
+		ebiten.KeyComma:        {',', '<'},
+		ebiten.KeyPeriod:       {'.', '>'},
+		ebiten.KeySlash:        {'/', '?'},
+		ebiten.KeyBackquote:    {'`', '~'},
+	}
+
+	if s, ok := symbolMap[k]; ok {
+		if shift {
+			return s.sh, true
+		}
+		return s.un, true
+	}
+
 	if k >= ebiten.KeyNumpad0 && k <= ebiten.KeyNumpad9 {
 		return int32(k-ebiten.KeyNumpad0) + '0', true
 	}

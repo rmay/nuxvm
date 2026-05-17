@@ -56,20 +56,16 @@ MODULE FILE
 
 ( --- High-level words --- )
 
-( @load    ( name-ptr buf-ptr max -- read-len )
+( @load    ( name-ptr buf-ptr max -- len )
   Load a file. Sets FILE name/buf, calls read, returns length. )
 @load ( name-ptr buf-ptr max -- len )
-    name!
-    buf!
-    read
+    rot name! swap buf! read
 ;
 
 ( @save    ( name-ptr buf-ptr len -- res )
   Write to a file. Sets FILE name/buf, calls write, returns result. )
 @save ( name-ptr buf-ptr len -- res )
-    name!
-    buf!
-    write
+    rot name! swap buf! write
 ;
 
 ( @exists? ( name-ptr -- bool )
@@ -77,7 +73,7 @@ MODULE FILE
 @exists? ( name-ptr -- bool )
     name!
     size
-    dup 0 >=
+    0 >=
 ;
 
 @dir-each ( name-ptr line-buf max quot -- )
