@@ -5,6 +5,8 @@ INCLUDE "lib/vfs.lux"
 INCLUDE "lib/draw.lux"
 INCLUDE "lib/time.lux"
 INCLUDE "lib/file.lux"
+INCLUDE "lib/event.lux"
+INCLUDE "lib/str.lux"
 
 MODULE MAIN
 
@@ -12,6 +14,8 @@ IMPORT VFS
 IMPORT DRAW
 IMPORT TIME
 IMPORT FILE
+IMPORT EVENT
+IMPORT STR
 
 ( --- Window geometry (matches Shell's 800x600 child window) --- )
 @WIN_W      800 ;
@@ -59,35 +63,11 @@ IMPORT FILE
 
 ( --- Buffer manipulation --- )
 
-@move-mem ( src dest len -- )
-    3 frame!
-    2 local@ 1 local@ < [
-        ( Backward copy: src < dest, copy from high to low to avoid clobber )
-        2 local@ 0 local@ + 1 -
-        1 local@ 0 local@ + 1 -
-        [ 0 local@ 0 > ] [
-            OVER load-byte OVER store-byte
-            1 - swap 1 - swap
-            0 local@ 1 - 0 local!
-        ] |:
-        drop drop
-    ] [
-        ( Forward copy )
-        [ 0 local@ 0 > ] [
-            2 local@ load-byte 1 local@ store-byte
-            2 local@ 1 + 2 local!
-            1 local@ 1 + 1 local!
-            0 local@ 1 - 0 local!
-        ] |:
-    ] ?:
-    3 unframe!
-;
-
 @insert-char ( ch -- )
     cursor LOADI FILE_BUF +
     cursor LOADI FILE_BUF + 1 +
     file-len LOADI cursor LOADI -
-    move-mem
+    MEMORY::move-mem
     FILE_BUF cursor LOADI + store-byte
     file-len LOADI 1 + file-len STOREI
     cursor LOADI 1 + cursor STOREI
@@ -99,7 +79,7 @@ IMPORT FILE
         cursor LOADI FILE_BUF +
         cursor LOADI FILE_BUF + 1 -
         file-len LOADI cursor LOADI -
-        move-mem
+        MEMORY::move-mem
         file-len LOADI 1 - file-len STOREI
         cursor LOADI 1 - cursor STOREI
         1 dirty STOREI
@@ -267,38 +247,34 @@ IMPORT FILE
 
 ( --- Keyboard --- )
 
-@printable? ( ch -- bool )
-    dup 32 >= OVER 126 <= AND swap drop
-;
-
 @handle-key ( keycode -- )
-    dup 8 = [
+    dup EVENT::KEY_BACKSPACE = [
         drop delete-char refresh
         caret-x LOADI target-x STOREI
     ] [
-        dup 9 = [
+        dup EVENT::KEY_TAB = [
             drop 32 insert-char 32 insert-char 32 insert-char 32 insert-char refresh
             caret-x LOADI target-x STOREI
         ] [
-            dup 13 = [
+            dup EVENT::KEY_ENTER = [
                 drop 10 insert-char refresh
                 caret-x LOADI target-x STOREI
             ] [
-                dup 17 = [
+                dup EVENT::KEY_UP_ARROW = [
                     drop caret-y LOADI LINE_H - find-index-by-y cursor STOREI refresh
                 ] [
-                    dup 18 = [
+                    dup EVENT::KEY_DOWN_ARROW = [
                         drop caret-y LOADI LINE_H + find-index-by-y cursor STOREI refresh
                     ] [
-                        dup 19 = [
+                        dup EVENT::KEY_LEFT_ARROW = [
                             drop cursor-left refresh
                             caret-x LOADI target-x STOREI
                         ] [
-                            dup 20 = [
+                            dup EVENT::KEY_RIGHT_ARROW = [
                                 drop cursor-right refresh
                                 caret-x LOADI target-x STOREI
                             ] [
-                                dup printable? [
+                                dup STR::printable? [
                                     insert-char refresh
                                     caret-x LOADI target-x STOREI
                                 ] [
@@ -315,8 +291,8 @@ IMPORT FILE
 
 @handle-kbd ( -- )
     kfd LOADI kpkt 4 VFS::read 4 = [
-        kpkt load-byte 0 = [   ( type 0 = KeyDown )
-            kpkt 2 + DRAW::load-word-le
+        kpkt EVENT::kbd-type EVENT::KEY_DOWN = [
+            kpkt EVENT::kbd-key
             TIME::unix@ last-key STOREI
             handle-key
         ] ?

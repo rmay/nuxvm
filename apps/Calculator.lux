@@ -2,8 +2,13 @@
 
 INCLUDE "lib/vfs.lux"
 INCLUDE "lib/draw.lux"
+INCLUDE "lib/event.lux"
 
 MODULE CALC
+
+IMPORT VFS
+IMPORT DRAW
+IMPORT EVENT
 
 @dfd_addr 0x8D0000 ;
 @dfd@ dfd_addr LOADI ; @dfd! dfd_addr STOREI ;
@@ -24,42 +29,6 @@ MODULE CALC
 
 @mbuf     0x8D0100 ; ( 8 bytes )
 @kbuf     0x8D0110 ; ( 4 bytes )
-
-@draw-digit ( fd x y val color -- )
-    5 frame! ( 0:color, 1:val, 2:y, 3:x, 4:fd )
-    4 local@ 3 local@ 2 local@ 
-    1 local@ 48 + ( char )
-    0 local@ ( color )
-    3 ( scale )
-    DRAW::draw-char
-    5 unframe!
-;
-
-@draw-number ( fd x y val color -- )
-    5 frame! ( 0:color, 1:val, 2:y, 3:x, 4:fd )
-    
-    1 local@ 0 = [
-        4 local@ 3 local@ 2 local@ 0 0 local@ draw-digit
-    ] [
-        1 local@ 0 < [
-            1 local@ NEGATE 1 local!
-            [ 1 local@ 0 > ] [
-                4 local@ 3 local@ 2 local@ 1 local@ 10 MOD 0 local@ draw-digit
-                3 local@ 24 - 3 local! ( Increased spacing for scale 3 )
-                1 local@ 10 / 1 local!
-            ] |:
-            4 local@ 3 local@ 2 local@ 45 0 local@ 3 DRAW::draw-char
-        ] [
-            [ 1 local@ 0 > ] [
-                4 local@ 3 local@ 2 local@ 1 local@ 10 MOD 0 local@ draw-digit
-                3 local@ 24 - 3 local! ( Increased spacing for scale 3 )
-                1 local@ 10 / 1 local!
-            ] |:
-        ] ?:
-    ] ?:
-    
-    5 unframe!
-;
 
 @draw-btn ( x y label highlight -- )
     4 frame! ( 0:highlight, 1:label, 2:y, 3:x )
@@ -85,7 +54,7 @@ MODULE CALC
     dfd@ 1 local@ 11 + 0 local@ 11 + 198 43 0xFFFFFF DRAW::fill-rect
     
     ( Display Text )
-    dfd@ 1 local@ 190 + 0 local@ 16 + CUR_VAL LOADI 0x000000 draw-number
+    dfd@ 1 local@ 10 + 0 local@ 16 + CUR_VAL LOADI 0x000000 3 DRAW::draw-int
     
     ( Buttons )
     ( Row 1 )
@@ -179,12 +148,9 @@ MODULE CALC
 
 @handle-mouse
     mfd@ mbuf 8 VFS::read 8 = [
-        mbuf load-byte 3 = [ ( MouseDown )
-            mbuf 2 + DRAW::load-word-le ( mx )
-            mbuf 4 + DRAW::load-word-le ( my )
-            
-            swap CALC_X LOADI - ( my rx )
-            swap CALC_Y LOADI - ( rx ry )
+        mbuf EVENT::mouse-type EVENT::MOUSE_DOWN = [
+            mbuf EVENT::mouse-x CALC_X LOADI - ( rx )
+            mbuf EVENT::mouse-y CALC_Y LOADI - ( ry )
             
             ( Check rows )
             dup 65 >= [ dup 113 <= ] [ 0 ] ?: [
@@ -218,8 +184,8 @@ MODULE CALC
 
 @handle-kbd
     kfd@ kbuf 4 VFS::read 4 = [
-        kbuf load-byte 0 = [ ( KeyDown )
-            kbuf 2 + DRAW::load-word-le process-key
+        kbuf EVENT::kbd-type EVENT::KEY_DOWN = [
+            kbuf EVENT::kbd-key process-key
         ] ?
     ] ?
 ;

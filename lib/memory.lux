@@ -44,3 +44,29 @@ MODULE MEMORY
 @FILE_DIALOG_CURRENT_PATH 0x533200 ;
 @FILE_DIALOG_SELECTED_DIR 0x533400 ;
 @FILE_DIALOG_FILTER_EXT_ADDR 0x533600 ;
+
+( --- Memory Manipulation --- )
+
+@move-mem ( src dest len -- )
+    3 frame!
+    2 local@ 1 local@ < [
+        ( Backward copy: src < dest, copy from high to low to avoid clobber )
+        2 local@ 0 local@ + 1 -
+        1 local@ 0 local@ + 1 -
+        [ 0 local@ 0 > ] [
+            OVER load-byte OVER store-byte
+            1 - swap 1 - swap
+            0 local@ 1 - 0 local!
+        ] |:
+        drop drop
+    ] [
+        ( Forward copy )
+        [ 0 local@ 0 > ] [
+            2 local@ load-byte 1 local@ store-byte
+            2 local@ 1 + 2 local!
+            1 local@ 1 + 1 local!
+            0 local@ 1 - 0 local!
+        ] |:
+    ] ?:
+    3 unframe!
+;

@@ -2,6 +2,7 @@
 
 INCLUDE "lib/vfs.lux"
 INCLUDE "lib/core.lux"
+INCLUDE "lib/str.lux"
 
 MODULE DRAW
 
@@ -133,5 +134,11 @@ MODULE DRAW
     0 local@
     draw-string
 
+    6 unframe!
+;
+@draw-int ( fd x y n color scale -- )
+    6 frame! ( 0:scale, 1:color, 2:n, 3:y, 4:x, 5:fd )
+    2 local@ 0x530900 STR::int-to-str
+    5 local@ 4 local@ 3 local@ 0x530900 1 local@ 0 local@ draw-str
     6 unframe!
 ;

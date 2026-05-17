@@ -247,34 +247,19 @@ func (f *drawFile) Write(p []byte) (int, error) {
 			if i+strLen > len(p) {
 				return i - 11, io.ErrShortWrite
 			}
-			cx := x
+			
+			renderer := f.s.GetFontRenderer()
 			sc := float64(scale)
-			if scale >= 6 {
-				div := 12.0
-				if !f.s.text.useBasicFont {
-					div = 16.0
-				}
-				sc = float64(scale) / div
-			} else if sc <= 0 {
-				sc = 1.0
+			if !f.s.text.useBasicFont && scale < 6 {
+				sc = float64(scale) * 16.0
 			}
 
-			face := getGoFace(scale)
+			cx := x
 			for j := 0; j < strLen; j++ {
 				char := p[i+j]
 				f.s.drawCharVFS(cx, y, char, color, scale)
-				var charWidth int32
-				if f.s.text.useBasicFont {
-					charWidth = int32(float64(BasicFontWidth) * sc)
-				} else {
-					adv, ok := face.GlyphAdvance(rune(char))
-					if ok {
-						charWidth = int32(adv.Ceil())
-					} else {
-						charWidth = 4
-					}
-				}
-				cx += charWidth
+				w, _ := renderer.MeasureGlyph(char, sc)
+				cx += int32(w)
 			}
 			i += strLen
 		case 3: // DrawRect

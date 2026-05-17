@@ -2,8 +2,14 @@
 
 INCLUDE "lib/vfs.lux"
 INCLUDE "lib/ui.lux"
+INCLUDE "lib/event.lux"
 
 MODULE DEMO
+
+IMPORT VFS
+IMPORT UI
+IMPORT EVENT
+IMPORT DRAW
 
 ( File descriptors and input state )
 @dfd_addr    0x8A0000 ; @dfd@ dfd_addr LOADI ; @dfd! dfd_addr STOREI ;
@@ -33,43 +39,8 @@ MODULE DEMO
 @STR_CLICKS  T"clicks: "   ;
 @STR_VALUE   T"value: "    ;
 
-( Integer-to-decimal string writer (max 3 digits, addr must hold 4+ bytes) )
-@write-digit ( n buf -- )
-    48 + swap store-byte
-;
-
-@int-to-str ( val buf -- )
-    2 frame! ( 0:buf 1:val )
-    1 local@ 0 < [
-        45 0 local@ store-byte
-        0 local@ 1 + 0 local!
-        0 local@ 0 1 local!
-    ] ?
-    1 local@ 100 / dup 0 > [
-        48 + 0 local@ store-byte
-        0 local@ 1 + 0 local!
-    ] [ drop ] ?:
-    1 local@ 100 MOD 10 / dup 0 > [
-        48 + 0 local@ store-byte
-        0 local@ 1 + 0 local!
-    ] [ drop ] ?:
-    1 local@ 10 MOD 48 + 0 local@ store-byte
-    0 local@ 1 + 0 local!
-    0 0 local@ store-byte
-    2 unframe!
-;
-
-@num_buf 0x8A0200 ; ( scratch buffer for number strings )
-
 ( char width at scale 2: 14px )
 @CHAR_W 14 ;
-
-@draw-int ( fd x y n color -- )
-    5 frame! ( 0:color 1:n 2:y 3:x 4:fd )
-    1 local@ num_buf int-to-str
-    4 local@ 3 local@ 2 local@ num_buf 0 local@ 2 DRAW::draw-str
-    5 unframe!
-;
 
 @init
     VFS::PATH_DRAW  VFS::open dfd!
@@ -95,7 +66,7 @@ MODULE DEMO
     dfd@ BTN1 UI::button-draw
     ( click counter )
     dfd@ 290 226 STR_CLICKS UI::CLR_TEXT 2 DRAW::draw-str
-    dfd@ 290 STR_CLICKS strlen CHAR_W * + 226 clicks@ UI::CLR_TEXT draw-int
+    dfd@ 290 STR_CLICKS strlen CHAR_W * + 226 clicks@ UI::CLR_TEXT 2 DRAW::draw-int
     ( checkbox )
     dfd@ CB1 UI::checkbox-draw
     ( radio buttons )
@@ -103,7 +74,7 @@ MODULE DEMO
     dfd@ RD2 UI::radio-draw
     ( slider )
     dfd@ 290 386 STR_VALUE UI::CLR_TEXT 2 DRAW::draw-str
-    dfd@ 290 STR_VALUE strlen CHAR_W * + 386 sl-val@ UI::CLR_TEXT draw-int
+    dfd@ 290 STR_VALUE strlen CHAR_W * + 386 sl-val@ UI::CLR_TEXT 2 DRAW::draw-int
     dfd@ SL1 UI::slider-draw
     0 dirty!
 ;
@@ -111,15 +82,16 @@ MODULE DEMO
 @handle-mouse
     mfd@ mbuf 8 VFS::read
     8 = [
-        mbuf load-byte
-        dup 2 = [
-            mbuf 2 + DRAW::load-word-le mx!
-            mbuf 4 + DRAW::load-word-le my!
+        mbuf EVENT::mouse-type
+        dup EVENT::MOUSE_MOVE = [
+            mbuf EVENT::mouse-x mx!
+            mbuf EVENT::mouse-y my!
         ] [
-            dup 3 = [ 1 mbtn! ] [
-                4 = [ 0 mbtn! ] ?
+            dup EVENT::MOUSE_DOWN = [ 1 mbtn! ] [
+                dup EVENT::MOUSE_UP = [ 0 mbtn! ] ?
             ] ?:
         ] ?:
+        drop
     ] ?
 ;
 

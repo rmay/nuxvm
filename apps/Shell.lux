@@ -2,8 +2,13 @@
 
 INCLUDE "lib/vfs.lux"
 INCLUDE "lib/draw.lux"
+INCLUDE "lib/event.lux"
 
 MODULE SHELL
+
+IMPORT VFS
+IMPORT DRAW
+IMPORT EVENT
 
 @dfd_addr 0x8E0000 ;
 @mfd_addr 0x8E0004 ;
@@ -38,11 +43,11 @@ MODULE SHELL
 @handle-mouse
     mfd@ mbuf 8 VFS::read ( n )
     8 = [
-        mbuf load-byte ( type )
-        mbuf 2 + DRAW::load-word-le mx STOREI
-        mbuf 4 + DRAW::load-word-le my STOREI
+        mbuf EVENT::mouse-type ( type )
+        mbuf EVENT::mouse-x mx STOREI
+        mbuf EVENT::mouse-y my STOREI
         
-        dup 2 = [ ( MouseMove )
+        dup EVENT::MOUSE_MOVE = [ ( MouseMove )
             dragging@ [
                 win_x@ mx LOADI last_mx@ - + win_x!
                 win_y@ my LOADI last_my@ - + win_y!
@@ -50,7 +55,7 @@ MODULE SHELL
             ] [ 0 ] ?:
             drop
         ] [
-            dup 3 = [ ( MouseDown )
+            dup EVENT::MOUSE_DOWN = [ ( MouseDown )
                 ( Check if in window )
                 mx LOADI win_x@ >= mx LOADI win_x@ 800 + < AND
                 my LOADI win_y@ >= AND my LOADI win_y@ 600 + < AND [
@@ -58,7 +63,7 @@ MODULE SHELL
                 ] ?
                 drop
             ] [
-                dup 4 = [ ( MouseUp )
+                dup EVENT::MOUSE_UP = [ ( MouseUp )
                     0 dragging!
                 ] ?
             ] ?:
@@ -67,8 +72,8 @@ MODULE SHELL
         ( Proxy to child if active )
         cmfd@ 0 > [
             ( Match /sys/mouse format: [Type(1), Button(1), X(2), Y(2), Padding(2)] )
-            mbuf load-byte DRAW::BUF store-byte
-            mbuf 1 + load-byte DRAW::BUF 1 + store-byte
+            mbuf EVENT::mouse-type DRAW::BUF store-byte
+            mbuf EVENT::mouse-btn  DRAW::BUF 1 + store-byte
             mx LOADI win_x@ - DRAW::BUF 2 + DRAW::store-word-le
             my LOADI win_y@ - DRAW::BUF 4 + DRAW::store-word-le
             0 DRAW::BUF 6 + store-byte

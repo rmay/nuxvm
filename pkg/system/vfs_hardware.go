@@ -2,6 +2,7 @@ package system
 
 import (
 	"encoding/binary"
+	"image"
 	"io"
 )
 
@@ -69,24 +70,29 @@ func (s *System) drawRect(x, y, w, h int32, color uint32) {
 
 // drawCharVFS renders a character using the system font.
 func (s *System) drawCharVFS(x, y int32, char byte, color uint32, scale byte) {
-	if s.text.useBasicFont {
-		sc := float64(scale)
-		if scale >= 6 {
-			sc = float64(scale) / 12.0
-		}
-		if sc <= 0 {
-			sc = 1.0
-		}
-		s.drawCharBasic(x, y, char, color, sc)
-		return
+	sc := float64(scale)
+	if !s.text.useBasicFont && scale < 6 {
+		// For TTF/CFF, small scale values are treated as multipliers for a base size of 16
+		sc = float64(scale) * 16.0
 	}
 
-	size := scale
-	if scale < 6 {
-		// Treat as a multiplier for a base size of 16
-		size = uint8(float64(scale) * 16.0)
+	sw := int(s.screenWidth)
+	sh := int(s.screenHeight)
+	paneMinX := int(s.paneX)
+	paneMinY := int(s.paneY)
+	paneMaxX := int(s.paneX + s.paneW)
+	paneMaxY := int(s.paneY + s.paneH)
+	if s.paneW == 0 {
+		paneMaxX = sw
 	}
-	s.drawCharGo(x, y, char, color, size)
+	if s.paneH == 0 {
+		paneMaxY = sh
+	}
+
+	screen := s.screenImage()
+	sub := screen.SubImage(image.Rect(paneMinX, paneMinY, paneMaxX, paneMaxY)).(*image.RGBA)
+
+	s.DrawGlyph(sub, x-int32(paneMinX), y-int32(paneMinY), char, color, sc)
 
 	if s.Services != nil {
 		if win := s.Services.GetActiveWindow(); win != nil {

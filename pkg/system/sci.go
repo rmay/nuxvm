@@ -2,6 +2,7 @@ package system
 
 import (
 	"fmt"
+	"image"
 	"os"
 )
 
@@ -448,83 +449,45 @@ func (s *System) handleSCIDrawText(winID int32, textPtr int32) {
 	}
 
 	text := s.cstring(uint32(textPtr))
+	img := win.Image()
+	if img == nil {
+		s.sciResult = -1
+		return
+	}
+
 	for _, c := range []byte(text) {
-		s.drawCharToWindow(win, c)
+		s.drawCharToWindow(win, img, c)
 	}
 	win.Dirty = true
 	s.sciResult = 0
 }
 
 // drawCharToWindow renders a character into a window's framebuffer at the current cursor position
-func (s *System) drawCharToWindow(win *WindowRecord, c byte) {
-	glyph := Font[c]
+func (s *System) drawCharToWindow(win *WindowRecord, img *image.RGBA, c byte) {
+	renderer := s.GetFontRenderer()
 	scale := s.text.getScale()
 
-	originX := int(s.text.cursorX)
-	originY := int(s.text.cursorY)
-
-	winW := int(win.ContRgn.Width())
-	winH := int(win.ContRgn.Height())
-
-	// Bounds check: stay within window framebuffer
-	if originX >= winW || originY >= winH {
-		s.advanceCursorInWindow(win)
+	// Handle control characters
+	switch c {
+	case '\n':
+		_, h := renderer.MeasureGlyph('A', scale)
+		s.text.cursorX = 0
+		s.text.cursorY += uint16(h)
+		return
+	case '\r':
+		s.text.cursorX = 0
 		return
 	}
 
-	r := byte(s.text.color >> 16)
-	g := byte(s.text.color >> 8)
-	b := byte(s.text.color)
-
-	for row := 0; row < 13; row++ {
-		bits := glyph[row]
-		if bits == 0 {
-			continue
-		}
-		startY := float64(row) * scale
-		endY := float64(row+1) * scale
-		for py := int(startY); py < int(endY); py++ {
-			y := originY + py
-			if y < 0 || y >= winH {
-				continue
-			}
-			for col := 0; col < 7; col++ {
-				if bits&(1<<col) == 0 {
-					continue
-				}
-				startX := float64(col) * scale
-				endX := float64(col+1) * scale
-				for px := int(startX); px < int(endX); px++ {
-					x := originX + px
-					if x < 0 || x >= winW {
-						continue
-					}
-					offset := (y*winW + x) * 4
-					if offset+4 <= len(win.FrameBuf) {
-						win.FrameBuf[offset] = r
-						win.FrameBuf[offset+1] = g
-						win.FrameBuf[offset+2] = b
-						win.FrameBuf[offset+3] = 255
-					}
-				}
-			}
-		}
-	}
-
-	s.advanceCursorInWindow(win)
-}
-
-// advanceCursorInWindow moves cursor one cell right, wrapping at window edge
-func (s *System) advanceCursorInWindow(win *WindowRecord) {
+	advance := s.DrawGlyph(img, int32(s.text.cursorX), int32(s.text.cursorY), c, s.text.color, scale)
+	s.text.cursorX += uint16(advance)
+	
+	// Handle auto-wrap
 	winW := int(win.ContRgn.Width())
-	scale := s.text.getScale()
-	cellW := int(7 * scale)
-	cellH := int(13 * scale)
-
-	s.text.cursorX += uint16(cellW)
-	if int(s.text.cursorX)+cellW > winW {
+	if int(s.text.cursorX) >= winW {
+		_, h := renderer.MeasureGlyph('A', scale)
 		s.text.cursorX = 0
-		s.text.cursorY += uint16(cellH)
+		s.text.cursorY += uint16(h)
 	}
 }
 
@@ -551,7 +514,10 @@ func (s *System) handleSCIDrawCFF(fontPtr int32, data int32) {
 	// Chicago12x12 is stored in 16x16 tiles.
 	tileSize := 16
 
-	s.drawCFFMagnified(uint32(fontPtr), char, x, y, color, tileSize, scale)
+	if fontPtr != 0 && int(fontPtr)+256 < len(s.memory) {
+		s.drawCFFRaw(s.memory[fontPtr:], char, x, y, color, tileSize, scale)
+	}
+
 	if s.Services != nil {
 		if win := s.Services.GetActiveWindow(); win != nil {
 			win.Dirty = true

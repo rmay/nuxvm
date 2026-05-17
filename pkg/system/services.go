@@ -2,6 +2,7 @@ package system
 
 import (
 	"fmt"
+	"image"
 	"os"
 	"sort"
 	"sync"
@@ -66,6 +67,20 @@ type WindowRecord struct {
 	FrameBuf      []byte
 	MenuTablePtr  uint32 // pointer to menu table in VM memory (0 = no menu)
 	Dirty         bool   // true if framebuffer has changed since last GPU upload
+}
+
+// Image returns an *image.RGBA wrapper around the window's FrameBuf.
+func (win *WindowRecord) Image() *image.RGBA {
+	w := win.Port.PortRect.Width()
+	h := win.Port.PortRect.Height()
+	if len(win.FrameBuf) < int(w*h*4) {
+		return nil
+	}
+	return &image.RGBA{
+		Pix:    win.FrameBuf,
+		Stride: int(w) * 4,
+		Rect:   image.Rect(0, 0, int(w), int(h)),
+	}
 }
 
 // ============= Input Manager =============
