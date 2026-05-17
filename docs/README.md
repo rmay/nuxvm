@@ -1,6 +1,6 @@
 # NUX
 
-A simple 45-opcode stack-based virtual machine written in Go.
+A simple stack-based virtual machine written in Go.
 
 ## Features
 

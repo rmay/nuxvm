@@ -60,12 +60,11 @@ IMPORT MEMORY
 
 @strcpy-safe ( src dest -- )
     2 frame! ( 0:dest, 1:src )
-    [ 1 local@ load-byte dup 0 > ] [
-        0 local@ store-byte
+    [ 1 local@ load-byte 0 > ] [
+        1 local@ load-byte 0 local@ store-byte
         1 local@ 1 + 1 local!
         0 local@ 1 + 0 local!
     ] |:
-    drop ( final 0 )
     0 0 local@ store-byte
     2 unframe!
 ;
@@ -115,7 +114,7 @@ IMPORT MEMORY
 @init-locals ( -- ) ;
 
 @type ( ptr -- )
-    [ dup load-byte dup 0 > ] [
+    [ dup load-byte 0 > ] [
         dup load-byte emit
         1 +
     ] |:

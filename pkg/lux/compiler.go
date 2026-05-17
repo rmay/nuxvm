@@ -62,9 +62,15 @@ type Compiler struct {
 	includeDepth   int
 	includedFiles  map[string]bool
 	trace          bool
+
+	stringPatches []StringPatch
 }
 
-const fileStringHeapBase = 0x700000
+type StringPatch struct {
+	Offset  int32
+	QuotIdx int
+	TempAddr int32
+}
 
 var builtins = map[string]byte{
 	"DUP":      vm.OpDup,
@@ -129,7 +135,7 @@ var combinators = map[string]bool{
 	"CALL": true, "?:": true, "?": true, "!:": true, "|:": true, "#:": true, "DIP": true, "KEEP": true,
 }
 
-func NewCompiler(tokens []Token, trace ...bool) *Compiler {
+func NewCompiler(tokens []Token, baseAddr int32, trace ...bool) *Compiler {
 	tr := false
 	if len(trace) > 0 {
 		tr = trace[0]
@@ -138,7 +144,7 @@ func NewCompiler(tokens []Token, trace ...bool) *Compiler {
 		tokens: tokens, dictionary: make(map[string]Word), imports: make(map[string]string),
 		includedFiles:  make(map[string]bool),
 		quotationStack: make([]int, 0),
-		activeQuotIdx:  -1, baseAddr: int32(vm.UserMemoryOffset), nextStringHeap: fileStringHeapBase,
+		activeQuotIdx:  -1, baseAddr: baseAddr, nextStringHeap: 0,
 		tempAlloc: 0x8000,
 		trace:     tr,
 	}
@@ -182,7 +188,7 @@ func (c *Compiler) peek() Token {
 	return c.tokens[c.pos]
 }
 
-func Compile(source string, trace ...bool) ([]byte, error) {
+func Compile(source string, baseAddr int32, trace ...bool) ([]byte, error) {
 	tr := false
 	if len(trace) > 0 {
 		tr = trace[0]
@@ -192,7 +198,7 @@ func Compile(source string, trace ...bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewCompiler(tokens, tr).compile()
+	return NewCompiler(tokens, baseAddr, tr).compile()
 }
 
 func (c *Compiler) compile() ([]byte, error) {
@@ -323,6 +329,22 @@ func (c *Compiler) compile() ([]byte, error) {
 	haltAddr := c.currentAddress()
 	c.emit(vm.OpHalt)
 	binary.BigEndian.PutUint32(c.bytecode[int(skipQuotPos)+1:int(skipQuotPos)+5], uint32(haltAddr))
+
+	stringHeapBase := c.baseAddr + int32(len(c.bytecode))
+	for _, sp := range c.stringPatches {
+		var base int
+		if sp.QuotIdx == -1 {
+			base = 0
+		} else {
+			base = int(c.quotations[sp.QuotIdx].Address - c.baseAddr)
+		}
+		binary.BigEndian.PutUint32(c.bytecode[base+int(sp.Offset):base+int(sp.Offset)+4], uint32(stringHeapBase+sp.TempAddr))
+	}
+
+	// Append padding for the string heap so NewVM allocates enough space
+	padding := make([]byte, int(c.nextStringHeap))
+	c.bytecode = append(c.bytecode, padding...)
+
 	return c.bytecode, nil
 }
 
@@ -823,9 +845,13 @@ func (c *Compiler) emitFileString(s string) {
 		c.emit(vm.OpPush)
 		c.emit(vm.EncodeInt32(chunk)...)
 		c.emit(vm.OpPush)
-		c.emit(vm.EncodeInt32(addr + i*4)...)
+		off := c.currentOffset()
+		c.stringPatches = append(c.stringPatches, StringPatch{Offset: off, QuotIdx: c.activeQuotIdx, TempAddr: addr + i*4})
+		c.emit(0, 0, 0, 0) // placeholder for address
 		c.emit(vm.OpStoreI)
 	}
 	c.emit(vm.OpPush)
-	c.emit(vm.EncodeInt32(addr)...)
+	off := c.currentOffset()
+	c.stringPatches = append(c.stringPatches, StringPatch{Offset: off, QuotIdx: c.activeQuotIdx, TempAddr: addr})
+	c.emit(0, 0, 0, 0) // placeholder for start address
 }

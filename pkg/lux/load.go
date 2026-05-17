@@ -10,13 +10,13 @@ import (
 // compiled in-process and the bytecode is returned. Any other extension is
 // treated as pre-compiled bytecode and returned verbatim. Errors bubble up
 // with a short, actionable message — callers can print and exit.
-func LoadProgram(path string) ([]byte, error) {
+func LoadProgram(path string, baseAddr int32) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	if strings.HasSuffix(strings.ToLower(path), ".lux") {
-		bytecode, err := Compile(string(data))
+		bytecode, err := Compile(string(data), baseAddr)
 		if err != nil {
 			return nil, fmt.Errorf("compile %s: %w", path, err)
 		}

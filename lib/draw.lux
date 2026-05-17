@@ -60,6 +60,7 @@ MODULE DRAW
 ;
 
 @draw-char ( fd x y char color scale -- )
+    ( scale: 0=system-default, 1-5=multiplier, 6+=point-size )
     6 frame! ( 0:scale, 1:color, 2:char, 3:y, 4:x, 5:fd )
 
     1 BUF store-byte ( Cmd 1: DrawChar )
@@ -75,6 +76,7 @@ MODULE DRAW
 ;
 
 @draw-string ( fd x y ptr len color scale -- )
+    ( scale: 0=system-default, 1-5=multiplier, 6+=point-size )
     7 frame! ( 0:scale, 1:color, 2:len, 3:ptr, 4:y, 5:x, 6:fd )
 
     2 BUF store-byte                    ( Cmd 2: DrawString )
@@ -100,6 +102,23 @@ MODULE DRAW
     6 local@ BUF 12 2 local@ + VFS::write drop
 
     7 unframe!
+;
+
+@set-font-size ( fd size -- )
+    2 frame!
+    4 BUF store-byte
+    0 local@ BUF 1 + store-byte
+    1 local@ BUF 2 VFS::write drop
+    2 unframe!
+;
+
+@set-font ( fd which -- )
+    ( which: 0 = Chicago CFF default, 1 = 7x13 basic )
+    2 frame!
+    5 BUF store-byte
+    0 local@ BUF 1 + store-byte
+    1 local@ BUF 2 VFS::write drop
+    2 unframe!
 ;
 
 @draw-str ( fd x y ptr color scale -- )

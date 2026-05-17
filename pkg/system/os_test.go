@@ -22,12 +22,12 @@ func TestOSKeyboard(t *testing.T) {
 		0 ( Initial value for while loop )
 		[ 1 ] [ YIELD ] |:
 	`, vm.DeviceMemoryOffset+0x0040+12, vm.DeviceMemoryOffset+0x0040)
-	program, err := lux.Compile(source)
+	program, err := lux.Compile(source, int32(vm.HeadlessBaseAddress))
 	if err != nil {
 		t.Fatalf("Failed to compile test program: %v", err)
 	}
 
-	machine := NewMachine(program, 0)
+	machine := NewMachine(program, vm.HeadlessBaseAddress, 0)
 	var output strings.Builder
 	machine.CPU.OutputHandler = func(value int32, format int32) {
 		if format == 1 {

@@ -195,13 +195,13 @@ ADD
 
 ### Loop Pattern
 ```go
-loop := vm.UserMemoryOffset + uint32(len(prog))
+loop := vm.HeadlessBaseAddress + uint32(len(prog))
 prog = append(prog, vm.OpDup)      // DUP counter
 endPH := len(prog)
 prog = append(prog, jz(0)...)      // Exit when 0
 // ... loop body ...
 prog = append(prog, jmp(loop)...)
-endAddr := vm.UserMemoryOffset + int32(len(prog))
+endAddr := vm.HeadlessBaseAddress + int32(len(prog))
 copy(prog[endPH+1:], enc(endAddr)) // Patch address
 ```
 

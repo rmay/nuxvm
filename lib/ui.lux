@@ -4,17 +4,20 @@ INCLUDE "lib/draw.lux"
 
 MODULE UI
 
-( --- Theme Colors (warm lux palette, Mac SE/30-inspired) --- )
-@CLR_BG      0xFFF8E7 ;
-@CLR_BORDER  0x2C1810 ;
-@CLR_TEXT    0x1A0A00 ;
+( --- Theme Colors (System 6 style) --- )
+@CLR_BG      0xFFFFFF ;
+@CLR_BORDER  0x000000 ;
+@CLR_TEXT    0x000000 ;
 @CLR_HILIGHT 0xFFFFFF ;
-@CLR_SHADOW  0x88624A ;
-@CLR_HOVER   0xFFE0A0 ;
-@CLR_PRESS   0xD4A020 ;
-@CLR_CHECK   0x4A7A3F ;
-@CLR_TRACK   0xC8B898 ;
-@CLR_THUMB   0x8B5E3C ;
+@CLR_SHADOW  0x000000 ;
+@CLR_HOVER   0xEEEEEE ;
+@CLR_PRESS   0x000000 ;
+@CLR_CHECK   0x000000 ;
+@CLR_TRACK   0xAAAAAA ;
+@CLR_THUMB   0x000000 ;
+
+@FONT_CHAR_W  7 ;    ( char width at scale 1 )
+@FONT_CHAR_H  16 ;   ( char height at scale 1: tileSize 16 × scale 1 )
 
 ( --- Hit Testing --- )
 
@@ -52,47 +55,115 @@ MODULE UI
 ;
 
 ( ===== Button ===== )
-( Struct (28 bytes): x(4) y(4) w(4) h(4) state(4) label-ptr(4) was-down(4) )
-@BTN_SIZE     28 ;
-@BTN_X         0 ;
-@BTN_Y         4 ;
-@BTN_W         8 ;
-@BTN_H        12 ;
-@BTN_STATE    16 ;
-@BTN_LABEL    20 ;
-@BTN_WAS_DOWN 24 ;
+( Struct (36 bytes): x(4) y(4) w(4) h(4) state(4) label-ptr(4) was-down(4) callback(4) default(4) )
+@BTN_SIZE      36 ;
+@BTN_X          0 ;
+@BTN_Y          4 ;
+@BTN_W          8 ;
+@BTN_H         12 ;
+@BTN_STATE     16 ;
+@BTN_LABEL     20 ;
+@BTN_WAS_DOWN  24 ;
+@BTN_CALLBACK  28 ;
+@BTN_DEFAULT   32 ;
 
-@button-init ( addr x y w h label-ptr -- )
-    6 frame! ( 0:label 1:h 2:w 3:y 4:x 5:addr )
-    4 local@ 5 local@ BTN_X + STOREI
-    3 local@ 5 local@ BTN_Y + STOREI
-    2 local@ 5 local@ BTN_W + STOREI
-    1 local@ 5 local@ BTN_H + STOREI
-    0 5 local@ BTN_STATE + STOREI
-    0 local@ 5 local@ BTN_LABEL + STOREI
-    0 5 local@ BTN_WAS_DOWN + STOREI
-    6 unframe!
+@button-init ( addr x y w h label-ptr callback -- )
+    7 frame! ( 0:callback 1:label 2:h 3:w 4:y 5:x 6:addr )
+    5 local@ 6 local@ BTN_X        + STOREI
+    4 local@ 6 local@ BTN_Y        + STOREI
+    3 local@ 6 local@ BTN_W        + STOREI
+    2 local@ 6 local@ BTN_H        + STOREI
+    0        6 local@ BTN_STATE    + STOREI
+    1 local@ 6 local@ BTN_LABEL   + STOREI
+    0        6 local@ BTN_WAS_DOWN + STOREI
+    0 local@ 6 local@ BTN_CALLBACK + STOREI
+    0        6 local@ BTN_DEFAULT  + STOREI
+    7 unframe!
 ;
 
 @button-draw ( fd addr -- )
     2 frame! ( 0:addr 1:fd )
-    1 local@
-    0 local@ BTN_X + LOADI
-    0 local@ BTN_Y + LOADI
-    0 local@ BTN_W + LOADI
-    0 local@ BTN_H + LOADI
-    0 local@ BTN_STATE + LOADI
-    dup 2 = [ drop CLR_PRESS ] [
-        1 = [ CLR_HOVER ] [ CLR_BG ] ?:
+
+    ( default-button outer ring )
+    0 local@ BTN_DEFAULT + LOADI [
+        ( outer ring: fill black rect, then white spacer rect, both corner-cut )
+        1 local@
+        0 local@ BTN_X + LOADI 7 -
+        0 local@ BTN_Y + LOADI 7 -
+        0 local@ BTN_W + LOADI 14 +
+        0 local@ BTN_H + LOADI 14 +
+        CLR_BORDER DRAW::fill-rect
+        1 local@
+        0 local@ BTN_X + LOADI 4 -
+        0 local@ BTN_Y + LOADI 4 -
+        0 local@ BTN_W + LOADI 8 +
+        0 local@ BTN_H + LOADI 8 +
+        CLR_BG DRAW::fill-rect
+        ( corner cuts on outer ring )
+        1 local@ 0 local@ BTN_X + LOADI 7 -                                    0 local@ BTN_Y + LOADI 7 -                                    2 2 CLR_BG DRAW::fill-rect
+        1 local@ 0 local@ BTN_X + LOADI 0 local@ BTN_W + LOADI + 7 + 2 -       0 local@ BTN_Y + LOADI 7 -                                    2 2 CLR_BG DRAW::fill-rect
+        1 local@ 0 local@ BTN_X + LOADI 7 -                                    0 local@ BTN_Y + LOADI 0 local@ BTN_H + LOADI + 7 + 2 -       2 2 CLR_BG DRAW::fill-rect
+        1 local@ 0 local@ BTN_X + LOADI 0 local@ BTN_W + LOADI + 7 + 2 -       0 local@ BTN_Y + LOADI 0 local@ BTN_H + LOADI + 7 + 2 -       2 2 CLR_BG DRAW::fill-rect
+    ] ?
+
+    0 local@ BTN_STATE + LOADI 2 = [
+        ( ====== Pressed: black fill, white text ====== )
+        1 local@
+        0 local@ BTN_X + LOADI
+        0 local@ BTN_Y + LOADI
+        0 local@ BTN_W + LOADI
+        0 local@ BTN_H + LOADI
+        CLR_PRESS DRAW::fill-rect
+        ( corner cuts )
+        1 local@ 0 local@ BTN_X + LOADI                              0 local@ BTN_Y + LOADI                              2 2 CLR_BG DRAW::fill-rect
+        1 local@ 0 local@ BTN_X + LOADI 0 local@ BTN_W + LOADI + 2 - 0 local@ BTN_Y + LOADI                              2 2 CLR_BG DRAW::fill-rect
+        1 local@ 0 local@ BTN_X + LOADI                              0 local@ BTN_Y + LOADI 0 local@ BTN_H + LOADI + 2 -  2 2 CLR_BG DRAW::fill-rect
+        1 local@ 0 local@ BTN_X + LOADI 0 local@ BTN_W + LOADI + 2 - 0 local@ BTN_Y + LOADI 0 local@ BTN_H + LOADI + 2 -  2 2 CLR_BG DRAW::fill-rect
+        ( white label centered )
+        1 local@
+        0 local@ BTN_LABEL + LOADI strlen FONT_CHAR_W *
+        0 local@ BTN_W + LOADI SWAP - 2 /
+        0 local@ BTN_X + LOADI +
+        FONT_CHAR_H
+        0 local@ BTN_H + LOADI SWAP - 2 /
+        0 local@ BTN_Y + LOADI +
+        0 local@ BTN_LABEL + LOADI
+        CLR_BG 1
+        DRAW::draw-str
+    ] [
+        ( ====== Normal / Hover: white fill, 1px black border ====== )
+        ( outer border )
+        1 local@
+        0 local@ BTN_X + LOADI
+        0 local@ BTN_Y + LOADI
+        0 local@ BTN_W + LOADI
+        0 local@ BTN_H + LOADI
+        CLR_BORDER DRAW::fill-rect
+        ( inner fill, inset 1px )
+        1 local@
+        0 local@ BTN_X + LOADI 1 +
+        0 local@ BTN_Y + LOADI 1 +
+        0 local@ BTN_W + LOADI 2 -
+        0 local@ BTN_H + LOADI 2 -
+        CLR_BG DRAW::fill-rect
+        ( corner cuts )
+        1 local@ 0 local@ BTN_X + LOADI                              0 local@ BTN_Y + LOADI                              2 2 CLR_BG DRAW::fill-rect
+        1 local@ 0 local@ BTN_X + LOADI 0 local@ BTN_W + LOADI + 2 - 0 local@ BTN_Y + LOADI                              2 2 CLR_BG DRAW::fill-rect
+        1 local@ 0 local@ BTN_X + LOADI                              0 local@ BTN_Y + LOADI 0 local@ BTN_H + LOADI + 2 -  2 2 CLR_BG DRAW::fill-rect
+        1 local@ 0 local@ BTN_X + LOADI 0 local@ BTN_W + LOADI + 2 - 0 local@ BTN_Y + LOADI 0 local@ BTN_H + LOADI + 2 -  2 2 CLR_BG DRAW::fill-rect
+        ( black label centered )
+        1 local@
+        0 local@ BTN_LABEL + LOADI strlen FONT_CHAR_W *
+        0 local@ BTN_W + LOADI SWAP - 2 /
+        0 local@ BTN_X + LOADI +
+        FONT_CHAR_H
+        0 local@ BTN_H + LOADI SWAP - 2 /
+        0 local@ BTN_Y + LOADI +
+        0 local@ BTN_LABEL + LOADI
+        CLR_TEXT 1
+        DRAW::draw-str
     ] ?:
-    draw-3d-rect
-    ( draw label with 4px padding from top-left )
-    1 local@
-    0 local@ BTN_X + LOADI 6 +
-    0 local@ BTN_Y + LOADI 4 +
-    0 local@ BTN_LABEL + LOADI
-    CLR_TEXT 1
-    DRAW::draw-str
+
     2 unframe!
 ;
 
@@ -123,6 +194,45 @@ MODULE UI
     ] ?:
     0 local@ 3 local@ BTN_WAS_DOWN + STOREI
     swap drop
+    4 unframe!
+;
+
+@button-tick ( addr mx my btn -- )
+    4 frame! ( 0:btn 1:my 2:mx 3:addr )
+    2 local@ 1 local@
+    3 local@ BTN_X + LOADI
+    3 local@ BTN_Y + LOADI
+    3 local@ BTN_W + LOADI
+    3 local@ BTN_H + LOADI
+    in-rect? ( hit )
+    dup [
+        0 local@ 1 = [
+            2 3 local@ BTN_STATE + STOREI
+            0
+        ] [
+            3 local@ BTN_WAS_DOWN + LOADI [
+                1 3 local@ BTN_STATE + STOREI
+                1
+            ] [
+                1 3 local@ BTN_STATE + STOREI
+                0
+            ] ?:
+        ] ?:
+    ] [
+        0 3 local@ BTN_STATE + STOREI
+        0
+    ] ?:
+    0 local@ 3 local@ BTN_WAS_DOWN + STOREI
+    ( call stored callback if clicked )
+    [
+        3 local@ BTN_CALLBACK + LOADI
+        dup 0 > [
+            CALL
+        ] [
+            drop
+        ] ?:
+    ] ?
+    drop
     4 unframe!
 ;
 
@@ -169,12 +279,12 @@ MODULE UI
         0 local@ CB_SZ + LOADI 6 - dup
         CLR_CHECK DRAW::fill-rect
     ] ?
-    ( label to the right )
+    ( label to the right, vertically centered on box )
     1 local@
     0 local@ CB_X + LOADI 0 local@ CB_SZ + LOADI + 6 +
-    0 local@ CB_Y + LOADI 1 +
+    0 local@ CB_Y + LOADI 0 local@ CB_SZ + LOADI 2 / + FONT_CHAR_H 2 / -
     0 local@ CB_LABEL + LOADI
-    CLR_TEXT 1
+    CLR_TEXT 2
     DRAW::draw-str
     2 unframe!
 ;
@@ -210,6 +320,48 @@ MODULE UI
     4 unframe!
 ;
 
+( ===== Radio Button ===== )
+( Same struct layout as Checkbox (CB_SIZE=24). Only the draw routine differs. )
+( Use checkbox-init and checkbox-update for radio buttons.                    )
+( Apps manage mutual exclusion by clearing CB_CHK on siblings when one fires. )
+
+@radio-draw ( fd addr -- )
+    2 frame! ( 0:addr 1:fd )
+    ( border square )
+    1 local@ 0 local@ CB_X + LOADI 0 local@ CB_Y + LOADI
+    0 local@ CB_SZ + LOADI dup CLR_BORDER DRAW::fill-rect
+    ( inner bg: inset 1px )
+    1 local@ 0 local@ CB_X + LOADI 1 + 0 local@ CB_Y + LOADI 1 +
+    0 local@ CB_SZ + LOADI 2 - dup CLR_BG DRAW::fill-rect
+    ( tier 1: 6×2 CLR_BG at each corner — rows 0-1 and sz-2 to sz-1 )
+    1 local@ 0 local@ CB_X + LOADI                               0 local@ CB_Y + LOADI                               6 2 CLR_BG DRAW::fill-rect
+    1 local@ 0 local@ CB_X + LOADI 0 local@ CB_SZ + LOADI + 6 -  0 local@ CB_Y + LOADI                               6 2 CLR_BG DRAW::fill-rect
+    1 local@ 0 local@ CB_X + LOADI                               0 local@ CB_Y + LOADI 0 local@ CB_SZ + LOADI + 2 -  6 2 CLR_BG DRAW::fill-rect
+    1 local@ 0 local@ CB_X + LOADI 0 local@ CB_SZ + LOADI + 6 -  0 local@ CB_Y + LOADI 0 local@ CB_SZ + LOADI + 2 -  6 2 CLR_BG DRAW::fill-rect
+    ( tier 2: 4×2 CLR_BG — rows 2-3 and sz-4 to sz-3 )
+    1 local@ 0 local@ CB_X + LOADI                               0 local@ CB_Y + LOADI 2 +                            4 2 CLR_BG DRAW::fill-rect
+    1 local@ 0 local@ CB_X + LOADI 0 local@ CB_SZ + LOADI + 4 -  0 local@ CB_Y + LOADI 2 +                            4 2 CLR_BG DRAW::fill-rect
+    1 local@ 0 local@ CB_X + LOADI                               0 local@ CB_Y + LOADI 0 local@ CB_SZ + LOADI + 4 -   4 2 CLR_BG DRAW::fill-rect
+    1 local@ 0 local@ CB_X + LOADI 0 local@ CB_SZ + LOADI + 4 -  0 local@ CB_Y + LOADI 0 local@ CB_SZ + LOADI + 4 -  4 2 CLR_BG DRAW::fill-rect
+    ( tier 3: 2×2 CLR_BG — rows 4-5 and sz-6 to sz-5 )
+    1 local@ 0 local@ CB_X + LOADI                               0 local@ CB_Y + LOADI 4 +                            2 2 CLR_BG DRAW::fill-rect
+    1 local@ 0 local@ CB_X + LOADI 0 local@ CB_SZ + LOADI + 2 -  0 local@ CB_Y + LOADI 4 +                            2 2 CLR_BG DRAW::fill-rect
+    1 local@ 0 local@ CB_X + LOADI                               0 local@ CB_Y + LOADI 0 local@ CB_SZ + LOADI + 6 -   2 2 CLR_BG DRAW::fill-rect
+    1 local@ 0 local@ CB_X + LOADI 0 local@ CB_SZ + LOADI + 2 -  0 local@ CB_Y + LOADI 0 local@ CB_SZ + LOADI + 6 -  2 2 CLR_BG DRAW::fill-rect
+    ( selection dot: inset 4px )
+    0 local@ CB_CHK + LOADI [
+        1 local@ 0 local@ CB_X + LOADI 4 + 0 local@ CB_Y + LOADI 4 +
+        0 local@ CB_SZ + LOADI 8 - dup CLR_CHECK DRAW::fill-rect
+    ] ?
+    ( label: vertically centered on box )
+    1 local@
+    0 local@ CB_X + LOADI 0 local@ CB_SZ + LOADI + 6 +
+    0 local@ CB_Y + LOADI 0 local@ CB_SZ + LOADI 2 / + FONT_CHAR_H 2 / -
+    0 local@ CB_LABEL + LOADI
+    CLR_TEXT 2 DRAW::draw-str
+    2 unframe!
+;
+
 ( ===== Slider ===== )
 ( Struct (36 bytes): x(4) y(4) w(4) h(4) min(4) max(4) val(4) dragging(4) was-down(4) )
 @SL_SIZE     36 ;
@@ -222,7 +374,7 @@ MODULE UI
 @SL_VAL      24 ;
 @SL_DRG      28 ;
 @SL_WAS_DOWN 32 ;
-@SL_THUMB_W   8 ;
+@SL_THUMB_W  16 ;
 
 @slider-init ( addr x y w h min max val -- )
     8 frame! ( 0:val 1:max 2:min 3:h 4:w 5:y 6:x 7:addr )
@@ -259,30 +411,21 @@ MODULE UI
 
 @slider-draw ( fd addr -- )
     2 frame! ( 0:addr 1:fd )
-    ( track: centered vertically, 4px tall )
-    1 local@
-    0 local@ SL_X + LOADI
-    0 local@ SL_Y + LOADI 0 local@ SL_H + LOADI 2 / 2 - +
-    0 local@ SL_W + LOADI
-    4
-    CLR_TRACK DRAW::fill-rect
-    ( filled portion up to thumb )
+    ( clear slider area )
+    1 local@ 0 local@ SL_X + LOADI 0 local@ SL_Y + LOADI
+    0 local@ SL_W + LOADI 0 local@ SL_H + LOADI CLR_BG DRAW::fill-rect
+    ( track: 6px tall, centered vertically, recessed-groove look )
+    1 local@ 0 local@ SL_X + LOADI
+    0 local@ SL_Y + LOADI 0 local@ SL_H + LOADI 2 / 3 - +
+    0 local@ SL_W + LOADI 6
+    CLR_TRACK draw-border-rect
+    ( thumb: 3D raised button )
     0 local@ slider-thumb-x ( thumb_x )
-    1 local@
-    0 local@ SL_X + LOADI
-    0 local@ SL_Y + LOADI 0 local@ SL_H + LOADI 2 / 2 - +
-    2 PICK 0 local@ SL_X + LOADI - ( w = thumb_x - x )
-    4
-    CLR_THUMB DRAW::fill-rect
-    drop ( thumb_x )
-    ( thumb rect )
-    0 local@ slider-thumb-x ( thumb_x )
-    1 local@
-    OVER
+    1 local@ OVER               ( thumb_x fd thumb_x )
     0 local@ SL_Y + LOADI
     SL_THUMB_W
     0 local@ SL_H + LOADI
-    CLR_THUMB DRAW::fill-rect
+    CLR_BG draw-3d-rect
     drop ( thumb_x )
     2 unframe!
 ;
@@ -309,13 +452,14 @@ MODULE UI
             3 local@ SL_W + LOADI SL_THUMB_W - dup 0 > [
                 ( clamp mx to [x, x+track_w] )
                 2 local@ 3 local@ SL_X + LOADI -  ( mx - x )
-                MAX 0 ( clamp low )
+                0 MAX ( clamp low )
                 OVER MIN ( clamp high: track_w )
                 ( new_val = min + offset * range / track_w )
                 3 local@ SL_MAX + LOADI 3 local@ SL_MIN + LOADI - *
                 OVER /  ( track_w still on stack below )
                 3 local@ SL_MIN + LOADI +
                 3 local@ SL_VAL + STOREI
+                drop ( discard track_w )
             ] [
                 drop
             ] ?:

@@ -10,7 +10,7 @@ import (
 
 func TestDebugTimes(t *testing.T) {
 	source := "[ 42 ] 1 #: HALT"
-	bytecode, err := Compile(source)
+	bytecode, err := Compile(source, int32(vm.HeadlessBaseAddress))
 	if err != nil {
 		t.Fatalf("Compile error: %v", err)
 	}
@@ -19,7 +19,7 @@ func TestDebugTimes(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stderr = w
 
-	machine := vm.NewVM(bytecode)
+	machine := vm.NewVM(bytecode, vm.HeadlessBaseAddress)
 	runErr := machine.Run()
 
 	w.Close()

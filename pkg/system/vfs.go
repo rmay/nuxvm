@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/rmay/nuxvm/pkg/lux"
+	"github.com/rmay/nuxvm/pkg/vm"
 )
 
 // VFSFile is the interface that all virtual files must implement.
@@ -72,6 +73,8 @@ func (v *VFS) openFile(s *System, path string) (VFSFile, error) {
 		file = &audioFile{s: s}
 	case path == "/sys/debug":
 		file = &debugFile{}
+	case path == "/sys/font/widths":
+		file = &fontWidthsFile{s: s}
 	case path == "/sys/chan/new":
 		c1, c2 := newChannelPair()
 		s.lastChan = c2
@@ -223,6 +226,9 @@ func (f *drawFile) Write(p []byte) (int, error) {
 			char := p[i+4]
 			color := binary.LittleEndian.Uint32(p[i+5 : i+9])
 			scale := p[i+9]
+			if scale == 0 {
+				scale = f.s.text.fontSize
+			}
 			f.s.drawCharVFS(x, y, char, color, scale)
 			i += 10
 		case 2: // DrawString
@@ -233,20 +239,42 @@ func (f *drawFile) Write(p []byte) (int, error) {
 			y := int32(int16(binary.LittleEndian.Uint16(p[i+2 : i+4])))
 			color := binary.LittleEndian.Uint32(p[i+4 : i+8])
 			scale := p[i+8]
+			if scale == 0 {
+				scale = f.s.text.fontSize
+			}
 			strLen := int(binary.LittleEndian.Uint16(p[i+9 : i+11]))
 			i += 11
 			if i+strLen > len(p) {
 				return i - 11, io.ErrShortWrite
 			}
 			cx := x
+			sc := float64(scale)
+			if scale >= 6 {
+				div := 12.0
+				if !f.s.text.useBasicFont {
+					div = 16.0
+				}
+				sc = float64(scale) / div
+			} else if sc <= 0 {
+				sc = 1.0
+			}
+
+			face := getGoFace(scale)
 			for j := 0; j < strLen; j++ {
 				char := p[i+j]
 				f.s.drawCharVFS(cx, y, char, color, scale)
-				charWidth := int32(ChicagoCFF[char])
-				if charWidth == 0 {
-					charWidth = 4
+				var charWidth int32
+				if f.s.text.useBasicFont {
+					charWidth = int32(float64(BasicFontWidth) * sc)
+				} else {
+					adv, ok := face.GlyphAdvance(rune(char))
+					if ok {
+						charWidth = int32(adv.Ceil())
+					} else {
+						charWidth = 4
+					}
 				}
-				cx += charWidth * int32(scale)
+				cx += charWidth
 			}
 			i += strLen
 		case 3: // DrawRect
@@ -260,6 +288,18 @@ func (f *drawFile) Write(p []byte) (int, error) {
 			color := binary.LittleEndian.Uint32(p[i+8 : i+12])
 			f.s.drawRect(x, y, w, h, color)
 			i += 12
+		case 4: // SetFontSize
+			if i+1 > len(p) {
+				return i - 1, io.ErrShortWrite
+			}
+			f.s.text.fontSize = p[i]
+			i += 1
+		case 5: // SetFont: 0 = Chicago CFF (default), 1 = 7x13 basicfont
+			if i+1 > len(p) {
+				return i - 1, io.ErrShortWrite
+			}
+			f.s.text.useBasicFont = p[i] != 0
+			i += 1
 		default:
 			return i - 1, fmt.Errorf("unknown draw command: %d", cmd)
 		}
@@ -355,7 +395,7 @@ func (f *vmFile) Read(p []byte) (n int, err error) {
 func (f *vmFile) Write(p []byte) (n int, err error) {
 	if f.kind == "new" {
 		programPath := strings.TrimSpace(string(p))
-		bytecode, err := lux.LoadProgram(programPath)
+		bytecode, err := lux.LoadProgram(programPath, int32(vm.HeadlessBaseAddress))
 		if err != nil {
 			return 0, err
 		}
@@ -363,7 +403,7 @@ func (f *vmFile) Write(p []byte) (n int, err error) {
 		id := f.s.nextMachineID
 		f.s.nextMachineID++
 
-		child := NewMachine(bytecode, 32*1024*1024)
+		child := NewMachine(bytecode, vm.HeadlessBaseAddress, 32*1024*1024)
 		f.s.childMachines[id] = child
 
 		f.lastCreatedID = id
@@ -451,3 +491,26 @@ func (f *debugFile) Write(p []byte) (n int, err error) {
 func (f *debugFile) Close() error {
 	return nil
 }
+
+// fontWidthsFile returns the character widths of the current Go font.
+type fontWidthsFile struct {
+	s *System
+}
+
+func (f *fontWidthsFile) Read(p []byte) (n int, err error) {
+	face := getGoFace(f.s.text.fontSize)
+	widths := make([]byte, 256)
+	for i := 0; i < 256; i++ {
+		adv, ok := face.GlyphAdvance(rune(i))
+		if ok {
+			widths[i] = uint8(adv.Ceil())
+		} else {
+			widths[i] = 0
+		}
+	}
+	n = copy(p, widths)
+	return n, io.EOF
+}
+
+func (f *fontWidthsFile) Write(p []byte) (n int, err error) { return 0, io.ErrShortWrite }
+func (f *fontWidthsFile) Close() error                     { return nil }

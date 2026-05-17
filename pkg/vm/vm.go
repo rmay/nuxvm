@@ -23,8 +23,11 @@ const (
 	VideoMaxBufferSize    = 1280 * 1024 * 4
 	VideoFramebufferEnd   = VideoFramebufferStart + VideoMaxBufferSize
 
-	// User memory starts after the maximum possible video framebuffer
-	UserMemoryOffset = 0x600000 // 6MB decimal
+	// User memory base addresses.
+	// Headless mode starts right after device memory.
+	// Graphical mode starts after the maximum possible video framebuffer to avoid collisions.
+	HeadlessBaseAddress  = 0x11000
+	GraphicalBaseAddress = 0x600000 // 6MB decimal
 )
 
 // Device memory configuration (device port logic moved to Bus layer)
@@ -74,21 +77,15 @@ const MaxLocalsSize = 4096
 // MaxLoopStackSize defines the maximum depth of nested loops.
 const MaxLoopStackSize = 1024
 
-// NewVM initializes a new VM with the given program.
-// The program is loaded at UserMemoryOffset.
-func NewVM(program []byte, trace ...bool) *VM {
-	// Allocate RAM: Reserved + (Framebuffer range but not allocated) + User Memory
-	// Actually, we should only allocate what the VM physically needs to address as RAM.
-	// Let's keep UserMemoryOffset as the constant it is, but memory slice will be sized to fit.
-	// We ensure at least 8MB to cover the string heap (0x700000).
-	memSize := UserMemoryOffset + uint32(len(program))
-	if memSize < 0x800000 {
-		memSize = 0x800000
-	}
+// NewVM initializes a new VM with the given program and base address.
+func NewVM(program []byte, baseAddress uint32, trace ...bool) *VM {
+	// Allocate RAM: baseAddress + program size
+	// We no longer force a minimum 8MB allocation.
+	memSize := baseAddress + uint32(len(program))
 	totalMemory := make([]byte, memSize)
 
 	// Copy program to user memory area
-	copy(totalMemory[UserMemoryOffset:], program)
+	copy(totalMemory[baseAddress:], program)
 
 	traceEnabled := false
 	if len(trace) > 0 {
@@ -99,10 +96,10 @@ func NewVM(program []byte, trace ...bool) *VM {
 		stack:              make([]int32, 0, MaxStackSize),
 		returnStack:        make([]int32, 0, MaxReturnStackSize),
 		memory:             totalMemory,
-		pc:                 UserMemoryOffset, // Start execution at user memory
+		pc:                 baseAddress, // Start execution at user memory
 		running:            true,
 		reservedMemorySize: ReservedMemorySize,
-		userMemoryStart:    UserMemoryOffset,
+		userMemoryStart:    baseAddress,
 		trace:              traceEnabled,
 		locals:             make([]int32, 0, MaxLocalsSize),
 		loopStack:          make([]int32, 0, MaxLoopStackSize),
@@ -110,15 +107,14 @@ func NewVM(program []byte, trace ...bool) *VM {
 	}
 }
 
-// NewVMWithMemorySize creates a VM with a fixed memory size.
-// The program is loaded at UserMemoryOffset.
-func NewVMWithMemorySize(program []byte, totalSize uint32, trace ...bool) *VM {
-	if totalSize < UserMemoryOffset+uint32(len(program)) {
-		totalSize = UserMemoryOffset + uint32(len(program))
+// NewVMWithMemorySize creates a VM with a fixed memory size and base address.
+func NewVMWithMemorySize(program []byte, baseAddress uint32, totalSize uint32, trace ...bool) *VM {
+	if totalSize < baseAddress+uint32(len(program)) {
+		totalSize = baseAddress + uint32(len(program))
 	}
 
 	totalMemory := make([]byte, totalSize)
-	copy(totalMemory[UserMemoryOffset:], program)
+	copy(totalMemory[baseAddress:], program)
 
 	traceEnabled := false
 	if len(trace) > 0 {
@@ -129,10 +125,10 @@ func NewVMWithMemorySize(program []byte, totalSize uint32, trace ...bool) *VM {
 		stack:              make([]int32, 0, MaxStackSize),
 		returnStack:        make([]int32, 0, MaxReturnStackSize),
 		memory:             totalMemory,
-		pc:                 UserMemoryOffset,
+		pc:                 baseAddress,
 		running:            true,
 		reservedMemorySize: ReservedMemorySize,
-		userMemoryStart:    UserMemoryOffset,
+		userMemoryStart:    baseAddress,
 		trace:              traceEnabled,
 		locals:             make([]int32, 0, MaxLocalsSize),
 		loopStack:          make([]int32, 0, MaxLoopStackSize),
@@ -140,13 +136,13 @@ func NewVMWithMemorySize(program []byte, totalSize uint32, trace ...bool) *VM {
 	}
 }
 
-// NewVMWithReservedMemory creates a VM with custom reserved memory size.
-func NewVMWithReservedMemory(program []byte, reservedSize uint32, trace ...bool) *VM {
-	memSize := UserMemoryOffset + uint32(len(program))
+// NewVMWithReservedMemory creates a VM with custom reserved memory size and base address.
+func NewVMWithReservedMemory(program []byte, baseAddress uint32, reservedSize uint32, trace ...bool) *VM {
+	memSize := baseAddress + uint32(len(program))
 	totalMemory := make([]byte, memSize)
 
 	// Copy program to user memory area
-	copy(totalMemory[UserMemoryOffset:], program)
+	copy(totalMemory[baseAddress:], program)
 
 	traceEnabled := false
 	if len(trace) > 0 {
@@ -157,11 +153,14 @@ func NewVMWithReservedMemory(program []byte, reservedSize uint32, trace ...bool)
 		stack:              make([]int32, 0, MaxStackSize),
 		returnStack:        make([]int32, 0, MaxReturnStackSize),
 		memory:             totalMemory,
-		pc:                 UserMemoryOffset, // Start execution at user memory
+		pc:                 baseAddress, // Start execution at user memory
 		running:            true,
 		reservedMemorySize: reservedSize,
-		userMemoryStart:    UserMemoryOffset,
+		userMemoryStart:    baseAddress,
 		trace:              traceEnabled,
+		locals:             make([]int32, 0, MaxLocalsSize),
+		loopStack:          make([]int32, 0, MaxLoopStackSize),
+		fp:                 -1,
 	}
 }
 
@@ -290,6 +289,10 @@ func (vm *VM) LastOpcode() string {
 // Running returns whether the VM is currently running
 func (vm *VM) Running() bool {
 	return vm.running
+}
+
+func (vm *VM) SetRunning(r bool) {
+	vm.running = r
 }
 
 // Halted returns whether the VM has halted.
@@ -946,7 +949,7 @@ func (vm *VM) Load() error {
 	vm.pc += 4
 
 	// Check if the address is within the device memory region or video framebuffer
-	if isDeviceAddr(address) {
+	if vm.isDeviceAddr(address) {
 		// It's a device memory access, call device handler
 		value, err := vm.handleDeviceRead(address)
 		if err != nil {
@@ -979,7 +982,7 @@ func (vm *VM) Store() error {
 	vm.pc += 4
 
 	// Check if the address is within the device memory region or video framebuffer
-	if isDeviceAddr(address) {
+	if vm.isDeviceAddr(address) {
 		// It's a device memory access, call device handler
 		err := vm.handleDeviceWrite(address, value)
 		if err != nil {
@@ -1297,9 +1300,6 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 	case OpHalt:
 		vm.running = false
 		vm.halted = true
-		if vm.trace {
-			fmt.Fprintf(os.Stderr, "VM: OpHalt: Stopping execution")
-		}
 	case OpYield:
 		vm.running = false
 	case OpLoadI:
@@ -1308,7 +1308,7 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 			return currentPC, fmt.Errorf("loadi failed: %v", err)
 		}
 		uaddr := uint32(addr)
-		if isDeviceAddr(uaddr) {
+		if vm.isDeviceAddr(uaddr) {
 			val, err := vm.handleDeviceRead(uaddr)
 			if err != nil {
 				return currentPC, fmt.Errorf("loadi device read failed: %v", err)
@@ -1329,7 +1329,7 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 			return currentPC, fmt.Errorf("storei failed: %v", err)
 		}
 		uaddr := uint32(addr)
-		if isDeviceAddr(uaddr) {
+		if vm.isDeviceAddr(uaddr) {
 			if err := vm.handleDeviceWrite(uaddr, value); err != nil {
 				return currentPC, fmt.Errorf("storei device write failed: %v", err)
 			}
@@ -1544,7 +1544,10 @@ func (vm *VM) DebugInfo() string {
 }
 
 // isDeviceAddr checks if an address is in device memory or video framebuffer range.
-func isDeviceAddr(addr uint32) bool {
+func (vm *VM) isDeviceAddr(addr uint32) bool {
+	if addr >= vm.userMemoryStart {
+		return false
+	}
 	return (addr >= DeviceMemoryOffset && addr < DeviceMemoryOffset+DeviceMemorySize) ||
 		(addr >= VideoFramebufferStart && addr < VideoFramebufferEnd)
 }

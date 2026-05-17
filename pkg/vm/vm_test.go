@@ -27,7 +27,7 @@ func (m *MockBus) Write(address uint32, value int32) error {
 
 // Helper function to create a VM with a simple program
 func createVMWithProgram(program []byte) *VM {
-	vm := NewVMWithMemorySize(program, uint32(UserMemoryOffset)+uint32(len(program)))
+	vm := NewVM(program, uint32(HeadlessBaseAddress))
 	vm.SetBus(&MockBus{})
 	return vm
 }
@@ -52,7 +52,7 @@ func contains(s, substr string) bool {
 
 func TestNewVM(t *testing.T) {
 	program := []byte{OpHalt}
-	vm := NewVM(program)
+	vm := NewVM(program, uint32(HeadlessBaseAddress))
 
 	if vm == nil {
 		t.Fatal("NewVM returned nil")
@@ -66,10 +66,7 @@ func TestNewVM(t *testing.T) {
 	if !vm.Running() {
 		t.Error("Expected VM to be running initially")
 	}
-	expectedMemSize := int(UserMemoryOffset) + len(program)
-	if expectedMemSize < 0x800000 {
-		expectedMemSize = 0x800000
-	}
+	expectedMemSize := int(HeadlessBaseAddress) + len(program)
 	if len(vm.memory) != expectedMemSize {
 		t.Errorf("Expected memory length %d, got %d", expectedMemSize, len(vm.memory))
 	}
@@ -357,7 +354,7 @@ func TestUnary(t *testing.T) {
 
 func TestJmp(t *testing.T) {
 	program := make([]byte, 10)
-	target := UserMemoryOffset + 5
+	target := HeadlessBaseAddress + 5
 	program[0] = OpJmp
 	binary.BigEndian.PutUint32(program[1:], uint32(target))
 	program[5] = OpHalt
@@ -375,7 +372,7 @@ func TestJmp(t *testing.T) {
 
 func TestJz(t *testing.T) {
 	program := make([]byte, 15)
-	target := UserMemoryOffset + 8 // distinct from fall-through PC (UserMemoryOffset+5)
+	target := HeadlessBaseAddress + 8 // distinct from fall-through PC (HeadlessBaseAddress+5)
 	program[0] = OpJz
 	binary.BigEndian.PutUint32(program[1:], uint32(target))
 	program[5] = OpHalt
@@ -408,7 +405,7 @@ func TestJz(t *testing.T) {
 
 func TestJnz(t *testing.T) {
 	program := make([]byte, 15)
-	target := UserMemoryOffset + 8 // distinct from fall-through PC (UserMemoryOffset+5)
+	target := HeadlessBaseAddress + 8 // distinct from fall-through PC (HeadlessBaseAddress+5)
 	program[0] = OpJnz
 	binary.BigEndian.PutUint32(program[1:], uint32(target))
 	program[5] = OpHalt
@@ -441,7 +438,7 @@ func TestJnz(t *testing.T) {
 
 func TestCallRet(t *testing.T) {
 	program := make([]byte, 20)
-	funcAddr := UserMemoryOffset + 10
+	funcAddr := HeadlessBaseAddress + 10
 	program[0] = OpCall
 	binary.BigEndian.PutUint32(program[1:], uint32(funcAddr))
 	program[5] = OpHalt
@@ -465,8 +462,8 @@ func TestCallRet(t *testing.T) {
 	if _, err := vm.Step(); err != nil {
 		t.Fatalf("Step 2 failed: %v", err)
 	}
-	if vm.PC() != UserMemoryOffset+5 {
-		t.Errorf("Expected PC=%d after ret, got %d", UserMemoryOffset+5, vm.PC())
+	if vm.PC() != HeadlessBaseAddress+5 {
+		t.Errorf("Expected PC=%d after ret, got %d", HeadlessBaseAddress+5, vm.PC())
 	}
 	if len(vm.ReturnStack()) != 0 {
 		t.Errorf("Expected empty return stack, got length %d", len(vm.ReturnStack()))
@@ -474,8 +471,8 @@ func TestCallRet(t *testing.T) {
 }
 
 func TestLoadStore(t *testing.T) {
-	program := make([]byte, 120) // large enough for addr=UserMemoryOffset+100
-	addr := uint32(UserMemoryOffset + 100)
+	program := make([]byte, 120) // large enough for addr=HeadlessBaseAddress+100
+	addr := uint32(HeadlessBaseAddress + 100)
 
 	// Store 42 at addr
 	program[0] = OpStore
@@ -512,12 +509,12 @@ func TestLoadStore(t *testing.T) {
 }
 
 func TestLoadIStoreI(t *testing.T) {
-	program := make([]byte, 120) // large enough for addr=UserMemoryOffset+100
+	program := make([]byte, 120) // large enough for addr=HeadlessBaseAddress+100
 	program[0] = OpStoreI
 	program[1] = OpLoadI
 	program[2] = OpHalt
 	vm := createVMWithProgram(program)
-	addr := int32(UserMemoryOffset + 100)
+	addr := int32(HeadlessBaseAddress + 100)
 	val := int32(12345)
 
 	pushValue(t, vm, val)

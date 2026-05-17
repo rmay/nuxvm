@@ -7,17 +7,25 @@ import (
 	"strings"
 
 	"github.com/rmay/nuxvm/pkg/lux"
+	"github.com/rmay/nuxvm/pkg/vm"
 )
 
 func main() {
 	trace := flag.Bool("trace", false, "enable compilation tracing")
 	outFlag := flag.String("o", "", "output path (default: <input>.bin, stripping a trailing .lux)")
+	targetFlag := flag.String("target", "graphical", "compilation target (graphical or headless)")
 	flag.Parse()
 
 	if len(flag.Args()) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: luxc [-trace] [-o out.bin] <file.lux>")
+		fmt.Fprintln(os.Stderr, "Usage: luxc [-trace] [-o out.bin] [-target graphical|headless] <file.lux>")
 		os.Exit(1)
 	}
+
+	baseAddr := vm.GraphicalBaseAddress
+	if *targetFlag == "headless" {
+		baseAddr = vm.HeadlessBaseAddress
+	}
+
 	inPath := flag.Args()[0]
 
 	source, err := os.ReadFile(inPath)
@@ -26,7 +34,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	bytecode, err := lux.Compile(string(source), *trace)
+	bytecode, err := lux.Compile(string(source), int32(baseAddr), *trace)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "luxc: %v\n", err)
 		os.Exit(1)

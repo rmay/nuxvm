@@ -9,12 +9,20 @@ MODULE VFS
 @SCI-ARG2 0x100DC ;
 
 ( VFS SCI Command Codes )
-@CMD_OPEN  1 ;
-@CMD_CLOSE 2 ;
-@CMD_READ  3 ;
-@CMD_WRITE 4 ;
-@CMD_BIND  5 ;
-@CMD_YIELD 15 ;
+@CMD_OPEN  10 ;
+@CMD_CLOSE 11 ;
+@CMD_READ  12 ;
+@CMD_WRITE 13 ;
+@CMD_BIND  14 ;
+
+@CMD_CREATE_WIN 1 ;
+@CMD_CLOSE_WIN  2 ;
+@CMD_MOVE_WIN   3 ;
+@CMD_FOCUS_WIN  8 ;
+@CMD_POLL_EVENT 9 ;
+
+@CMD_YIELD 16 ;
+@CMD_FILE_DIALOG 21 ;
 
 ( Standard Paths )
 @PATH_CHAN_NEW  T"/sys/chan/new" ;
@@ -66,4 +74,16 @@ MODULE VFS
 
 @yield ( -- status )
     CMD_YIELD 0 0 EXEC
+;
+
+@open-file-dialog ( mode buf-ptr -- status )
+    CMD_FILE_DIALOG rot rot EXEC
+;
+
+@create-window ( name-ptr size -- win-id )
+    CMD_CREATE_WIN rot rot EXEC
+;
+
+@poll-event ( -- event )
+    CMD_POLL_EVENT 0 0 EXEC
 ;

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/rmay/nuxvm/pkg/vm"
 )
 
 // TestLoadProgramCompilesLux verifies that .lux inputs are compiled on the fly
@@ -17,11 +19,11 @@ func TestLoadProgramCompilesLux(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	loaded, err := LoadProgram(path)
+	loaded, err := LoadProgram(path, int32(vm.HeadlessBaseAddress))
 	if err != nil {
 		t.Fatalf("LoadProgram: %v", err)
 	}
-	expected, err := Compile(src)
+	expected, err := Compile(src, int32(vm.HeadlessBaseAddress))
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -39,7 +41,7 @@ func TestLoadProgramPassesThroughBin(t *testing.T) {
 	if err := os.WriteFile(path, raw, 0644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := LoadProgram(path)
+	got, err := LoadProgram(path, int32(vm.HeadlessBaseAddress))
 	if err != nil {
 		t.Fatalf("LoadProgram: %v", err)
 	}
@@ -50,7 +52,7 @@ func TestLoadProgramPassesThroughBin(t *testing.T) {
 
 // TestLoadProgramMissingFile returns a clear error.
 func TestLoadProgramMissingFile(t *testing.T) {
-	if _, err := LoadProgram("/this/path/should/not/exist.lux"); err == nil {
+	if _, err := LoadProgram("/this/path/should/not/exist.lux", int32(vm.HeadlessBaseAddress)); err == nil {
 		t.Error("expected error for missing file")
 	}
 }

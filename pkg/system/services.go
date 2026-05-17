@@ -159,10 +159,19 @@ type Pane struct {
 	W, H  int32
 }
 
+// ModalUI is the interface for OS-level modal dialogs (e.g. File Dialog)
+type ModalUI interface {
+	Update(evt *InputEvent) bool // returns true if still active
+	Draw(fb []byte, w, h int32)
+}
+
 // ============= Service Manager =============
 
 type ServiceManager struct {
 	windowMu sync.RWMutex // protects windows map and activeWinID
+
+	// Modal management
+	modal ModalUI
 
 	// Window management
 	windowChan  chan WindowMsg
@@ -342,6 +351,39 @@ func (sm *ServiceManager) SetScreenSize(w, h int32) {
 	sm.screenWidth = w
 	sm.screenHeight = h
 	sm.windowMu.Unlock()
+}
+
+func (sm *ServiceManager) HasModal() bool {
+	sm.windowMu.RLock()
+	defer sm.windowMu.RUnlock()
+	return sm.modal != nil
+}
+
+func (sm *ServiceManager) SetModal(m ModalUI) {
+	sm.windowMu.Lock()
+	sm.modal = m
+	sm.windowMu.Unlock()
+}
+
+func (sm *ServiceManager) UpdateModal(evt *InputEvent) bool {
+	sm.windowMu.Lock()
+	defer sm.windowMu.Unlock()
+	if sm.modal == nil {
+		return false
+	}
+	active := sm.modal.Update(evt)
+	if !active {
+		sm.modal = nil
+	}
+	return active
+}
+
+func (sm *ServiceManager) DrawModal(fb []byte, w, h int32) {
+	sm.windowMu.RLock()
+	defer sm.windowMu.RUnlock()
+	if sm.modal != nil {
+		sm.modal.Draw(fb, w, h)
+	}
 }
 
 // GetWindowChannel returns the window management request channel

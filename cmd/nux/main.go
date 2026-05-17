@@ -25,13 +25,13 @@ func main() {
 	}
 
 	filename := flag.Args()[0]
-	program, err := lux.LoadProgram(filename)
+	program, err := lux.LoadProgram(filename, int32(vm.HeadlessBaseAddress))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	machine := vm.NewVM(program)
+	machine := vm.NewVM(program, vm.HeadlessBaseAddress)
 
 	if *debugFlag {
 		runDebug(machine)

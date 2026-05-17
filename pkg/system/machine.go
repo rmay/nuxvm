@@ -13,12 +13,12 @@ type Machine struct {
 	System *System
 }
 
-func NewMachine(program []byte, memSize uint32, trace ...bool) *Machine {
+func NewMachine(program []byte, baseAddress uint32, memSize uint32, trace ...bool) *Machine {
 	var cpu *vm.VM
 	if memSize > 0 {
-		cpu = vm.NewVMWithMemorySize(program, memSize, trace...)
+		cpu = vm.NewVMWithMemorySize(program, baseAddress, memSize, trace...)
 	} else {
-		cpu = vm.NewVM(program, trace...)
+		cpu = vm.NewVM(program, baseAddress, trace...)
 	}
 	sys := NewSystem()
 	sys.SetMemory(cpu.Memory())
@@ -63,12 +63,12 @@ func NewMachine(program []byte, memSize uint32, trace ...bool) *Machine {
 // The new Machine has its own CPU, memory, text/screen state, and vectors —
 // only Services is shared. Services goroutines are NOT restarted; the caller
 // must have already started them on the shared instance.
-func NewMachineSharedServices(program []byte, memSize uint32, services *ServiceManager, trace ...bool) *Machine {
+func NewMachineSharedServices(program []byte, baseAddress uint32, memSize uint32, services *ServiceManager, trace ...bool) *Machine {
 	var cpu *vm.VM
 	if memSize > 0 {
-		cpu = vm.NewVMWithMemorySize(program, memSize, trace...)
+		cpu = vm.NewVMWithMemorySize(program, baseAddress, memSize, trace...)
 	} else {
-		cpu = vm.NewVM(program, trace...)
+		cpu = vm.NewVM(program, baseAddress, trace...)
 	}
 	// Skip the 5 MB screenPixels fallback — this VM shares a ServiceManager
 	// that has real windows, so getActiveFramebuffer always resolves to a
@@ -98,10 +98,22 @@ func NewMachineSharedServices(program []byte, memSize uint32, services *ServiceM
 // Tick executes the CPU until it yields or halts.
 // It returns whether the CPU is still running.
 func (m *Machine) Tick() (bool, error) {
-	if !m.CPU.Running() {
+	if m.System.Services != nil && m.System.Services.HasModal() {
+		fb := m.System.getActiveFramebuffer()
+		w := m.System.getScreenWidth()
+		h := m.System.getScreenHeight()
+		m.System.Services.DrawModal(fb, w, h)
+		if win := m.System.Services.GetActiveWindow(); win != nil {
+			win.Dirty = true
+		}
+		return true, nil
+	}
+
+	if m.CPU.Halted() {
 		return false, nil
 	}
 
+	m.CPU.SetRunning(true)
 	m.CPU.ClearYield()
 	m.System.yielded = false
 
@@ -210,6 +222,21 @@ func (m *Machine) QueueWheel(dx, dy float64) {
 // DrainInputEvents polls and dispatches all pending input events to the VM.
 // Called each frame before machine.Tick() to feed buffered input to the VM.
 func (m *Machine) DrainInputEvents() {
+	if m.System.Services != nil && m.System.Services.HasModal() {
+		for {
+			var evt *InputEvent
+			select {
+			case e := <-m.System.inputQueue:
+				evt = &e
+			default:
+				return
+			}
+			if !m.System.Services.UpdateModal(evt) {
+				return
+			}
+		}
+	}
+
 	var mouseChanged bool
 	mouseX, mouseY := m.System.mouseX, m.System.mouseY
 	mouseBtn := m.System.MouseButton()

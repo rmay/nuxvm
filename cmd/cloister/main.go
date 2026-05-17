@@ -8,12 +8,16 @@ import (
 	"image/color"
 	"math"
 	"os"
+	"path"
+	"strings"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/audio"
+	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/rmay/nuxvm/pkg/lux"
 	"github.com/rmay/nuxvm/pkg/system"
+	"github.com/rmay/nuxvm/pkg/vm"
 )
 
 const audioSampleRate = 44100
@@ -22,6 +26,13 @@ type Game struct {
 	machine *system.Machine
 	lastMX  int
 	lastMY  int
+
+	// Launcher state
+	launcherMode  bool
+	apps          []string
+	selectedIndex int
+	memSize       int
+	audioCtx      *audio.Context
 }
 
 // translateKey maps an ebiten Key to the integer keycode that Lux apps see.
@@ -79,6 +90,32 @@ func translateKey(k ebiten.Key) (int32, bool) {
 }
 
 func (g *Game) Update() error {
+	if g.launcherMode {
+		if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) {
+			g.selectedIndex--
+			if g.selectedIndex < 0 {
+				g.selectedIndex = len(g.apps) - 1
+			}
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyArrowDown) {
+			g.selectedIndex++
+			if g.selectedIndex >= len(g.apps) {
+				g.selectedIndex = 0
+			}
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
+			if len(g.apps) > 0 {
+				appPath := path.Join("apps", g.apps[g.selectedIndex])
+				if err := g.loadApp(appPath); err != nil {
+					fmt.Fprintf(os.Stderr, "Error loading %s: %v\n", appPath, err)
+				} else {
+					g.launcherMode = false
+				}
+			}
+		}
+		return nil
+	}
+
 	g.machine.DrainInputEvents()
 
 	for _, k := range inpututil.AppendJustPressedKeys(nil) {
@@ -105,12 +142,26 @@ func (g *Game) Update() error {
 		return err
 	}
 	if !running {
-		return fmt.Errorf("VM halted")
+		g.launcherMode = true
+		return nil
 	}
 	return nil
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
+	if g.launcherMode {
+		screen.Fill(color.RGBA{20, 20, 20, 255})
+		ebitenutil.DebugPrintAt(screen, "--- NUXVM LAUNCHER ---", 20, 20)
+		for i, app := range g.apps {
+			prefix := "  "
+			if i == g.selectedIndex {
+				prefix = "> "
+			}
+			ebitenutil.DebugPrintAt(screen, prefix+app, 20, 50+i*20)
+		}
+		return
+	}
+
 	pixels := g.machine.System.ScreenPixels()
 	w := int(g.machine.System.ScreenWidth())
 	h := int(g.machine.System.ScreenHeight())
@@ -124,6 +175,9 @@ func (g *Game) Draw(screen *ebiten.Image) {
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
+	if g.launcherMode {
+		return 800, 600
+	}
 	sw, sh := int(g.machine.System.ScreenWidth()), int(g.machine.System.ScreenHeight())
 	return sw, sh
 }
@@ -161,34 +215,64 @@ func newSoundHandler(ctx *audio.Context) func(int32) {
 	}
 }
 
+func (g *Game) loadApp(appPath string) error {
+	bytecode, err := lux.LoadProgram(appPath, int32(vm.GraphicalBaseAddress))
+	if err != nil {
+		return err
+	}
+
+	machine := system.NewMachine(bytecode, vm.GraphicalBaseAddress, uint32(g.memSize)*1024*1024, false)
+	machine.System.SetResolution(800, 600)
+
+	if svc := machine.System.Services; svc != nil {
+		svc.SoundHandler = newSoundHandler(g.audioCtx)
+	}
+
+	g.machine = machine
+	return nil
+}
+
 func main() {
 	memFlag := flag.Int("mem", 32, "VM memory size in megabytes")
 	flag.Parse()
 
-	shellPath := "apps/Shell.bin"
+	game := &Game{
+		memSize:  *memFlag,
+		audioCtx: audio.NewContext(audioSampleRate),
+	}
+
+	// Always load the apps list so it's available if we drop back to the launcher
+	files, err := os.ReadDir("apps")
+	if err == nil {
+		for _, f := range files {
+			if !f.IsDir() && strings.HasSuffix(f.Name(), ".bin") {
+				game.apps = append(game.apps, f.Name())
+			}
+		}
+	}
+
 	if flag.NArg() > 0 {
-		shellPath = flag.Arg(0)
-	}
-
-	bytecode, err := lux.LoadProgram(shellPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading %s: %v\n", shellPath, err)
-		os.Exit(1)
-	}
-
-	machine := system.NewMachine(bytecode, uint32(*memFlag)*1024*1024, false)
-	machine.System.SetResolution(800, 600)
-
-	audioCtx := audio.NewContext(audioSampleRate)
-	if svc := machine.System.Services; svc != nil {
-		svc.SoundHandler = newSoundHandler(audioCtx)
+		shellPath := flag.Arg(0)
+		if err := game.loadApp(shellPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading %s: %v\n", shellPath, err)
+			os.Exit(1)
+		}
+	} else {
+		game.launcherMode = true
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading apps directory: %v\n", err)
+			os.Exit(1)
+		}
+		if len(game.apps) == 0 {
+			fmt.Fprintf(os.Stderr, "No .bin files found in apps/\n")
+			os.Exit(1)
+		}
 	}
 
 	ebiten.SetWindowTitle("NuxVM / Actor 9")
 	ebiten.SetWindowSize(800, 600)
 
-	game := &Game{machine: machine}
-	fmt.Fprintf(os.Stderr, "Starting NuxVM: %dx%d\n", machine.System.ScreenWidth(), machine.System.ScreenHeight())
+	fmt.Fprintf(os.Stderr, "Starting NuxVM Launcher\n")
 	if err := ebiten.RunGame(game); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

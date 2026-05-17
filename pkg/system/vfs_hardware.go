@@ -15,12 +15,24 @@ func (s *System) fillRect(x, y, w, h int32, color uint32) {
 	sw := int(s.screenWidth)
 	sh := int(s.screenHeight)
 
+	paneMinX := s.paneX
+	paneMinY := s.paneY
+	paneMaxX := s.paneX + s.paneW
+	paneMaxY := s.paneY + s.paneH
+
+	if s.paneW == 0 {
+		paneMaxX = int32(sw)
+	}
+	if s.paneH == 0 {
+		paneMaxY = int32(sh)
+	}
+
 	for py := y; py < y+h; py++ {
-		if py < 0 || py >= int32(sh) {
+		if py < paneMinY || py >= paneMaxY || py < 0 || py >= int32(sh) {
 			continue
 		}
 		for px := x; px < x+w; px++ {
-			if px < 0 || px >= int32(sw) {
+			if px < paneMinX || px >= paneMaxX || px < 0 || px >= int32(sw) {
 				continue
 			}
 			offset := (int(py)*sw + int(px)) * 4
@@ -30,6 +42,12 @@ func (s *System) fillRect(x, y, w, h int32, color uint32) {
 				s.screenPixels[offset+2] = b
 				s.screenPixels[offset+3] = a
 			}
+		}
+	}
+
+	if s.Services != nil {
+		if win := s.Services.GetActiveWindow(); win != nil {
+			win.Dirty = true
 		}
 	}
 }
@@ -49,13 +67,32 @@ func (s *System) drawRect(x, y, w, h int32, color uint32) {
 	s.fillRect(x+w-1, y, 1, h, color)
 }
 
-// drawCharVFS renders a character using the Chicago 12×12 CFF font at the given integer scale.
+// drawCharVFS renders a character using the system font.
 func (s *System) drawCharVFS(x, y int32, char byte, color uint32, scale byte) {
-	sc := float64(scale)
-	if sc < 1 {
-		sc = 1
+	if s.text.useBasicFont {
+		sc := float64(scale)
+		if scale >= 6 {
+			sc = float64(scale) / 12.0
+		}
+		if sc <= 0 {
+			sc = 1.0
+		}
+		s.drawCharBasic(x, y, char, color, sc)
+		return
 	}
-	s.drawCFFRaw(ChicagoCFF, char, x, y, color, 16, sc)
+
+	size := scale
+	if scale < 6 {
+		// Treat as a multiplier for a base size of 16
+		size = uint8(float64(scale) * 16.0)
+	}
+	s.drawCharGo(x, y, char, color, size)
+
+	if s.Services != nil {
+		if win := s.Services.GetActiveWindow(); win != nil {
+			win.Dirty = true
+		}
+	}
 }
 
 // kbdFile and mouseFile implementation details

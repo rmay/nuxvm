@@ -1,0 +1,301 @@
+( --- Quill: minimal Plan9-style text editor --- )
+
+INCLUDE "lib/core.lux"
+INCLUDE "lib/vfs.lux"
+INCLUDE "lib/draw.lux"
+INCLUDE "lib/time.lux"
+INCLUDE "lib/file.lux"
+
+MODULE MAIN
+
+IMPORT VFS
+IMPORT DRAW
+IMPORT TIME
+IMPORT FILE
+
+( --- Window geometry (matches Shell's 800x600 child window) --- )
+@WIN_W      800 ;
+@WIN_H      600 ;
+@MARGIN     16 ;
+@PANE_X     16 ;        ( MARGIN )
+@PANE_Y     16 ;        ( MARGIN )
+@PANE_W     768 ;       ( WIN_W - 2*MARGIN )
+@PANE_H     568 ;       ( WIN_H - 2*MARGIN )
+@PANE_RIGHT 784 ;       ( PANE_X + PANE_W )
+@PANE_BOT   584 ;       ( PANE_Y + PANE_H )
+@LINE_H     26 ;
+@FONT_SIZE  18 ;
+
+@CLR_BG     0xFFFFFF ;
+@CLR_FRAME  0xAAAAAA ;
+@CLR_TEXT   0x000000 ;
+@CLR_CARET  0xCC0000 ;
+
+( --- Memory layout --- )
+@FILE_BUF       0x800000 ;
+@FILE_BUF_MAX   0x100000 ;
+@FONT_DATA      0x900000 ;
+@FONT_BYTES     8448 ;
+
+( --- State --- )
+( NOTE: must live OUTSIDE the FONT_DATA range or CFF load clobbers state. )
+@dfd        0x910004 ;
+@kfd        0x910008 ;
+@file-len   0x910010 ;
+@dirty      0x910014 ;
+@cursor     0x910018 ;   ( byte index into FILE_BUF )
+@last-key   0x910024 ;   ( unix seconds, for autosave debounce )
+@kpkt       0x910030 ;   ( 4-byte kbd packet scratch )
+
+( --- Font width lookup --- )
+( Using the system proportional font widths from /sys/font/widths. )
+@char-w ( ch -- w )
+    FONT_DATA + load-byte
+    dup 0 = [ drop 4 ] ?
+;
+
+( --- Buffer manipulation --- )
+
+@move-mem ( src dest len -- )
+    3 frame!
+    2 local@ 1 local@ < [
+        ( Backward copy: src < dest, copy from high to low to avoid clobber )
+        2 local@ 0 local@ + 1 -
+        1 local@ 0 local@ + 1 -
+        [ 0 local@ 0 > ] [
+            OVER load-byte OVER store-byte
+            1 - swap 1 - swap
+            0 local@ 1 - 0 local!
+        ] |:
+        drop drop
+    ] [
+        ( Forward copy )
+        [ 0 local@ 0 > ] [
+            2 local@ load-byte 1 local@ store-byte
+            2 local@ 1 + 2 local!
+            1 local@ 1 + 1 local!
+            0 local@ 1 - 0 local!
+        ] |:
+    ] ?:
+    3 unframe!
+;
+
+@insert-char ( ch -- )
+    cursor LOADI FILE_BUF +
+    cursor LOADI FILE_BUF + 1 +
+    file-len LOADI cursor LOADI -
+    move-mem
+    FILE_BUF cursor LOADI + store-byte
+    file-len LOADI 1 + file-len STOREI
+    cursor LOADI 1 + cursor STOREI
+    1 dirty STOREI
+;
+
+@delete-char ( -- )
+    cursor LOADI 0 > [
+        cursor LOADI FILE_BUF +
+        cursor LOADI FILE_BUF + 1 -
+        file-len LOADI cursor LOADI -
+        move-mem
+        file-len LOADI 1 - file-len STOREI
+        cursor LOADI 1 - cursor STOREI
+        1 dirty STOREI
+    ] ?
+;
+
+@cursor-left ( -- )
+    cursor LOADI 0 > [ cursor LOADI 1 - cursor STOREI ] ?
+;
+
+@cursor-right ( -- )
+    cursor LOADI file-len LOADI < [ cursor LOADI 1 + cursor STOREI ] ?
+;
+
+( --- Rendering --- )
+
+@draw-caret ( x y -- )
+    dfd LOADI rot rot 2 LINE_H CLR_CARET DRAW::fill-rect
+;
+
+( Emit a single DrawString for FILE_BUF chars in [start, end at pixel x, y.
+  No-op when start >= end so trailing flushes on empty lines are safe. )
+@flush-seg ( start end x y -- )
+    4 frame!   ( 0:y 1:x 2:end 3:start )
+    2 local@ 3 local@ -
+    dup 0 > [
+        dfd LOADI
+        1 local@
+        0 local@
+        FILE_BUF 3 local@ +
+        4 PICK
+        CLR_TEXT
+        FONT_SIZE
+        DRAW::draw-string
+        drop
+    ] [ drop ] ?:
+    4 unframe!
+;
+
+( Walk the buffer once, accumulating a run of chars per visual line.
+  At each newline / wrap point, flush the run with one DrawString call.
+  The host's per-char advance keeps glyph positions aligned with the
+  Lux-side char-w used for wrap and caret math. )
+@layout-and-render ( -- )
+    PANE_Y PANE_X PANE_X 0 PANE_X PANE_Y 0 7 frame!
+    ( 0:i 1:y 2:x 3:seg-start 4:seg-x 5:caret-x 6:caret-y )
+
+    [ 0 local@ file-len LOADI <= ] [
+        ( 1. Capture caret position )
+        0 local@ cursor LOADI = [
+            2 local@ 5 local!
+            1 local@ 6 local!
+        ] ?
+
+        ( 2. Handle char-driven x,y updates )
+        0 local@ file-len LOADI < [
+            FILE_BUF 0 local@ + load-byte    ( ch )
+            dup 10 = [
+                ( Newline: flush run, advance line, skip the \n byte. )
+                drop
+                3 local@ 0 local@ 4 local@ 1 local@ flush-seg
+                PANE_X 2 local!
+                1 local@ LINE_H + 1 local!
+                0 local@ 1 + 3 local!
+                PANE_X 4 local!
+            ] [
+                dup char-w                   ( ch w )
+                2 local@ OVER + PANE_RIGHT > [
+                    ( Wrap: flush run before this char, start a new line. )
+                    3 local@ 0 local@ 4 local@ 1 local@ flush-seg
+                    PANE_X 2 local!
+                    1 local@ LINE_H + 1 local!
+                    0 local@ 3 local!
+                    PANE_X 4 local!
+                ] ?
+                2 local@ + 2 local!
+                drop
+            ] ?:
+        ] ?
+
+        0 local@ 1 + 0 local!
+    ] |:
+
+    ( Flush the final run, then draw the caret on top. )
+    3 local@ file-len LOADI 4 local@ 1 local@ flush-seg
+    5 local@ 6 local@ draw-caret
+
+    7 unframe!
+;
+
+@refresh ( -- )
+    ( Clear full window region to white. The Shell's offset-draw will
+      translate these into screen coords. )
+    dfd LOADI 0 0 WIN_W WIN_H CLR_BG DRAW::fill-rect
+    ( 1px inner frame at margin - 1 so we can see the editable area )
+    dfd LOADI MARGIN 1 - MARGIN 1 - PANE_W 2 + PANE_H 2 + CLR_FRAME DRAW::draw-rect
+    layout-and-render
+;
+
+( --- Device setup --- )
+
+@open-devices ( -- )
+    ( /dev/draw is bound by the Shell; retry until it appears. )
+    [ T"/dev/draw" VFS::open dup 0 < ] [
+        drop VFS::yield drop
+    ] |:
+    dfd STOREI
+    ( /dev/kbd is bound by the Shell similarly. )
+    [ T"/dev/kbd" VFS::open dup 0 < ] [
+        drop VFS::yield drop
+    ] |:
+    kfd STOREI
+;
+
+( --- File I/O --- )
+
+@save-file ( -- )
+    T"manuscript.quill" FILE::name!
+    FILE_BUF FILE::buf!
+    file-len LOADI FILE::write drop
+    0 dirty STOREI
+;
+
+( --- Keyboard --- )
+
+@printable? ( ch -- bool )
+    dup 32 >= OVER 126 <= AND swap drop
+;
+
+@handle-key ( keycode -- )
+    dup 8 = [
+        drop delete-char refresh
+    ] [
+        dup 13 = [
+            drop 10 insert-char refresh
+        ] [
+            dup 19 = [
+                drop cursor-left refresh
+            ] [
+                dup 20 = [
+                    drop cursor-right refresh
+                ] [
+                    dup printable? [
+                        insert-char refresh
+                    ] [
+                        drop
+                    ] ?:
+                ] ?:
+            ] ?:
+        ] ?:
+    ] ?:
+;
+
+@handle-kbd ( -- )
+    kfd LOADI kpkt 4 VFS::read 4 = [
+        kpkt load-byte 0 = [   ( type 0 = KeyDown )
+            kpkt 2 + DRAW::load-word-le
+            TIME::unix@ last-key STOREI
+            handle-key
+        ] ?
+    ] ?
+;
+
+( --- Main --- )
+
+@start
+    ( 1. Open devices via Shell-bound namespace )
+    open-devices
+
+    ( 2. Pick font + size on the draw device )
+    dfd LOADI 0 DRAW::set-font
+    dfd LOADI FONT_SIZE DRAW::set-font-size
+
+    ( 3. Load system font widths for the chosen size )
+    T"/sys/font/widths" VFS::open dup 0 >= [
+        dup FONT_DATA 256 VFS::read drop
+        VFS::close drop
+    ] [ drop ] ?:
+
+    ( 4. Load existing manuscript if present )
+    T"manuscript.quill" FILE_BUF FILE_BUF_MAX FILE::load
+    dup 0 > [ file-len STOREI ] [ drop 0 file-len STOREI ] ?:
+
+    0 cursor STOREI
+    0 dirty STOREI
+    TIME::unix@ last-key STOREI
+
+    refresh
+    [ 1 ] [
+        handle-kbd
+        ( Autosave after 2s of inactivity )
+        dirty LOADI 1 = [
+            TIME::unix@ last-key LOADI - 2 >= [
+                save-file
+            ] ?
+        ] ?
+        VFS::yield drop
+    ] |:
+;
+
+MAIN::start
+HALT

@@ -18,11 +18,11 @@ func TestCombinatorIf(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bytecode, err := Compile(tt.source)
+			bytecode, err := Compile(tt.source, int32(vm.HeadlessBaseAddress))
 			if err != nil {
 				t.Fatalf("Compile error: %v", err)
 			}
-			machine := vm.NewVM(bytecode)
+			machine := vm.NewVM(bytecode, vm.HeadlessBaseAddress)
 			if err := machine.Run(); err != nil {
 				t.Fatalf("Runtime error: %v", err)
 			}
@@ -54,11 +54,11 @@ func TestCombinatorIfElse(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bytecode, err := Compile(tt.source)
+			bytecode, err := Compile(tt.source, int32(vm.HeadlessBaseAddress))
 			if err != nil {
 				t.Fatalf("Compile error: %v", err)
 			}
-			machine := vm.NewVM(bytecode)
+			machine := vm.NewVM(bytecode, vm.HeadlessBaseAddress)
 			if err := machine.Run(); err != nil {
 				t.Fatalf("Runtime error: %v", err)
 			}
@@ -88,11 +88,11 @@ func TestCombinatorNested(t *testing.T) {
 ] |: drop ;
 test
 `
-	bytecode, err := Compile(source)
+	bytecode, err := Compile(source, int32(vm.HeadlessBaseAddress))
 	if err != nil {
 		t.Fatalf("Compile error: %v", err)
 	}
-	machine := vm.NewVM(bytecode)
+	machine := vm.NewVM(bytecode, vm.HeadlessBaseAddress)
 	if err := machine.Run(); err != nil {
 		t.Fatalf("Runtime error: %v", err)
 	}
@@ -114,11 +114,11 @@ func TestCombinatorDeepNesting(t *testing.T) {
 ] |: drop ;
 test
 `
-	bytecode, err := Compile(source)
+	bytecode, err := Compile(source, int32(vm.HeadlessBaseAddress))
 	if err != nil {
 		t.Fatalf("Compile error: %v", err)
 	}
-	machine := vm.NewVM(bytecode)
+	machine := vm.NewVM(bytecode, vm.HeadlessBaseAddress)
 	if err := machine.Run(); err != nil {
 		t.Fatalf("Runtime error: %v", err)
 	}

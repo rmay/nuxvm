@@ -3,10 +3,12 @@ package system
 import (
 	"encoding/binary"
 	"testing"
+
+	"github.com/rmay/nuxvm/pkg/vm"
 )
 
 func TestVFSDraw(t *testing.T) {
-	machine := NewMachine(nil, 32*1024)
+	machine := NewMachine(nil, vm.GraphicalBaseAddress, 32*1024)
 	sys := machine.System
 
 	fd, err := sys.vfs.Open(sys, "/sys/draw")
@@ -38,7 +40,7 @@ func TestVFSDraw(t *testing.T) {
 
 func TestVFSFilePersistence(t *testing.T) {
 	// Mock services for host file access
-	machine := NewMachine(nil, 32*1024)
+	machine := NewMachine(nil, vm.GraphicalBaseAddress, 32*1024)
 	sys := machine.System
 
 	// We need a ServiceManager to test /sys/file/
@@ -51,7 +53,7 @@ func TestVFSFilePersistence(t *testing.T) {
 }
 
 func TestVFSMouse(t *testing.T) {
-	machine := NewMachine(nil, 32*1024)
+	machine := NewMachine(nil, vm.GraphicalBaseAddress, 32*1024)
 	sys := machine.System
 
 	fd, err := sys.vfs.Open(sys, "/sys/mouse")

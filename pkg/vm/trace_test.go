@@ -17,7 +17,7 @@ func TestTraceLimit(t *testing.T) {
 		OpJmp, 0, 0, 0, 0,
 	}
 
-	vm := NewVM(program, true)
+	vm := NewVM(program, uint32(HeadlessBaseAddress), true)
 
 	// Capture stderr
 	oldStderr := os.Stderr

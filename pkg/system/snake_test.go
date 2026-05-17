@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/rmay/nuxvm/pkg/lux"
+	"github.com/rmay/nuxvm/pkg/vm"
 )
 
 func TestSnakeStartButton(t *testing.T) {
@@ -14,13 +15,13 @@ func TestSnakeStartButton(t *testing.T) {
 	defer os.Chdir(origDir)
 
 	// 1. Load and compile Snake.lux
-	program, err := lux.LoadProgram("apps/Snake.lux")
+	program, err := lux.LoadProgram("apps/Snake.lux", int32(vm.GraphicalBaseAddress))
 	if err != nil {
 		t.Fatalf("Failed to load Snake.lux: %v", err)
 	}
 
 	// 2. Setup Machine with enough memory (16MB)
-	machine := NewMachine(program, 16*1024*1024)
+	machine := NewMachine(program, vm.GraphicalBaseAddress, 16*1024*1024)
 	sys := machine.System
 
 	// Set a standard resolution
@@ -87,12 +88,12 @@ func TestSnakeKeyboardDown(t *testing.T) {
 	os.Chdir("../..")
 	defer os.Chdir(origDir)
 
-	program, err := lux.LoadProgram("apps/Snake.lux")
+	program, err := lux.LoadProgram("apps/Snake.lux", int32(vm.GraphicalBaseAddress))
 	if err != nil {
 		t.Fatalf("Failed to load Snake.lux: %v", err)
 	}
 
-	machine := NewMachine(program, 16*1024*1024)
+	machine := NewMachine(program, vm.GraphicalBaseAddress, 16*1024*1024)
 	sys := machine.System
 	sys.SetResolution(320, 240)
 
@@ -146,12 +147,12 @@ func TestSnakeMovesContinuously(t *testing.T) {
 	os.Chdir("../..")
 	defer os.Chdir(origDir)
 
-	program, err := lux.LoadProgram("apps/Snake.lux")
+	program, err := lux.LoadProgram("apps/Snake.lux", int32(vm.GraphicalBaseAddress))
 	if err != nil {
 		t.Fatalf("Failed to load Snake.lux: %v", err)
 	}
 
-	machine := NewMachine(program, 16*1024*1024)
+	machine := NewMachine(program, vm.GraphicalBaseAddress, 16*1024*1024)
 	sys := machine.System
 	sys.SetResolution(800, 600)
 

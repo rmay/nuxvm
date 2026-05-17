@@ -28,14 +28,14 @@ func newFileTestRig(t *testing.T) *fileTestRig {
 		t.Fatalf("chdir: %v", err)
 	}
 	sys := NewSystem()
-	mem := make([]byte, vm.UserMemoryOffset+4096)
+	mem := make([]byte, vm.HeadlessBaseAddress+4096)
 	sys.SetMemory(mem)
 	return &fileTestRig{
 		sys:      sys,
 		mem:      mem,
 		tempDir:  tempDir,
-		nameAddr: uint32(vm.UserMemoryOffset) + 100,
-		bufAddr:  uint32(vm.UserMemoryOffset) + 400,
+		nameAddr: uint32(vm.HeadlessBaseAddress) + 100,
+		bufAddr:  uint32(vm.HeadlessBaseAddress) + 400,
 	}
 }
 
@@ -99,15 +99,15 @@ func TestFileReadWrite(t *testing.T) {
 	defer os.Chdir(origDir)
 
 	sys := NewSystem()
-	mem := make([]byte, vm.UserMemoryOffset+1024)
+	mem := make([]byte, vm.HeadlessBaseAddress+1024)
 	sys.SetMemory(mem)
 
 	filename := "testfile.txt"
 	content := "Hello CLOISTER!"
 
 	// Use addresses relative to UserMemoryOffset for safety
-	nameAddr := uint32(vm.UserMemoryOffset) + 100
-	bufAddr := uint32(vm.UserMemoryOffset) + 200
+	nameAddr := uint32(vm.HeadlessBaseAddress) + 100
+	bufAddr := uint32(vm.HeadlessBaseAddress) + 200
 
 	// Setup filename in VM memory
 	copy(mem[nameAddr:], []byte(filename+"\x00"))

@@ -4,10 +4,12 @@ import (
 	"encoding/binary"
 	"testing"
 	"time"
+
+	"github.com/rmay/nuxvm/pkg/vm"
 )
 
 func TestAudioSoundHandlerVFS(t *testing.T) {
-	machine := NewMachine(nil, 32*1024)
+	machine := NewMachine(nil, vm.HeadlessBaseAddress, 32*1024)
 	sys := machine.System
 
 	sm := NewServiceManager()

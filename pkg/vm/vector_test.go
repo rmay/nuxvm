@@ -5,7 +5,7 @@ import (
 )
 
 func TestVectorAssignment(t *testing.T) {
-	vm := NewVM([]byte{})
+	vm := NewVM([]byte{}, uint32(HeadlessBaseAddress))
 
 	// Test direct SetVector/GetVector access (public API)
 	vectorAddr := uint32(0x6500)
@@ -30,7 +30,7 @@ func TestVectorAssignment(t *testing.T) {
 func TestTriggerVector(t *testing.T) {
 	// Program that just halts
 	program := []byte{OpHalt}
-	vm := NewVM(program)
+	vm := NewVM(program, uint32(HeadlessBaseAddress))
 
 	// Set vector 0 (System) to UserMemoryOffset (start of program)
 	expectedPC := vm.UserMemoryStart()
@@ -57,7 +57,7 @@ func TestTriggerVectorPushesReturnAddr(t *testing.T) {
 	// Vector triggers should behave like a CALL: push the interrupted PC so the
 	// handler's RET resumes where the VM was. Without this, vector handlers
 	// (compiled with implicit RET) underflow the return stack.
-	vm := NewVM([]byte{OpHalt})
+	vm := NewVM([]byte{OpHalt}, uint32(HeadlessBaseAddress))
 	vm.vectors[4] = vm.UserMemoryStart()
 	vm.pc = 0x1234
 	prevDepth := len(vm.returnStack)
@@ -74,7 +74,7 @@ func TestTriggerVectorPushesReturnAddr(t *testing.T) {
 }
 
 func TestTriggerVectorEdgeCases(t *testing.T) {
-	vm := NewVM([]byte{OpHalt}) // Minimal program
+	vm := NewVM([]byte{OpHalt}, uint32(HeadlessBaseAddress)) // Minimal program
 
 	// Test invalid vector index
 	err := vm.TriggerVector(32)
@@ -106,7 +106,7 @@ func TestTriggerVectorEdgeCases(t *testing.T) {
 }
 
 func TestDeviceReadVector(t *testing.T) {
-	vm := NewVM([]byte{})
+	vm := NewVM([]byte{}, uint32(HeadlessBaseAddress))
 	// Set a vector address
 	vectorAddr := uint32(0x5000)
 	vm.SetVector(1, vectorAddr)

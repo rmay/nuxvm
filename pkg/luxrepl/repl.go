@@ -144,12 +144,12 @@ func (r *REPL) evaluate(line string) {
 	}
 	source += line
 
-	bytecode, err := lux.Compile(source)
+	bytecode, err := lux.Compile(source, int32(vm.HeadlessBaseAddress))
 	if err != nil {
 		r.emit(fmt.Sprintf("Compile error: %v\n", err))
 		return
 	}
-	machine := vm.NewVM(bytecode, false)
+	machine := vm.NewVM(bytecode, vm.HeadlessBaseAddress)
 	if err := machine.Run(); err != nil {
 		r.emit(fmt.Sprintf("Runtime error: %v\n", err))
 		return

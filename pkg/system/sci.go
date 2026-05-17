@@ -17,6 +17,24 @@ func (s *System) handleSCICommand() {
 	s.sciResult = 0
 
 	switch cmd {
+	// Window Management
+	case SCICreateWin:
+		s.handleSCICreateWin(arg1, arg2)
+	case SCICloseWin:
+		s.handleSCICloseWin(arg1)
+	case SCIMoveWin:
+		s.handleSCIMoveWin(arg1, arg2)
+	case SCISetPixel:
+		s.handleSCISetPixel(arg1, arg2)
+	case SCIGetWinSize:
+		s.handleSCIGetWinSize(arg1)
+	case SCIFocusWin:
+		s.handleSCIFocusWin(arg1)
+
+	// Input
+	case SCIPollEvent:
+		s.handleSCIPollEvent()
+
 	// VFS Primitives
 	case SCIVFSOpen:
 		s.handleSCIVFSOpen(arg1)
@@ -54,7 +72,16 @@ func (s *System) handleSCICommand() {
 		s.handleSCIDrawCFF(arg1, arg2)
 	case SCIDebugPrint:
 		s.handleSCIDebugPrint(arg1)
+	case SCIOpenFileDialog:
+		s.handleSCIOpenFileDialog(arg1, arg2)
+	default:
+		fmt.Fprintf(os.Stderr, "SCI: unknown command %d\n", cmd)
 	}
+}
+
+func (s *System) handleSCIOpenFileDialog(mode int32, bufPtr int32) {
+	// To be implemented in file_dialog.go
+	s.startFileDialog(mode, bufPtr)
 }
 
 // VFS Handlers
@@ -275,7 +302,11 @@ func (s *System) handleSCIPollEvent() {
 	}
 
 	// Pack event: type (8 bits) | data (24 bits)
-	s.sciResult = (int32(evt.Type) << 24) | (evt.KeyCode & 0xFFFFFF)
+	data := evt.KeyCode & 0xFFFFFF
+	if evt.Type == InputMouseMove || evt.Type == InputMouseDown || evt.Type == InputMouseUp {
+		data = (evt.MouseX << 12) | (evt.MouseY & 0xFFF)
+	}
+	s.sciResult = (int32(evt.Type) << 24) | data
 }
 
 // File I/O Handlers

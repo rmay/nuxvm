@@ -1,4 +1,4 @@
-( UI Widget Library Demo — run with: ./cloister -w 240 -h 200 apps/UIDemo.bin )
+( UI Widget Library Demo — run with: ./bin/cloister apps/UIDemo.bin )
 
 INCLUDE "lib/vfs.lux"
 INCLUDE "lib/ui.lux"
@@ -18,15 +18,17 @@ MODULE DEMO
 @mbuf 0x8A0100 ; ( 8 bytes: mouse event packet )
 
 ( Widget state blocks )
-@BTN1 0x8A1000 ; ( button: 28 bytes )
-@CB1  0x8A1020 ; ( checkbox: 24 bytes )
-@CB2  0x8A1040 ; ( checkbox: 24 bytes )
-@SL1  0x8A1060 ; ( slider: 36 bytes )
+@BTN1 0x8A1000 ; ( button:   36 bytes )
+@CB1  0x8A1030 ; ( checkbox: 24 bytes )
+@RD1  0x8A1050 ; ( radio:    24 bytes )
+@RD2  0x8A1070 ; ( radio:    24 bytes )
+@SL1  0x8A1090 ; ( slider:   36 bytes )
 
 ( String constants )
-@STR_CLICK   T"Click Me!" ;
-@STR_OPT_A   T"Option A"  ;
-@STR_OPT_B   T"Option B"  ;
+@STR_CLICK   T"Click Me!"  ;
+@STR_OPT_A   T"Option A"   ;
+@STR_OPT_B   T"Option B"   ;
+@STR_OPT_C   T"Option C"   ;
 @STR_TITLE   T"lux ui demo" ;
 @STR_CLICKS  T"clicks: "   ;
 @STR_VALUE   T"value: "    ;
@@ -37,12 +39,11 @@ MODULE DEMO
 ;
 
 @int-to-str ( val buf -- )
-    ( write up to 3 decimal digits then null-terminate )
     2 frame! ( 0:buf 1:val )
     1 local@ 0 < [
-        45 0 local@ store-byte ( '-' )
+        45 0 local@ store-byte
         0 local@ 1 + 0 local!
-        1 local@ 0 1 local! ( abs )
+        0 local@ 0 1 local!
     ] ?
     1 local@ 100 / dup 0 > [
         48 + 0 local@ store-byte
@@ -60,10 +61,13 @@ MODULE DEMO
 
 @num_buf 0x8A0200 ; ( scratch buffer for number strings )
 
+( char width at scale 2: 14px )
+@CHAR_W 14 ;
+
 @draw-int ( fd x y n color -- )
     5 frame! ( 0:color 1:n 2:y 3:x 4:fd )
     1 local@ num_buf int-to-str
-    4 local@ 3 local@ 2 local@ num_buf 0 local@ 1 DRAW::draw-str
+    4 local@ 3 local@ 2 local@ num_buf 0 local@ 2 DRAW::draw-str
     5 unframe!
 ;
 
@@ -74,31 +78,32 @@ MODULE DEMO
     0 clicks!  50 sl-val!
     1 dirty!
 
-    BTN1 20  30 90 22 STR_CLICK  UI::button-init
-    CB1  20  70 14 STR_OPT_A   UI::checkbox-init
-    CB2  20  95 14 STR_OPT_B   UI::checkbox-init
-    SL1  20 130 140 14 0 100 50 UI::slider-init
+    BTN1 290 174 220 44 STR_CLICK [ clicks@ 1 + clicks! ] UI::button-init
+    CB1  329 270 24 STR_OPT_A    UI::checkbox-init
+    RD1  329 310 24 STR_OPT_B    UI::checkbox-init
+    RD2  329 350 24 STR_OPT_C    UI::checkbox-init
+    SL1  290 426 220 20 0 100 50 UI::slider-init
 ;
 
 @draw-all
     ( background )
-    dfd@ 0 0 240 200 UI::CLR_BG DRAW::fill-rect
+    dfd@ 0 0 800 600 UI::CLR_BG DRAW::fill-rect
     ( title bar stripe )
-    dfd@ 0 0 240 20 UI::CLR_BORDER DRAW::fill-rect
-    dfd@ 6 4 STR_TITLE UI::CLR_BG 1 DRAW::draw-str
-    ( section labels )
-    dfd@ 20 12 T"button" UI::CLR_TEXT 1 DRAW::draw-str ( overwritten by title but fine )
+    dfd@ 0 0 800 30 UI::CLR_BORDER DRAW::fill-rect
+    dfd@ 800 STR_TITLE strlen CHAR_W * - 2 / 7 STR_TITLE UI::CLR_BG 2 DRAW::draw-str
     ( button )
     dfd@ BTN1 UI::button-draw
     ( click counter )
-    dfd@ 20 56 STR_CLICKS UI::CLR_TEXT 1 DRAW::draw-str
-    dfd@ 20 STR_CLICKS strlen 7 * + 56 clicks@ UI::CLR_TEXT draw-int
-    ( checkboxes )
+    dfd@ 290 226 STR_CLICKS UI::CLR_TEXT 2 DRAW::draw-str
+    dfd@ 290 STR_CLICKS strlen CHAR_W * + 226 clicks@ UI::CLR_TEXT draw-int
+    ( checkbox )
     dfd@ CB1 UI::checkbox-draw
-    dfd@ CB2 UI::checkbox-draw
+    ( radio buttons )
+    dfd@ RD1 UI::radio-draw
+    dfd@ RD2 UI::radio-draw
     ( slider )
-    dfd@ 20 118 STR_VALUE UI::CLR_TEXT 1 DRAW::draw-str
-    dfd@ 20 STR_VALUE strlen 7 * + 118 sl-val@ UI::CLR_TEXT draw-int
+    dfd@ 290 386 STR_VALUE UI::CLR_TEXT 2 DRAW::draw-str
+    dfd@ 290 STR_VALUE strlen CHAR_W * + 386 sl-val@ UI::CLR_TEXT draw-int
     dfd@ SL1 UI::slider-draw
     0 dirty!
 ;
@@ -119,11 +124,16 @@ MODULE DEMO
 ;
 
 @update-widgets
-    BTN1 mx@ my@ mbtn@ UI::button-update [
-        clicks@ 1 + clicks!
-    ] ?
+    BTN1 mx@ my@ mbtn@ UI::button-tick
     CB1 mx@ my@ mbtn@ UI::checkbox-update drop
-    CB2 mx@ my@ mbtn@ UI::checkbox-update drop
+    RD1 mx@ my@ mbtn@ UI::checkbox-update [
+        1 RD1 UI::CB_CHK + STOREI
+        0 RD2 UI::CB_CHK + STOREI
+    ] ?
+    RD2 mx@ my@ mbtn@ UI::checkbox-update [
+        0 RD1 UI::CB_CHK + STOREI
+        1 RD2 UI::CB_CHK + STOREI
+    ] ?
     SL1 mx@ my@ mbtn@ UI::slider-update sl-val!
     1 dirty!
 ;

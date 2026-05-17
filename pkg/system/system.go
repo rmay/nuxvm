@@ -67,18 +67,29 @@ const (
 	GPUVectorIdx        = (gpuPort - vm.DeviceMemoryOffset) / 16        // 16
 
 	// VFS SCI Command codes
-	SCIVFSOpen  = 1
-	SCIVFSClose = 2
-	SCIVFSRead  = 3
-	SCIVFSWrite = 4
-	SCIVFSBind  = 5
+	SCIVFSOpen  = 10
+	SCIVFSClose = 11
+	SCIVFSRead  = 12
+	SCIVFSWrite = 13
+	SCIVFSBind  = 14
 
-	SCIPlaySound    = 14
-	SCIYield        = 15
-	SCIGetPID       = 16
-	SCIGetActiveWin = 17
-	SCIDrawCFF      = 18
-	SCIDebugPrint   = 19
+	SCICreateWin    = 1
+	SCICloseWin     = 2
+	SCIMoveWin      = 3
+	SCIDrawRect     = 4
+	SCIDrawText     = 5
+	SCISetPixel     = 6
+	SCIGetWinSize   = 7
+	SCIFocusWin     = 8
+	SCIPollEvent    = 9
+
+	SCIPlaySound      = 15
+	SCIYield          = 16
+	SCIGetPID         = 17
+	SCIGetActiveWin   = 18
+	SCIDrawCFF        = 19
+	SCIDebugPrint     = 20
+	SCIOpenFileDialog = 21
 )
 
 // fileState tracks an open file or directory for the File device.
@@ -918,22 +929,6 @@ func (s *System) read(address uint32) (int32, error) {
 
 // Write implements vm.Bus.Write
 func (s *System) Write(address uint32, value int32) error {
-	// SCI (System Call Interface) device:
-	if address == sciCommandAddr {
-		s.sciCommand = value
-		return nil
-	}
-	if address == sciArg1Addr {
-		s.sciArg1 = value
-		return nil
-	}
-	if address == sciArg2Addr {
-		s.sciArg2 = value
-		// Trigger SCI command handler when arg2 is written
-		s.handleSCICommand()
-		return nil
-	}
-
 	// Port vector registers (offset+0 of any 16-byte device block)
 	if address >= vm.DeviceMemoryOffset && address < vm.DeviceMemoryOffset+vm.DeviceMemorySize {
 		offset := address - vm.DeviceMemoryOffset
@@ -1147,17 +1142,14 @@ func (s *System) Write(address uint32, value int32) error {
 
 	// SCI (System Call Interface) device:
 	if address == sciCommandAddr {
-		fmt.Fprintf(os.Stderr, "System: Writing SCI_CMD: %d\n", value)
 		s.sciCommand = value
 		return nil
 	}
 	if address == sciArg1Addr {
-		fmt.Fprintf(os.Stderr, "System: Writing SCI_ARG1: %d\n", value)
 		s.sciArg1 = value
 		return nil
 	}
 	if address == sciArg2Addr {
-		fmt.Fprintf(os.Stderr, "System: Writing SCI_ARG2: %d\n", value)
 		s.sciArg2 = value
 		// Trigger SCI command handler when arg2 is written
 		s.handleSCICommand()
