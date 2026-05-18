@@ -325,8 +325,8 @@ IMPORT MENU
 @on-mouse ( mpkt -- )
     MB_ADDR
     OVER EVENT::mouse-x
-    OVER EVENT::mouse-y
-    2 PICK EVENT::mouse-type EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?:
+    2 PICK EVENT::mouse-y
+    3 PICK EVENT::mouse-type EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?:
     [ MENUS ] 1
     MENU::menu-bar-update
     refresh
@@ -362,7 +362,7 @@ IMPORT MENU
     ] [ drop ] ?:
 
     ( 5. Load existing manuscript if present )
-    T"manuscript.quill" FILE_BUF FILE_BUF_MAX FILE::load
+    T"manuscript.quill" FILE_BUF 65535 FILE::load
     dup 0 > [ file-len STOREI ] [ drop 0 file-len STOREI ] ?:
 
     0 cursor STOREI
