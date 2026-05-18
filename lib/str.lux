@@ -18,28 +18,28 @@ MODULE STR
     1 local@ 0 = [
         48 0 local@ store-byte
         0 0 local@ 1 + store-byte
-        2 unframe! EXIT
-    ] ?
-    1 local@ 0 < [
-        45 0 local@ store-byte
-        0 local@ 1 + 0 local!
-        0 1 local@ - 1 local!
-    ] ?
-    
-    ( Find largest power of 10 <= val )
-    1 ( power )
-    [ dup 10 * dup 0 > [ dup 1 local@ <= ] [ drop 0 ] ?: ] [
-        10 *
-    ] |:
-    
-    ( Emit digits )
-    [ dup 0 > ] [
-        1 local@ OVER / 48 + 0 local@ store-byte
-        0 local@ 1 + 0 local!
-        1 local@ OVER MOD 1 local!
-        10 /
-    ] |:
-    drop ( power )
-    0 0 local@ store-byte
+    ] [
+        1 local@ 0 < [
+            45 0 local@ store-byte
+            0 local@ 1 + 0 local!
+            0 1 local@ - 1 local!
+        ] ?
+        
+        ( Find largest power of 10 <= val )
+        1 ( power )
+        [ dup 10 * dup 0 > [ dup 1 local@ <= ] [ drop 0 ] ?: ] [
+            10 *
+        ] |:
+        
+        ( Emit digits )
+        [ dup 0 > ] [
+            1 local@ OVER / 48 + 0 local@ store-byte
+            0 local@ 1 + 0 local!
+            1 local@ OVER MOD 1 local!
+            10 /
+        ] |:
+        drop ( power )
+        0 0 local@ store-byte
+    ] ?:
     2 unframe!
 ;

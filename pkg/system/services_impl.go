@@ -205,7 +205,6 @@ func (sm *ServiceManager) handleSoundMessage(msg SoundMsg) SoundReply {
 	}
 }
 
-
 // StartFileSystemManager starts the file system management service goroutine.
 // It handles file I/O operations within the sandbox.
 func (sm *ServiceManager) StartFileSystemManager() {

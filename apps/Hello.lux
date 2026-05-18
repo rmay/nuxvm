@@ -1,45 +1,28 @@
-( --- Hello World App (Modernized) --- )
+( --- Hello World App (Modernized with APP framework) --- )
 
-INCLUDE "lib/vfs.lux"
-INCLUDE "lib/draw.lux"
+INCLUDE "lib/app.lux"
 
 MODULE HELLO
 
-@dfd_addr  0x8E0000 ;
-@dfd@  dfd_addr  LOADI ; @dfd!  dfd_addr  STOREI ;
+@tx 0x8E000C ; @ty 0x8E0010 ;
 
-@SCREEN_W  0x8E0004 ;
-@SCREEN_H  0x8E0008 ;
-@tx_addr   0x8E000C ;
-@ty_addr   0x8E0010 ;
-@tx@  tx_addr LOADI ; @tx!  tx_addr STOREI ;
-@ty@  ty_addr LOADI ; @ty!  ty_addr STOREI ;
+@on-frame
+    ( Clear to black )
+    APP::draw-fd 0 0 APP::width APP::height 0x000000 DRAW::fill-rect
+
+    ( Draw "Hello" in white at 2x scale using Chicago 12x12 CFF )
+    APP::draw-fd tx LOADI ty LOADI T"Hello, World!" 0xFFFFFF 2 DRAW::draw-str
+;
 
 @start
-    ( 0. Set Window Title )
-    T"Hello from Lux!" VFS::set-window-title
+    T"Hello from Lux!" APP::init
 
-    ( 1. Open /dev/draw )
-    T"/dev/draw" VFS::open dfd!
+    ( Compute centered origin: "Hello" at scale 2 is 64px wide, 32px tall )
+    APP::width 64 - 2 / tx STOREI
+    APP::height 32 - 2 / ty STOREI
 
-    ( 2. Get Resolution )
-    0x10024 LOADI SCREEN_W STOREI
-    0x10028 LOADI SCREEN_H STOREI
-
-    ( 3. Compute centered origin: "Hello" at scale 2 is 64px wide, 32px tall )
-    SCREEN_W LOADI 64 - 2 / tx!
-    SCREEN_H LOADI 32 - 2 / ty!
-
-    ( 4. Main Loop )
-    [ 1 ] [
-        ( Clear to black )
-        dfd@ 0 0 SCREEN_W LOADI SCREEN_H LOADI 0x000000 DRAW::fill-rect
-
-        ( Draw "Hello" in white at 2x scale using Chicago 12x12 CFF )
-        dfd@ tx@ ty@ T"Hello, World!" 0xFFFFFF 2 DRAW::draw-str
-
-        VFS::yield DROP
-    ] |:
+    [ on-frame ] APP::on-frame!
+    APP::loop
 ;
 
 HELLO::start

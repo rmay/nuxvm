@@ -423,7 +423,7 @@ func TestTextCursorWraps(t *testing.T) {
 	sys := NewSystem()
 	sys.SetResolution(32, 32)
 	sys.Write(textAttrAddr, int32((uint32(12)<<24)|0xFFFFFF)) // white
-	sys.Write(textCursorAddr, int32(28<<16))                 // cell (28,0) — near right edge
+	sys.Write(textCursorAddr, int32(28<<16))                  // cell (28,0) — near right edge
 
 	sys.Write(textCharAddr, int32('X'))
 

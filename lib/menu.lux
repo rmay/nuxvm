@@ -1,0 +1,178 @@
+( Menu Bar Library — Quotation Driven )
+
+INCLUDE "lib/draw.lux"
+INCLUDE "lib/str.lux"
+INCLUDE "lib/ui.lux"
+
+MODULE MENU
+
+( --- Theme Colors (System 6 style) --- )
+@CLR_BG      0xFFFFFF ;
+@CLR_BORDER  0x000000 ;
+@CLR_TEXT    0x000000 ;
+@CLR_HILIGHT 0xCCCCCC ; ( Gray for highlights )
+
+@BAR_H       20 ;
+@FONT_CHAR_W  7 ;
+@FONT_CHAR_H 16 ;
+@MENU_PADDING 10 ;
+@ITEM_H      20 ;
+
+( --- State Struct (8 bytes) --- )
+@MB_SIZE    8 ;
+@MB_ACTIVE  0 ; ( index of active menu, -1 if none )
+@MB_HOVER   4 ; ( index of hovered item in active menu, -1 if none )
+
+( --- API --- )
+
+@menu-bar-draw ( fd addr win-w menus-quot count -- )
+    @MENU_PADDING 0 ( x i )
+    7 frame! ( 0:i 1:x 2:count 3:m-quot 4:win-w 5:addr 6:fd )
+
+    ( 1. Background )
+    6 local@ 0 0 4 local@ @BAR_H @CLR_BG DRAW::fill-rect
+    6 local@ 0 @BAR_H 1 - 4 local@ 1 @CLR_BORDER DRAW::fill-rect
+
+    ( 2. Labels )
+    [ 0 local@ 2 local@ < ] [
+        0 local@ 3 local@ CALL CALL ( label items-q count )
+        ( Calculate width )
+        2 PICK strlen @FONT_CHAR_W * @MENU_PADDING 2 * + ( label items-q count w )
+
+        ( Draw Label )
+        6 local@ ( fd )
+        1 local@ @MENU_PADDING + ( x )
+        @BAR_H @FONT_CHAR_H - 2 / ( y )
+        4 PICK ( label )
+        0 local@ 5 local@ MB_ACTIVE + LOADI = [ @CLR_HILIGHT ] [ @CLR_TEXT ] ?:
+        1 DRAW::draw-str
+
+        ( Update x and i )
+        drop drop drop ( w )
+        1 local@ + 1 local! ( x += w )
+        0 local@ 1 + 0 local! ( i++ )
+    ] |:
+
+    ( 3. Dropdown )
+    5 local@ MB_ACTIVE + LOADI dup -1 > [
+        ( active-idx )
+        @MENU_PADDING 0 ( x i )
+        [ dup 2 PICK < ] [
+            dup 3 local@ CALL CALL drop drop strlen @FONT_CHAR_W * @MENU_PADDING 2 * + +
+            swap 1 + swap
+        ] |:
+        swap ( active-x )
+
+        ( Get active menu data )
+        OVER 3 local@ CALL CALL ( active-idx active-x label items-q item-count )
+
+        ( Dropdown Frame )
+        6 local@ 5 local@ ( fd addr )
+        7 frame! ( 0:addr 1:fd 2:item-count 3:items-q 4:label 5:active-x 6:active-idx )
+        
+        ( Width )
+        0 0 [ dup 2 local@ < ] [
+            dup 3 local@ CALL drop drop strlen @FONT_CHAR_W * MAX
+            swap 1 + swap
+        ] |:
+        drop @MENU_PADDING 2 * + ( dropdown-w )
+        
+        ( Box )
+        1 local@ 5 local@ @BAR_H 2 PICK 2 local@ @ITEM_H * @CLR_BG UI::draw-border-rect
+
+        ( Items )
+        0 ( i )
+        [ dup 2 local@ < ] [
+            ( dropdown-w i )
+            dup 0 local@ MB_HOVER + LOADI = [
+                1 local@ 5 local@ @BAR_H 2 PICK @ITEM_H * + 3 PICK @ITEM_H @CLR_HILIGHT DRAW::fill-rect
+            ] ?
+            
+            1 local@ ( fd )
+            5 local@ @MENU_PADDING + ( x )
+            @BAR_H OVER @ITEM_H * + @ITEM_H @FONT_CHAR_H - 2 / + ( y )
+            dup 3 local@ CALL drop swap drop ( label )
+            @CLR_TEXT 1 DRAW::draw-str
+            
+            1 +
+        ] |:
+        drop drop ( i w )
+        7 unframe!
+        drop ( active-idx )
+    ] [ drop ] ?:
+
+    7 unframe!
+;
+
+@menu-bar-update ( addr mx my btn menus-quot count -- )
+    6 frame! ( 0:count 1:m-quot 2:btn 3:my 4:mx 5:addr )
+
+    5 local@ MB_ACTIVE + LOADI dup -1 = [
+        drop ( -1 )
+        2 local@ 1 = [
+            @MENU_PADDING 0 ( x i )
+            [ dup 0 local@ < ] [
+                ( x i )
+                dup 1 local@ CALL CALL drop drop strlen @FONT_CHAR_W * @MENU_PADDING 2 * + ( w )
+                4 local@ 3 local@ ( mx my )
+                2 PICK ( x ) 0 ( y ) 2 PICK ( w ) @BAR_H ( h )
+                UI::in-rect? [
+                    dup ( i ) 5 local@ MB_ACTIVE + STOREI
+                    -1 5 local@ MB_HOVER + STOREI
+                    drop 0 local@ 1 - ( force exit )
+                ] ?
+                + swap 1 +
+            ] |:
+            drop drop
+        ] ?
+    ] [
+        ( active-idx )
+        @MENU_PADDING 0 ( x i )
+        [ dup 2 PICK < ] [
+            dup 1 local@ CALL CALL drop drop strlen @FONT_CHAR_W * @MENU_PADDING 2 * + +
+            swap 1 + swap
+        ] |:
+        swap ( active-x )
+
+        OVER 1 local@ CALL CALL ( active-idx active-x label items-q count )
+
+        ( Dropdown Frame )
+        5 local@ 4 local@ 3 local@ 2 local@
+        9 frame! ( 0:btn 1:my 2:mx 3:addr 4:count 5:items-q 6:label 7:active-x 8:active-idx )
+        
+        ( Width )
+        0 0 [ dup 4 local@ < ] [
+            dup 5 local@ CALL drop drop strlen @FONT_CHAR_W * MAX
+            swap 1 + swap
+        ] |:
+        drop @MENU_PADDING 2 * + ( w )
+        
+        0 local@ 1 = [
+            2 local@ 1 local@ 7 local@ @BAR_H 2 PICK 4 local@ @ITEM_H * UI::in-rect? [
+                ( Inside dropdown )
+                0 ( i )
+                [ dup 4 local@ < ] [
+                    2 local@ 1 local@ 7 local@ @BAR_H 2 PICK @ITEM_H * + 4 PICK @ITEM_H UI::in-rect? [
+                        dup 5 local@ CALL swap drop swap drop ( callback )
+                        dup 0 > [ CALL ] [ drop ] ?:
+                        -1 3 local@ MB_ACTIVE + STOREI
+                        drop 4 local@ 1 - ( exit )
+                    ] ?
+                    1 +
+                ] |:
+                drop
+            ] [
+                -1 3 local@ MB_ACTIVE + STOREI
+            ] ?:
+        ] [
+            -1 3 local@ MB_HOVER + STOREI
+            2 local@ 1 local@ 7 local@ @BAR_H 2 PICK 4 local@ @ITEM_H * UI::in-rect? [
+                1 local@ @BAR_H - @ITEM_H / 3 local@ MB_HOVER + STOREI
+            ] ?
+        ] ?:
+        drop ( w )
+        9 unframe!
+    ] ?:
+
+    6 unframe!
+;

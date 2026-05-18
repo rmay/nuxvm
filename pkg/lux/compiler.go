@@ -35,12 +35,13 @@ type PatchRequest struct {
 }
 
 type UnresolvedReference struct {
-	Word    string
-	Offset  int32
-	Line    int
-	Column  int
-	QuotIdx int
-	Module  string
+	Word      string
+	Offset    int32
+	Line      int
+	Column    int
+	QuotIdx   int
+	Module    string
+	IsAddress bool
 }
 
 type Compiler struct {
@@ -67,8 +68,8 @@ type Compiler struct {
 }
 
 type StringPatch struct {
-	Offset  int32
-	QuotIdx int
+	Offset   int32
+	QuotIdx  int
 	TempAddr int32
 }
 
@@ -125,6 +126,12 @@ var builtins = map[string]byte{
 	"MIN":      vm.OpMin,
 	"MAX":      vm.OpMax,
 	"DIVMOD":   vm.OpDivmod,
+	"CALLSTACK": vm.OpCallStack,
+	"JMPSTACK":  vm.OpJmpStack,
+	"PUSHR":     vm.OpPushR,
+	"POPR":      vm.OpPopR,
+	"PEEKR":     vm.OpPeekR,
+	"PEEKR2":    vm.OpPeekR2,
 	"FRAME!":   vm.OpFrame,
 	"UNFRAME!": vm.OpUnframe,
 	"LOCAL@":   vm.OpLocalGet,
@@ -284,6 +291,9 @@ func (c *Compiler) compile() ([]byte, error) {
 	addrMap := make(map[int32]int32)
 	for i := range c.quotations {
 		c.quotations[i].Address = c.currentAddress()
+		if c.trace {
+			fmt.Fprintf(os.Stderr, "Compiler: quotation %d assigned address %d (temp 0x%X)\n", i, c.quotations[i].Address, c.quotations[i].TempAddr)
+		}
 		addrMap[c.quotations[i].TempAddr] = c.quotations[i].Address
 		c.emit(c.quotations[i].Code...)
 	}
@@ -308,7 +318,11 @@ func (c *Compiler) compile() ([]byte, error) {
 		} else {
 			base = int(c.quotations[u.QuotIdx].Address - c.baseAddr)
 		}
-		c.bytecode[base+int(u.Offset)] = vm.OpCall
+		if u.IsAddress {
+			c.bytecode[base+int(u.Offset)] = vm.OpPush
+		} else {
+			c.bytecode[base+int(u.Offset)] = vm.OpCall
+		}
 		binary.BigEndian.PutUint32(c.bytecode[base+int(u.Offset)+1:base+int(u.Offset)+5], uint32(w.Address))
 	}
 
@@ -408,6 +422,22 @@ func (c *Compiler) compileToken(t Token) error {
 		off := c.currentOffset()
 		c.unresolved = append(c.unresolved, UnresolvedReference{Word: t.Value, Offset: off, Line: t.Line, Column: t.Column, QuotIdx: c.activeQuotIdx, Module: c.currentModule})
 		c.emit(vm.OpPush, 0, 0, 0, 0)
+	case TokenDollar:
+		// Handle $word -> push the bytecode address of word (function pointer / address-of)
+		t = c.advance()
+		if t.Type != TokenWord {
+			return fmt.Errorf("expected word name after $ at line %d", t.Line)
+		}
+		if w, ok := c.resolveWord(t.Value); ok {
+			c.emit(vm.OpPush)
+			c.emit(vm.EncodeInt32(w.Address)...)
+			return nil
+		}
+		// Unresolved word address: patch it later as a PUSH
+		off := c.currentOffset()
+		c.unresolved = append(c.unresolved, UnresolvedReference{Word: t.Value, Offset: off, Line: t.Line, Column: t.Column, QuotIdx: c.activeQuotIdx, Module: c.currentModule, IsAddress: true})
+		c.emit(vm.OpPush, 0, 0, 0, 0)
+		return nil
 	case TokenLBracket:
 		return c.compileQuotation()
 	case TokenString:
@@ -507,38 +537,48 @@ func (c *Compiler) compileCombinator(name string, line int) error {
 		c.quotationStack = c.quotationStack[:len(c.quotationStack)-2]
 		next := c.peek().Type
 		isTailCall := next == TokenSemicolon || next == TokenRBracket
-		// Stack at runtime: [ cond addr_if addr_else ]
-		c.emit(vm.OpRot, vm.OpJz) // -> [ addr_if addr_else cond ] -> Jz pops cond
+		// Stack at runtime: [ ... cond addr_if addr_else ]
+		// We want to move cond to top: [ ... addr_if addr_else cond ]
+		// OpRot works on top 3: a=cond, b=addr_if, c=addr_else -> b, c, a
+		c.emit(vm.OpRot, vm.OpJz) // -> [ ... addr_if addr_else cond ] -> Jz pops cond
 		jzAt := c.currentOffset()
 		c.emit(0, 0, 0, 0)
-		// True branch: [ addr_if addr_else ]
-		c.emit(vm.OpPop) // -> [ addr_if ]
+
+		// True branch: [ ... addr_if addr_else ]
+		c.emit(vm.OpPop) // -> [ ... addr_if ]
+		var jmpAt int32
 		if isTailCall {
 			c.emit(vm.OpJmpStack)
 		} else {
 			c.emit(vm.OpCallStack)
+			c.emit(vm.OpJmp)
+			jmpAt = int32(c.currentOffset())
+			c.emit(0, 0, 0, 0)
 		}
 
-		c.emit(vm.OpJmp)
-		jmpAt := c.currentOffset()
-		c.emit(0, 0, 0, 0)
-
-		// False branch: [ addr_if addr_else ]
+		// False branch: [ ... addr_if addr_else ] (cond was 0)
 		elseAt := c.currentAddress()
-		c.emit(vm.OpSwap, vm.OpPop) // -> [ addr_else ]
+		c.emit(vm.OpSwap, vm.OpPop) // -> [ ... addr_else ]
 		if isTailCall {
 			c.emit(vm.OpJmpStack)
 		} else {
 			c.emit(vm.OpCallStack)
 		}
 		endAt := c.currentAddress()
+
 		if c.activeQuotIdx >= 0 {
-			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, elseAt}, InternalJump{jmpAt, endAt})
+			if isTailCall {
+				c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{int32(jzAt), int32(elseAt)})
+			} else {
+				c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{int32(jzAt), int32(elseAt)}, InternalJump{jmpAt, int32(endAt)})
+			}
 		} else {
 			binary.BigEndian.PutUint32(getBuf()[jzAt:jzAt+4], uint32(elseAt))
-			binary.BigEndian.PutUint32(getBuf()[jmpAt:jmpAt+4], uint32(endAt))
+			if !isTailCall {
+				binary.BigEndian.PutUint32(getBuf()[int(jmpAt):int(jmpAt)+4], uint32(endAt))
+			}
 		}
-		return nil // Finished ?:
+		return nil
 	case "?":
 		if len(c.quotationStack) < 1 {
 			return fmt.Errorf("if requires one quotation")
@@ -560,25 +600,26 @@ func (c *Compiler) compileCombinator(name string, line int) error {
 			c.emit(0, 0, 0, 0)
 
 			// False branch: [ addr ]
-			skipAt := c.currentAddress()
+			elseAt := c.currentAddress()
 			c.emit(vm.OpPop)
 			endAt := c.currentAddress()
 			if c.activeQuotIdx >= 0 {
-				c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, skipAt}, InternalJump{jmpAt, endAt})
+				c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, elseAt}, InternalJump{jmpAt, endAt})
 			} else {
-				binary.BigEndian.PutUint32(getBuf()[jzAt:jzAt+4], uint32(skipAt))
+				binary.BigEndian.PutUint32(getBuf()[jzAt:jzAt+4], uint32(elseAt))
 				binary.BigEndian.PutUint32(getBuf()[jmpAt:jmpAt+4], uint32(endAt))
 			}
 			return nil
 		}
 		// If tail call, False branch (skip)
-		skipAt := c.currentAddress()
+		elseAt := c.currentAddress()
 		c.emit(vm.OpPop)
 		if c.activeQuotIdx >= 0 {
-			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, skipAt})
+			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, elseAt})
 		} else {
-			binary.BigEndian.PutUint32(getBuf()[jzAt:jzAt+4], uint32(skipAt))
+			binary.BigEndian.PutUint32(getBuf()[jzAt:jzAt+4], uint32(elseAt))
 		}
+		return nil
 	case "!:":
 		if len(c.quotationStack) < 1 {
 			return fmt.Errorf("unless requires one quotation")

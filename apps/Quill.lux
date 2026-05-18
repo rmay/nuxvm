@@ -1,30 +1,34 @@
-( --- Quill: minimal Plan9-style text editor --- )
+( --- Quill: minimal Plan9-style text editor (Refactored) --- )
 
+INCLUDE "lib/app.lux"
 INCLUDE "lib/core.lux"
-INCLUDE "lib/vfs.lux"
-INCLUDE "lib/draw.lux"
 INCLUDE "lib/time.lux"
 INCLUDE "lib/file.lux"
-INCLUDE "lib/event.lux"
 INCLUDE "lib/str.lux"
+INCLUDE "lib/ui.lux"
+INCLUDE "lib/menu.lux"
 
 MODULE MAIN
 
+IMPORT APP
 IMPORT VFS
 IMPORT DRAW
 IMPORT TIME
 IMPORT FILE
 IMPORT EVENT
 IMPORT STR
+IMPORT UI
+IMPORT MENU
 
 ( --- Window geometry (matches Shell's 800x600 child window) --- )
 @WIN_W      800 ;
 @WIN_H      600 ;
+@BAR_H      20 ;
 @MARGIN     16 ;
 @PANE_X     16 ;        ( MARGIN )
-@PANE_Y     16 ;        ( MARGIN )
+@PANE_Y     36 ;        ( BAR_H + MARGIN )
 @PANE_W     768 ;       ( WIN_W - 2*MARGIN )
-@PANE_H     568 ;       ( WIN_H - 2*MARGIN )
+@PANE_H     548 ;       ( WIN_H - BAR_H - 2*MARGIN )
 @PANE_RIGHT 784 ;       ( PANE_X + PANE_W )
 @PANE_BOT   584 ;       ( PANE_Y + PANE_H )
 @LINE_H     26 ;
@@ -40,19 +44,50 @@ IMPORT STR
 @FILE_BUF_MAX   0x100000 ;
 @FONT_DATA      0x900000 ;
 @FONT_BYTES     8448 ;
+@MENU_DATA      0x920000 ;
 
 ( --- State --- )
 ( NOTE: must live OUTSIDE the FONT_DATA range or CFF load clobbers state. )
-@dfd        0x910004 ;
-@kfd        0x910008 ;
 @file-len   0x910010 ;
 @dirty      0x910014 ;
 @cursor     0x910018 ;   ( byte index into FILE_BUF )
 @last-key   0x910024 ;   ( unix seconds, for autosave debounce )
-@kpkt       0x910030 ;   ( 4-byte kbd packet scratch )
 @caret-x    0x910034 ;
 @caret-y    0x910038 ;
 @target-x   0x91003C ;
+
+( --- Menu Structure --- )
+@MB_ADDR        @MENU_DATA ;
+
+@menu-new ( -- )
+    0 file-len STOREI
+    0 cursor STOREI
+    0 dirty STOREI
+    refresh
+;
+
+@menu-quit ( -- ) HALT ;
+
+@MI_FILE ( i -- label shortcut callback )
+    dup 0 = [ drop T"New"  0 [ menu-new ]  ] [
+    dup 1 = [ drop T"Save" 0 [ save-file ] ] [
+    dup 2 = [ drop T"Quit" 0 [ menu-quit ] ] [
+    drop 0 0 0 ] ?: ] ?: ] ?:
+;
+
+@MN_FILE ( -- label items_quot count )
+    T"File" [ MI_FILE ] 3
+;
+
+@MENUS ( i -- menu_quot )
+    dup 0 = [ drop [ MN_FILE ] ] [
+    drop 0 ] ?:
+;
+
+@init-menus ( -- )
+    -1 MB_ADDR MENU::MB_ACTIVE + STOREI
+    -1 MB_ADDR MENU::MB_HOVER  + STOREI
+;
 
 ( --- Font width lookup --- )
 ( Using the system proportional font widths from /sys/font/widths. )
@@ -97,7 +132,7 @@ IMPORT STR
 ( --- Rendering --- )
 
 @draw-caret ( x y -- )
-    dfd LOADI rot rot 2 LINE_H CLR_CARET DRAW::fill-rect
+    APP::draw-fd rot rot 2 LINE_H CLR_CARET DRAW::fill-rect
 ;
 
 ( Emit a single DrawString for FILE_BUF chars in [start, end at pixel x, y.
@@ -106,7 +141,7 @@ IMPORT STR
     4 frame!   ( 0:y 1:x 2:end 3:start )
     2 local@ 3 local@ -
     dup 0 > [
-        dfd LOADI
+        APP::draw-fd
         1 local@
         0 local@
         FILE_BUF 3 local@ +
@@ -215,25 +250,14 @@ IMPORT STR
 @refresh ( -- )
     ( Clear full window region to white. The Shell's offset-draw will
       translate these into screen coords. )
-    dfd LOADI 0 0 WIN_W WIN_H CLR_BG DRAW::fill-rect
+    APP::draw-fd 0 0 WIN_W WIN_H CLR_BG DRAW::fill-rect
+    
+    ( Draw Menu Bar )
+    APP::draw-fd MB_ADDR WIN_W [ MENUS ] 1 MENU::menu-bar-draw
+    
     ( 1px inner frame at margin - 1 so we can see the editable area )
-    dfd LOADI MARGIN 1 - MARGIN 1 - PANE_W 2 + PANE_H 2 + CLR_FRAME DRAW::draw-rect
+    APP::draw-fd MARGIN 1 - PANE_Y 1 - PANE_W 2 + PANE_H 2 + CLR_FRAME DRAW::draw-rect
     layout-and-render
-;
-
-( --- Device setup --- )
-
-@open-devices ( -- )
-    ( /dev/draw is bound by the Shell; retry until it appears. )
-    [ T"/dev/draw" VFS::open dup 0 < ] [
-        drop VFS::yield drop
-    ] |:
-    dfd STOREI
-    ( /dev/kbd is bound by the Shell similarly. )
-    [ T"/dev/kbd" VFS::open dup 0 < ] [
-        drop VFS::yield drop
-    ] |:
-    kfd STOREI
 ;
 
 ( --- File I/O --- )
@@ -289,12 +313,31 @@ IMPORT STR
     ] ?:
 ;
 
-@handle-kbd ( -- )
-    kfd LOADI kpkt 4 VFS::read 4 = [
-        kpkt EVENT::kbd-type EVENT::KEY_DOWN = [
-            kpkt EVENT::kbd-key
-            TIME::unix@ last-key STOREI
-            handle-key
+@on-kbd ( kpkt -- )
+    dup EVENT::kbd-type EVENT::KEY_DOWN = [
+        dup EVENT::kbd-key
+        TIME::unix@ last-key STOREI
+        handle-key
+    ] ?
+    drop
+;
+
+@on-mouse ( mpkt -- )
+    MB_ADDR
+    OVER EVENT::mouse-x
+    OVER EVENT::mouse-y
+    2 PICK EVENT::mouse-type EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?:
+    [ MENUS ] 1
+    MENU::menu-bar-update
+    refresh
+    drop
+;
+
+@on-frame ( -- )
+    ( Autosave after 2s of inactivity )
+    dirty LOADI 1 = [
+        TIME::unix@ last-key LOADI - 2 >= [
+            save-file
         ] ?
     ] ?
 ;
@@ -302,23 +345,23 @@ IMPORT STR
 ( --- Main --- )
 
 @start
-    ( 0. Set Window Title )
-    T"Quill" VFS::set-window-title
+    ( 0. Set Window Title & Open devices )
+    T"Quill" APP::init
 
-    ( 1. Open devices via Shell-bound namespace )
-    open-devices
+    ( 2. Initialize Menus )
+    init-menus
 
-    ( 2. Pick font + size on the draw device )
-    dfd LOADI 0 DRAW::set-font
-    dfd LOADI FONT_SIZE DRAW::set-font-size
+    ( 3. Pick font + size on the draw device )
+    APP::draw-fd 0 DRAW::set-font
+    APP::draw-fd FONT_SIZE DRAW::set-font-size
 
-    ( 3. Load system font widths for the chosen size )
+    ( 4. Load system font widths for the chosen size )
     T"/sys/font/widths" VFS::open dup 0 >= [
         dup FONT_DATA 256 VFS::read drop
         VFS::close drop
     ] [ drop ] ?:
 
-    ( 4. Load existing manuscript if present )
+    ( 5. Load existing manuscript if present )
     T"manuscript.quill" FILE_BUF FILE_BUF_MAX FILE::load
     dup 0 > [ file-len STOREI ] [ drop 0 file-len STOREI ] ?:
 
@@ -329,16 +372,10 @@ IMPORT STR
     refresh
     caret-x LOADI target-x STOREI
 
-    [ 1 ] [
-        handle-kbd
-        ( Autosave after 2s of inactivity )
-        dirty LOADI 1 = [
-            TIME::unix@ last-key LOADI - 2 >= [
-                save-file
-            ] ?
-        ] ?
-        VFS::yield drop
-    ] |:
+    [ on-mouse ] APP::on-mouse!
+    [ on-kbd   ] APP::on-kbd!
+    [ on-frame ] APP::on-frame!
+    APP::loop
 ;
 
 MAIN::start

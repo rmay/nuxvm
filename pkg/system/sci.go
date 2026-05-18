@@ -491,7 +491,7 @@ func (s *System) drawCharToWindow(win *WindowRecord, img *image.RGBA, c byte) {
 
 	advance := s.DrawGlyph(img, int32(s.text.cursorX), int32(s.text.cursorY), c, s.text.color, scale)
 	s.text.cursorX += uint16(advance)
-	
+
 	// Handle auto-wrap
 	winW := int(win.ContRgn.Width())
 	if int(s.text.cursorX) >= winW {

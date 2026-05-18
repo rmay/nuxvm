@@ -21,6 +21,9 @@ IMPORT EVENT
 @dragging_addr 0x8E0014 ;
 @last_mx_addr 0x8E0018 ;
 @last_my_addr 0x8E001C ;
+@draw_peer_fd_addr 0x8E0030;
+@mouse_peer_fd_addr 0x8E0034;
+@kbd_peer_fd_addr 0x8E0038;
 
 @dfd@ dfd_addr LOADI ; @dfd! dfd_addr STOREI ;
 @mfd@ mfd_addr LOADI ; @mfd! mfd_addr STOREI ;
@@ -33,6 +36,9 @@ IMPORT EVENT
 @dragging@ dragging_addr LOADI ; @dragging! dragging_addr STOREI ;
 @last_mx@ last_mx_addr LOADI ; @last_mx! last_mx_addr STOREI ;
 @last_my@ last_my_addr LOADI ; @last_my! last_my_addr STOREI ;
+@draw_peer_fd@ draw_peer_fd_addr LOADI; @draw_peer_fd! draw_peer_fd_addr STOREI;
+@mouse_peer_fd@ mouse_peer_fd_addr LOADI; @mouse_peer_fd! mouse_peer_fd_addr STOREI;
+@kbd_peer_fd@ kbd_peer_fd_addr LOADI; @kbd_peer_fd! kbd_peer_fd_addr STOREI;
 
 @mbuf 0x8D2000 ;
 @mx 0x8D2008 ; @my 0x8D200C ;
@@ -150,18 +156,18 @@ IMPORT EVENT
 ;
 
 @launch-app ( path -- )
-    4 frame! ( 0:path, 1:draw-peer, 2:mouse-peer, 3:kbd-peer )
+    1 frame! ( 0:path )
     ( 1. Create Draw Channel )
     VFS::PATH_CHAN_NEW VFS::open cfd!
-    VFS::PATH_CHAN_PEER VFS::open 1 local!
+    VFS::PATH_CHAN_PEER VFS::open draw_peer_fd!
 
     ( 2. Create Mouse Channel )
     VFS::PATH_CHAN_NEW VFS::open cmfd!
-    VFS::PATH_CHAN_PEER VFS::open 2 local!
+    VFS::PATH_CHAN_PEER VFS::open mouse_peer_fd!
 
     ( 3. Create Kbd Channel )
     VFS::PATH_CHAN_NEW VFS::open ckfd!
-    VFS::PATH_CHAN_PEER VFS::open 3 local!
+    VFS::PATH_CHAN_PEER VFS::open kbd_peer_fd!
 
     ( 4. Spawn Child VM )
     VFS::PATH_VM_NEW VFS::open ( vm_ctl_fd )
@@ -172,16 +178,16 @@ IMPORT EVENT
     ( id_buf LOADI is the ID )
 
     ( 6. Bind into Child Namespace )
-    1 local@ T"/sys/vm/1/ns/dev/draw" VFS::bind drop
-    2 local@ T"/sys/vm/1/ns/dev/mouse" VFS::bind drop
-    3 local@ T"/sys/vm/1/ns/dev/kbd" VFS::bind drop
+    draw_peer_fd@ T"/sys/vm/1/ns/dev/draw" VFS::bind drop
+    mouse_peer_fd@ T"/sys/vm/1/ns/dev/mouse" VFS::bind drop
+    kbd_peer_fd@ T"/sys/vm/1/ns/dev/kbd" VFS::bind drop
 
     ( 7. Cleanup )
-    1 local@ VFS::close drop
-    2 local@ VFS::close drop
-    3 local@ VFS::close drop
+    draw_peer_fd@ VFS::close drop
+    mouse_peer_fd@ VFS::close drop
+    kbd_peer_fd@ VFS::close drop
     VFS::close drop ( vm_ctl_fd )
-    4 unframe!
+    1 unframe!
 ;
 
 @start

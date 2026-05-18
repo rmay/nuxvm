@@ -21,6 +21,7 @@ const (
 	TokenString                     // "chars" or T"chars" — emits string bytes to heap at compile-time, pushes address
 	TokenLBracket                   // [ - start quotation
 	TokenRBracket                   // ] - end quotation
+	TokenDollar                     // $ - address-of (e.g. $WORD pushes the bytecode address of WORD)
 	TokenEOF                        // End of file
 )
 
@@ -127,6 +128,11 @@ func (l *Lexer) NextToken() (Token, error) {
 			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading @")
 		}
 		return l.readSingleChar(TokenAtSign), nil
+	case ch == '$':
+		if l.trace {
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading $")
+		}
+		return l.readSingleChar(TokenDollar), nil
 	case ch == ';':
 		if l.trace {
 			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading ;")

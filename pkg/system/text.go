@@ -148,7 +148,7 @@ func (r *TTFFontRenderer) DrawGlyph(dst *image.RGBA, x, y int32, char byte, col 
 	}
 
 	d.DrawString(string(rune(char)))
-	
+
 	adv, _ := face.GlyphAdvance(rune(char))
 	return adv.Ceil()
 }
@@ -190,7 +190,7 @@ func (r *CFFFontRenderer) DrawGlyph(dst *image.RGBA, x, y int32, char byte, col 
 	// Special case: if this is our Chicago fallback, use TTF for better quality
 	if len(r.Data) == len(ChicagoCFF) {
 		ttf := &TTFFontRenderer{Size: 16}
-		return ttf.DrawGlyph(dst, x, y, char, col, scale * float64(r.TileSize))
+		return ttf.DrawGlyph(dst, x, y, char, col, scale*float64(r.TileSize))
 	}
 
 	width := int(r.Data[char])
@@ -266,7 +266,7 @@ func (r *CFFFontRenderer) MeasureGlyph(char byte, scale float64) (int, int) {
 	}
 	if len(r.Data) == len(ChicagoCFF) {
 		ttf := &TTFFontRenderer{Size: 16}
-		return ttf.MeasureGlyph(char, scale * float64(r.TileSize))
+		return ttf.MeasureGlyph(char, scale*float64(r.TileSize))
 	}
 	width := int(r.Data[char])
 	return int(float64(width) * scale), int(float64(r.TileSize) * scale)
@@ -320,12 +320,12 @@ func (s *System) DrawGlyph(dst *image.RGBA, x, y int32, char byte, colorVal uint
 		B: uint8(colorVal),
 		A: 255,
 	}
-	
+
 	// Apply pane clipping if drawing to the main screen
 	if dst.Pix == nil || len(dst.Pix) == 0 {
 		return 0
 	}
-	
+
 	return renderer.DrawGlyph(dst, x, y, char, c, scale)
 }
 
@@ -375,7 +375,7 @@ func (s *System) drawChar(c byte) {
 
 	renderer := s.GetFontRenderer()
 	scale := s.text.getScale()
-	
+
 	// Handle control characters
 	switch c {
 	case '\n':
@@ -387,7 +387,7 @@ func (s *System) drawChar(c byte) {
 		s.text.cursorX = 0
 		return
 	}
-	
+
 	if c < 0x20 || c > 0x7E {
 		return
 	}
@@ -409,7 +409,7 @@ func (s *System) drawChar(c byte) {
 	screen := s.screenImage()
 	// Create a sub-image for the pane
 	sub := screen.SubImage(image.Rect(paneMinX, paneMinY, paneMaxX, paneMaxY)).(*image.RGBA)
-	
+
 	advance := s.DrawGlyph(sub, int32(s.text.cursorX)-int32(paneMinX), int32(s.text.cursorY)-int32(paneMinY), c, s.text.color, scale)
 	s.text.cursorX += uint16(advance)
 
@@ -429,7 +429,7 @@ func (s *System) drawCFFRaw(data []byte, char byte, x, y int32, colorVal uint32,
 		B: uint8(colorVal),
 		A: 255,
 	}
-	
+
 	// For raw CFF drawing, we target the whole screen but respect panes
 	sw := int(s.screenWidth)
 	sh := int(s.screenHeight)
@@ -446,7 +446,7 @@ func (s *System) drawCFFRaw(data []byte, char byte, x, y int32, colorVal uint32,
 
 	screen := s.screenImage()
 	sub := screen.SubImage(image.Rect(paneMinX, paneMinY, paneMaxX, paneMaxY)).(*image.RGBA)
-	
+
 	renderer.DrawGlyph(sub, x-int32(paneMinX), y-int32(paneMinY), char, col, scale)
 }
 

@@ -70,10 +70,15 @@ type VM struct {
 	fp         int // Index into locals stack
 	locals     []int32
 	loopStack  []int32
+
+	// Trailing ring of executed PCs (for post-mortem diagnostics).
+	pcRing    [64]uint32
+	pcRingIdx int
 }
 
 // MaxLocalsSize defines the maximum number of local variables.
 const MaxLocalsSize = 4096
+
 // MaxLoopStackSize defines the maximum depth of nested loops.
 const MaxLoopStackSize = 1024
 
@@ -357,7 +362,13 @@ func (vm *VM) Rot() error {
 		return fmt.Errorf("stack underflow: need 3 values for ROT")
 	}
 	n := len(vm.stack)
-	vm.stack[n-3], vm.stack[n-2], vm.stack[n-1] = vm.stack[n-2], vm.stack[n-1], vm.stack[n-3]
+	a := vm.stack[n-3]
+	b := vm.stack[n-2]
+	c := vm.stack[n-1]
+
+	vm.stack[n-3] = b
+	vm.stack[n-2] = c
+	vm.stack[n-1] = a
 	return nil
 }
 
@@ -708,7 +719,6 @@ func (vm *VM) Gte() error {
 	return vm.Push(0)
 }
 
-// Pick copies the nth stack element (0=top) to the top.
 func (vm *VM) Pick() error {
 	if len(vm.stack) < 1 {
 		return fmt.Errorf("stack underflow: need index for PICK")
@@ -1058,6 +1068,8 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 	}
 	opcode := vm.memory[vm.pc]
 	vm.lastOpcode = opcode
+	vm.pcRing[vm.pcRingIdx] = vm.pc
+	vm.pcRingIdx = (vm.pcRingIdx + 1) % len(vm.pcRing)
 	vm.pc++
 
 	if vm.trace {
@@ -1384,11 +1396,11 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		if len(vm.locals)+int(n)+1 > MaxLocalsSize {
 			return currentPC, fmt.Errorf("frame failed: locals overflow")
 		}
-		
+
 		oldFP := int32(vm.fp)
 		vm.fp = len(vm.locals)
 		vm.locals = append(vm.locals, oldFP)
-		
+
 		// Copy n items from stack to locals
 		// Order: v_n ... v1. v1 is at top of main stack.
 		// We want local@ 0 to be v1.
@@ -1411,7 +1423,10 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		if len(vm.stack) < 1 {
 			return currentPC, fmt.Errorf("localget failed: stack underflow")
 		}
-		offset, _ := vm.Pop()
+		offset, err := vm.Pop()
+		if err != nil {
+			return currentPC, fmt.Errorf("localget failed: %v", err)
+		}
 		if vm.fp < 0 {
 			return currentPC, fmt.Errorf("localget failed: no active frame")
 		}
@@ -1424,8 +1439,14 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		if len(vm.stack) < 2 {
 			return currentPC, fmt.Errorf("localset failed: stack underflow")
 		}
-		offset, _ := vm.Pop()
-		val, _ := vm.Pop()
+		offset, err := vm.Pop()
+		if err != nil {
+			return currentPC, fmt.Errorf("localset failed: %v", err)
+		}
+		val, err := vm.Pop()
+		if err != nil {
+			return currentPC, fmt.Errorf("localset failed: %v", err)
+		}
 		if vm.fp < 0 {
 			return currentPC, fmt.Errorf("localset failed: no active frame")
 		}
@@ -1489,6 +1510,19 @@ func (vm *VM) StackDump(limit int) []int32 {
 	res := make([]int32, limit)
 	copy(res, vm.stack[n-limit:])
 	return res
+}
+
+// RecentPCs returns the last N executed PCs in chronological order (oldest first).
+func (vm *VM) RecentPCs() []uint32 {
+	n := len(vm.pcRing)
+	out := make([]uint32, 0, n)
+	for i := 0; i < n; i++ {
+		pc := vm.pcRing[(vm.pcRingIdx+i)%n]
+		if pc != 0 {
+			out = append(out, pc)
+		}
+	}
+	return out
 }
 
 // DebugInfo returns detailed state for error reporting

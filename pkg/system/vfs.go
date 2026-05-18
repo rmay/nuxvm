@@ -37,7 +37,7 @@ func NewVFS() *VFS {
 
 func (v *VFS) Open(s *System, path string) (int32, error) {
 	fmt.Fprintf(os.Stderr, "VFS: Open called for %q\n", path)
-	
+
 	file, err := v.openFile(s, path)
 	if err != nil {
 		return -1, err
@@ -247,7 +247,7 @@ func (f *drawFile) Write(p []byte) (int, error) {
 			if i+strLen > len(p) {
 				return i - 11, io.ErrShortWrite
 			}
-			
+
 			renderer := f.s.GetFontRenderer()
 			sc := float64(scale)
 			if !f.s.text.useBasicFont && scale < 6 {
@@ -292,18 +292,17 @@ func (f *drawFile) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-
 func (f *drawFile) Close() error { return nil }
 
 type kbdFile struct{ s *System }
 
 func (f *kbdFile) Write(p []byte) (n int, err error) { return 0, io.ErrShortWrite }
-func (f *kbdFile) Close() error                    { return nil }
+func (f *kbdFile) Close() error                      { return nil }
 
 type mouseFile struct{ s *System }
 
 func (f *mouseFile) Write(p []byte) (n int, err error) { return 0, io.ErrShortWrite }
-func (f *mouseFile) Close() error                    { return nil }
+func (f *mouseFile) Close() error                      { return nil }
 
 // audioFile handles audio playback via /sys/audio
 type audioFile struct{ s *System }
@@ -359,10 +358,10 @@ func (f *hostFile) Close() error {
 
 // vmFile handles child VM management via /sys/vm/
 type vmFile struct {
-	s    *System
-	id   int32
-	kind string // "new", "ctl", "draw", etc.
-	lastCreatedID int32 // For /sys/vm/new
+	s             *System
+	id            int32
+	kind          string // "new", "ctl", "draw", etc.
+	lastCreatedID int32  // For /sys/vm/new
 }
 
 func (f *vmFile) Read(p []byte) (n int, err error) {
@@ -498,4 +497,4 @@ func (f *fontWidthsFile) Read(p []byte) (n int, err error) {
 }
 
 func (f *fontWidthsFile) Write(p []byte) (n int, err error) { return 0, io.ErrShortWrite }
-func (f *fontWidthsFile) Close() error                     { return nil }
+func (f *fontWidthsFile) Close() error                      { return nil }

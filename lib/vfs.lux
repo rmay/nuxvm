@@ -20,10 +20,13 @@ MODULE VFS
 @CMD_MOVE_WIN   3 ;
 @CMD_FOCUS_WIN  8 ;
 @CMD_POLL_EVENT 9 ;
-
 @CMD_YIELD 16 ;
+@CMD_GET_ACTIVE_WIN 18;
 @CMD_FILE_DIALOG 21 ;
 @CMD_SET_WINDOW_TITLE 22 ;
+@CMD_GET_WIN_SIZE 7;
+@CMD_DEBUG_PRINT 20;
+
 
 ( Standard Paths )
 @PATH_CHAN_NEW  T"/sys/chan/new" ;
@@ -77,8 +80,19 @@ MODULE VFS
     CMD_YIELD 0 0 EXEC
 ;
 
+@debug-print ( str-ptr -- )
+    CMD_DEBUG_PRINT swap 0 EXEC drop
+;
+
 @open-file-dialog ( mode buf-ptr -- status )
     CMD_FILE_DIALOG rot rot EXEC
+;
+@get-active-window ( -- win-id )
+    CMD_GET_ACTIVE_WIN 0 0 EXEC
+;
+
+@get-window-size ( win-id -- size )
+    CMD_GET_WIN_SIZE swap 0 EXEC
 ;
 
 @create-window ( name-ptr size -- win-id )

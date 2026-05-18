@@ -1,0 +1,94 @@
+( --- Application Framework --- )
+
+INCLUDE "lib/vfs.lux"
+INCLUDE "lib/draw.lux"
+INCLUDE "lib/event.lux"
+
+MODULE APP
+
+IMPORT VFS
+IMPORT DRAW
+IMPORT EVENT
+
+( --- State --- )
+( Using 0x8C0000 range to avoid collision with DRAW::BUF at 0x8F0000 )
+@dfd      0x8C0000 ;
+@mfd      0x8C0004 ;
+@kfd      0x8C0008 ;
+@v-frame  0x8C000C ;
+@v-mouse  0x8C0010 ;
+@v-kbd    0x8C0014 ;
+@mpkt     0x8C0020 ; ( 8 bytes )
+@kpkt     0x8C0030 ; ( 4 bytes )
+@win-w    0x8C0040 ;
+@win-h    0x8C0044 ;
+
+( --- Accessors --- )
+@draw-fd  ( -- fd ) dfd LOADI ;
+@mouse-fd ( -- fd ) mfd LOADI ;
+@kbd-fd   ( -- fd ) kfd LOADI ;
+@width    ( -- w )  win-w LOADI ;
+@height   ( -- h )  win-h LOADI ;
+
+( --- Vector Setters --- )
+@on-frame! ( addr -- ) v-frame STOREI ;
+@on-mouse! ( addr -- ) v-mouse STOREI ;
+@on-kbd!   ( addr -- ) v-kbd   STOREI ;
+
+( --- Device Initialization --- )
+
+@open-devices ( -- )
+    ( /dev/draw )
+    [ T"/dev/draw" VFS::open dup 0 < ] [
+        drop VFS::yield drop
+    ] |:
+    dfd STOREI
+    
+    ( /dev/mouse )
+    [ T"/dev/mouse" VFS::open dup 0 < ] [
+        drop VFS::yield drop
+    ] |:
+    mfd STOREI
+    
+    ( /dev/kbd )
+    [ T"/dev/kbd" VFS::open dup 0 < ] [
+        drop VFS::yield drop
+    ] |:
+    kfd STOREI
+
+    ( Get Resolution )
+    0x10024 LOADI win-w STOREI
+    0x10028 LOADI win-h STOREI
+;
+
+( --- Framework Lifecycle --- )
+
+@init ( title-ptr -- )
+    VFS::set-window-title
+    open-devices
+;
+
+@loop ( -- )
+    [ 1 ] [
+        ( 1. Handle Mouse )
+        mfd LOADI mpkt 8 VFS::read 8 = [
+            v-mouse LOADI dup 0 > [
+                mpkt swap CALLSTACK
+            ] [ drop ] ?:
+        ] ?
+
+        ( 2. Handle Keyboard )
+        kfd LOADI kpkt 4 VFS::read 4 = [
+            v-kbd LOADI dup 0 > [
+                kpkt swap CALLSTACK
+            ] [ drop ] ?:
+        ] ?
+
+        ( 3. Handle Frame )
+        v-frame LOADI dup 0 > [
+            CALLSTACK
+        ] [ drop ] ?:
+
+        VFS::yield DROP
+    ] |:
+;

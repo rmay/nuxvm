@@ -123,6 +123,34 @@ func (m *Machine) Tick() (bool, error) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Machine: Tick error at PC=0x%X: %v\n", m.CPU.PC(), err)
 			fmt.Fprintf(os.Stderr, "Machine: Stack Dump (top 32): %v\n", m.CPU.StackDump(32))
+			fmt.Fprintf(os.Stderr, "Machine: ReturnStack Dump: %v\n", m.CPU.ReturnStack())
+			pc := int(m.CPU.PC())
+			mem := m.CPU.Memory()
+			lo, hi := pc-32, pc+32
+			if lo < 0 {
+				lo = 0
+			}
+			if hi > len(mem) {
+				hi = len(mem)
+			}
+			fmt.Fprintf(os.Stderr, "Machine: bytes near PC (0x%X..0x%X):\n  ", lo, hi)
+			for i := lo; i < hi; i++ {
+				if i == pc {
+					fmt.Fprintf(os.Stderr, "*%02X", mem[i])
+				} else {
+					fmt.Fprintf(os.Stderr, " %02X", mem[i])
+				}
+			}
+			fmt.Fprintln(os.Stderr)
+			recent := m.CPU.RecentPCs()
+			fmt.Fprintf(os.Stderr, "Machine: recent PCs (oldest..newest, %d):\n", len(recent))
+			for i, p := range recent {
+				if i > 0 && i%8 == 0 {
+					fmt.Fprintln(os.Stderr)
+				}
+				fmt.Fprintf(os.Stderr, " 0x%X", p)
+			}
+			fmt.Fprintln(os.Stderr)
 			return false, err
 		}
 	}

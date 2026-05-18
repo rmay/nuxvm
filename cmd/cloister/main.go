@@ -159,7 +159,7 @@ func (g *Game) Update() error {
 	}
 	if !running {
 		g.launcherMode = true
-		ebiten.SetWindowTitle("NuxVM / Actor 9")
+		ebiten.SetWindowTitle("Cloister")
 		return nil
 	}
 	return nil
@@ -289,7 +289,7 @@ func main() {
 		}
 	}
 
-	ebiten.SetWindowTitle("NuxVM / Actor 9")
+	ebiten.SetWindowTitle("Cloister")
 	ebiten.SetWindowSize(800, 600)
 
 	fmt.Fprintf(os.Stderr, "Starting NuxVM Launcher\n")

@@ -1,8 +1,8 @@
 package system
 
 import (
-	"testing"
 	"github.com/rmay/nuxvm/pkg/vm"
+	"testing"
 )
 
 func TestSCISetWindowTitle(t *testing.T) {
@@ -24,8 +24,8 @@ func TestSCISetWindowTitle(t *testing.T) {
 
 	// Trigger SCISetWindowTitle
 	sys.Write(sciPort+4, int32(SCISetWindowTitle)) // sciCommand
-	sys.Write(sciPort+8, int32(titleAddr))        // sciArg1
-	sys.Write(sciPort+12, 0)                      // sciArg2 triggers handleSCICommand
+	sys.Write(sciPort+8, int32(titleAddr))         // sciArg1
+	sys.Write(sciPort+12, 0)                       // sciArg2 triggers handleSCICommand
 
 	if capturedTitle != title {
 		t.Errorf("Expected title %q, got %q", title, capturedTitle)

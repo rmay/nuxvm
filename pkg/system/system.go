@@ -73,15 +73,15 @@ const (
 	SCIVFSWrite = 13
 	SCIVFSBind  = 14
 
-	SCICreateWin    = 1
-	SCICloseWin     = 2
-	SCIMoveWin      = 3
-	SCIDrawRect     = 4
-	SCIDrawText     = 5
-	SCISetPixel     = 6
-	SCIGetWinSize   = 7
-	SCIFocusWin     = 8
-	SCIPollEvent    = 9
+	SCICreateWin  = 1
+	SCICloseWin   = 2
+	SCIMoveWin    = 3
+	SCIDrawRect   = 4
+	SCIDrawText   = 5
+	SCISetPixel   = 6
+	SCIGetWinSize = 7
+	SCIFocusWin   = 8
+	SCIPollEvent  = 9
 
 	SCIPlaySound      = 15
 	SCIYield          = 16

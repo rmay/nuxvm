@@ -8,14 +8,14 @@ import (
 // Opcode constants — 55 opcodes (0x00–0x36), grouped by function.
 const (
 	// Stack Manipulation: 0x00–0x07
-	OpPush  = 0x00 // [] → [value]; 5-byte encoding (opcode + 4-byte big-endian immediate)
-	OpPop   = 0x01 // [a] → []
-	OpDup   = 0x02 // [a] → [a, a]
-	OpSwap  = 0x03 // [a, b] → [b, a]
-	OpOver  = 0x04 // [a, b] → [a, b, a]
-	OpRot   = 0x05 // [a, b, c] → [b, c, a]
-	OpPick  = 0x06 // [... n] → [... stack[n]]; pops n, copies nth element (0=top) to top
-	OpRoll  = 0x07 // [... x_n...x_0 n] → [... x_{n-1}...x_0 x_n]; rotates nth element to top
+	OpPush = 0x00 // [] → [value]; 5-byte encoding (opcode + 4-byte big-endian immediate)
+	OpPop  = 0x01 // [a] → []
+	OpDup  = 0x02 // [a] → [a, a]
+	OpSwap = 0x03 // [a, b] → [b, a]
+	OpOver = 0x04 // [a, b] → [a, b, a]
+	OpRot  = 0x05 // [a, b, c] → [b, c, a]
+	OpPick = 0x06 // [... n] → [... stack[n]]; pops n, copies nth element (0=top) to top
+	OpRoll = 0x07 // [... x_n...x_0 n] → [... x_{n-1}...x_0 x_n]; rotates nth element to top
 
 	// Arithmetic: 0x08–0x13
 	OpAdd    = 0x08 // [a, b] → [a+b]
