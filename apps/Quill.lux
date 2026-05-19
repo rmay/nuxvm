@@ -38,6 +38,7 @@ IMPORT MENU
 @CLR_FRAME  0xAAAAAA ;
 @CLR_TEXT   0x000000 ;
 @CLR_CARET  0xCC0000 ;
+@CLR_SEL    0xCCDDFF ;
 
 ( --- Memory layout --- )
 @FILE_BUF       0x800000 ;
@@ -45,6 +46,8 @@ IMPORT MENU
 @FONT_DATA      0x900000 ;
 @FONT_BYTES     8448 ;
 @MENU_DATA      0x920000 ;
+@PASTE_BUF      0xA00000 ;
+@PASTE_MAX      0x10000 ;
 
 ( --- State --- )
 ( NOTE: must live OUTSIDE the FONT_DATA range or CFF load clobbers state. )
@@ -55,6 +58,8 @@ IMPORT MENU
 @caret-x    0x910034 ;
 @caret-y    0x910038 ;
 @target-x   0x91003C ;
+@anchor     0x910040 ;   ( selection anchor; -1 = no selection )
+@drag       0x910044 ;   ( 1 if mouse-drag selection in progress )
 
 ( --- Menu Structure --- )
 @MB_ADDR        @MENU_DATA ;
@@ -63,10 +68,19 @@ IMPORT MENU
     0 file-len STOREI
     0 cursor STOREI
     0 dirty STOREI
+    -1 anchor STOREI
     refresh
 ;
 
 @menu-quit ( -- ) HALT ;
+
+@menu-cut ( -- )
+    sel-active? [
+        snarf-selection
+        delete-selection
+        refresh
+    ] ?
+;
 
 @MI_FILE ( i -- label shortcut callback )
     dup 0 = [ drop T"New"  0 [ menu-new ]  ] [
@@ -79,9 +93,21 @@ IMPORT MENU
     T"File" [ MI_FILE ] 3
 ;
 
+@MI_EDIT ( i -- label shortcut callback )
+    dup 0 = [ drop T"Cut"   0 [ menu-cut ]        ] [
+    dup 1 = [ drop T"Snarf" 0 [ snarf-selection ] ] [
+    dup 2 = [ drop T"Paste" 0 [ paste-snarf ]     ] [
+    drop 0 0 0 ] ?: ] ?: ] ?:
+;
+
+@MN_EDIT ( -- label items_quot count )
+    T"Edit" [ MI_EDIT ] 3
+;
+
 @MENUS ( i -- menu_quot )
     dup 0 = [ drop [ MN_FILE ] ] [
-    drop 0 ] ?:
+    dup 1 = [ drop [ MN_EDIT ] ] [
+    drop 0 ] ?: ] ?:
 ;
 
 @init-menus ( -- )
@@ -129,6 +155,61 @@ IMPORT MENU
     cursor LOADI file-len LOADI < [ cursor LOADI 1 + cursor STOREI ] ?
 ;
 
+( --- Selection (Plan9-style snarf range) --- )
+
+@sel-clear ( -- )
+    -1 anchor STOREI
+;
+
+@sel-active? ( -- flag )
+    anchor LOADI -1 = 0 =              ( anchor != -1 )
+    anchor LOADI cursor LOADI = 0 =    ( anchor != cursor )
+    AND
+;
+
+@sel-lo ( -- idx )
+    cursor LOADI anchor LOADI MIN
+;
+
+@sel-hi ( -- idx )
+    cursor LOADI anchor LOADI MAX
+;
+
+@delete-range ( lo hi -- )
+    2 frame! ( 0:hi 1:lo )
+    FILE_BUF 0 local@ +                     ( src = FILE_BUF+hi )
+    FILE_BUF 1 local@ +                     ( dst = FILE_BUF+lo )
+    file-len LOADI 0 local@ -               ( count = file-len - hi )
+    MEMORY::move-mem
+    file-len LOADI 0 local@ - 1 local@ + file-len STOREI
+    1 local@ cursor STOREI
+    sel-clear
+    1 dirty STOREI
+    2 unframe!
+;
+
+@delete-selection ( -- )
+    sel-active? [ sel-lo sel-hi delete-range ] ?
+;
+
+@insert-bytes ( src n -- )
+    2 frame! ( 0:n 1:src )
+    ( shift FILE_BUF[cursor..file-len] right by n )
+    FILE_BUF cursor LOADI +                 ( src )
+    FILE_BUF cursor LOADI + 0 local@ +      ( dst )
+    file-len LOADI cursor LOADI -           ( count )
+    MEMORY::move-mem
+    ( copy src bytes into FILE_BUF[cursor..] )
+    1 local@                                 ( src )
+    FILE_BUF cursor LOADI +                  ( dst )
+    0 local@                                 ( count )
+    MEMORY::move-mem
+    file-len LOADI 0 local@ + file-len STOREI
+    cursor LOADI 0 local@ + cursor STOREI
+    1 dirty STOREI
+    2 unframe!
+;
+
 ( --- Rendering --- )
 
 @draw-caret ( x y -- )
@@ -156,42 +237,125 @@ IMPORT MENU
 
 ( Simulate layout to find the character on visual row 'ty' closest to 'target-x' )
 @find-index-by-y ( ty -- idx )
-    dup PANE_Y < [ drop 0 EXIT ] ?
-    PANE_Y PANE_X 0 0 10000 5 frame!
-    ( 0:best-diff 1:best-i 2:i 3:x 4:y )
+    dup PANE_Y < [ drop -1 ] [
+        PANE_Y PANE_X 0 -1 10000 5 frame!
+        ( 0:best-diff 1:best-i 2:i 3:x 4:y )
 
-    [ 2 local@ file-len LOADI <= ] [
-        4 local@ OVER = [
-            ( We are on the target line )
-            3 local@ target-x LOADI - dup 0 < [ 0 swap - ] ? ( abs diff )
-            dup 0 local@ < [
-                0 local!
-                2 local@ 1 local!
-            ] [ drop ] ?:
-        ] ?
+        [ 2 local@ file-len LOADI <= ] [
+            4 local@ OVER = [
+                ( We are on the target line )
+                3 local@ target-x LOADI - dup 0 < [ 0 swap - ] ? ( abs diff )
+                dup 0 local@ < [
+                    0 local!
+                    2 local@ 1 local!
+                ] [ drop ] ?:
+            ] ?
 
-        ( Advance x, y )
-        2 local@ file-len LOADI < [
-            FILE_BUF 2 local@ + load-byte
-            dup 10 = [
-                drop
-                PANE_X 3 local!
-                4 local@ LINE_H + 4 local!
-            ] [
-                dup char-w
-                3 local@ OVER + PANE_RIGHT > [
+            ( Advance x, y )
+            2 local@ file-len LOADI < [
+                FILE_BUF 2 local@ + load-byte
+                dup 10 = [
+                    drop
                     PANE_X 3 local!
                     4 local@ LINE_H + 4 local!
-                ] ?
-                3 local@ + 3 local!
-                drop
-            ] ?:
-        ] ?
-        2 local@ 1 + 2 local!
-    ] |:
-    1 local@
-    5 unframe!
-    swap drop ( ty )
+                ] [
+                    dup char-w
+                    3 local@ OVER + PANE_RIGHT > [
+                        PANE_X 3 local!
+                        4 local@ LINE_H + 4 local!
+                    ] ?
+                    3 local@ + 3 local!
+                    drop
+                ] ?:
+            ] ?
+            2 local@ 1 + 2 local!
+        ] |:
+        1 local@
+        5 unframe!
+        swap drop ( ty )
+    ] ?:
+;
+
+( Like find-index-by-y but constrained to a target x as well. Temporarily
+  overrides target-x so the existing y-walker picks the nearest char on the
+  target row. )
+@find-index-by-xy ( tx ty -- idx )
+    target-x LOADI 3 frame! ( 0:saved 1:ty 2:tx )
+    2 local@ target-x STOREI
+    1 local@ find-index-by-y
+    0 local@ target-x STOREI
+    3 unframe!
+;
+
+( Paint the selection highlight under the text. Walks the buffer
+  using the same wrap/advance rules as layout-and-render so highlights
+  line up exactly with rendered glyphs. )
+( IMPORTANT: EXIT inside a quotation only returns from the quotation,
+  not from the enclosing word — so we must wrap the entire body in a
+  `sel-active? [ ... ] ?` rather than relying on a guard EXIT. )
+@draw-selection ( -- )
+    sel-active? [
+        sel-hi sel-lo PANE_X PANE_Y 0 5 frame!
+        ( 0:i 1:y 2:x 3:lo 4:hi )
+
+        [ 0 local@ 4 local@ < ] [
+            ( If i is within lo..hi, paint highlight rect for this char )
+            0 local@ 3 local@ >= [
+                FILE_BUF 0 local@ + load-byte
+                dup 10 = [ drop 6 ] [ char-w ] ?:   ( w: newline → small marker )
+                ( fill-rect: fd x y w h color )
+                APP::draw-fd 2 local@ 1 local@ 3 PICK LINE_H CLR_SEL DRAW::fill-rect
+                drop ( drop the w copy used in stack arithmetic above )
+            ] ?
+
+            ( Advance x,y by this char )
+            0 local@ file-len LOADI < [
+                FILE_BUF 0 local@ + load-byte
+                dup 10 = [
+                    drop
+                    PANE_X 2 local!
+                    1 local@ LINE_H + 1 local!
+                ] [
+                    dup char-w
+                    2 local@ OVER + PANE_RIGHT > [
+                        PANE_X 2 local!
+                        1 local@ LINE_H + 1 local!
+                    ] ?
+                    2 local@ + 2 local!
+                    drop
+                ] ?:
+            ] ?
+
+            0 local@ 1 + 0 local!
+        ] |:
+        5 unframe!
+    ] ?
+;
+
+( --- Snarf (system clipboard) --- )
+
+@snarf-selection ( -- )
+    sel-active? [
+        T"/sys/snarf" VFS::open dup 0 >= [
+            ( fd )
+            dup FILE_BUF sel-lo + sel-hi sel-lo - VFS::write drop
+            VFS::close drop
+        ] [ drop ] ?:
+    ] ?
+;
+
+@paste-snarf ( -- )
+    delete-selection
+    T"/sys/snarf" VFS::open dup 0 >= [
+        ( fd )
+        dup PASTE_BUF PASTE_MAX VFS::read     ( fd n )
+        swap VFS::close drop                  ( n )
+        dup 0 > [
+            PASTE_BUF swap insert-bytes
+        ] [ drop ] ?:
+        refresh
+        caret-x LOADI target-x STOREI
+    ] [ drop ] ?:
 ;
 
 ( Walk the buffer once, accumulating a run of chars per visual line.
@@ -251,13 +415,14 @@ IMPORT MENU
     ( Clear full window region to white. The Shell's offset-draw will
       translate these into screen coords. )
     APP::draw-fd 0 0 WIN_W WIN_H CLR_BG DRAW::fill-rect
-    
-    ( Draw Menu Bar )
-    APP::draw-fd MB_ADDR WIN_W [ MENUS ] 1 MENU::menu-bar-draw
-    
+
     ( 1px inner frame at margin - 1 so we can see the editable area )
     APP::draw-fd MARGIN 1 - PANE_Y 1 - PANE_W 2 + PANE_H 2 + CLR_FRAME DRAW::draw-rect
+    draw-selection
     layout-and-render
+
+    ( Menu bar drawn LAST so the dropdown lands on top of text + selection. )
+    APP::draw-fd MB_ADDR WIN_W [ MENUS ] 2 MENU::menu-bar-draw
 ;
 
 ( --- File I/O --- )
@@ -271,7 +436,9 @@ IMPORT MENU
 
 ( --- Keyboard --- )
 
-@handle-key ( keycode -- )
+( Existing per-key behavior, unchanged; called by handle-key after Cmd/Shift
+  pre-processing. )
+@handle-key-core ( keycode -- )
     dup EVENT::KEY_BACKSPACE = [
         drop delete-char refresh
         caret-x LOADI target-x STOREI
@@ -285,10 +452,12 @@ IMPORT MENU
                 caret-x LOADI target-x STOREI
             ] [
                 dup EVENT::KEY_UP_ARROW = [
-                    drop caret-y LOADI LINE_H - find-index-by-y cursor STOREI refresh
+                    drop caret-y LOADI LINE_H - find-index-by-y
+                    dup -1 = 0 = [ cursor STOREI refresh ] [ drop ] ?:
                 ] [
                     dup EVENT::KEY_DOWN_ARROW = [
-                        drop caret-y LOADI LINE_H + find-index-by-y cursor STOREI refresh
+                        drop caret-y LOADI LINE_H + find-index-by-y
+                        dup -1 = 0 = [ cursor STOREI refresh ] [ drop ] ?:
                     ] [
                         dup EVENT::KEY_LEFT_ARROW = [
                             drop cursor-left refresh
@@ -313,23 +482,110 @@ IMPORT MENU
     ] ?:
 ;
 
+( Non-Cmd keyboard handling: Shift+arrow extension, selection-replace
+  on edit keys, then dispatch to handle-key-core unless the key was
+  fully handled here (e.g. backspace on a live selection). )
+@handle-key-normal ( keycode mods -- )
+    2 frame! ( 0:mods 1:keycode )
+    0   ( handled flag: 0 = pass to core, 1 = consumed here )
+
+    ( --- Arrow keys: shift extends selection, plain clears it --- )
+    1 local@ EVENT::KEY_LEFT_ARROW =
+    1 local@ EVENT::KEY_RIGHT_ARROW = OR
+    1 local@ EVENT::KEY_UP_ARROW    = OR
+    1 local@ EVENT::KEY_DOWN_ARROW  = OR [
+        0 local@ EVENT::MOD_SHIFT AND 0 = 0 = [
+            anchor LOADI -1 = [ cursor LOADI anchor STOREI ] ?
+        ] [
+            sel-clear
+        ] ?:
+    ] ?
+
+    ( --- Edit keys on a live selection: replace the range --- )
+    sel-active? [
+        1 local@ EVENT::KEY_BACKSPACE = [
+            delete-selection refresh
+            caret-x LOADI target-x STOREI
+            drop 1                          ( mark handled )
+        ] [
+            1 local@ EVENT::KEY_ENTER = [ delete-selection ] ?
+            1 local@ EVENT::KEY_TAB   = [ delete-selection ] ?
+            1 local@ STR::printable?    [ delete-selection ] ?
+        ] ?:
+    ] ?
+
+    ( If not handled, dispatch to the per-key core )
+    0 = [ 1 local@ handle-key-core ] ?
+
+    2 unframe!
+;
+
+( Top-level keyboard entry. Cmd shortcuts are dispatched here, before
+  any frame is opened, so quotation EXITs cannot leave dangling frame
+  state in the rest of the word. )
+@handle-key ( keycode mods -- )
+    dup EVENT::MOD_CMD AND 0 = 0 = [
+        drop                                 ( drop mods; keycode on top )
+        dup 99 = [
+            drop snarf-selection
+        ] [
+            dup 118 = [
+                drop paste-snarf
+            ] [
+                dup 120 = [
+                    drop snarf-selection delete-selection refresh
+                ] [
+                    drop                     ( unknown Cmd combo: ignore )
+                ] ?:
+            ] ?:
+        ] ?:
+    ] [
+        handle-key-normal
+    ] ?:
+;
+
 @on-kbd ( kpkt -- )
     dup EVENT::kbd-type EVENT::KEY_DOWN = [
         dup EVENT::kbd-key
+        OVER EVENT::kbd-mods
         TIME::unix@ last-key STOREI
         handle-key
     ] ?
     drop
 ;
 
+( Drag-selection inside the text pane. Mouse down (button 1) sets cursor
+  and anchor to the clicked character; mouse move while button is held
+  extends by moving the cursor only. Mouse up ends the drag. The menu
+  bar still gets first crack at the event. )
 @on-mouse ( mpkt -- )
+    ( Pass to menu bar first )
     MB_ADDR
     OVER EVENT::mouse-x
     2 PICK EVENT::mouse-y
     3 PICK EVENT::mouse-type EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?:
-    [ MENUS ] 1
+    [ MENUS ] 2
     MENU::menu-bar-update
+
+    ( Text-pane drag selection. Only honor events in the editable region. )
+    dup EVENT::mouse-y PANE_Y >= [
+        dup EVENT::mouse-type EVENT::MOUSE_DOWN = [
+            dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy
+            dup cursor STOREI
+            anchor STOREI
+            1 drag STOREI
+        ] ?
+        dup EVENT::mouse-type EVENT::MOUSE_MOVE = drag LOADI 1 = AND [
+            dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy
+            cursor STOREI
+        ] ?
+        dup EVENT::mouse-type EVENT::MOUSE_UP = [
+            0 drag STOREI
+        ] ?
+    ] ?
+
     refresh
+    caret-x LOADI target-x STOREI
     drop
 ;
 
@@ -367,6 +623,8 @@ IMPORT MENU
 
     0 cursor STOREI
     0 dirty STOREI
+    -1 anchor STOREI
+    0 drag STOREI
     TIME::unix@ last-key STOREI
 
     refresh
