@@ -22,6 +22,7 @@ IMPORT DRAW
 @sl_val_addr 0x8A001C ; @sl-val@ sl_val_addr LOADI ; @sl-val! sl_val_addr STOREI ;
 
 @mbuf 0x8A0100 ; ( 8 bytes: mouse event packet )
+@tbuf 0x8A0200 ; ( 1024 bytes: text widget buffer )
 
 ( Widget state blocks )
 @BTN1 0x8A1000 ; ( button:   36 bytes )
@@ -29,6 +30,7 @@ IMPORT DRAW
 @RD1  0x8A1050 ; ( radio:    24 bytes )
 @RD2  0x8A1070 ; ( radio:    24 bytes )
 @SL1  0x8A1090 ; ( slider:   36 bytes )
+@TX1  0x8A10C0 ; ( text:     48 bytes )
 
 ( String constants )
 @STR_CLICK   T"Click Me!"  ;
@@ -38,6 +40,7 @@ IMPORT DRAW
 @STR_TITLE   T"lux ui demo" ;
 @STR_CLICKS  T"clicks: "   ;
 @STR_VALUE   T"value: "    ;
+@STR_TEXT    T"type here:" ;
 
 ( char width at scale 2: 14px )
 @CHAR_W 14 ;
@@ -45,6 +48,7 @@ IMPORT DRAW
 @init
     VFS::PATH_DRAW  VFS::open dfd!
     VFS::PATH_MOUSE VFS::open mfd!
+    VFS::PATH_KBD   VFS::open 0x8A0020 STOREI ( kfd )
     0 mx!  0 my!  0 mbtn!
     0 clicks!  50 sl-val!
     1 dirty!
@@ -54,6 +58,7 @@ IMPORT DRAW
     RD1  329 310 24 STR_OPT_B    UI::checkbox-init
     RD2  329 350 24 STR_OPT_C    UI::checkbox-init
     SL1  290 426 220 20 0 100 50 UI::slider-init
+    TX1  290 480 220 100 tbuf 1024 UI::text-init
 ;
 
 @draw-all
@@ -76,37 +81,44 @@ IMPORT DRAW
     dfd@ 290 386 STR_VALUE UI::CLR_TEXT 2 DRAW::draw-str
     dfd@ 290 STR_VALUE strlen CHAR_W * + 386 sl-val@ UI::CLR_TEXT 2 DRAW::draw-int
     dfd@ SL1 UI::slider-draw
+    ( text )
+    dfd@ 290 460 STR_TEXT UI::CLR_TEXT 1 DRAW::draw-str
+    dfd@ TX1 UI::text-draw
     0 dirty!
 ;
 
 @handle-mouse
     mfd@ mbuf 8 VFS::read
     8 = [
-        mbuf EVENT::mouse-type
-        dup EVENT::MOUSE_MOVE = [
-            mbuf EVENT::mouse-x mx!
-            mbuf EVENT::mouse-y my!
-        ] [
-            dup EVENT::MOUSE_DOWN = [ 1 mbtn! ] [
-                dup EVENT::MOUSE_UP = [ 0 mbtn! ] ?
-            ] ?:
-        ] ?:
-        drop
+        mbuf EVENT::mouse-x mx!
+        mbuf EVENT::mouse-y my!
+        mbuf EVENT::mouse-type dup mbtn! ( use mbtn to store type for updates )
+        
+        TX1 mx@ my@ mbtn@ UI::text-update-mouse
+    ] ?
+;
+
+@handle-kbd
+    0x8A0020 LOADI ( kfd ) mbuf 8 VFS::read
+    8 = [
+        mbuf EVENT::kbd-type EVENT::KEY_DOWN = [
+            TX1 mbuf EVENT::kbd-key mbuf EVENT::kbd-mods UI::text-update-kbd
+        ] ?
     ] ?
 ;
 
 @update-widgets
-    BTN1 mx@ my@ mbtn@ UI::button-tick
-    CB1 mx@ my@ mbtn@ UI::checkbox-update drop
-    RD1 mx@ my@ mbtn@ UI::checkbox-update [
+    BTN1 mx@ my@ mbtn@ EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: UI::button-tick
+    CB1 mx@ my@ mbtn@ EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: UI::checkbox-update drop
+    RD1 mx@ my@ mbtn@ EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: UI::checkbox-update [
         1 RD1 UI::CB_CHK + STOREI
         0 RD2 UI::CB_CHK + STOREI
     ] ?
-    RD2 mx@ my@ mbtn@ UI::checkbox-update [
+    RD2 mx@ my@ mbtn@ EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: UI::checkbox-update [
         0 RD1 UI::CB_CHK + STOREI
         1 RD2 UI::CB_CHK + STOREI
     ] ?
-    SL1 mx@ my@ mbtn@ UI::slider-update sl-val!
+    SL1 mx@ my@ mbtn@ EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: UI::slider-update sl-val!
     1 dirty!
 ;
 
@@ -114,6 +126,7 @@ IMPORT DRAW
     init
     [ 1 ] [
         handle-mouse
+        handle-kbd
         update-widgets
         dirty@ [ draw-all ] ?
         VFS::yield drop

@@ -10,13 +10,16 @@ MODULE MENU
 @CLR_BG      0xFFFFFF ;
 @CLR_BORDER  0x000000 ;
 @CLR_TEXT    0x000000 ;
-@CLR_HILIGHT 0xCCCCCC ; ( Gray for highlights )
+@CLR_HILIGHT 0x000000 ;
+@CLR_HILIGHT_TEXT 0xFFFFFF ;
 
-@BAR_H       20 ;
-@FONT_CHAR_W  7 ;
-@FONT_CHAR_H 16 ;
+@BAR_H       24 ;
+@FONT_CHAR_W  10 ;
+@FONT_CHAR_H 20 ;
 @MENU_PADDING 10 ;
-@ITEM_H      20 ;
+@ITEM_H      24 ;
+@MENU_ROOT_W 80 ; ( Fixed width for root items )
+@MENU_ITEM_W 100 ; ( Fixed width for dropdown subitems )
 
 ( --- State Struct (8 bytes) --- )
 @MB_SIZE    8 ;
@@ -47,16 +50,20 @@ MODULE MENU
         drop drop ( count items-q )
         3 local! ( label )
 
-        ( Calculate width )
-        3 local@ strlen @FONT_CHAR_W * @MENU_PADDING 2 * + 0 local! ( w )
+        ( Fixed root width )
+        @MENU_ROOT_W 0 local! ( w )
 
         ( Draw Label )
+        5 local@ 10 local@ MB_ACTIVE + LOADI = [
+            11 local@ 6 local@ 0 0 local@ @BAR_H @CLR_HILIGHT DRAW::fill-rect
+        ] ?
+
         11 local@ ( fd )
-        6 local@ @MENU_PADDING + ( x )
+        6 local@ @MENU_PADDING + ( x, left aligned )
         @BAR_H @FONT_CHAR_H - 2 / ( y )
         3 local@ ( label )
-        5 local@ 10 local@ MB_ACTIVE + LOADI = [ @CLR_HILIGHT ] [ @CLR_TEXT ] ?:
-        1 DRAW::draw-str
+        5 local@ 10 local@ MB_ACTIVE + LOADI = [ @CLR_HILIGHT_TEXT ] [ @CLR_TEXT ] ?:
+        16 DRAW::draw-str
 
         ( Update x and i )
         6 local@ 0 local@ + 6 local! ( x += w )
@@ -70,8 +77,7 @@ MODULE MENU
         @MENU_PADDING 6 local! ( x = padding )
         0 5 local! ( i = 0 )
         [ 5 local@ 4 local@ < ] [
-            5 local@ 8 local@ CALL CALL drop drop ( label )
-            strlen @FONT_CHAR_W * @MENU_PADDING 2 * + 6 local@ + 6 local! ( x += w )
+            @MENU_ROOT_W 6 local@ + 6 local! ( x += w )
             5 local@ 1 + 5 local! ( i++ )
         ] |:
 
@@ -81,16 +87,8 @@ MODULE MENU
         2 local! ( items-q )
         3 local! ( label )
 
-        ( Dropdown Width )
-        0 0 local! ( w = 0 )
-        0 5 local! ( i = 0 )
-        [ 5 local@ 1 local@ < ] [
-            5 local@ 2 local@ CALL drop drop ( label )
-            strlen @FONT_CHAR_W * 
-            0 local@ MAX 0 local!
-            5 local@ 1 + 5 local! ( i++ )
-        ] |:
-        0 local@ @MENU_PADDING 2 * + 0 local! ( w )
+        ( Fixed Dropdown Width )
+        @MENU_ITEM_W 0 local! ( w )
 
         ( Box )
         11 local@ ( fd )
@@ -114,11 +112,13 @@ MODULE MENU
             ] ?
 
             ( Item Label )
+            5 local@ 2 local@ CALL drop drop 3 local! ( label )
             11 local@ ( fd )
-            6 local@ @MENU_PADDING + ( x )
+            6 local@ @MENU_PADDING + ( x, left aligned )
             @BAR_H 5 local@ @ITEM_H * + @ITEM_H @FONT_CHAR_H - 2 / + ( y )
-            5 local@ 2 local@ CALL drop drop ( label )
-            @CLR_TEXT 1 DRAW::draw-str
+            3 local@ ( label )
+            5 local@ 10 local@ MB_HOVER + LOADI = [ @CLR_HILIGHT_TEXT ] [ @CLR_TEXT ] ?:
+            16 DRAW::draw-str
 
             5 local@ 1 + 5 local! ( i++ )
         ] |:
@@ -144,9 +144,8 @@ MODULE MENU
             @MENU_PADDING 5 local! ( x )
             0 4 local! ( i )
             [ 4 local@ 6 local@ < ] [
-                ( Get label width )
-                4 local@ 7 local@ CALL CALL drop drop ( label )
-                strlen @FONT_CHAR_W * @MENU_PADDING 2 * + 0 local! ( w )
+                ( Fixed width )
+                @MENU_ROOT_W 0 local! ( w )
                 
                 ( Check collision )
                 10 local@ 9 local@ ( mx my )
@@ -168,8 +167,7 @@ MODULE MENU
         @MENU_PADDING 5 local! ( x = padding )
         0 4 local! ( i = 0 )
         [ 4 local@ 3 local@ < ] [
-            4 local@ 7 local@ CALL CALL drop drop ( label )
-            strlen @FONT_CHAR_W * @MENU_PADDING 2 * + 5 local@ + 5 local! ( x += w )
+            @MENU_ROOT_W 5 local@ + 5 local! ( x += w )
             4 local@ 1 + 4 local! ( i++ )
         ] |:
 
@@ -179,16 +177,8 @@ MODULE MENU
         2 local! ( items-q )
         drop ( label )
 
-        ( Width of dropdown )
-        0 0 local! ( w = 0 )
-        0 4 local! ( i = 0 )
-        [ 4 local@ 1 local@ < ] [
-            4 local@ 2 local@ CALL drop drop ( label )
-            strlen @FONT_CHAR_W * 
-            0 local@ MAX 0 local!
-            4 local@ 1 + 4 local! ( i++ )
-        ] |:
-        0 local@ @MENU_PADDING 2 * + 0 local! ( w )
+        ( Fixed width of dropdown )
+        @MENU_ITEM_W 0 local! ( w )
 
         8 local@ 1 = [
             ( Mouse down: check if inside dropdown )

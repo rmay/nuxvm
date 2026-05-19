@@ -212,8 +212,13 @@ func (m *Machine) Services() *ServiceManager {
 
 // QueueKeyDown queues a keyboard event for this machine.
 func (m *Machine) QueueKeyDown(keyCode int32) {
+	m.QueueKeyDownMods(keyCode, 0)
+}
+
+// QueueKeyDownMods queues a keyboard event with modifier flags.
+func (m *Machine) QueueKeyDownMods(keyCode int32, mods uint32) {
 	select {
-	case m.System.inputQueue <- InputEvent{Type: InputKeyDown, KeyCode: keyCode}:
+	case m.System.inputQueue <- InputEvent{Type: InputKeyDown, KeyCode: keyCode, Modifiers: mods}:
 	default:
 		// queue full, drop event
 	}

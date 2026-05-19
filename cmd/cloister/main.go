@@ -35,6 +35,33 @@ type Game struct {
 	audioCtx      *audio.Context
 }
 
+// currentModifiers reads ebiten's modifier state and packs it into the bitmask
+// expected by system.InputEvent.Modifiers (mirrors lib/event.lux MOD_*).
+func currentModifiers() uint32 {
+	var m uint32
+	if ebiten.IsKeyPressed(ebiten.KeyShift) ||
+		ebiten.IsKeyPressed(ebiten.KeyShiftLeft) ||
+		ebiten.IsKeyPressed(ebiten.KeyShiftRight) {
+		m |= system.ModShift
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyControl) ||
+		ebiten.IsKeyPressed(ebiten.KeyControlLeft) ||
+		ebiten.IsKeyPressed(ebiten.KeyControlRight) {
+		m |= system.ModCtrl
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyAlt) ||
+		ebiten.IsKeyPressed(ebiten.KeyAltLeft) ||
+		ebiten.IsKeyPressed(ebiten.KeyAltRight) {
+		m |= system.ModAlt
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyMeta) ||
+		ebiten.IsKeyPressed(ebiten.KeyMetaLeft) ||
+		ebiten.IsKeyPressed(ebiten.KeyMetaRight) {
+		m |= system.ModCmd
+	}
+	return m
+}
+
 // translateKey maps an ebiten Key to the integer keycode that Lux apps see.
 // Letters/digits become ASCII (lowercase); arrows use the dedicated 17-20
 // codes that Snake.lux and other apps key off.
@@ -134,9 +161,10 @@ func (g *Game) Update() error {
 
 	g.machine.DrainInputEvents()
 
+	mods := currentModifiers()
 	for _, k := range inpututil.AppendJustPressedKeys(nil) {
 		if code, ok := translateKey(k); ok {
-			g.machine.QueueKeyDown(code)
+			g.machine.QueueKeyDownMods(code, mods)
 		}
 	}
 

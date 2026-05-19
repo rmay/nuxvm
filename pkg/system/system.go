@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rmay/nuxvm/pkg/vm"
@@ -42,6 +43,7 @@ const (
 	sciCommandAddr       = sciPort + 4
 	sciArg1Addr          = sciPort + 8
 	sciArg2Addr          = sciPort + 12
+	sciArg3Addr          = vm.DeviceMemoryOffset + 0x0124
 	mouseWheelYAddr      = vm.DeviceMemoryOffset + 0x00A4
 	windowResizeWAddr    = resizePort + 4
 	windowResizeHAddr    = resizePort + 8
@@ -163,6 +165,7 @@ type System struct {
 	sciCommand int32
 	sciArg1    int32
 	sciArg2    int32
+	sciArg3    int32
 	sciResult  int32
 
 	// GPU device state
@@ -193,6 +196,10 @@ type System struct {
 	// Child VM management
 	childMachines map[int32]*Machine
 	nextMachineID int32
+
+	// Snarf (system-wide copy/paste buffer; Plan9-style /sys/snarf)
+	snarfMu  sync.RWMutex
+	snarfBuf []byte
 
 	yielded bool
 }
@@ -863,6 +870,9 @@ func (s *System) read(address uint32) (int32, error) {
 	if address == sciArg2Addr {
 		return s.sciArg2, nil
 	}
+	if address == sciArg3Addr {
+		return s.sciArg3, nil
+	}
 
 	if address == mouseWheelYAddr {
 		return s.mouseWheelY, nil
@@ -1156,6 +1166,10 @@ func (s *System) Write(address uint32, value int32) error {
 		s.sciArg2 = value
 		// Trigger SCI command handler when arg2 is written
 		s.handleSCICommand()
+		return nil
+	}
+	if address == sciArg3Addr {
+		s.sciArg3 = value
 		return nil
 	}
 

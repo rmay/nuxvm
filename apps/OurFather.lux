@@ -1,17 +1,13 @@
 ( --- Our Father App --- )
 
+INCLUDE "lib/app.lux"
 INCLUDE "lib/vfs.lux"
 INCLUDE "lib/draw.lux"
 
 MODULE OUR_FATHER
 
-@dfd_addr  0x8E0000 ;
-@dfd@  dfd_addr  LOADI ; @dfd!  dfd_addr  STOREI ;
-
-@SCREEN_W  0x8E0004 ;
-@SCREEN_H  0x8E0008 ;
-@SCREEN_W@ SCREEN_W LOADI ;
-@SCREEN_H@ SCREEN_H LOADI ;
+IMPORT APP
+IMPORT DRAW
 
 ( Layout Parameters )
 @PANE_GAP 4 ;
@@ -20,79 +16,70 @@ MODULE OUR_FATHER
 @PADDING_X2 20 ;
 @TEXT_PAD 10 ;
 
+@draw-prayers ( -- )
+    ( Clear to white )
+    APP::draw-fd 0 0 APP::width APP::height 0xFFFFFF DRAW::fill-rect
+
+    ( Draw Left Pane Border )
+    APP::draw-fd PADDING PADDING 
+             APP::width 2 / PADDING - PANE_GAP_HALF - 
+             APP::height PADDING_X2 - 
+             0x000000 DRAW::draw-rect
+
+    ( Draw Right Pane Border )
+    APP::draw-fd APP::width 2 / PANE_GAP_HALF + PADDING + PADDING
+             APP::width 2 / PADDING - PANE_GAP_HALF - 
+             APP::height PADDING_X2 - 
+             0x000000 DRAW::draw-rect
+
+    ( Draw English Text - Left Pane )
+    PADDING TEXT_PAD + ( lx )
+    
+    dup APP::draw-fd swap 30 T"Our Father, who art in" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 60 T"heaven, hallowed be thy" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 90 T"name; thy kingdom come;" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 120 T"thy will be done on" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 150 T"earth as it is in heaven." 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 180 T"Give us this day our" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 210 T"daily bread; and forgive" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 240 T"us our trespasses as we" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 270 T"forgive those who trespass" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 300 T"against us; and lead us" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 330 T"not into temptation, but" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 360 T"deliver us from evil." 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 410 T"Amen." 0x000000 2 DRAW::draw-str
+
+    drop ( lx )
+
+    ( Draw Latin Text - Right Pane )
+    APP::width 2 / PANE_GAP_HALF + PADDING + TEXT_PAD + ( rx )
+    
+    dup APP::draw-fd swap 30 T"PATER NOSTER, qui es in" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 60 T"caelis, sanctificetur" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 90 T"nomen tuum. Adveniat" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 120 T"regnum tuum. Fiat" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 150 T"voluntas tua, sicut in" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 180 T"caelo et in terra." 0x000000 2 DRAW::draw-str
+
+    dup APP::draw-fd swap 240 T"Panem nostrum quotidianum" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 270 T"da nobis hodie, et dimitte" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 300 T"nobis debita nostra sicut" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 330 T"et nos dimittimus" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 360 T"debitoribus nostris." 0x000000 2 DRAW::draw-str
+
+    dup APP::draw-fd swap 420 T"Et ne nos inducas in" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 450 T"tentationem, sed libera" 0x000000 2 DRAW::draw-str
+    dup APP::draw-fd swap 480 T"nos a malo." 0x000000 2 DRAW::draw-str
+
+    dup APP::draw-fd swap 540 T"Amen." 0x000000 2 DRAW::draw-str
+    
+    drop ( rx )
+;
+
 @start
-    ( 0. Set Window Title )
-    T"Our Father" VFS::set-window-title
-
-    ( 1. Open /dev/draw )
-    T"/dev/draw" VFS::open dfd!
-
-    ( 2. Get Resolution )
-    0x10024 LOADI SCREEN_W STOREI
-    0x10028 LOADI SCREEN_H STOREI
-
-    ( 3. Main Loop )
-    [ 1 ] [
-        ( Clear to white )
-        dfd@ 0 0 SCREEN_W@ SCREEN_H@ 0xFFFFFF DRAW::fill-rect
-
-        ( Draw Left Pane Border )
-        dfd@ PADDING PADDING 
-             SCREEN_W@ 2 / PADDING - PANE_GAP_HALF - 
-             SCREEN_H@ PADDING_X2 - 
-             0x000000 DRAW::draw-rect
-
-        ( Draw Right Pane Border )
-        dfd@ SCREEN_W@ 2 / PANE_GAP_HALF + PADDING + PADDING
-             SCREEN_W@ 2 / PADDING - PANE_GAP_HALF - 
-             SCREEN_H@ PADDING_X2 - 
-             0x000000 DRAW::draw-rect
-
-        ( Draw English Text - Left Pane )
-        PADDING TEXT_PAD + ( lx )
-        
-        dup dfd@ swap 30 T"Our Father, who art in" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 60 T"heaven, hallowed be thy" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 90 T"name; thy kingdom come;" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 120 T"thy will be done on" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 150 T"earth as it is in heaven." 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 180 T"Give us this day our" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 210 T"daily bread; and forgive" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 240 T"us our trespasses as we" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 270 T"forgive those who trespass" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 300 T"against us; and lead us" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 330 T"not into temptation, but" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 360 T"deliver us from evil." 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 410 T"Amen." 0x000000 2 DRAW::draw-str
-
-        drop ( lx )
-
-        ( Draw Latin Text - Right Pane )
-        SCREEN_W@ 2 / PANE_GAP_HALF + PADDING + TEXT_PAD + ( rx )
-        
-        dup dfd@ swap 30 T"PATER NOSTER, qui es in" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 60 T"caelis, sanctificetur" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 90 T"nomen tuum. Adveniat" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 120 T"regnum tuum. Fiat" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 150 T"voluntas tua, sicut in" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 180 T"caelo et in terra." 0x000000 2 DRAW::draw-str
-
-        dup dfd@ swap 240 T"Panem nostrum quotidianum" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 270 T"da nobis hodie, et dimitte" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 300 T"nobis debita nostra sicut" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 330 T"et nos dimittimus" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 360 T"debitoribus nostris." 0x000000 2 DRAW::draw-str
-
-        dup dfd@ swap 420 T"Et ne nos inducas in" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 450 T"tentationem, sed libera" 0x000000 2 DRAW::draw-str
-        dup dfd@ swap 480 T"nos a malo." 0x000000 2 DRAW::draw-str
-
-        dup dfd@ swap 540 T"Amen." 0x000000 2 DRAW::draw-str
-        
-        drop ( rx )
-
-        VFS::yield DROP
-    ] |:
+    T"Our Father" APP::init
+    [ draw-prayers ] APP::on-frame!
+    APP::loop
 ;
 
 OUR_FATHER::start

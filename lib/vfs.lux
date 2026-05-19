@@ -7,6 +7,7 @@ MODULE VFS
 @SCI-CMD  0x100D4 ;
 @SCI-ARG1 0x100D8 ;
 @SCI-ARG2 0x100DC ;
+@SCI-ARG3 0x10124 ;
 
 ( VFS SCI Command Codes )
 @CMD_OPEN  10 ;
@@ -56,18 +57,20 @@ MODULE VFS
 
 @read ( fd buf-ptr len -- bytes-read )
     3 frame! ( 0:len, 1:buf, 2:fd )
+    0 local@ SCI-ARG3 STOREI
     CMD_READ
-    2 local@ 16 LSHIFT 0 local@ 0xFFFF AND OR ( arg1: fd << 16 | len )
-    1 local@ ( arg2: buf )
+    2 local@
+    1 local@
     EXEC
     3 unframe!
 ;
 
 @write ( fd buf-ptr len -- bytes-written )
     3 frame! ( 0:len, 1:buf, 2:fd )
+    0 local@ SCI-ARG3 STOREI
     CMD_WRITE
-    2 local@ 16 LSHIFT 0 local@ 0xFFFF AND OR ( arg1: fd << 16 | len )
-    1 local@ ( arg2: buf )
+    2 local@
+    1 local@
     EXEC
     3 unframe!
 ;

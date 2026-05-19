@@ -1,105 +1,90 @@
 ( --- NUXVM Master Shell (Actor 9) --- )
 
+INCLUDE "lib/app.lux"
 INCLUDE "lib/vfs.lux"
 INCLUDE "lib/draw.lux"
 INCLUDE "lib/event.lux"
 
 MODULE SHELL
 
+IMPORT APP
 IMPORT VFS
 IMPORT DRAW
 IMPORT EVENT
 
-@dfd_addr 0x8E0000 ;
-@mfd_addr 0x8E0004 ;
-@cfd_addr 0x8E0008 ; ( Parent end of Child Draw Channel )
-@cmfd_addr 0x8E0020 ; ( Parent end of Child Mouse Channel )
-@khfd_addr 0x8E0024 ; ( Shell's read end of hardware /sys/kbd )
-@ckfd_addr 0x8E0028 ; ( Parent end of Child Kbd Channel )
-@win_x_addr 0x8E000C ;
-@win_y_addr 0x8E0010 ;
-@dragging_addr 0x8E0014 ;
-@last_mx_addr 0x8E0018 ;
-@last_my_addr 0x8E001C ;
-@draw_peer_fd_addr 0x8E0030;
-@mouse_peer_fd_addr 0x8E0034;
-@kbd_peer_fd_addr 0x8E0038;
+( State )
+@cfd   0x8D3000 ; ( Parent end of Child Draw Channel )
+@cmfd  0x8D3004 ; ( Parent end of Child Mouse Channel )
+@ckfd  0x8D3008 ; ( Parent end of Child Kbd Channel )
+@win_x 0x8D300C ;
+@win_y 0x8D3010 ;
+@dragging 0x8D3014 ;
+@last_mx  0x8D3018 ;
+@last_my  0x8D301C ;
 
-@dfd@ dfd_addr LOADI ; @dfd! dfd_addr STOREI ;
-@mfd@ mfd_addr LOADI ; @mfd! mfd_addr STOREI ;
-@cfd@ cfd_addr LOADI ; @cfd! cfd_addr STOREI ;
-@cmfd@ cmfd_addr LOADI ; @cmfd! cmfd_addr STOREI ;
-@khfd@ khfd_addr LOADI ; @khfd! khfd_addr STOREI ;
-@ckfd@ ckfd_addr LOADI ; @ckfd! ckfd_addr STOREI ;
-@win_x@ win_x_addr LOADI ; @win_x! win_x_addr STOREI ;
-@win_y@ win_y_addr LOADI ; @win_y! win_y_addr STOREI ;
-@dragging@ dragging_addr LOADI ; @dragging! dragging_addr STOREI ;
-@last_mx@ last_mx_addr LOADI ; @last_mx! last_mx_addr STOREI ;
-@last_my@ last_my_addr LOADI ; @last_my! last_my_addr STOREI ;
-@draw_peer_fd@ draw_peer_fd_addr LOADI; @draw_peer_fd! draw_peer_fd_addr STOREI;
-@mouse_peer_fd@ mouse_peer_fd_addr LOADI; @mouse_peer_fd! mouse_peer_fd_addr STOREI;
-@kbd_peer_fd@ kbd_peer_fd_addr LOADI; @kbd_peer_fd! kbd_peer_fd_addr STOREI;
+@cfd@ cfd LOADI ; @cfd! cfd STOREI ;
+@cmfd@ cmfd LOADI ; @cmfd! cmfd STOREI ;
+@ckfd@ ckfd LOADI ; @ckfd! ckfd STOREI ;
+@win_x@ win_x LOADI ; @win_x! win_x STOREI ;
+@win_y@ win_y LOADI ; @win_y! win_y STOREI ;
+@dragging@ dragging LOADI ; @dragging! dragging STOREI ;
+@last_mx@ last_mx LOADI ; @last_mx! last_mx STOREI ;
+@last_my@ last_my LOADI ; @last_my! last_my STOREI ;
 
 @mbuf 0x8D2000 ;
-@mx 0x8D2008 ; @my 0x8D200C ;
-@kbuf 0x8D2010 ; ( 4 bytes: scratch for keyboard packets )
 @pbuf 0x8D1000 ;
 @id_buf 0x8D0000 ;
 
-@handle-mouse
-    mfd@ mbuf 8 VFS::read ( n )
-    8 = [
-        mbuf EVENT::mouse-type ( type )
-        mbuf EVENT::mouse-x mx STOREI
-        mbuf EVENT::mouse-y my STOREI
-        
-        dup EVENT::MOUSE_MOVE = [ ( MouseMove )
-            dragging@ [
-                win_x@ mx LOADI last_mx@ - + win_x!
-                win_y@ my LOADI last_my@ - + win_y!
-                1 ( dirty )
-            ] [ 0 ] ?:
-            drop
-        ] [
-            dup EVENT::MOUSE_DOWN = [ ( MouseDown )
-                ( Check if in window )
-                mx LOADI win_x@ >= mx LOADI win_x@ 800 + < AND
-                my LOADI win_y@ >= AND my LOADI win_y@ 600 + < AND [
-                    1 dragging!
-                ] ?
-                drop
-            ] [
-                dup EVENT::MOUSE_UP = [ ( MouseUp )
-                    0 dragging!
-                ] ?
-            ] ?:
-        ] ?:
-        
-        ( Proxy to child if active )
-        cmfd@ 0 > [
-            ( Match /sys/mouse format: [Type(1), Button(1), X(2), Y(2), Padding(2)] )
-            mbuf EVENT::mouse-type DRAW::BUF store-byte
-            mbuf EVENT::mouse-btn  DRAW::BUF 1 + store-byte
-            mx LOADI win_x@ - DRAW::BUF 2 + DRAW::store-word-le
-            my LOADI win_y@ - DRAW::BUF 4 + DRAW::store-word-le
-            0 DRAW::BUF 6 + store-byte
-            0 DRAW::BUF 7 + store-byte
-            cmfd@ DRAW::BUF 8 VFS::write drop
+@on-mouse ( mpkt -- )
+    1 frame! ( 0:mpkt )
+    0 local@ EVENT::mouse-type ( type )
+    0 local@ EVENT::mouse-x ( mx )
+    0 local@ EVENT::mouse-y ( my )
+    3 frame! ( 0:my, 1:mx, 2:type )
+    
+    2 local@ EVENT::MOUSE_MOVE = [
+        dragging@ [
+            win_x@ 1 local@ last_mx@ - + win_x!
+            win_y@ 0 local@ last_my@ - + win_y!
         ] ?
-
-        mx LOADI last_mx!
-        my LOADI last_my!
-        drop
+    ] [
+        2 local@ EVENT::MOUSE_DOWN = [
+            ( Check if in window )
+            1 local@ win_x@ >= 1 local@ win_x@ 800 + < AND
+            0 local@ win_y@ >= AND 0 local@ win_y@ 600 + < AND [
+                1 dragging!
+            ] ?
+        ] [
+            2 local@ EVENT::MOUSE_UP = [
+                0 dragging!
+            ] ?
+        ] ?:
+    ] ?:
+    
+    ( Proxy to child if active )
+    cmfd@ 0 > [
+        ( Match /sys/mouse format: [Type(1), Button(1), X(2), Y(2), Padding(2)] )
+        2 local@ DRAW::BUF store-byte
+        0 local@ EVENT::mouse-btn DRAW::BUF 1 + store-byte
+        1 local@ win_x@ - DRAW::BUF 2 + DRAW::store-word-le
+        0 local@ win_y@ - DRAW::BUF 4 + DRAW::store-word-le
+        0 DRAW::BUF 6 + store-byte
+        0 DRAW::BUF 7 + store-byte
+        cmfd@ DRAW::BUF 8 VFS::write drop
     ] ?
+
+    1 local@ last_mx!
+    0 local@ last_my!
+
+    3 unframe!
+    1 unframe!
 ;
 
-@handle-kbd
-    ( Forward 4-byte key packets from /sys/kbd to the child's /dev/kbd. )
+@on-kbd ( kpkt -- )
+    ( Forward 8-byte key packets from hardware to the child's /dev/kbd. )
     ckfd@ 0 > [
-        khfd@ kbuf 4 VFS::read 4 = [
-            ckfd@ kbuf 4 VFS::write drop
-        ] ?
-    ] ?
+        ckfd@ swap 8 VFS::write drop
+    ] [ drop ] ?:
 ;
 
 @offset-draw ( buf len -- )
@@ -109,13 +94,13 @@ IMPORT EVENT
         dup 0 = OVER 3 = OR [ ( FillRect (0), DrawRect (3) )
             2 local@ 1 + dup DRAW::load-word-le win_x@ + swap DRAW::store-word-le
             2 local@ 3 + dup DRAW::load-word-le win_y@ + swap DRAW::store-word-le
-            dfd@ 2 local@ 13 VFS::write drop
+            APP::draw-fd 2 local@ 13 VFS::write drop
             13 0 local!
         ] [
             dup 1 = [ ( DrawChar )
                 2 local@ 1 + dup DRAW::load-word-le win_x@ + swap DRAW::store-word-le
                 2 local@ 3 + dup DRAW::load-word-le win_y@ + swap DRAW::store-word-le
-                dfd@ 2 local@ 11 VFS::write drop
+                APP::draw-fd 2 local@ 11 VFS::write drop
                 11 0 local!
             ] [
                 dup 2 = [ ( DrawString )
@@ -123,14 +108,14 @@ IMPORT EVENT
                     2 local@ 3 + dup DRAW::load-word-le win_y@ + swap DRAW::store-word-le
                     2 local@ 10 + DRAW::load-word-le ( slen )
                     12 + 0 local!
-                    dfd@ 2 local@ 0 local@ VFS::write drop
+                    APP::draw-fd 2 local@ 0 local@ VFS::write drop
                 ] [
                     dup 4 = [ ( SetFontSize )
-                        dfd@ 2 local@ 2 VFS::write drop
+                        APP::draw-fd 2 local@ 2 VFS::write drop
                         2 0 local!
                     ] [
                         dup 5 = [ ( SetFont )
-                            dfd@ 2 local@ 2 VFS::write drop
+                            APP::draw-fd 2 local@ 2 VFS::write drop
                             2 0 local!
                         ] [
                             ( Unknown: skip 1 byte to avoid infinite loop )
@@ -148,78 +133,79 @@ IMPORT EVENT
     3 unframe!
 ;
 
-@proxy-draw
+@proxy-draw ( -- )
     [ cfd@ pbuf 1024 VFS::read dup 0 > ] [
         pbuf swap offset-draw
     ] |:
     drop
 ;
 
+@on-frame ( -- )
+    ( 1. Background )
+    APP::draw-fd 0 0 APP::width APP::height 0x222222 DRAW::fill-rect
+    
+    ( 2. Window Frame )
+    APP::draw-fd win_x@ 1 - win_y@ 1 - 802 602 0x000000 DRAW::draw-rect
+    APP::draw-fd win_x@ win_y@ 800 600 0xFFFFFF DRAW::fill-rect
+    
+    ( 3. Proxy Child Graphics )
+    proxy-draw
+;
+
 @launch-app ( path -- )
     1 frame! ( 0:path )
-    ( 1. Create Draw Channel )
+    ( 1. Create Channels )
     VFS::PATH_CHAN_NEW VFS::open cfd!
-    VFS::PATH_CHAN_PEER VFS::open draw_peer_fd!
-
-    ( 2. Create Mouse Channel )
+    VFS::PATH_CHAN_PEER VFS::open ( draw_peer_fd )
+    
     VFS::PATH_CHAN_NEW VFS::open cmfd!
-    VFS::PATH_CHAN_PEER VFS::open mouse_peer_fd!
-
-    ( 3. Create Kbd Channel )
+    VFS::PATH_CHAN_PEER VFS::open ( mouse_peer_fd )
+    
     VFS::PATH_CHAN_NEW VFS::open ckfd!
-    VFS::PATH_CHAN_PEER VFS::open kbd_peer_fd!
+    VFS::PATH_CHAN_PEER VFS::open ( kbd_peer_fd )
+    
+    3 frame! ( 0:k_peer, 1:m_peer, 2:d_peer )
 
-    ( 4. Spawn Child VM )
+    ( 2. Spawn Child VM )
     VFS::PATH_VM_NEW VFS::open ( vm_ctl_fd )
-    0 local@ dup strlen 2 PICK VFS::write drop
+    3 local@ dup strlen 2 PICK VFS::write drop
 
-    ( 5. Get Child ID )
+    ( 3. Get Child ID )
     dup id_buf 4 VFS::read drop
     ( id_buf LOADI is the ID )
 
-    ( 6. Bind into Child Namespace )
-    draw_peer_fd@ T"/sys/vm/1/ns/dev/draw" VFS::bind drop
-    mouse_peer_fd@ T"/sys/vm/1/ns/dev/mouse" VFS::bind drop
-    kbd_peer_fd@ T"/sys/vm/1/ns/dev/kbd" VFS::bind drop
+    ( 4. Bind into Child Namespace )
+    2 local@ T"/sys/vm/1/ns/dev/draw" VFS::bind drop
+    1 local@ T"/sys/vm/1/ns/dev/mouse" VFS::bind drop
+    0 local@ T"/sys/vm/1/ns/dev/kbd" VFS::bind drop
 
-    ( 7. Cleanup )
-    draw_peer_fd@ VFS::close drop
-    mouse_peer_fd@ VFS::close drop
-    kbd_peer_fd@ VFS::close drop
+    ( 5. Cleanup )
+    2 local@ VFS::close drop
+    1 local@ VFS::close drop
+    0 local@ VFS::close drop
     VFS::close drop ( vm_ctl_fd )
+    
+    3 unframe!
     1 unframe!
 ;
 
 @start
-    ( 1. Open Hardware )
-    VFS::PATH_DRAW VFS::open dfd!
-    VFS::PATH_MOUSE VFS::open mfd!
-    VFS::PATH_KBD VFS::open khfd!
-    0 cmfd!
-    0 ckfd!
+    T"Master Shell" APP::init
 
-    ( 2. Initial State )
+    ( Initial Window Pos )
     100 win_x!
     100 win_y!
     0 dragging!
     0 last_mx!
     0 last_my!
 
-    ( 3. Clear Screen & Draw Window Frame )
-    dfd@ 0 0 1024 768 0x222222 DRAW::fill-rect
-    dfd@ win_x@ 1 - win_y@ 1 - 802 602 0x000000 DRAW::draw-rect
-    dfd@ win_x@ win_y@ 800 600 0xFFFFFF DRAW::fill-rect
-
-    ( 4. Launch Child )
     T"apps/Quill.lux" launch-app
 
-    ( 5. Main Loop )
-    [ 1 ] [
-        handle-mouse
-        handle-kbd
-        proxy-draw
-        VFS::yield DROP
-    ] |:
+    [ on-frame ] APP::on-frame!
+    [ on-mouse ] APP::on-mouse!
+    [ on-kbd ] APP::on-kbd!
+
+    APP::loop
 ;
 
 SHELL::start

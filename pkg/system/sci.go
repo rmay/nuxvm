@@ -42,16 +42,24 @@ func (s *System) handleSCICommand() {
 	case SCIVFSClose:
 		s.handleSCIVFSClose(arg1)
 	case SCIVFSRead:
-		// arg1: fd (high 16) | length (low 16)
-		// arg2: buffer pointer
+		// arg1: fd (high 16) | length (low 16) (Legacy)
+		// OR arg1: fd, sciArg3: length (32-bit)
 		fd := arg1 >> 16
 		length := arg1 & 0xFFFF
+		if s.sciArg3 != 0 {
+			fd = arg1
+			length = s.sciArg3
+		}
 		s.handleSCIVFSRead(fd, arg2, length)
 	case SCIVFSWrite:
-		// arg1: fd (high 16) | length (low 16)
-		// arg2: buffer pointer
+		// arg1: fd (high 16) | length (low 16) (Legacy)
+		// OR arg1: fd, sciArg3: length (32-bit)
 		fd := arg1 >> 16
 		length := arg1 & 0xFFFF
+		if s.sciArg3 != 0 {
+			fd = arg1
+			length = s.sciArg3
+		}
 		s.handleSCIVFSWrite(fd, arg2, length)
 	case SCIVFSBind:
 		// arg1: fd
@@ -80,6 +88,9 @@ func (s *System) handleSCICommand() {
 	default:
 		fmt.Fprintf(os.Stderr, "SCI: unknown command %d\n", cmd)
 	}
+
+	// Clear arguments to avoid stale values in next call
+	s.sciArg3 = 0
 }
 
 func (s *System) handleSCISetWindowTitle(ptr int32) {

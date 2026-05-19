@@ -97,10 +97,19 @@ const (
 	InputResize
 )
 
+// Modifier flag bits. Mirror lib/event.lux MOD_* constants.
+const (
+	ModShift uint32 = 1 << 0
+	ModCtrl  uint32 = 1 << 1
+	ModAlt   uint32 = 1 << 2
+	ModCmd   uint32 = 1 << 3
+)
+
 type InputEvent struct {
 	Type      InputEventType
-	KeyCode   int32 // for key events
-	MouseX    int32 // for mouse events
+	KeyCode   int32  // for key events
+	Modifiers uint32 // bitmask of ModShift/ModCtrl/ModAlt/ModCmd
+	MouseX    int32  // for mouse events
 	MouseY    int32
 	MouseBtn  uint32
 	WheelX    float64

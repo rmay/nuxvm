@@ -73,6 +73,8 @@ func (v *VFS) openFile(s *System, path string) (VFSFile, error) {
 		file = &audioFile{s: s}
 	case path == "/sys/debug":
 		file = &debugFile{}
+	case path == "/sys/snarf":
+		file = &snarfFile{s: s}
 	case path == "/sys/font/widths":
 		file = &fontWidthsFile{s: s}
 	case path == "/sys/chan/new":
@@ -459,6 +461,37 @@ func newChannelPair() (VFSFile, VFSFile) {
 	}
 	return endpoint1, endpoint2
 }
+
+// snarfFile exposes the system-wide snarf buffer (Plan9 /dev/snarf).
+// Each open is independent; Read returns a snapshot of the current
+// contents starting at the per-handle cursor; Write replaces the
+// global buffer. Buffer is owned by System.
+type snarfFile struct {
+	s      *System
+	cursor int
+}
+
+func (f *snarfFile) Read(p []byte) (int, error) {
+	f.s.snarfMu.RLock()
+	defer f.s.snarfMu.RUnlock()
+	if f.cursor >= len(f.s.snarfBuf) {
+		return 0, io.EOF
+	}
+	n := copy(p, f.s.snarfBuf[f.cursor:])
+	f.cursor += n
+	return n, nil
+}
+
+func (f *snarfFile) Write(p []byte) (int, error) {
+	f.s.snarfMu.Lock()
+	defer f.s.snarfMu.Unlock()
+	buf := make([]byte, len(p))
+	copy(buf, p)
+	f.s.snarfBuf = buf
+	return len(p), nil
+}
+
+func (f *snarfFile) Close() error { return nil }
 
 // debugFile is a simple mock file that prints to host stdout.
 type debugFile struct{}

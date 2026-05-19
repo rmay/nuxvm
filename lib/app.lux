@@ -19,9 +19,13 @@ IMPORT EVENT
 @v-mouse  0x8C0010 ;
 @v-kbd    0x8C0014 ;
 @mpkt     0x8C0020 ; ( 8 bytes )
-@kpkt     0x8C0030 ; ( 4 bytes )
+@kpkt     0x8C0030 ; ( 8 bytes: Type, pad, KeyCode(2), Modifiers(4) )
 @win-w    0x8C0040 ;
 @win-h    0x8C0044 ;
+
+( --- ESC Popup State --- )
+@esc-open     0x8C0050 ;
+@esc-btn-hov  0x8C0054 ; ( 0=none, 1=continue, 2=restart, 3=quit )
 
 ( --- Accessors --- )
 @draw-fd  ( -- fd ) dfd LOADI ;
@@ -34,6 +38,120 @@ IMPORT EVENT
 @on-frame! ( addr -- ) v-frame STOREI ;
 @on-mouse! ( addr -- ) v-mouse STOREI ;
 @on-kbd!   ( addr -- ) v-kbd   STOREI ;
+
+( --- ESC Popup Routines --- )
+
+@draw-esc-popup ( -- )
+    win-w LOADI 200 - 2 / ( x )
+    win-h LOADI 160 - 2 / ( y )
+    2 frame! ( 0:y, 1:x )
+
+    ( 1. Outer Box )
+    dfd LOADI 1 local@ 2 - 0 local@ 2 - 204 164 0x000000 DRAW::fill-rect
+    dfd LOADI 1 local@ 0 local@ 200 160 0xFFFFFF DRAW::fill-rect
+    
+    ( 2. Title )
+    dfd LOADI 1 local@ 35 + 0 local@ 15 + T"System Menu" 0x000000 16 DRAW::draw-str
+
+    ( 3. Continue Button )
+    dfd LOADI 1 local@ 20 + 0 local@ 50 + 160 30 0x000000 DRAW::fill-rect
+    dfd LOADI 1 local@ 21 + 0 local@ 51 + 158 28 
+    esc-btn-hov LOADI 1 = [ 0xAAAAAA ] [ 0xFFFFFF ] ?: DRAW::fill-rect
+    dfd LOADI 1 local@ 60 + 0 local@ 56 + T"Continue" 0x000000 12 DRAW::draw-str
+
+    ( 4. Restart Button )
+    dfd LOADI 1 local@ 20 + 0 local@ 85 + 160 30 0x000000 DRAW::fill-rect
+    dfd LOADI 1 local@ 21 + 0 local@ 86 + 158 28 
+    esc-btn-hov LOADI 2 = [ 0xAAAAAA ] [ 0xFFFFFF ] ?: DRAW::fill-rect
+    dfd LOADI 1 local@ 50 + 0 local@ 91 + T"Restart App" 0x000000 12 DRAW::draw-str
+
+    ( 5. Quit Button )
+    dfd LOADI 1 local@ 20 + 0 local@ 120 + 160 30 0x000000 DRAW::fill-rect
+    dfd LOADI 1 local@ 21 + 0 local@ 121 + 158 28
+    esc-btn-hov LOADI 3 = [ 0xAAAAAA ] [ 0xFFFFFF ] ?: DRAW::fill-rect
+    dfd LOADI 1 local@ 80 + 0 local@ 126 + T"Quit" 0x000000 12 DRAW::draw-str
+
+    2 unframe!
+;
+
+@handle-esc-mouse ( mpkt -- )
+    1 frame! ( 0:mpkt )
+    win-w LOADI 200 - 2 / ( x )
+    win-h LOADI 160 - 2 / ( y )
+    2 frame! ( 0:py, 1:px )
+
+    ( Hit testing )
+    0 local@ EVENT::mouse-x 1 local@ - ( rx )
+    0 local@ EVENT::mouse-y 0 local@ - ( ry )
+    2 frame! ( 0:ry, 1:rx )
+
+    ( Check buttons )
+    1 local@ 20 >= [ 1 local@ 180 <= ] [ 0 ] ?: [
+        0 local@ 50 >= [ 0 local@ 80 <= ] [ 0 ] ?: [
+            ( Continue )
+            1 esc-btn-hov STOREI
+            0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+                0 esc-open STOREI
+            ] ?
+        ] [
+            0 local@ 85 >= [ 0 local@ 115 <= ] [ 0 ] ?: [
+                ( Restart )
+                2 esc-btn-hov STOREI
+                0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+                    0 esc-open STOREI
+                    0 JMPSTACK
+                ] ?
+            ] [
+                0 local@ 120 >= [ 0 local@ 150 <= ] [ 0 ] ?: [
+                    ( Quit )
+                    3 esc-btn-hov STOREI
+                    0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+                        HALT
+                    ] ?
+                ] [
+                    0 esc-btn-hov STOREI
+                    0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+                        0 esc-open STOREI
+                    ] ?
+                ] ?:
+            ] ?:
+        ] ?:
+    ] [
+        0 esc-btn-hov STOREI
+        0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+            0 esc-open STOREI
+        ] ?
+    ] ?:
+
+    2 unframe! ( rx ry )
+    2 unframe! ( px py )
+    1 unframe! ( mpkt )
+;
+
+@handle-esc-kbd ( kpkt -- )
+    dup EVENT::kbd-type EVENT::KEY_DOWN = [
+        dup EVENT::kbd-key ( key )
+        dup EVENT::KEY_UP_ARROW = [
+            esc-btn-hov LOADI 1 - dup 1 < [ drop 3 ] ? esc-btn-hov STOREI
+        ] ?
+        dup EVENT::KEY_DOWN_ARROW = [
+            esc-btn-hov LOADI 1 + dup 3 > [ drop 1 ] ? esc-btn-hov STOREI
+        ] ?
+        dup EVENT::KEY_ENTER = [
+            esc-btn-hov LOADI dup 1 = [
+                0 esc-open STOREI
+            ] [
+                dup 2 = [ 0 JMPSTACK ] [
+                dup 3 = [ HALT ] ? ] ?:
+            ] ?:
+        ] ?
+        dup EVENT::KEY_ESC = [
+            0 esc-open STOREI
+        ] ?
+        drop
+    ] ?
+    drop
+;
 
 ( --- Device Initialization --- )
 
@@ -72,22 +190,41 @@ IMPORT EVENT
     [ 1 ] [
         ( 1. Handle Mouse )
         mfd LOADI mpkt 8 VFS::read 8 = [
-            v-mouse LOADI dup 0 > [
-                mpkt swap CALLSTACK
-            ] [ drop ] ?:
+            esc-open LOADI [
+                mpkt handle-esc-mouse
+            ] [
+                v-mouse LOADI dup 0 > [
+                    mpkt swap CALLSTACK
+                ] [ drop ] ?:
+            ] ?:
         ] ?
 
         ( 2. Handle Keyboard )
-        kfd LOADI kpkt 4 VFS::read 4 = [
-            v-kbd LOADI dup 0 > [
-                kpkt swap CALLSTACK
-            ] [ drop ] ?:
+        kfd LOADI kpkt 8 VFS::read 8 = [
+            esc-open LOADI [
+                kpkt handle-esc-kbd
+            ] [
+                kpkt EVENT::kbd-type EVENT::KEY_DOWN = 
+                kpkt EVENT::kbd-key EVENT::KEY_ESC = AND [
+                    1 esc-open STOREI
+                    1 esc-btn-hov STOREI
+                ] [
+                    v-kbd LOADI dup 0 > [
+                        kpkt swap CALLSTACK
+                    ] [ drop ] ?:
+                ] ?:
+            ] ?:
         ] ?
 
         ( 3. Handle Frame )
         v-frame LOADI dup 0 > [
             CALLSTACK
         ] [ drop ] ?:
+
+        ( 4. Handle Overlay )
+        esc-open LOADI [
+            draw-esc-popup
+        ] ?
 
         VFS::yield DROP
     ] |:

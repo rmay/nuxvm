@@ -109,10 +109,16 @@ func (f *kbdFile) Read(p []byte) (n int, err error) {
 	}
 	select {
 	case evt := <-f.s.kbdEvents:
-		// [Type (1), Padding (1), KeyCode (2)]
+		// [Type (1), Padding (1), KeyCode (2), Modifiers (4)]
+		// Modifiers are only written when the caller passes an 8+ byte buffer;
+		// older apps that pass a 4-byte buffer still get the legacy layout.
 		p[0] = byte(evt.Type)
 		p[1] = 0
 		binary.LittleEndian.PutUint16(p[2:4], uint16(evt.KeyCode))
+		if len(p) >= 8 {
+			binary.LittleEndian.PutUint32(p[4:8], evt.Modifiers)
+			return 8, nil
+		}
 		return 4, nil
 	default:
 		return 0, nil

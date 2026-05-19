@@ -1329,7 +1329,7 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		} else if addr >= 0 && int(addr)+4 <= len(vm.memory) {
 			vm.stack = append(vm.stack, int32(binary.BigEndian.Uint32(vm.memory[addr:addr+4])))
 		} else {
-			return currentPC, fmt.Errorf("loadi failed: address %d out of bounds", addr)
+			return currentPC, fmt.Errorf("loadi failed: address %d (0x%X) out of bounds", addr, uaddr)
 		}
 	case OpStoreI:
 		addr, err := vm.Pop()
@@ -1348,7 +1348,7 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		} else if addr >= 0 && int(addr)+4 <= len(vm.memory) {
 			binary.BigEndian.PutUint32(vm.memory[addr:addr+4], uint32(value))
 		} else {
-			return currentPC, fmt.Errorf("storei failed: address %d out of bounds", addr)
+			return currentPC, fmt.Errorf("storei failed: address %d (0x%X) out of bounds", addr, uaddr)
 		}
 	case OpJmpStack:
 		if err := vm.JmpStack(); err != nil {
