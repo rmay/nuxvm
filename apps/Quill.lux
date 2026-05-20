@@ -534,6 +534,7 @@ IMPORT MENU
             ] [
                 dup 120 = [
                     drop snarf-selection delete-selection refresh
+                    caret-x LOADI target-x STOREI
                 ] [
                     drop                     ( unknown Cmd combo: ignore )
                 ] ?:
@@ -559,6 +560,9 @@ IMPORT MENU
   extends by moving the cursor only. Mouse up ends the drag. The menu
   bar still gets first crack at the event. )
 @on-mouse ( mpkt -- )
+    ( Capture menu state before update )
+    MB_ADDR MENU::MB_ACTIVE + LOADI -1 > 1 frame! ( 0:menu-was-open )
+
     ( Pass to menu bar first )
     MB_ADDR
     OVER EVENT::mouse-x
@@ -568,25 +572,28 @@ IMPORT MENU
     MENU::menu-bar-update
 
     ( Text-pane drag selection. Only honor events in the editable region. )
-    dup EVENT::mouse-y PANE_Y >= [
-        dup EVENT::mouse-type EVENT::MOUSE_DOWN = [
-            dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy
-            dup cursor STOREI
-            anchor STOREI
-            1 drag STOREI
-        ] ?
-        dup EVENT::mouse-type EVENT::MOUSE_MOVE = drag LOADI 1 = AND [
-            dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy
-            cursor STOREI
-        ] ?
-        dup EVENT::mouse-type EVENT::MOUSE_UP = [
-            0 drag STOREI
+    0 local@ 0 = [
+        dup EVENT::mouse-y PANE_Y >= [
+            dup EVENT::mouse-type EVENT::MOUSE_DOWN = [
+                dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy
+                dup cursor STOREI
+                anchor STOREI
+                1 drag STOREI
+            ] ?
+            dup EVENT::mouse-type EVENT::MOUSE_MOVE = drag LOADI 1 = AND [
+                dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy
+                cursor STOREI
+            ] ?
+            dup EVENT::mouse-type EVENT::MOUSE_UP = [
+                0 drag STOREI
+            ] ?
         ] ?
     ] ?
 
     refresh
     caret-x LOADI target-x STOREI
     drop
+    1 unframe!
 ;
 
 @on-frame ( -- )

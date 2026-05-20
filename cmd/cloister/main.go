@@ -132,6 +132,23 @@ func translateKey(k ebiten.Key) (int32, bool) {
 	return 0, false
 }
 
+// repeatingKeyPressed returns true if the key just started being pressed,
+// or if it has been held down long enough to repeat.
+func repeatingKeyPressed(key ebiten.Key) bool {
+	const (
+		delay  = 30
+		repeat = 3
+	)
+	d := inpututil.KeyPressDuration(key)
+	if d == 1 {
+		return true
+	}
+	if d >= delay && (d-delay)%repeat == 0 {
+		return true
+	}
+	return false
+}
+
 func (g *Game) Update() error {
 	if g.launcherMode {
 		if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) {
@@ -162,9 +179,11 @@ func (g *Game) Update() error {
 	g.machine.DrainInputEvents()
 
 	mods := currentModifiers()
-	for _, k := range inpututil.AppendJustPressedKeys(nil) {
-		if code, ok := translateKey(k); ok {
-			g.machine.QueueKeyDownMods(code, mods)
+	for _, k := range inpututil.AppendPressedKeys(nil) {
+		if repeatingKeyPressed(k) {
+			if code, ok := translateKey(k); ok {
+				g.machine.QueueKeyDownMods(code, mods)
+			}
 		}
 	}
 
