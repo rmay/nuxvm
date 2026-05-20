@@ -60,6 +60,9 @@ IMPORT MENU
 @target-x   0x91003C ;
 @anchor     0x910040 ;   ( selection anchor; -1 = no selection )
 @drag       0x910044 ;   ( 1 if mouse-drag selection in progress )
+@frame-count      0x910048 ;
+@last-click-frame 0x91004C ;
+@last-click-idx   0x910050 ;
 
 ( --- Menu Structure --- )
 @MB_ADDR        @MENU_DATA ;
@@ -555,6 +558,37 @@ IMPORT MENU
     drop
 ;
 
+( --- Word Boundary Helpers --- )
+
+@is-space? ( ch -- bool )
+    dup 32 = OVER 10 = OR OVER 9 = OR swap drop
+;
+
+@select-word ( -- )
+    cursor LOADI dup 2 frame! ( 0:hi 1:lo )
+    
+    ( Walk left )
+    [ 1 local@ 0 > ] [
+        FILE_BUF 1 local@ 1 - + load-byte is-space? [ 0 ] [
+            1 local@ 1 - 1 local!
+            1
+        ] ?:
+    ] |:
+    
+    ( Walk right )
+    [ 0 local@ file-len LOADI < ] [
+        FILE_BUF 0 local@ + load-byte is-space? [ 0 ] [
+            0 local@ 1 + 0 local!
+            1
+        ] ?:
+    ] |:
+    
+    1 local@ anchor STOREI
+    0 local@ cursor STOREI
+    
+    2 unframe!
+;
+
 ( Drag-selection inside the text pane. Mouse down (button 1) sets cursor
   and anchor to the clicked character; mouse move while button is held
   extends by moving the cursor only. Mouse up ends the drag. The menu
@@ -575,10 +609,22 @@ IMPORT MENU
     0 local@ 0 = [
         dup EVENT::mouse-y PANE_Y >= [
             dup EVENT::mouse-type EVENT::MOUSE_DOWN = [
-                dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy
-                dup cursor STOREI
-                anchor STOREI
-                1 drag STOREI
+                dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy ( idx )
+                
+                ( Check for double-click )
+                frame-count LOADI last-click-frame LOADI - 30 <=
+                OVER last-click-idx LOADI = AND [
+                    dup cursor STOREI
+                    select-word
+                    -1 last-click-idx STOREI ( Reset to prevent triple-click doing it again immediately )
+                ] [
+                    dup cursor STOREI
+                    dup anchor STOREI
+                    frame-count LOADI last-click-frame STOREI
+                    dup last-click-idx STOREI
+                    1 drag STOREI
+                ] ?:
+                drop
             ] ?
             dup EVENT::mouse-type EVENT::MOUSE_MOVE = drag LOADI 1 = AND [
                 dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy
@@ -586,6 +632,9 @@ IMPORT MENU
             ] ?
             dup EVENT::mouse-type EVENT::MOUSE_UP = [
                 0 drag STOREI
+                cursor LOADI anchor LOADI = [
+                    -1 anchor STOREI
+                ] ?
             ] ?
         ] ?
     ] ?
@@ -597,6 +646,7 @@ IMPORT MENU
 ;
 
 @on-frame ( -- )
+    frame-count LOADI 1 + frame-count STOREI
     ( Autosave after 2s of inactivity )
     dirty LOADI 1 = [
         TIME::unix@ last-key LOADI - 2 >= [
@@ -632,6 +682,9 @@ IMPORT MENU
     0 dirty STOREI
     -1 anchor STOREI
     0 drag STOREI
+    0 frame-count STOREI
+    -100 last-click-frame STOREI
+    -1 last-click-idx STOREI
     TIME::unix@ last-key STOREI
 
     refresh
