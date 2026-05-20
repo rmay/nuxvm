@@ -568,19 +568,21 @@ IMPORT MENU
     cursor LOADI dup 2 frame! ( 0:hi 1:lo )
     
     ( Walk left )
-    [ 1 local@ 0 > ] [
-        FILE_BUF 1 local@ 1 - + load-byte is-space? [ 0 ] [
-            1 local@ 1 - 1 local!
-            1
-        ] ?:
+    [ 
+        1 local@ 0 > [
+            FILE_BUF 1 local@ 1 - + load-byte is-space? 0 =
+        ] [ 0 ] ?:
+    ] [
+        1 local@ 1 - 1 local!
     ] |:
     
     ( Walk right )
-    [ 0 local@ file-len LOADI < ] [
-        FILE_BUF 0 local@ + load-byte is-space? [ 0 ] [
-            0 local@ 1 + 0 local!
-            1
-        ] ?:
+    [ 
+        0 local@ file-len LOADI < [
+            FILE_BUF 0 local@ + load-byte is-space? 0 =
+        ] [ 0 ] ?:
+    ] [
+        0 local@ 1 + 0 local!
     ] |:
     
     1 local@ anchor STOREI
