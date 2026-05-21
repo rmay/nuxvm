@@ -19,7 +19,7 @@ MODULE MENU
 @MENU_PADDING 10 ;
 @ITEM_H      24 ;
 @MENU_ROOT_W 80 ; ( Fixed width for root items )
-@MENU_ITEM_W 100 ; ( Fixed width for dropdown subitems )
+@MENU_ITEM_W 160 ; ( Fixed width for dropdown subitems )
 
 ( --- State Struct (8 bytes) --- )
 @MB_SIZE    8 ;

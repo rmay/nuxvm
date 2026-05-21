@@ -63,6 +63,8 @@ IMPORT MENU
 @last-click-frame 0x91004C ;
 @last-click-idx   0x910050 ;
 @char-w-val       0x910054 ;
+@hex-mode         0x910058 ;
+@HEX_LINE_BUF     0x910100 ;
 
 ( --- Menu Structure --- )
 @MB_ADDR        @MENU_DATA ;
@@ -107,10 +109,27 @@ IMPORT MENU
     T"Edit" [ MI_EDIT ] 3
 ;
 
+@toggle-hex ( -- )
+    hex-mode LOADI 0 = [ 1 ] [ 0 ] ?: hex-mode STOREI
+    -1 anchor STOREI
+    refresh
+    cursor LOADI rc-from-idx swap drop target-col STOREI
+;
+
+@MI_VIEW ( i -- label shortcut callback )
+    dup 0 = [ drop T"Toggle Hex" 0 [ toggle-hex ] ] [
+    drop 0 0 0 ] ?:
+;
+
+@MN_VIEW ( -- label items_quot count )
+    T"View" [ MI_VIEW ] 1
+;
+
 @MENUS ( i -- menu_quot )
     dup 0 = [ drop [ MN_FILE ] ] [
     dup 1 = [ drop [ MN_EDIT ] ] [
-    drop 0 ] ?: ] ?:
+    dup 2 = [ drop [ MN_VIEW ] ] [
+    drop 0 ] ?: ] ?: ] ?:
 ;
 
 @init-menus ( -- )
@@ -248,57 +267,70 @@ IMPORT MENU
 ;
 
 @rc-from-idx ( idx -- r c )
-    0 0 0 rot 4 frame! ( 0:i 1:r 2:c 3:target-idx )
-    [ 0 local@ 3 local@ < ] [
-        FILE_BUF 0 local@ + load-byte
-        dup 10 = [
-            drop
-            1 local@ 1 + 1 local!
-            0 2 local!
-        ] [
-            drop
-            2 local@ 1 + 2 local!
-            2 local@ COLUMNS >= [
+    hex-mode LOADI 1 = [
+        dup 16 / swap 16 MOD 3 * 6 +
+    ] [
+        0 0 0 rot 4 frame! ( 0:i 1:r 2:c 3:target-idx )
+        [ 0 local@ 3 local@ < ] [
+            FILE_BUF 0 local@ + load-byte
+            dup 10 = [
+                drop
                 1 local@ 1 + 1 local!
                 0 2 local!
-            ] ?
-        ] ?:
-        0 local@ 1 + 0 local!
-    ] |:
-    1 local@ 2 local@
-    4 unframe!
+            ] [
+                drop
+                2 local@ 1 + 2 local!
+                2 local@ COLUMNS >= [
+                    1 local@ 1 + 1 local!
+                    0 2 local!
+                ] ?
+            ] ?:
+            0 local@ 1 + 0 local!
+        ] |:
+        1 local@ 2 local@
+        4 unframe!
+    ] ?:
 ;
 
 @idx-from-rc ( r c -- idx )
-    swap 0 0 0 0 6 frame! ( 0:found 1:curr-c 2:curr-r 3:i 4:target-r 5:target-c )
-    [ 0 local@ 0 = [ 3 local@ file-len LOADI < ] [ 0 ] ?: ] [
-        ( Are we at the target row? )
-        2 local@ 4 local@ = [
-            ( Are we at or past the target col? )
-            1 local@ 5 local@ >= [ 1 0 local! ] ?
-            ( If the line ends here, we stop )
-            FILE_BUF 3 local@ + load-byte 10 = [ 1 0 local! ] ?
-        ] ?
+    hex-mode LOADI 1 = [
+        swap 16 * swap ( r*16 c )
+        6 - 3 / ( r*16 (c-6)/3 )
+        dup 0 < [ drop 0 ] ?
+        dup 15 > [ drop 15 ] ?
+        +
+        dup file-len LOADI > [ drop file-len LOADI ] ?
+    ] [
+        swap 0 0 0 0 6 frame! ( 0:found 1:curr-c 2:curr-r 3:i 4:target-r 5:target-c )
+        [ 0 local@ 0 = [ 3 local@ file-len LOADI < ] [ 0 ] ?: ] [
+            ( Are we at the target row? )
+            2 local@ 4 local@ = [
+                ( Are we at or past the target col? )
+                1 local@ 5 local@ >= [ 1 0 local! ] ?
+                ( If the line ends here, we stop )
+                FILE_BUF 3 local@ + load-byte 10 = [ 1 0 local! ] ?
+            ] ?
 
-        0 local@ 0 = [
-            FILE_BUF 3 local@ + load-byte
-            dup 10 = [
-                drop
-                2 local@ 1 + 2 local!
-                0 1 local!
-            ] [
-                drop
-                1 local@ 1 + 1 local!
-                1 local@ COLUMNS >= [
+            0 local@ 0 = [
+                FILE_BUF 3 local@ + load-byte
+                dup 10 = [
+                    drop
                     2 local@ 1 + 2 local!
                     0 1 local!
-                ] ?
-            ] ?:
-            3 local@ 1 + 3 local!
-        ] ?
-    ] |:
-    3 local@
-    6 unframe!
+                ] [
+                    drop
+                    1 local@ 1 + 1 local!
+                    1 local@ COLUMNS >= [
+                        2 local@ 1 + 2 local!
+                        0 1 local!
+                    ] ?
+                ] ?:
+                3 local@ 1 + 3 local!
+            ] ?
+        ] |:
+        3 local@
+        6 unframe!
+    ] ?:
 ;
 
 ( Simulate layout to find the character at visual row/col )
@@ -371,49 +403,116 @@ IMPORT MENU
     ] [ drop ] ?:
 ;
 
-@layout-and-render ( -- )
-    0 0 0 0 4 frame! ( 0:i 1:r 2:c 3:seg-start )
-    [ 0 local@ file-len LOADI <= ] [
-        ( Capture caret position )
-        0 local@ cursor LOADI = [
-            2 local@ char-w * PANE_X + caret-x STOREI
-            1 local@ LINE_H * PANE_Y + caret-y STOREI
-        ] ?
+( --- Hex Formatting --- )
 
-        ( Advance )
-        0 local@ file-len LOADI < [
-            FILE_BUF 0 local@ + load-byte
-            dup 10 = [
-                drop
-                3 local@ 0 local@
-                PANE_X
-                1 local@ LINE_H * PANE_Y +
-                flush-seg
-                1 local@ 1 + 1 local!
-                0 2 local!
-                0 local@ 1 + 3 local!
-            ] [
-                drop
-                2 local@ 1 + 2 local!
-                2 local@ COLUMNS >= [
-                    3 local@ 0 local@ 1 +
+@nibble-to-hex ( n -- ch )
+    dup 10 < [ 48 + ] [ 10 - 65 + ] ?:
+;
+
+@byte-to-hex ( byte buf -- )
+    2 frame!
+    1 local@ 4 SHR 15 AND nibble-to-hex 0 local@ store-byte
+    1 local@ 15 AND nibble-to-hex 0 local@ 1 + store-byte
+    2 unframe!
+;
+
+@addr-to-hex ( addr buf -- )
+    2 frame!
+    1 local@ 12 SHR 15 AND nibble-to-hex 0 local@ store-byte
+    1 local@ 8 SHR 15 AND nibble-to-hex 0 local@ 1 + store-byte
+    1 local@ 4 SHR 15 AND nibble-to-hex 0 local@ 2 + store-byte
+    1 local@ 15 AND nibble-to-hex 0 local@ 3 + store-byte
+    2 unframe!
+;
+
+@layout-and-render ( -- )
+    hex-mode LOADI 1 = [
+        0 ( start_idx )
+        [ dup file-len LOADI <= ] [
+            dup 0 2 frame! ( 0:i 1:start_idx )
+            
+            ( init buffer with spaces )
+            0 [ dup 72 < ] [ dup 32 HEX_LINE_BUF rot + store-byte 1 + ] |: drop
+            
+            1 local@ HEX_LINE_BUF addr-to-hex
+            
+            [ 0 local@ 16 < 1 local@ 0 local@ + file-len LOADI <= AND ] [
+                1 local@ 0 local@ + file-len LOADI = [
+                    ( EOF marker )
+                ] [
+                    FILE_BUF 1 local@ 0 local@ + + load-byte
+                    ( hex )
+                    dup HEX_LINE_BUF 6 + 0 local@ 3 * + byte-to-hex
+                    
+                    ( ascii )
+                    dup 32 >= OVER 126 <= AND [ ] [ drop 46 ] ?:
+                    HEX_LINE_BUF 56 + 0 local@ + store-byte
+                ] ?:
+                
+                0 local@ 1 + 0 local!
+            ] |:
+            
+            APP::draw-fd
+            PANE_X
+            1 local@ 16 / LINE_H * PANE_Y +
+            HEX_LINE_BUF
+            72
+            CLR_TEXT
+            FONT_SIZE
+            DRAW::draw-string
+            
+            2 unframe!
+            16 +
+        ] |:
+        
+        ( draw caret )
+        cursor LOADI rc-from-idx ( r c )
+        char-w * PANE_X + swap LINE_H * PANE_Y + caret-y STOREI caret-x STOREI
+        caret-x LOADI caret-y LOADI draw-caret
+    ] [
+        0 0 0 0 4 frame! ( 0:i 1:r 2:c 3:seg-start )
+        [ 0 local@ file-len LOADI <= ] [
+            ( Capture caret position )
+            0 local@ cursor LOADI = [
+                2 local@ char-w * PANE_X + caret-x STOREI
+                1 local@ LINE_H * PANE_Y + caret-y STOREI
+            ] ?
+
+            ( Advance )
+            0 local@ file-len LOADI < [
+                FILE_BUF 0 local@ + load-byte
+                dup 10 = [
+                    drop
+                    3 local@ 0 local@
                     PANE_X
                     1 local@ LINE_H * PANE_Y +
                     flush-seg
                     1 local@ 1 + 1 local!
                     0 2 local!
                     0 local@ 1 + 3 local!
-                ] ?
-            ] ?:
-        ] ?
-        0 local@ 1 + 0 local!
-    ] |:
+                ] [
+                    drop
+                    2 local@ 1 + 2 local!
+                    2 local@ COLUMNS >= [
+                        3 local@ 0 local@ 1 +
+                        PANE_X
+                        1 local@ LINE_H * PANE_Y +
+                        flush-seg
+                        1 local@ 1 + 1 local!
+                        0 2 local!
+                        0 local@ 1 + 3 local!
+                    ] ?
+                ] ?:
+            ] ?
+            0 local@ 1 + 0 local!
+        ] |:
 
-    ( Flush the final run, then draw the caret on top. )
-    3 local@ file-len LOADI PANE_X 1 local@ LINE_H * PANE_Y + flush-seg
-    caret-x LOADI caret-y LOADI draw-caret
+        ( Flush the final run, then draw the caret on top. )
+        3 local@ file-len LOADI PANE_X 1 local@ LINE_H * PANE_Y + flush-seg
+        caret-x LOADI caret-y LOADI draw-caret
 
-    4 unframe!
+        4 unframe!
+    ] ?:
 ;
 
 @refresh ( -- )
@@ -424,7 +523,7 @@ IMPORT MENU
     draw-selection
     layout-and-render
 
-    APP::draw-fd MB_ADDR WIN_W [ MENUS ] 2 MENU::menu-bar-draw
+    APP::draw-fd MB_ADDR WIN_W [ MENUS ] 3 MENU::menu-bar-draw
 ;
 
 ( --- File I/O --- )
@@ -444,12 +543,16 @@ IMPORT MENU
         cursor LOADI rc-from-idx swap drop target-col STOREI
     ] [
         dup EVENT::KEY_TAB = [
-            drop 32 insert-char 32 insert-char 32 insert-char 32 insert-char refresh
-            cursor LOADI rc-from-idx swap drop target-col STOREI
+            drop hex-mode LOADI 0 = [
+                32 insert-char 32 insert-char 32 insert-char 32 insert-char refresh
+                cursor LOADI rc-from-idx swap drop target-col STOREI
+            ] ?
         ] [
             dup EVENT::KEY_ENTER = [
-                drop 10 insert-char refresh
-                cursor LOADI rc-from-idx swap drop target-col STOREI
+                drop hex-mode LOADI 0 = [
+                    10 insert-char refresh
+                    cursor LOADI rc-from-idx swap drop target-col STOREI
+                ] ?
             ] [
                 dup EVENT::KEY_UP_ARROW = [
                     drop 
@@ -473,8 +576,24 @@ IMPORT MENU
                                 drop cursor-right refresh
                             ] [
                                 dup STR::printable? [
-                                    insert-char refresh
-                                    cursor LOADI rc-from-idx swap drop target-col STOREI
+                                    hex-mode LOADI 1 = [
+                                        ( Hex typing: shift nibbles into current byte )
+                                        dup 48 >= OVER 57 <= AND OVER 65 >= 2 PICK 70 <= AND OR OVER 97 >= 2 PICK 102 <= AND OR [
+                                            dup 97 >= [ 87 - ] [ dup 65 >= [ 55 - ] [ 48 - ] ?: ] ?: ( val )
+                                            cursor LOADI file-len LOADI = [
+                                                0 insert-char
+                                                cursor LOADI 1 - cursor STOREI
+                                            ] ?
+                                            FILE_BUF cursor LOADI + load-byte 4 LSHIFT 255 AND OVER OR
+                                            FILE_BUF cursor LOADI + store-byte
+                                            1 dirty STOREI
+                                            drop
+                                        ] [ drop ] ?:
+                                        refresh
+                                    ] [
+                                        insert-char refresh
+                                        cursor LOADI rc-from-idx swap drop target-col STOREI
+                                    ] ?:
                                 ] [
                                     drop
                                 ] ?:
@@ -606,7 +725,7 @@ IMPORT MENU
     OVER EVENT::mouse-x
     2 PICK EVENT::mouse-y
     3 PICK EVENT::mouse-type EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?:
-    [ MENUS ] 2
+    [ MENUS ] 3
     MENU::menu-bar-update
 
     ( Text-pane drag selection. Only honor events in the editable region. )
