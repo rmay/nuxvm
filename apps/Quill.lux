@@ -303,17 +303,18 @@ IMPORT MENU
 
 ( Simulate layout to find the character at visual row/col )
 @find-index-by-xy ( tx ty -- idx )
-    PANE_Y - LINE_H / ( tr )
-    swap PANE_X - char-w / ( tc )
-    swap idx-from-rc
+    PANE_Y - LINE_H 2 / + LINE_H / ( tr )
+    swap PANE_X - char-w 2 / + char-w / ( tc )
+    idx-from-rc
 ;
 
 ( Paint the selection highlight under the text. Walks the buffer
   using the same wrap/advance rules as layout-and-render. )
 @draw-selection ( -- )
     sel-active? [
+        sel-lo
         sel-lo rc-from-idx ( r c )
-        sel-lo 3 frame! ( 0:c 1:r 2:i )
+        3 frame! ( 0:c 1:r 2:i )
         [ 2 local@ sel-hi < ] [
             FILE_BUF 2 local@ + load-byte
             dup 10 = [
