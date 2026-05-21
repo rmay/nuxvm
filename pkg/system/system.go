@@ -206,17 +206,17 @@ type System struct {
 
 func NewSystem() *System {
 	s := &System{
-		screenWidth:  800,
-		screenHeight: 600,
-		paneW:        800,
-		paneH:        600,
+		screenWidth:  960,
+		screenHeight: 720,
+		paneW:        960,
+		paneH:        720,
 		screenPixels: make([]byte, vm.VideoMaxBufferSize),
 		rngState:     uint32(time.Now().UnixNano()),
 		text: textState{
 			fontSize:     12,
 			color:        0xFFFFFF,
 			useCFF:       false,
-			useBasicFont: true,
+			fontID:       1,
 		},
 		Services:      NewServiceManager(),
 		vfs:           NewVFS(),
@@ -239,16 +239,16 @@ func NewSystem() *System {
 // and getActiveFramebuffer() will always resolve to a real window FrameBuf.
 func NewSystemNoFallback() *System {
 	s := &System{
-		screenWidth:  800,
-		screenHeight: 600,
-		paneW:        800,
-		paneH:        600,
+		screenWidth:  960,
+		screenHeight: 720,
+		paneW:        960,
+		paneH:        720,
 		rngState:     uint32(time.Now().UnixNano()),
 		text: textState{
 			fontSize:     12,
 			color:        0xFFFFFF,
 			useCFF:       false,
-			useBasicFont: true,
+			fontID:       1,
 		},
 		Services:      NewServiceManager(),
 		vfs:           NewVFS(),

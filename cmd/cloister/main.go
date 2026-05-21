@@ -15,6 +15,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/audio"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
+	"github.com/hajimehoshi/ebiten/v2/vector"
 	"github.com/rmay/nuxvm/pkg/lux"
 	"github.com/rmay/nuxvm/pkg/system"
 	"github.com/rmay/nuxvm/pkg/vm"
@@ -33,6 +34,10 @@ type Game struct {
 	selectedIndex int
 	memSize       int
 	audioCtx      *audio.Context
+
+	// Launcher Esc Menu state
+	escMenuOpen  bool
+	escMenuHover int // 0=none, 1=continue, 2=restart, 3=quit
 }
 
 // currentModifiers reads ebiten's modifier state and packs it into the bitmask
@@ -151,6 +156,79 @@ func repeatingKeyPressed(key ebiten.Key) bool {
 
 func (g *Game) Update() error {
 	if g.launcherMode {
+		if g.escMenuOpen {
+			if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) {
+				g.escMenuHover--
+				if g.escMenuHover < 1 {
+					g.escMenuHover = 3
+				}
+			}
+			if inpututil.IsKeyJustPressed(ebiten.KeyArrowDown) {
+				g.escMenuHover++
+				if g.escMenuHover > 3 {
+					g.escMenuHover = 1
+				}
+			}
+			if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
+				switch g.escMenuHover {
+				case 1: // Continue
+					g.escMenuOpen = false
+				case 2: // Restart App (behaves like continue in launcher)
+					g.escMenuOpen = false
+				case 3: // Quit
+					os.Exit(0)
+				}
+			}
+			if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
+				g.escMenuOpen = false
+			}
+
+			mx, my := ebiten.CursorPosition()
+			winW, winH := 960, 720
+			menuX := (winW - 200) / 2
+			menuY := (winH - 160) / 2
+
+			relX := mx - menuX
+			relY := my - menuY
+
+			hover := 0
+			if relX >= 20 && relX <= 180 {
+				if relY >= 50 && relY <= 80 {
+					hover = 1
+				} else if relY >= 85 && relY <= 115 {
+					hover = 2
+				} else if relY >= 120 && relY <= 150 {
+					hover = 3
+				}
+			}
+			
+			if mx != g.lastMX || my != g.lastMY {
+				if hover != 0 {
+					g.escMenuHover = hover
+				} else {
+					g.escMenuHover = 0
+				}
+				g.lastMX, g.lastMY = mx, my
+			}
+
+			if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
+				if hover == 1 || hover == 2 {
+					g.escMenuOpen = false
+				} else if hover == 3 {
+					os.Exit(0)
+				} else {
+					g.escMenuOpen = false
+				}
+			}
+			return nil
+		}
+
+		if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
+			g.escMenuOpen = true
+			g.escMenuHover = 1
+			return nil
+		}
+
 		if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) {
 			g.selectedIndex--
 			if g.selectedIndex < 0 {
@@ -223,6 +301,46 @@ func (g *Game) Draw(screen *ebiten.Image) {
 			}
 			ebitenutil.DebugPrintAt(screen, prefix+app, 20, 50+i*20)
 		}
+
+		if g.escMenuOpen {
+			winW, winH := float32(960), float32(720)
+			menuX := (winW - 200) / 2
+			menuY := (winH - 160) / 2
+
+			// 1. Outer Box
+			vector.DrawFilledRect(screen, menuX-2, menuY-2, 204, 164, color.RGBA{0, 0, 0, 255}, false)
+			vector.DrawFilledRect(screen, menuX, menuY, 200, 160, color.RGBA{255, 255, 255, 255}, false)
+
+			// 2. Title
+			ebitenutil.DebugPrintAt(screen, "System Menu", int(menuX+35), int(menuY+15))
+
+			// 3. Continue Button
+			vector.DrawFilledRect(screen, menuX+20, menuY+50, 160, 30, color.RGBA{0, 0, 0, 255}, false)
+			btnColor1 := color.RGBA{255, 255, 255, 255}
+			if g.escMenuHover == 1 {
+				btnColor1 = color.RGBA{170, 170, 170, 255}
+			}
+			vector.DrawFilledRect(screen, menuX+21, menuY+51, 158, 28, btnColor1, false)
+			ebitenutil.DebugPrintAt(screen, "Continue", int(menuX+60), int(menuY+56))
+
+			// 4. Restart Button
+			vector.DrawFilledRect(screen, menuX+20, menuY+85, 160, 30, color.RGBA{0, 0, 0, 255}, false)
+			btnColor2 := color.RGBA{255, 255, 255, 255}
+			if g.escMenuHover == 2 {
+				btnColor2 = color.RGBA{170, 170, 170, 255}
+			}
+			vector.DrawFilledRect(screen, menuX+21, menuY+86, 158, 28, btnColor2, false)
+			ebitenutil.DebugPrintAt(screen, "Restart App", int(menuX+50), int(menuY+91))
+
+			// 5. Quit Button
+			vector.DrawFilledRect(screen, menuX+20, menuY+120, 160, 30, color.RGBA{0, 0, 0, 255}, false)
+			btnColor3 := color.RGBA{255, 255, 255, 255}
+			if g.escMenuHover == 3 {
+				btnColor3 = color.RGBA{170, 170, 170, 255}
+			}
+			vector.DrawFilledRect(screen, menuX+21, menuY+121, 158, 28, btnColor3, false)
+			ebitenutil.DebugPrintAt(screen, "Quit", int(menuX+80), int(menuY+126))
+		}
 		return
 	}
 
@@ -240,7 +358,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
 	if g.launcherMode {
-		return 800, 600
+		return 960, 720
 	}
 	sw, sh := int(g.machine.System.ScreenWidth()), int(g.machine.System.ScreenHeight())
 	return sw, sh
@@ -286,7 +404,7 @@ func (g *Game) loadApp(appPath string) error {
 	}
 
 	machine := system.NewMachine(bytecode, vm.GraphicalBaseAddress, uint32(g.memSize)*1024*1024, false)
-	machine.System.SetResolution(800, 600)
+	machine.System.SetResolution(960, 720)
 
 	if svc := machine.System.Services; svc != nil {
 		svc.SoundHandler = newSoundHandler(g.audioCtx)
@@ -337,7 +455,7 @@ func main() {
 	}
 
 	ebiten.SetWindowTitle("Cloister")
-	ebiten.SetWindowSize(800, 600)
+	ebiten.SetWindowSize(960, 720)
 
 	fmt.Fprintf(os.Stderr, "Starting NuxVM Launcher\n")
 	if err := ebiten.RunGame(game); err != nil {

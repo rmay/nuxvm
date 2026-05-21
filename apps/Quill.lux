@@ -20,19 +20,18 @@ IMPORT STR
 IMPORT UI
 IMPORT MENU
 
-( --- Window geometry (matches Shell's 800x600 child window) --- )
-@WIN_W      800 ;
-@WIN_H      600 ;
+( --- Window geometry (matches Shell's 960x720 child window) --- )
+@WIN_W      960 ;
+@WIN_H      720 ;
 @BAR_H      20 ;
 @MARGIN     16 ;
 @PANE_X     16 ;        ( MARGIN )
 @PANE_Y     36 ;        ( BAR_H + MARGIN )
-@PANE_W     768 ;       ( WIN_W - 2*MARGIN )
-@PANE_H     548 ;       ( WIN_H - BAR_H - 2*MARGIN )
-@PANE_RIGHT 784 ;       ( PANE_X + PANE_W )
-@PANE_BOT   584 ;       ( PANE_Y + PANE_H )
+@PANE_H     668 ;       ( WIN_H - BAR_H - 2*MARGIN )
+@PANE_BOT   704 ;       ( PANE_Y + PANE_H )
 @LINE_H     26 ;
 @FONT_SIZE  18 ;
+@COLUMNS    80 ;
 
 @CLR_BG     0xFFFFFF ;
 @CLR_FRAME  0xAAAAAA ;
@@ -57,12 +56,13 @@ IMPORT MENU
 @last-key   0x910024 ;   ( unix seconds, for autosave debounce )
 @caret-x    0x910034 ;
 @caret-y    0x910038 ;
-@target-x   0x91003C ;
+@target-col 0x91003C ;
 @anchor     0x910040 ;   ( selection anchor; -1 = no selection )
 @drag       0x910044 ;   ( 1 if mouse-drag selection in progress )
 @frame-count      0x910048 ;
 @last-click-frame 0x91004C ;
 @last-click-idx   0x910050 ;
+@char-w-val       0x910054 ;
 
 ( --- Menu Structure --- )
 @MB_ADDR        @MENU_DATA ;
@@ -119,10 +119,17 @@ IMPORT MENU
 ;
 
 ( --- Font width lookup --- )
-( Using the system proportional font widths from /sys/font/widths. )
-@char-w ( ch -- w )
-    FONT_DATA + load-byte
-    dup 0 = [ drop 4 ] ?
+( Using the fixed width of 'A' from /sys/font/widths after mono selection. )
+@char-w ( -- w )
+    char-w-val LOADI
+;
+
+@PANE_W ( -- w )
+    char-w COLUMNS *
+;
+
+@PANE_RIGHT ( -- x )
+    PANE_X PANE_W +
 ;
 
 ( --- Buffer manipulation --- )
@@ -152,10 +159,12 @@ IMPORT MENU
 
 @cursor-left ( -- )
     cursor LOADI 0 > [ cursor LOADI 1 - cursor STOREI ] ?
+    cursor LOADI rc-from-idx swap drop target-col STOREI
 ;
 
 @cursor-right ( -- )
     cursor LOADI file-len LOADI < [ cursor LOADI 1 + cursor STOREI ] ?
+    cursor LOADI rc-from-idx swap drop target-col STOREI
 ;
 
 ( --- Selection (Plan9-style snarf range) --- )
@@ -238,100 +247,100 @@ IMPORT MENU
     4 unframe!
 ;
 
-( Simulate layout to find the character on visual row 'ty' closest to 'target-x' )
-@find-index-by-y ( ty -- idx )
-    dup PANE_Y < [ drop -1 ] [
-        PANE_Y PANE_X 0 -1 10000 5 frame!
-        ( 0:best-diff 1:best-i 2:i 3:x 4:y )
-
-        [ 2 local@ file-len LOADI <= ] [
-            4 local@ OVER = [
-                ( We are on the target line )
-                3 local@ target-x LOADI - dup 0 < [ 0 swap - ] ? ( abs diff )
-                dup 0 local@ < [
-                    0 local!
-                    2 local@ 1 local!
-                ] [ drop ] ?:
-            ] ?
-
-            ( Advance x, y )
-            2 local@ file-len LOADI < [
-                FILE_BUF 2 local@ + load-byte
-                dup 10 = [
-                    drop
-                    PANE_X 3 local!
-                    4 local@ LINE_H + 4 local!
-                ] [
-                    dup char-w
-                    3 local@ OVER + PANE_RIGHT > [
-                        PANE_X 3 local!
-                        4 local@ LINE_H + 4 local!
-                    ] ?
-                    3 local@ + 3 local!
-                    drop
-                ] ?:
-            ] ?
+@rc-from-idx ( idx -- r c )
+    0 0 0 rot 4 frame! ( 0:i 1:r 2:c 3:target-idx )
+    [ 0 local@ 3 local@ < ] [
+        FILE_BUF 0 local@ + load-byte
+        dup 10 = [
+            drop
+            1 local@ 1 + 1 local!
+            0 2 local!
+        ] [
+            drop
             2 local@ 1 + 2 local!
-        ] |:
-        1 local@
-        5 unframe!
-        swap drop ( ty )
-    ] ?:
+            2 local@ COLUMNS >= [
+                1 local@ 1 + 1 local!
+                0 2 local!
+            ] ?
+        ] ?:
+        0 local@ 1 + 0 local!
+    ] |:
+    1 local@ 2 local@
+    4 unframe!
 ;
 
-( Like find-index-by-y but constrained to a target x as well. Temporarily
-  overrides target-x so the existing y-walker picks the nearest char on the
-  target row. )
+@idx-from-rc ( r c -- idx )
+    swap 0 0 0 0 6 frame! ( 0:found 1:curr-c 2:curr-r 3:i 4:target-r 5:target-c )
+    [ 0 local@ 0 = [ 3 local@ file-len LOADI < ] [ 0 ] ?: ] [
+        ( Are we at the target row? )
+        2 local@ 4 local@ = [
+            ( Are we at or past the target col? )
+            1 local@ 5 local@ >= [ 1 0 local! ] ?
+            ( If the line ends here, we stop )
+            FILE_BUF 3 local@ + load-byte 10 = [ 1 0 local! ] ?
+        ] ?
+
+        0 local@ 0 = [
+            FILE_BUF 3 local@ + load-byte
+            dup 10 = [
+                drop
+                2 local@ 1 + 2 local!
+                0 1 local!
+            ] [
+                drop
+                1 local@ 1 + 1 local!
+                1 local@ COLUMNS >= [
+                    2 local@ 1 + 2 local!
+                    0 1 local!
+                ] ?
+            ] ?:
+            3 local@ 1 + 3 local!
+        ] ?
+    ] |:
+    3 local@
+    6 unframe!
+;
+
+( Simulate layout to find the character at visual row/col )
 @find-index-by-xy ( tx ty -- idx )
-    target-x LOADI 3 frame! ( 0:saved 1:ty 2:tx )
-    2 local@ target-x STOREI
-    1 local@ find-index-by-y
-    0 local@ target-x STOREI
-    3 unframe!
+    PANE_Y - LINE_H / ( tr )
+    swap PANE_X - char-w / ( tc )
+    swap idx-from-rc
 ;
 
 ( Paint the selection highlight under the text. Walks the buffer
-  using the same wrap/advance rules as layout-and-render so highlights
-  line up exactly with rendered glyphs. )
-( IMPORTANT: EXIT inside a quotation only returns from the quotation,
-  not from the enclosing word — so we must wrap the entire body in a
-  `sel-active? [ ... ] ?` rather than relying on a guard EXIT. )
+  using the same wrap/advance rules as layout-and-render. )
 @draw-selection ( -- )
     sel-active? [
-        sel-hi sel-lo PANE_X PANE_Y 0 5 frame!
-        ( 0:i 1:y 2:x 3:lo 4:hi )
-
-        [ 0 local@ 4 local@ < ] [
-            ( If i is within lo..hi, paint highlight rect for this char )
-            0 local@ 3 local@ >= [
-                FILE_BUF 0 local@ + load-byte
-                dup 10 = [ drop 6 ] [ char-w ] ?:   ( w: newline → small marker )
-                ( fill-rect: fd x y w h color )
-                APP::draw-fd 2 local@ 1 local@ 3 PICK LINE_H CLR_SEL DRAW::fill-rect
-                drop ( drop the w copy used in stack arithmetic above )
-            ] ?
-
-            ( Advance x,y by this char )
-            0 local@ file-len LOADI < [
-                FILE_BUF 0 local@ + load-byte
-                dup 10 = [
-                    drop
-                    PANE_X 2 local!
-                    1 local@ LINE_H + 1 local!
-                ] [
-                    dup char-w
-                    2 local@ OVER + PANE_RIGHT > [
-                        PANE_X 2 local!
-                        1 local@ LINE_H + 1 local!
-                    ] ?
-                    2 local@ + 2 local!
-                    drop
-                ] ?:
-            ] ?
-
-            0 local@ 1 + 0 local!
+        sel-lo rc-from-idx ( r c )
+        sel-lo 3 frame! ( 0:c 1:r 2:i )
+        [ 2 local@ sel-hi < ] [
+            FILE_BUF 2 local@ + load-byte
+            dup 10 = [
+                drop
+                APP::draw-fd
+                0 local@ char-w * PANE_X +
+                1 local@ LINE_H * PANE_Y +
+                char-w LINE_H CLR_SEL DRAW::fill-rect
+                
+                1 local@ 1 + 1 local!
+                0 0 local!
+            ] [
+                drop
+                APP::draw-fd
+                0 local@ char-w * PANE_X +
+                1 local@ LINE_H * PANE_Y +
+                char-w LINE_H CLR_SEL DRAW::fill-rect
+                
+                0 local@ 1 + 0 local!
+                0 local@ COLUMNS >= [
+                    1 local@ 1 + 1 local!
+                    0 0 local!
+                ] ?
+            ] ?:
+            2 local@ 1 + 2 local!
         ] |:
-        5 unframe!
+        3 unframe!
     ] ?
 ;
 
@@ -357,74 +366,63 @@ IMPORT MENU
             PASTE_BUF swap insert-bytes
         ] [ drop ] ?:
         refresh
-        caret-x LOADI target-x STOREI
+        cursor LOADI rc-from-idx swap drop target-col STOREI
     ] [ drop ] ?:
 ;
 
-( Walk the buffer once, accumulating a run of chars per visual line.
-  At each newline / wrap point, flush the run with one DrawString call.
-  The host's per-char advance keeps glyph positions aligned with the
-  Lux-side char-w used for wrap and caret math. )
 @layout-and-render ( -- )
-    PANE_Y PANE_X PANE_X 0 PANE_X PANE_Y 0 7 frame!
-    ( 0:i 1:y 2:x 3:seg-start 4:seg-x 5:caret-x 6:caret-y )
-
+    0 0 0 0 4 frame! ( 0:i 1:r 2:c 3:seg-start )
     [ 0 local@ file-len LOADI <= ] [
-        ( 1. Capture caret position )
+        ( Capture caret position )
         0 local@ cursor LOADI = [
-            2 local@ 5 local!
-            1 local@ 6 local!
-            2 local@ caret-x STOREI
-            1 local@ caret-y STOREI
+            2 local@ char-w * PANE_X + caret-x STOREI
+            1 local@ LINE_H * PANE_Y + caret-y STOREI
         ] ?
 
-        ( 2. Handle char-driven x,y updates )
+        ( Advance )
         0 local@ file-len LOADI < [
-            FILE_BUF 0 local@ + load-byte    ( ch )
+            FILE_BUF 0 local@ + load-byte
             dup 10 = [
-                ( Newline: flush run, advance line, skip the \n byte. )
                 drop
-                3 local@ 0 local@ 4 local@ 1 local@ flush-seg
-                PANE_X 2 local!
-                1 local@ LINE_H + 1 local!
+                3 local@ 0 local@
+                PANE_X
+                1 local@ LINE_H * PANE_Y +
+                flush-seg
+                1 local@ 1 + 1 local!
+                0 2 local!
                 0 local@ 1 + 3 local!
-                PANE_X 4 local!
             ] [
-                dup char-w                   ( ch w )
-                2 local@ OVER + PANE_RIGHT > [
-                    ( Wrap: flush run before this char, start a new line. )
-                    3 local@ 0 local@ 4 local@ 1 local@ flush-seg
-                    PANE_X 2 local!
-                    1 local@ LINE_H + 1 local!
-                    0 local@ 3 local!
-                    PANE_X 4 local!
-                ] ?
-                2 local@ + 2 local!
                 drop
+                2 local@ 1 + 2 local!
+                2 local@ COLUMNS >= [
+                    3 local@ 0 local@ 1 +
+                    PANE_X
+                    1 local@ LINE_H * PANE_Y +
+                    flush-seg
+                    1 local@ 1 + 1 local!
+                    0 2 local!
+                    0 local@ 1 + 3 local!
+                ] ?
             ] ?:
         ] ?
-
         0 local@ 1 + 0 local!
     ] |:
 
     ( Flush the final run, then draw the caret on top. )
-    3 local@ file-len LOADI 4 local@ 1 local@ flush-seg
-    5 local@ 6 local@ draw-caret
+    3 local@ file-len LOADI PANE_X 1 local@ LINE_H * PANE_Y + flush-seg
+    caret-x LOADI caret-y LOADI draw-caret
 
-    7 unframe!
+    4 unframe!
 ;
 
 @refresh ( -- )
-    ( Clear full window region to white. The Shell's offset-draw will
-      translate these into screen coords. )
     APP::draw-fd 0 0 WIN_W WIN_H CLR_BG DRAW::fill-rect
 
-    ( 1px inner frame at margin - 1 so we can see the editable area )
+    ( 1px inner frame at margin - 1 )
     APP::draw-fd MARGIN 1 - PANE_Y 1 - PANE_W 2 + PANE_H 2 + CLR_FRAME DRAW::draw-rect
     draw-selection
     layout-and-render
 
-    ( Menu bar drawn LAST so the dropdown lands on top of text + selection. )
     APP::draw-fd MB_ADDR WIN_W [ MENUS ] 2 MENU::menu-bar-draw
 ;
 
@@ -439,40 +437,43 @@ IMPORT MENU
 
 ( --- Keyboard --- )
 
-( Existing per-key behavior, unchanged; called by handle-key after Cmd/Shift
-  pre-processing. )
 @handle-key-core ( keycode -- )
     dup EVENT::KEY_BACKSPACE = [
         drop delete-char refresh
-        caret-x LOADI target-x STOREI
+        cursor LOADI rc-from-idx swap drop target-col STOREI
     ] [
         dup EVENT::KEY_TAB = [
             drop 32 insert-char 32 insert-char 32 insert-char 32 insert-char refresh
-            caret-x LOADI target-x STOREI
+            cursor LOADI rc-from-idx swap drop target-col STOREI
         ] [
             dup EVENT::KEY_ENTER = [
                 drop 10 insert-char refresh
-                caret-x LOADI target-x STOREI
+                cursor LOADI rc-from-idx swap drop target-col STOREI
             ] [
                 dup EVENT::KEY_UP_ARROW = [
-                    drop caret-y LOADI LINE_H - find-index-by-y
-                    dup -1 = 0 = [ cursor STOREI refresh ] [ drop ] ?:
+                    drop 
+                    cursor LOADI rc-from-idx ( r c )
+                    drop 1 - ( r-1 )
+                    dup 0 < [ drop 0 ] ?
+                    target-col LOADI
+                    idx-from-rc cursor STOREI refresh
                 ] [
                     dup EVENT::KEY_DOWN_ARROW = [
-                        drop caret-y LOADI LINE_H + find-index-by-y
-                        dup -1 = 0 = [ cursor STOREI refresh ] [ drop ] ?:
+                        drop 
+                        cursor LOADI rc-from-idx ( r c )
+                        drop 1 + ( r+1 )
+                        target-col LOADI
+                        idx-from-rc cursor STOREI refresh
                     ] [
                         dup EVENT::KEY_LEFT_ARROW = [
                             drop cursor-left refresh
-                            caret-x LOADI target-x STOREI
                         ] [
                             dup EVENT::KEY_RIGHT_ARROW = [
                                 drop cursor-right refresh
-                                caret-x LOADI target-x STOREI
                             ] [
                                 dup STR::printable? [
                                     insert-char refresh
-                                    caret-x LOADI target-x STOREI
+                                    cursor LOADI rc-from-idx swap drop target-col STOREI
                                 ] [
                                     drop
                                 ] ?:
@@ -508,7 +509,7 @@ IMPORT MENU
     sel-active? [
         1 local@ EVENT::KEY_BACKSPACE = [
             delete-selection refresh
-            caret-x LOADI target-x STOREI
+            cursor LOADI rc-from-idx swap drop target-col STOREI
             drop 1                          ( mark handled )
         ] [
             1 local@ EVENT::KEY_ENTER = [ delete-selection ] ?
@@ -537,7 +538,7 @@ IMPORT MENU
             ] [
                 dup 120 = [
                     drop snarf-selection delete-selection refresh
-                    caret-x LOADI target-x STOREI
+                    cursor LOADI rc-from-idx swap drop target-col STOREI
                 ] [
                     drop                     ( unknown Cmd combo: ignore )
                 ] ?:
@@ -642,7 +643,7 @@ IMPORT MENU
     ] ?
 
     refresh
-    caret-x LOADI target-x STOREI
+    cursor LOADI rc-from-idx swap drop target-col STOREI
     drop
     1 unframe!
 ;
@@ -666,8 +667,8 @@ IMPORT MENU
     ( 2. Initialize Menus )
     init-menus
 
-    ( 3. Pick font + size on the draw device )
-    APP::draw-fd 0 DRAW::set-font
+    ( 3. Pick font + size on the draw device: 2 = GoMono )
+    APP::draw-fd 2 DRAW::set-font
     APP::draw-fd FONT_SIZE DRAW::set-font-size
 
     ( 4. Load system font widths for the chosen size )
@@ -676,7 +677,10 @@ IMPORT MENU
         VFS::close drop
     ] [ drop ] ?:
 
-    ( 5. Load existing manuscript if present )
+    ( 5. Initialize char-w from 'A' width )
+    FONT_DATA 65 + load-byte char-w-val STOREI
+
+    ( 6. Load existing manuscript if present )
     T"manuscript.quill" FILE_BUF 65535 FILE::load
     dup 0 > [ file-len STOREI ] [ drop 0 file-len STOREI ] ?:
 
@@ -690,7 +694,7 @@ IMPORT MENU
     TIME::unix@ last-key STOREI
 
     refresh
-    caret-x LOADI target-x STOREI
+    cursor LOADI rc-from-idx swap drop target-col STOREI
 
     [ on-mouse ] APP::on-mouse!
     [ on-kbd   ] APP::on-kbd!

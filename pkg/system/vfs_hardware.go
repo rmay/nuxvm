@@ -71,7 +71,7 @@ func (s *System) drawRect(x, y, w, h int32, color uint32) {
 // drawCharVFS renders a character using the system font.
 func (s *System) drawCharVFS(x, y int32, char byte, color uint32, scale byte) {
 	sc := float64(scale)
-	if !s.text.useBasicFont && scale < 6 {
+	if s.text.fontID != 1 && scale < 6 {
 		// For TTF/CFF, small scale values are treated as multipliers for a base size of 16
 		sc = float64(scale) * 16.0
 	}

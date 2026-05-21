@@ -63,10 +63,10 @@ IMPORT DRAW
 
 @draw-all
     ( background )
-    dfd@ 0 0 800 600 UI::CLR_BG DRAW::fill-rect
+    dfd@ 0 0 960 720 UI::CLR_BG DRAW::fill-rect
     ( title bar stripe )
-    dfd@ 0 0 800 30 UI::CLR_BORDER DRAW::fill-rect
-    dfd@ 800 STR_TITLE strlen CHAR_W * - 2 / 7 STR_TITLE UI::CLR_BG 2 DRAW::draw-str
+    dfd@ 0 0 960 30 UI::CLR_BORDER DRAW::fill-rect
+    dfd@ 960 STR_TITLE strlen CHAR_W * - 2 / 7 STR_TITLE UI::CLR_BG 2 DRAW::draw-str
     ( button )
     dfd@ BTN1 UI::button-draw
     ( click counter )

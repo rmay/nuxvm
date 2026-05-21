@@ -154,7 +154,7 @@ func TestSnakeMovesContinuously(t *testing.T) {
 
 	machine := NewMachine(program, vm.GraphicalBaseAddress, 16*1024*1024)
 	sys := machine.System
-	sys.SetResolution(800, 600)
+	sys.SetResolution(960, 720)
 
 	// Wait for start screen.
 	for i := 0; i < 1000000; i++ {
@@ -165,8 +165,8 @@ func TestSnakeMovesContinuously(t *testing.T) {
 		}
 	}
 
-	// Click START button. For 800x600: box at (300,225), button at (350-450, 305-335).
-	sys.mouseEvents <- InputEvent{Type: InputMouseDown, MouseBtn: 1, MouseX: 400, MouseY: 320}
+	// Click START button. For 960x720: box at (380,270), button at (430-530, 350-380).
+	sys.mouseEvents <- InputEvent{Type: InputMouseDown, MouseBtn: 1, MouseX: 480, MouseY: 365}
 	for i := 0; i < 100000; i++ {
 		machine.Tick()
 		st := binary.BigEndian.Uint32(sys.memory[0x80002C : 0x80002C+4])

@@ -188,9 +188,9 @@ func (s *System) handleSCICreateWin(namePtr int32, size int32) {
 	// Extract null-terminated name from memory
 	name := s.cstring(uint32(namePtr))
 
-	// Create window with default dimensions (800x600 or size parameter)
-	width := int32(800)
-	height := int32(600)
+	// Create window with default dimensions (960x720 or size parameter)
+	width := int32(960)
+	height := int32(720)
 	if size > 0 {
 		width = size >> 16
 		height = size & 0xFFFF

@@ -252,7 +252,7 @@ func (f *drawFile) Write(p []byte) (int, error) {
 
 			renderer := f.s.GetFontRenderer()
 			sc := float64(scale)
-			if !f.s.text.useBasicFont && scale < 6 {
+			if f.s.text.fontID != 1 && scale < 6 {
 				sc = float64(scale) * 16.0
 			}
 
@@ -281,11 +281,11 @@ func (f *drawFile) Write(p []byte) (int, error) {
 			}
 			f.s.text.fontSize = p[i]
 			i += 1
-		case 5: // SetFont: 0 = Chicago CFF (default), 1 = 7x13 basicfont
+		case 5: // SetFont: 0 = Chicago CFF (default), 1 = 7x13 basicfont, 2 = GoMono, 3 = GoRegular
 			if i+1 > len(p) {
 				return i - 1, io.ErrShortWrite
 			}
-			f.s.text.useBasicFont = p[i] != 0
+			f.s.text.fontID = p[i]
 			i += 1
 		default:
 			return i - 1, fmt.Errorf("unknown draw command: %d", cmd)
@@ -515,7 +515,7 @@ type fontWidthsFile struct {
 }
 
 func (f *fontWidthsFile) Read(p []byte) (n int, err error) {
-	face := getGoFace(f.s.text.fontSize)
+	face := getGoFace(f.s.text.fontSize, f.s.text.fontID == 2)
 	widths := make([]byte, 256)
 	for i := 0; i < 256; i++ {
 		adv, ok := face.GlyphAdvance(rune(i))

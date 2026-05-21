@@ -449,7 +449,7 @@ func TestTextNewlineResetsColumn(t *testing.T) {
 }
 func TestWindowMMIO(t *testing.T) {
 	sys := NewSystem()
-	sys.SetOSResolution(800, 600)
+	sys.SetOSResolution(960, 720)
 	sys.Services.StartAllServices()
 
 	// Test default values without WM
@@ -459,8 +459,8 @@ func TestWindowMMIO(t *testing.T) {
 	}
 
 	visibleH, _ := sys.Read(windowPort + 16)
-	if visibleH != 600-TopBarHeight {
-		t.Errorf("Expected visibleH %d, got %d", 600-TopBarHeight, visibleH)
+	if visibleH != 720-TopBarHeight {
+		t.Errorf("Expected visibleH %d, got %d", 720-TopBarHeight, visibleH)
 	}
 
 	// Test with WM and an active window
@@ -471,7 +471,7 @@ func TestWindowMMIO(t *testing.T) {
 	}
 	sm.FocusWindow(winID)
 	// Layout the window so ContRgn is set
-	sm.LayoutSingle(winID, 0, 0, 800, 600-TopBarHeight)
+	sm.LayoutSingle(winID, 0, 0, 960, 720-TopBarHeight)
 
 	// Test ScrollX/Y Read/Write
 	sys.Write(windowPort+4, 100) // ScrollY
@@ -532,8 +532,8 @@ func TestNewSystemNoFallback(t *testing.T) {
 		t.Errorf("screenPixels should be nil in NoFallback mode")
 	}
 	// Default screen width/height should be initialized even in NoFallback
-	if s.getScreenWidth() != 800 || s.getScreenHeight() != 600 {
-		t.Errorf("expected 800x600 default dimensions, got %dx%d", s.getScreenWidth(), s.getScreenHeight())
+	if s.getScreenWidth() != 960 || s.getScreenHeight() != 720 {
+		t.Errorf("expected 960x720 default dimensions, got %dx%d", s.getScreenWidth(), s.getScreenHeight())
 	}
 	if fb := s.getActiveFramebuffer(); fb != nil {
 		t.Errorf("getActiveFramebuffer should be nil when no services/windows are present")

@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/font/gofont/gomono"
 	"golang.org/x/image/font/gofont/goregular"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
@@ -16,9 +17,11 @@ import (
 var ChicagoCFF []byte
 
 var (
-	goFontMu    sync.Mutex
-	goFontFaces = make(map[uint8]font.Face)
-	goFontRoot  *opentype.Font
+	goFontMu       sync.Mutex
+	goFontFaces    = make(map[uint8]font.Face)
+	goMonoFaces    = make(map[uint8]font.Face)
+	goFontRoot     *opentype.Font
+	goMonoRoot     *opentype.Font
 )
 
 func init() {
@@ -27,20 +30,32 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
+	goMonoRoot, err = opentype.Parse(gomono.TTF)
+	if err != nil {
+		panic(err)
+	}
 }
 
-func getGoFace(size uint8) font.Face {
+func getGoFace(size uint8, mono bool) font.Face {
 	goFontMu.Lock()
 	defer goFontMu.Unlock()
 
 	if size == 0 {
 		size = 12
 	}
-	if face, ok := goFontFaces[size]; ok {
+	
+	cache := goFontFaces
+	root := goFontRoot
+	if mono {
+		cache = goMonoFaces
+		root = goMonoRoot
+	}
+
+	if face, ok := cache[size]; ok {
 		return face
 	}
 
-	face, err := opentype.NewFace(goFontRoot, &opentype.FaceOptions{
+	face, err := opentype.NewFace(root, &opentype.FaceOptions{
 		Size:    float64(size),
 		DPI:     72,
 		Hinting: font.HintingFull,
@@ -48,7 +63,7 @@ func getGoFace(size uint8) font.Face {
 	if err != nil {
 		return basicfont.Face7x13
 	}
-	goFontFaces[size] = face
+	cache[size] = face
 	return face
 }
 
@@ -116,9 +131,10 @@ func (r *BasicFontRenderer) MeasureGlyph(char byte, scale float64) (int, int) {
 	return int(float64(BasicFontWidth) * scale), int(float64(BasicFontHeight) * scale)
 }
 
-// TTFFontRenderer uses Go Regular (TTF).
+// TTFFontRenderer uses Go Regular or Go Mono (TTF).
 type TTFFontRenderer struct {
-	Size uint8
+	Size   uint8
+	Family uint8 // 2 = GoMono, else GoRegular
 }
 
 func (r *TTFFontRenderer) DrawGlyph(dst *image.RGBA, x, y int32, char byte, col color.RGBA, scale float64) int {
@@ -136,7 +152,7 @@ func (r *TTFFontRenderer) DrawGlyph(dst *image.RGBA, x, y int32, char byte, col 
 		}
 	}
 
-	face := getGoFace(size)
+	face := getGoFace(size, r.Family == 2)
 	metrics := face.Metrics()
 	ascent := metrics.Ascent.Ceil()
 
@@ -165,7 +181,7 @@ func (r *TTFFontRenderer) MeasureGlyph(char byte, scale float64) (int, int) {
 			size = uint8(scale)
 		}
 	}
-	face := getGoFace(size)
+	face := getGoFace(size, r.Family == 2)
 	adv, _ := face.GlyphAdvance(rune(char))
 	metrics := face.Metrics()
 	return adv.Ceil(), metrics.Height.Ceil()
@@ -275,8 +291,8 @@ func (r *CFFFontRenderer) MeasureGlyph(char byte, scale float64) (int, int) {
 // textState holds the mutable registers for the Text device.
 type textState struct {
 	fontSize     uint8  // font size in points (e.g. 14)
+	fontID       uint8  // 0=Chicago, 1=BasicFont, 2=GoMono, 3=GoRegular
 	useCFF       bool   // if true, use Go Regular (replaces Chicago)
-	useBasicFont bool   // /sys/draw: if true, DrawChar/DrawString use the 7x13 basicfont
 	color        uint32 // 24-bit RGB
 	cursorX      uint16 // in pixels
 	cursorY      uint16 // in pixels
@@ -300,14 +316,16 @@ func (s *System) screenImage() *image.RGBA {
 
 // GetFontRenderer returns the active font renderer based on the current state.
 func (s *System) GetFontRenderer() FontRenderer {
-	if s.text.useCFF {
-		return &TTFFontRenderer{Size: s.text.fontSize}
-	}
-	if s.text.useBasicFont {
+	if s.text.fontID == 1 {
 		return &BasicFontRenderer{}
 	}
+	if s.text.fontID == 2 {
+		return &TTFFontRenderer{Size: s.text.fontSize, Family: 2}
+	}
+	if s.text.fontID == 3 || s.text.useCFF {
+		return &TTFFontRenderer{Size: s.text.fontSize, Family: 3}
+	}
 	// Default to Chicago CFF (which currently redirects to TTF in our unified plan)
-	// when useBasicFont is explicitly set to false (e.g. via VFS SetFont 0).
 	return &CFFFontRenderer{Data: ChicagoCFF, TileSize: 16}
 }
 

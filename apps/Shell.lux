@@ -50,8 +50,8 @@ IMPORT EVENT
     ] [
         2 local@ EVENT::MOUSE_DOWN = [
             ( Check if in window )
-            1 local@ win_x@ >= 1 local@ win_x@ 800 + < AND
-            0 local@ win_y@ >= AND 0 local@ win_y@ 600 + < AND [
+            1 local@ win_x@ >= 1 local@ win_x@ 960 + < AND
+            0 local@ win_y@ >= AND 0 local@ win_y@ 720 + < AND [
                 1 dragging!
             ] ?
         ] [
@@ -145,8 +145,8 @@ IMPORT EVENT
     APP::draw-fd 0 0 APP::width APP::height 0x222222 DRAW::fill-rect
     
     ( 2. Window Frame )
-    APP::draw-fd win_x@ 1 - win_y@ 1 - 802 602 0x000000 DRAW::draw-rect
-    APP::draw-fd win_x@ win_y@ 800 600 0xFFFFFF DRAW::fill-rect
+    APP::draw-fd win_x@ 1 - win_y@ 1 - 962 722 0x000000 DRAW::draw-rect
+    APP::draw-fd win_x@ win_y@ 960 720 0xFFFFFF DRAW::fill-rect
     
     ( 3. Proxy Child Graphics )
     proxy-draw
