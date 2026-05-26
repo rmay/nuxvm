@@ -43,3 +43,35 @@ MODULE STR
     ] ?:
     2 unframe!
 ;
+
+( --- String Manipulation & Comparison --- )
+
+@strcpy ( src dest -- )
+    strcpy-safe
+;
+
+@strlen ( ptr -- len )
+    strlen
+;
+
+@streq ( s1 s2 -- bool )
+    2 frame! ( 0:s2 1:s1 )
+    1 local@ 0 local@ ( p1 p2 )
+    1 ( match )
+    3 frame! ( 0:match 1:p2 2:p1 )
+    [ 
+        2 local@ load-byte 0 >
+        1 local@ load-byte 0 >
+        OR
+        0 local@ AND
+    ] [
+        2 local@ load-byte 1 local@ load-byte = 0 = [
+            0 0 local!
+        ] ?
+        2 local@ 1 + 2 local!
+        1 local@ 1 + 1 local!
+    ] |:
+    0 local@
+    3 unframe!
+    2 unframe!
+;

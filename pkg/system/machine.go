@@ -98,17 +98,6 @@ func NewMachineSharedServices(program []byte, baseAddress uint32, memSize uint32
 // Tick executes the CPU until it yields or halts.
 // It returns whether the CPU is still running.
 func (m *Machine) Tick() (bool, error) {
-	if m.System.Services != nil && m.System.Services.HasModal() {
-		fb := m.System.getActiveFramebuffer()
-		w := m.System.getScreenWidth()
-		h := m.System.getScreenHeight()
-		m.System.Services.DrawModal(fb, w, h)
-		if win := m.System.Services.GetActiveWindow(); win != nil {
-			win.Dirty = true
-		}
-		return true, nil
-	}
-
 	if m.CPU.Halted() {
 		return false, nil
 	}
@@ -117,8 +106,10 @@ func (m *Machine) Tick() (bool, error) {
 	m.CPU.ClearYield()
 	m.System.yielded = false
 
-	// Run until yield or halt
-	for m.CPU.Running() && !m.CPU.Yielded() && !m.System.yielded {
+	// Run until yield, halt, or cycle limit (to keep UI responsive)
+	const cycleLimit = 100000
+	cycles := 0
+	for m.CPU.Running() && !m.CPU.Yielded() && !m.System.yielded && cycles < cycleLimit {
 		_, err := m.CPU.Step()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Machine: Tick error at PC=0x%X: %v\n", m.CPU.PC(), err)
@@ -153,6 +144,7 @@ func (m *Machine) Tick() (bool, error) {
 			fmt.Fprintln(os.Stderr)
 			return false, err
 		}
+		cycles++
 	}
 
 	// Tick children
@@ -255,21 +247,6 @@ func (m *Machine) QueueWheel(dx, dy float64) {
 // DrainInputEvents polls and dispatches all pending input events to the VM.
 // Called each frame before machine.Tick() to feed buffered input to the VM.
 func (m *Machine) DrainInputEvents() {
-	if m.System.Services != nil && m.System.Services.HasModal() {
-		for {
-			var evt *InputEvent
-			select {
-			case e := <-m.System.inputQueue:
-				evt = &e
-			default:
-				return
-			}
-			if !m.System.Services.UpdateModal(evt) {
-				return
-			}
-		}
-	}
-
 	var mouseChanged bool
 	mouseX, mouseY := m.System.mouseX, m.System.mouseY
 	mouseBtn := m.System.MouseButton()
@@ -285,6 +262,13 @@ func (m *Machine) DrainInputEvents() {
 
 		if evt == nil {
 			break
+		}
+
+		// If a modal is active, let it handle the event first.
+		// All events are consumed while a modal is active.
+		if m.System.Services != nil && m.System.Services.HasModal() {
+			m.System.Services.UpdateModal(evt)
+			continue
 		}
 
 		switch evt.Type {
@@ -309,9 +293,21 @@ func (m *Machine) DrainInputEvents() {
 			case m.System.mouseEvents <- *evt:
 			default:
 			}
-		case InputMouseDown, InputMouseUp:
+		case InputMouseDown:
 			mouseX, mouseY = evt.MouseX, evt.MouseY
-			mouseBtn = evt.MouseBtn
+			if evt.MouseBtn > 0 && evt.MouseBtn <= 32 {
+				mouseBtn |= (1 << (evt.MouseBtn - 1))
+			}
+			mouseChanged = true
+			select {
+			case m.System.mouseEvents <- *evt:
+			default:
+			}
+		case InputMouseUp:
+			mouseX, mouseY = evt.MouseX, evt.MouseY
+			if evt.MouseBtn > 0 && evt.MouseBtn <= 32 {
+				mouseBtn &= ^(1 << (evt.MouseBtn - 1))
+			}
 			mouseChanged = true
 			select {
 			case m.System.mouseEvents <- *evt:

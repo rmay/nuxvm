@@ -270,6 +270,12 @@ func (g *Game) Update() error {
 		g.machine.QueueMouseMove(int32(mx), int32(my))
 		g.lastMX, g.lastMY = mx, my
 	}
+
+	wx, wy := ebiten.Wheel()
+	if wx != 0 || wy != 0 {
+		g.machine.QueueWheel(wx, wy)
+	}
+
 	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
 		g.machine.QueueMouseButton(int32(mx), int32(my), 1, true)
 	}

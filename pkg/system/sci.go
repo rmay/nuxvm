@@ -1,6 +1,7 @@
 package system
 
 import (
+	"encoding/binary"
 	"fmt"
 	"image"
 	"os"
@@ -65,6 +66,12 @@ func (s *System) handleSCICommand() {
 		// arg1: fd
 		// arg2: target path pointer
 		s.handleSCIVFSBind(arg1, arg2)
+	case SCIVFSSeek:
+		s.handleSCIVFSSeek(arg1, arg2)
+	case SCIVFSStat:
+		s.handleSCIVFSStat(arg1)
+	case SCIVFSWriteChunk:
+		s.handleSCIVFSWriteChunk(arg1)
 
 	// Sound
 	case SCIPlaySound:
@@ -81,8 +88,6 @@ func (s *System) handleSCICommand() {
 		s.handleSCIDrawCFF(arg1, arg2)
 	case SCIDebugPrint:
 		s.handleSCIDebugPrint(arg1)
-	case SCIOpenFileDialog:
-		s.handleSCIOpenFileDialog(arg1, arg2)
 	case SCISetWindowTitle:
 		s.handleSCISetWindowTitle(arg1)
 	default:
@@ -99,11 +104,6 @@ func (s *System) handleSCISetWindowTitle(ptr int32) {
 	}
 	title := s.cstring(uint32(ptr))
 	s.Services.TitleHandler(title)
-}
-
-func (s *System) handleSCIOpenFileDialog(mode int32, bufPtr int32) {
-	// To be implemented in file_dialog.go
-	s.startFileDialog(mode, bufPtr)
 }
 
 // VFS Handlers
@@ -166,6 +166,49 @@ func (s *System) handleSCIVFSBind(fd int32, pathPtr int32) {
 		return
 	}
 	s.sciResult = 0
+}
+
+func (s *System) handleSCIVFSSeek(fd int32, offset int32) {
+	_, err := s.vfs.Seek(fd, int64(offset))
+	if err != nil {
+		s.sciResult = -1
+		return
+	}
+	s.sciResult = 0
+}
+
+func (s *System) handleSCIVFSStat(fd int32) {
+	size, err := s.vfs.Stat(fd)
+	if err != nil {
+		s.sciResult = -1
+		return
+	}
+	s.sciResult = int32(size)
+}
+
+func (s *System) handleSCIVFSWriteChunk(paramPtr int32) {
+	if paramPtr < 0 || int(paramPtr)+20 > len(s.memory) {
+		s.sciResult = -1
+		return
+	}
+	fd := int32(binary.LittleEndian.Uint32(s.memory[paramPtr : paramPtr+4]))
+	bufPtr := int32(binary.LittleEndian.Uint32(s.memory[paramPtr+4 : paramPtr+8]))
+	length := int32(binary.LittleEndian.Uint32(s.memory[paramPtr+8 : paramPtr+12]))
+	offset := int32(binary.LittleEndian.Uint32(s.memory[paramPtr+12 : paramPtr+16]))
+	origLen := int32(binary.LittleEndian.Uint32(s.memory[paramPtr+16 : paramPtr+20]))
+
+	if length <= 0 || bufPtr < 0 || int(bufPtr)+int(length) > len(s.memory) {
+		s.sciResult = -1
+		return
+	}
+
+	buf := s.memory[bufPtr : bufPtr+length]
+	n, err := s.vfs.WriteChunk(fd, buf, int64(offset), int64(origLen))
+	if err != nil {
+		s.sciResult = -1
+		return
+	}
+	s.sciResult = n
 }
 
 // handleSCIDebugPrint(ptr) prints a null-terminated string to host stderr
@@ -437,6 +480,11 @@ func (s *System) handleSCIPlaySound(soundID int32) {
 func (s *System) handleSCIYield() {
 	s.yielded = true
 	s.sciResult = 0
+	if s.Services != nil {
+		if win := s.Services.GetActiveWindow(); win != nil {
+			win.Dirty = true
+		}
+	}
 }
 
 // handleSCIGetPID() -> processID

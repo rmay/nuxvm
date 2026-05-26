@@ -122,6 +122,20 @@ MODULE DRAW
     2 unframe!
 ;
 
+@begin-frame ( fd -- )
+    1 frame!
+    6 BUF store-byte
+    0 local@ BUF 1 VFS::write drop
+    1 unframe!
+;
+
+@end-frame ( fd -- )
+    1 frame!
+    7 BUF store-byte
+    0 local@ BUF 1 VFS::write drop
+    1 unframe!
+;
+
 @draw-str ( fd x y ptr color scale -- )
     6 frame! ( 0:scale, 1:color, 2:ptr, 3:y, 4:x, 5:fd )
 
@@ -136,6 +150,13 @@ MODULE DRAW
 
     6 unframe!
 ;
+
+@draw-str-n ( fd x y ptr len color scale -- )
+    7 frame! ( 0:scale, 1:color, 2:len, 3:ptr, 4:y, 5:x, 6:fd )
+    6 local@ 5 local@ 4 local@ 3 local@ 2 local@ 1 local@ 0 local@ draw-string
+    7 unframe!
+;
+
 @draw-int ( fd x y n color scale -- )
     6 frame! ( 0:scale, 1:color, 2:n, 3:y, 4:x, 5:fd )
     2 local@ 0x530900 STR::int-to-str

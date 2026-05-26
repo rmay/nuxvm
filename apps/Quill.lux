@@ -20,15 +20,16 @@ IMPORT STR
 IMPORT UI
 IMPORT MENU
 
-( --- Window geometry (matches Shell's 960x720 child window) --- )
+( --- Window geometry --- )
 @WIN_W      960 ;
 @WIN_H      720 ;
-@BAR_H      20 ;
+@BAR_H      24 ;
+@SB_W       16 ;
 @MARGIN     16 ;
-@PANE_X     16 ;        ( MARGIN )
-@PANE_Y     36 ;        ( BAR_H + MARGIN )
-@PANE_H     668 ;       ( WIN_H - BAR_H - 2*MARGIN )
-@PANE_BOT   704 ;       ( PANE_Y + PANE_H )
+@PANE_X     16 ;
+@PANE_Y     40 ;
+@PANE_H     664 ;
+@VISIBLE_LINES 25 ;
 @LINE_H     26 ;
 @FONT_SIZE  18 ;
 @COLUMNS    80 ;
@@ -49,109 +50,187 @@ IMPORT MENU
 @PASTE_MAX      0x10000 ;
 
 ( --- State --- )
-( NOTE: must live OUTSIDE the FONT_DATA range or CFF load clobbers state. )
 @file-len   0x910010 ;
 @dirty      0x910014 ;
-@cursor     0x910018 ;   ( byte index into FILE_BUF )
-@last-key   0x910024 ;   ( unix seconds, for autosave debounce )
+@cursor     0x910018 ;
+@last-key   0x910024 ;
 @caret-x    0x910034 ;
 @caret-y    0x910038 ;
 @target-col 0x91003C ;
-@anchor     0x910040 ;   ( selection anchor; -1 = no selection )
-@drag       0x910044 ;   ( 1 if mouse-drag selection in progress )
+@anchor     0x910040 ;
+@drag       0x910044 ;
 @frame-count      0x910048 ;
-@last-click-frame 0x91004C ;
-@last-click-idx   0x910050 ;
 @char-w-val       0x910054 ;
 @hex-mode         0x910058 ;
+@scroll-y         0x91005C ;
 @HEX_LINE_BUF     0x910100 ;
+@SB_DATA          0x910200 ;
+@PATH_BUF         0x930000 ;
+@VFS_PATH_BUF     0x940000 ;
+@current-path-buf 0x950000 ;
+@CHUNK_PARAM_BLOCK 0x951000 ;
+@file-fd          0x910060 ;
+@file-offset      0x910064 ;
+@total-size       0x910068 ;
+@orig-chunk-len   0x91006C ;
+@CHUNK_SIZE       65536 ;
+@line-count       0x910070 ;
+@LINE_STARTS      0xA10000 ;
 
-( --- Menu Structure --- )
 @MB_ADDR        @MENU_DATA ;
 
-@menu-new ( -- )
-    0 file-len STOREI
-    0 cursor STOREI
-    0 dirty STOREI
-    -1 anchor STOREI
-    refresh
+( --- Font width --- )
+@char-w ( -- w ) char-w-val LOADI ;
+@PANE_W ( -- w ) char-w COLUMNS * ;
+
+( --- Line cache --- )
+@rebuild-lines ( -- )
+    0 0 0 0 4 frame! ( 0:idx 1:row 2:col 3:line-start )
+    0 LINE_STARTS STOREI
+    1 1 local! ( row = 1 )
+    [ 0 local@ file-len LOADI < ] [
+        FILE_BUF 0 local@ + load-byte 10 = [
+            0 2 local! ( col = 0 )
+            0 local@ 1 + 3 local! ( line-start = idx + 1 )
+            3 local@ 1 local@ 4 * LINE_STARTS + STOREI
+            1 local@ 1 + 1 local! ( row++ )
+        ] [
+            2 local@ 1 + 2 local! ( col++ )
+            2 local@ COLUMNS >= [
+                0 2 local! ( col = 0 )
+                0 local@ 1 + 3 local! ( line-start = idx + 1 )
+                3 local@ 1 local@ 4 * LINE_STARTS + STOREI
+                1 local@ 1 + 1 local! ( row++ )
+            ] ?
+        ] ?:
+        0 local@ 1 + 0 local! ( idx++ )
+    ] |:
+    1 local@ line-count STOREI
+    4 unframe!
 ;
 
-@menu-quit ( -- ) HALT ;
+( --- Lazy Loading Helpers --- )
 
-@menu-cut ( -- )
-    sel-active? [
-        snarf-selection
-        delete-selection
-        refresh
+( Construct /sys/file/<path> in VFS_PATH_BUF )
+@make-vfs-path ( path-ptr -- vfs-path-ptr )
+    dup
+    T"/sys/file/" VFS_PATH_BUF STR::strcpy
+    VFS_PATH_BUF T"/sys/file/" STR::strlen + STR::strcpy
+    VFS_PATH_BUF
+;
+
+( Calculate A * B / C safely )
+@mul-div ( A B C -- res )
+    3 frame! ( 0:C 1:B 2:A )
+    2 local@ 0 local@ / 1 local@ *
+    2 local@ 0 local@ MOD 1 local@ 4 / *
+    0 local@ 4 / dup 0 = [ drop 1 ] ? /
+    +
+    3 unframe!
+;
+
+( Calculate total lines )
+@get-total-lines ( -- total-lines )
+    hex-mode LOADI 1 = [
+        total-size LOADI 16 /
+    ] [
+        file-len LOADI 0 = [ 0 ] [
+            total-size LOADI file-len LOADI rc-from-idx drop file-len LOADI mul-div
+        ] ?:
+    ] ?:
+;
+
+( Calculate absolute scroll-y )
+@get-abs-scroll-y ( -- abs-scroll-y )
+    hex-mode LOADI 1 = [
+        file-offset LOADI 16 / scroll-y LOADI +
+    ] [
+        file-len LOADI 0 = [ 0 ] [
+            file-offset LOADI file-len LOADI rc-from-idx drop file-len LOADI mul-div
+            scroll-y LOADI +
+        ] ?:
+    ] ?:
+;
+
+@save-current-chunk ( -- )
+    file-fd LOADI 0 >= [
+        dirty LOADI 1 = [
+            ( Setup CMD_WRITE_CHUNK parameter block )
+            file-fd LOADI CHUNK_PARAM_BLOCK STOREI
+            FILE_BUF CHUNK_PARAM_BLOCK 4 + STOREI
+            file-len LOADI CHUNK_PARAM_BLOCK 8 + STOREI
+            file-offset LOADI CHUNK_PARAM_BLOCK 12 + STOREI
+            orig-chunk-len LOADI CHUNK_PARAM_BLOCK 16 + STOREI
+            
+            ( Write via VFS )
+            CHUNK_PARAM_BLOCK VFS::write-chunk drop
+            
+            ( Update total size by difference )
+            file-len LOADI orig-chunk-len LOADI - ( diff )
+            total-size LOADI + total-size STOREI
+            
+            ( Update orig-chunk-len )
+            file-len LOADI orig-chunk-len STOREI
+            0 dirty STOREI
+        ] ?
     ] ?
 ;
 
-@MI_FILE ( i -- label shortcut callback )
-    dup 0 = [ drop T"New"  0 [ menu-new ]  ] [
-    dup 1 = [ drop T"Save" 0 [ save-file ] ] [
-    dup 2 = [ drop T"Quit" 0 [ menu-quit ] ] [
-    drop 0 0 0 ] ?: ] ?: ] ?:
+@load-chunk-at ( abs-pos -- )
+    1 frame! ( 0:abs-pos )
+    file-fd LOADI 0 >= [
+        ( Write back current chunk if dirty )
+        dirty LOADI 1 = [ save-current-chunk ] ?
+        
+        ( Calculate chunk start offset: start = abs-pos - CHUNK_SIZE / 2 )
+        0 local@ CHUNK_SIZE 2 / - ( start )
+        
+        ( Boundary check: start < 0 )
+        dup 0 < [ drop 0 ] ?
+        
+        ( Boundary check: start + CHUNK_SIZE > total-size )
+        dup CHUNK_SIZE + total-size LOADI > [
+            drop total-size LOADI CHUNK_SIZE - 0 MAX
+        ] ?
+        
+        ( Seek to start )
+        dup
+        file-fd LOADI swap VFS::seek drop
+        
+        ( Read CHUNK_SIZE bytes into FILE_BUF )
+        dup
+        file-offset STOREI
+        
+        file-fd LOADI FILE_BUF CHUNK_SIZE VFS::read ( bytes-read )
+        dup file-len STOREI
+        dup orig-chunk-len STOREI
+        rebuild-lines
+        
+        ( Set cursor position relative to chunk )
+        0 local@ file-offset LOADI - cursor STOREI
+        
+        0 dirty STOREI
+    ] ?
+    1 unframe!
 ;
 
-@MN_FILE ( -- label items_quot count )
-    T"File" [ MI_FILE ] 3
+@check-lazy-load ( -- )
+    file-fd LOADI 0 >= [
+        cursor LOADI 8192 < [
+            file-offset LOADI 0 > [
+                cursor LOADI file-offset LOADI + load-chunk-at
+            ] ?
+        ] [
+            cursor LOADI file-len LOADI 8192 - > [
+                file-offset LOADI file-len LOADI + total-size LOADI < [
+                    cursor LOADI file-offset LOADI + load-chunk-at
+                ] ?
+            ] ?
+        ] ?:
+    ] ?
 ;
 
-@MI_EDIT ( i -- label shortcut callback )
-    dup 0 = [ drop T"Cut"   0 [ menu-cut ]        ] [
-    dup 1 = [ drop T"Snarf" 0 [ snarf-selection ] ] [
-    dup 2 = [ drop T"Paste" 0 [ paste-snarf ]     ] [
-    drop 0 0 0 ] ?: ] ?: ] ?:
-;
-
-@MN_EDIT ( -- label items_quot count )
-    T"Edit" [ MI_EDIT ] 3
-;
-
-@toggle-hex ( -- )
-    hex-mode LOADI 0 = [ 1 ] [ 0 ] ?: hex-mode STOREI
-    -1 anchor STOREI
-    refresh
-    cursor LOADI rc-from-idx swap drop target-col STOREI
-;
-
-@MI_VIEW ( i -- label shortcut callback )
-    dup 0 = [ drop T"Toggle Hex" 0 [ toggle-hex ] ] [
-    drop 0 0 0 ] ?:
-;
-
-@MN_VIEW ( -- label items_quot count )
-    T"View" [ MI_VIEW ] 1
-;
-
-@MENUS ( i -- menu_quot )
-    dup 0 = [ drop [ MN_FILE ] ] [
-    dup 1 = [ drop [ MN_EDIT ] ] [
-    dup 2 = [ drop [ MN_VIEW ] ] [
-    drop 0 ] ?: ] ?: ] ?:
-;
-
-@init-menus ( -- )
-    -1 MB_ADDR MENU::MB_ACTIVE + STOREI
-    -1 MB_ADDR MENU::MB_HOVER  + STOREI
-;
-
-( --- Font width lookup --- )
-( Using the fixed width of 'A' from /sys/font/widths after mono selection. )
-@char-w ( -- w )
-    char-w-val LOADI
-;
-
-@PANE_W ( -- w )
-    char-w COLUMNS *
-;
-
-@PANE_RIGHT ( -- x )
-    PANE_X PANE_W +
-;
-
-( --- Buffer manipulation --- )
+( --- Buffer Helpers --- )
 
 @insert-char ( ch -- )
     cursor LOADI FILE_BUF +
@@ -162,6 +241,24 @@ IMPORT MENU
     file-len LOADI 1 + file-len STOREI
     cursor LOADI 1 + cursor STOREI
     1 dirty STOREI
+    rebuild-lines
+;
+
+@insert-bytes ( src n -- )
+    2 frame! ( 0:n 1:src )
+    FILE_BUF cursor LOADI +                 ( src )
+    FILE_BUF cursor LOADI + 0 local@ +      ( dst )
+    file-len LOADI cursor LOADI -           ( count )
+    MEMORY::move-mem
+    1 local@                                 ( src )
+    FILE_BUF cursor LOADI +                  ( dst )
+    0 local@                                 ( count )
+    MEMORY::move-mem
+    file-len LOADI 0 local@ + file-len STOREI
+    cursor LOADI 0 local@ + cursor STOREI
+    1 dirty STOREI
+    rebuild-lines
+    2 unframe!
 ;
 
 @delete-char ( -- )
@@ -173,73 +270,88 @@ IMPORT MENU
         file-len LOADI 1 - file-len STOREI
         cursor LOADI 1 - cursor STOREI
         1 dirty STOREI
+        rebuild-lines
     ] ?
 ;
 
 @cursor-left ( -- )
     cursor LOADI 0 > [ cursor LOADI 1 - cursor STOREI ] ?
-    cursor LOADI rc-from-idx swap drop target-col STOREI
 ;
 
 @cursor-right ( -- )
     cursor LOADI file-len LOADI < [ cursor LOADI 1 + cursor STOREI ] ?
-    cursor LOADI rc-from-idx swap drop target-col STOREI
 ;
 
-( --- Selection (Plan9-style snarf range) --- )
+( --- Coordinate Mapping --- )
 
-@sel-clear ( -- )
-    -1 anchor STOREI
+@rc-from-idx ( idx -- r c )
+    hex-mode LOADI 1 = [
+        dup 16 / swap 16 MOD 3 * 6 +
+    ] [
+        0 0 0 rot 4 frame! ( 0:idx 1:r 2:found 3:target-idx )
+        line-count LOADI 1 - 1 local!
+        [ 2 local@ 0 = ] [
+            1 local@ 4 * LINE_STARTS + LOADI 3 local@ <= [
+                1 2 local!
+            ] [
+                1 local@ 1 - 1 local!
+            ] ?:
+        ] |:
+        1 local@
+        3 local@ 1 local@ 4 * LINE_STARTS + LOADI -
+        4 unframe!
+    ] ?:
 ;
+
+@idx-from-rc ( r c -- idx )
+    hex-mode LOADI 1 = [
+        swap 16 * swap 6 - 3 / 0 MAX 15 MIN +
+        dup file-len LOADI MIN
+    ] [
+        2 frame! ( 0:c 1:r )
+        1 local@ line-count LOADI 1 - MIN 0 MAX 1 local!
+        1 local@ 4 * LINE_STARTS + LOADI 0 local@ +
+        1 local@ 1 + line-count LOADI < [
+            1 local@ 1 + 4 * LINE_STARTS + LOADI 1 -
+            MIN
+        ] [
+            file-len LOADI MIN
+        ] ?:
+        2 unframe!
+    ] ?:
+;
+
+@find-index-by-xy ( tx ty -- idx )
+    PANE_Y - LINE_H 2 / + LINE_H / scroll-y LOADI +
+    swap PANE_X - char-w 2 / + char-w /
+    idx-from-rc
+;
+
+( --- Selection --- )
 
 @sel-active? ( -- flag )
-    anchor LOADI -1 = 0 =              ( anchor != -1 )
-    anchor LOADI cursor LOADI = 0 =    ( anchor != cursor )
-    AND
+    anchor LOADI -1 = 0 =
+    anchor LOADI cursor LOADI = 0 = AND
 ;
-
-@sel-lo ( -- idx )
-    cursor LOADI anchor LOADI MIN
-;
-
-@sel-hi ( -- idx )
-    cursor LOADI anchor LOADI MAX
-;
-
-@delete-range ( lo hi -- )
-    2 frame! ( 0:hi 1:lo )
-    FILE_BUF 0 local@ +                     ( src = FILE_BUF+hi )
-    FILE_BUF 1 local@ +                     ( dst = FILE_BUF+lo )
-    file-len LOADI 0 local@ -               ( count = file-len - hi )
-    MEMORY::move-mem
-    file-len LOADI 0 local@ - 1 local@ + file-len STOREI
-    1 local@ cursor STOREI
-    sel-clear
-    1 dirty STOREI
-    2 unframe!
-;
+@sel-lo ( -- idx ) cursor LOADI anchor LOADI MIN ;
+@sel-hi ( -- idx ) cursor LOADI anchor LOADI MAX ;
 
 @delete-selection ( -- )
-    sel-active? [ sel-lo sel-hi delete-range ] ?
+    sel-active? [
+        sel-lo sel-hi 2 frame! ( 0:hi 1:lo )
+        FILE_BUF 0 local@ + FILE_BUF 1 local@ + file-len LOADI 0 local@ - MEMORY::move-mem
+        file-len LOADI 0 local@ - 1 local@ + file-len STOREI
+        1 local@ cursor STOREI
+        -1 anchor STOREI 1 dirty STOREI
+        rebuild-lines
+        2 unframe!
+    ] ?
 ;
 
-@insert-bytes ( src n -- )
-    2 frame! ( 0:n 1:src )
-    ( shift FILE_BUF[cursor..file-len] right by n )
-    FILE_BUF cursor LOADI +                 ( src )
-    FILE_BUF cursor LOADI + 0 local@ +      ( dst )
-    file-len LOADI cursor LOADI -           ( count )
-    MEMORY::move-mem
-    ( copy src bytes into FILE_BUF[cursor..] )
-    1 local@                                 ( src )
-    FILE_BUF cursor LOADI +                  ( dst )
-    0 local@                                 ( count )
-    MEMORY::move-mem
-    file-len LOADI 0 local@ + file-len STOREI
-    cursor LOADI 0 local@ + cursor STOREI
-    1 dirty STOREI
-    2 unframe!
-;
+( --- Hex Helpers --- )
+@nibble-to-hex ( n -- ch ) dup 10 < [ 48 + ] [ 10 - 65 + ] ?: ;
+@byte-to-hex ( b ptr -- ) 2 frame! 1 local@ 4 SHR 15 AND nibble-to-hex 0 local@ store-byte 1 local@ 15 AND nibble-to-hex 0 local@ 1 + store-byte 2 unframe! ;
+@addr-to-hex ( a ptr -- ) 2 frame! 1 local@ 12 SHR 15 AND nibble-to-hex 0 local@ store-byte 1 local@ 8 SHR 15 AND nibble-to-hex 0 local@ 1 + store-byte 1 local@ 4 SHR 15 AND nibble-to-hex 0 local@ 2 + store-byte 1 local@ 15 AND nibble-to-hex 0 local@ 3 + store-byte 2 unframe! ;
 
 ( --- Rendering --- )
 
@@ -247,137 +359,212 @@ IMPORT MENU
     APP::draw-fd rot rot 2 LINE_H CLR_CARET DRAW::fill-rect
 ;
 
-( Emit a single DrawString for FILE_BUF chars in [start, end at pixel x, y.
-  No-op when start >= end so trailing flushes on empty lines are safe. )
 @flush-seg ( start end x y -- )
-    4 frame!   ( 0:y 1:x 2:end 3:start )
-    2 local@ 3 local@ -
-    dup 0 > [
-        APP::draw-fd
-        1 local@
-        0 local@
-        FILE_BUF 3 local@ +
-        4 PICK
-        CLR_TEXT
-        FONT_SIZE
-        DRAW::draw-string
-        drop
-    ] [ drop ] ?:
+    4 frame! ( 0:y 1:x 2:end 3:start )
+    2 local@ 3 local@ - dup 0 > [
+        APP::draw-fd 1 local@ 0 local@ FILE_BUF 3 local@ + 2 local@ 3 local@ - CLR_TEXT FONT_SIZE DRAW::draw-string
+    ] ?
+    drop ( len )
     4 unframe!
 ;
 
-@rc-from-idx ( idx -- r c )
-    hex-mode LOADI 1 = [
-        dup 16 / swap 16 MOD 3 * 6 +
-    ] [
-        0 0 0 rot 4 frame! ( 0:i 1:r 2:c 3:target-idx )
-        [ 0 local@ 3 local@ < ] [
-            FILE_BUF 0 local@ + load-byte
-            dup 10 = [
-                drop
-                1 local@ 1 + 1 local!
-                0 2 local!
-            ] [
-                drop
-                2 local@ 1 + 2 local!
-                2 local@ COLUMNS >= [
-                    1 local@ 1 + 1 local!
-                    0 2 local!
-                ] ?
+@draw-selection ( -- )
+    sel-active? [
+        sel-lo dup rc-from-idx 3 frame! ( 0:c 1:r 2:i )
+        [ 2 local@ sel-hi < ] [
+            FILE_BUF 2 local@ + load-byte
+            1 local@ scroll-y LOADI - ( rel_r )
+            dup 0 >= OVER VISIBLE_LINES < AND [
+                APP::draw-fd 0 local@ char-w * PANE_X + swap LINE_H * PANE_Y + char-w LINE_H CLR_SEL DRAW::fill-rect
+            ] [ drop ] ?:
+            dup 10 = [ drop 1 local@ 1 + 1 local! 0 0 local! ] [
+                drop 0 local@ 1 + 0 local!
+                0 local@ COLUMNS >= [ 1 local@ 1 + 1 local! 0 0 local! ] ?
             ] ?:
+            2 local@ 1 + 2 local!
+        ] |: 3 unframe!
+    ] ?
+;
+
+@layout-and-render ( -- )
+    hex-mode LOADI 1 = [
+        scroll-y LOADI 16 * ( start_idx )
+        [ dup file-len LOADI <= ] [
+            dup 16 / scroll-y LOADI - ( rel_r )
+            dup 0 >= OVER VISIBLE_LINES < AND [
+                0 0 3 frame! ( 0:i 1:idx 2:rel_r )
+                0 [ dup 72 < ] [ dup 32 HEX_LINE_BUF rot + store-byte 1 + ] |: drop
+                1 local@ HEX_LINE_BUF addr-to-hex
+                [ 0 local@ 16 < 1 local@ 0 local@ + file-len LOADI <= AND ] [
+                    FILE_BUF 1 local@ 0 local@ + + load-byte
+                    dup 4 SHR 15 AND dup 10 < [ 48 + ] [ 10 - 65 + ] ?: HEX_LINE_BUF 6 + 0 local@ 3 * + store-byte
+                    dup 15 AND dup 10 < [ 48 + ] [ 10 - 65 + ] ?: HEX_LINE_BUF 6 + 0 local@ 3 * + 1 + store-byte
+                    dup 32 >= OVER 126 <= AND [ ] [ drop 46 ] ?: HEX_LINE_BUF 56 + 0 local@ + store-byte
+                    0 local@ 1 + 0 local!
+                ] |:
+                APP::draw-fd PANE_X 2 local@ LINE_H * PANE_Y + HEX_LINE_BUF 72 CLR_TEXT FONT_SIZE DRAW::draw-string
+                3 unframe!
+            ] [
+                VISIBLE_LINES >= [ drop file-len LOADI 1 + ] [ drop ] ?:
+            ] ?:
+            16 +
+        ] |:
+        drop ( start_idx )
+        cursor LOADI rc-from-idx scroll-y LOADI - ( rel_r cc )
+        dup 0 >= OVER VISIBLE_LINES < AND [
+            char-w * PANE_X + swap LINE_H * PANE_Y + draw-caret
+        ] [ drop drop ] ?:
+    ] [
+        0 0 0 0 4 frame! ( 0:idx 1:r 2:c 3:seg-start )
+        scroll-y LOADI line-count LOADI 1 - MIN 0 MAX
+        dup 1 local!
+        4 * LINE_STARTS + LOADI
+        dup 0 local!
+        3 local!
+        0 2 local!
+        [ 0 local@ file-len LOADI <= ] [
+            0 local@ cursor LOADI = [ 2 local@ char-w * PANE_X + caret-x STOREI 1 local@ scroll-y LOADI - LINE_H * PANE_Y + caret-y STOREI ] ?
+            0 local@ file-len LOADI < [
+                FILE_BUF 0 local@ + load-byte dup 10 = [
+                    drop 1 local@ scroll-y LOADI - ( rel_r ) dup 0 >= OVER VISIBLE_LINES < AND [
+                        drop 3 local@ 0 local@ PANE_X 1 local@ scroll-y LOADI - LINE_H * PANE_Y + flush-seg
+                    ] [ drop ] ?:
+                    1 local@ 1 + 1 local! 0 2 local! 0 local@ 1 + 3 local!
+                ] [
+                    drop 2 local@ 1 + 2 local! 2 local@ COLUMNS >= [
+                        1 local@ scroll-y LOADI - ( rel_r ) dup 0 >= OVER VISIBLE_LINES < AND [
+                            drop 3 local@ 0 local@ 1 + PANE_X 1 local@ scroll-y LOADI - LINE_H * PANE_Y + flush-seg
+                        ] [ drop ] ?:
+                        1 local@ 1 + 1 local! 0 2 local! 0 local@ 1 + 3 local!
+                    ] ?
+                ] ?:
+            ] ?
+            1 local@ scroll-y LOADI - VISIBLE_LINES >= [ file-len LOADI 0 local! ] ?
             0 local@ 1 + 0 local!
         ] |:
-        1 local@ 2 local@
+        1 local@ scroll-y LOADI - ( rel_r ) dup 0 >= OVER VISIBLE_LINES < AND [
+            drop 3 local@ file-len LOADI PANE_X 1 local@ scroll-y LOADI - LINE_H * PANE_Y + flush-seg
+        ] [ drop ] ?:
+        cursor LOADI rc-from-idx scroll-y LOADI - dup 0 >= OVER VISIBLE_LINES < AND [
+            drop drop caret-x LOADI caret-y LOADI draw-caret
+        ] [ drop drop ] ?:
         4 unframe!
     ] ?:
 ;
 
-@idx-from-rc ( r c -- idx )
-    hex-mode LOADI 1 = [
-        swap 16 * swap ( r*16 c )
-        6 - 3 / ( r*16 (c-6)/3 )
-        dup 0 < [ drop 0 ] ?
-        dup 15 > [ drop 15 ] ?
-        +
-        dup file-len LOADI > [ drop file-len LOADI ] ?
-    ] [
-        swap 0 0 0 0 6 frame! ( 0:found 1:curr-c 2:curr-r 3:i 4:target-r 5:target-c )
-        [ 0 local@ 0 = [ 3 local@ file-len LOADI < ] [ 0 ] ?: ] [
-            ( Are we at the target row? )
-            2 local@ 4 local@ = [
-                ( Are we at or past the target col? )
-                1 local@ 5 local@ >= [ 1 0 local! ] ?
-                ( If the line ends here, we stop )
-                FILE_BUF 3 local@ + load-byte 10 = [ 1 0 local! ] ?
-            ] ?
+@update-scrollbar ( -- )
+    SB_DATA WIN_W SB_W - PANE_Y SB_W PANE_H 0
+    get-total-lines VISIBLE_LINES - 0 MAX
+    get-abs-scroll-y 32 UI::scrollbar-init
+;
 
-            0 local@ 0 = [
-                FILE_BUF 3 local@ + load-byte
-                dup 10 = [
-                    drop
-                    2 local@ 1 + 2 local!
-                    0 1 local!
-                ] [
-                    drop
-                    1 local@ 1 + 1 local!
-                    1 local@ COLUMNS >= [
-                        2 local@ 1 + 2 local!
-                        0 1 local!
-                    ] ?
-                ] ?:
-                3 local@ 1 + 3 local!
-            ] ?
-        ] |:
-        3 local@
-        6 unframe!
+@refresh-text-pane ( -- )
+    APP::draw-fd DRAW::begin-frame
+    APP::draw-fd PANE_X PANE_Y PANE_W PANE_H CLR_BG DRAW::fill-rect
+    update-scrollbar APP::draw-fd SB_DATA UI::scrollbar-draw
+    draw-selection layout-and-render
+    APP::draw-fd DRAW::end-frame
+;
+
+@refresh ( -- )
+    APP::draw-fd DRAW::begin-frame
+    APP::draw-fd 0 0 WIN_W WIN_H CLR_BG DRAW::fill-rect
+    APP::draw-fd MARGIN 1 - PANE_Y 1 - PANE_W 2 + PANE_H 2 + CLR_FRAME DRAW::draw-rect
+    update-scrollbar APP::draw-fd SB_DATA UI::scrollbar-draw
+    draw-selection layout-and-render
+    APP::draw-fd MB_ADDR WIN_W [ MENUS ] 3 MENU::menu-bar-draw
+    APP::draw-fd DRAW::end-frame
+;
+
+@ensure-visible ( -- )
+    cursor LOADI rc-from-idx drop ( r )
+    dup scroll-y LOADI < [ scroll-y STOREI ] [
+        dup scroll-y LOADI VISIBLE_LINES + >= [ VISIBLE_LINES - 1 + scroll-y STOREI ] [ drop ] ?:
     ] ?:
 ;
 
-( Simulate layout to find the character at visual row/col )
-@find-index-by-xy ( tx ty -- idx )
-    PANE_Y - LINE_H 2 / + LINE_H / ( tr )
-    swap PANE_X - char-w 2 / + char-w / ( tc )
-    idx-from-rc
-;
+( --- Interaction --- )
 
-( Paint the selection highlight under the text. Walks the buffer
-  using the same wrap/advance rules as layout-and-render. )
-@draw-selection ( -- )
-    sel-active? [
-        sel-lo
-        sel-lo rc-from-idx ( r c )
-        3 frame! ( 0:c 1:r 2:i )
-        [ 2 local@ sel-hi < ] [
-            FILE_BUF 2 local@ + load-byte
-            dup 10 = [
-                drop
-                APP::draw-fd
-                0 local@ char-w * PANE_X +
-                1 local@ LINE_H * PANE_Y +
-                char-w LINE_H CLR_SEL DRAW::fill-rect
-                
-                1 local@ 1 + 1 local!
-                0 0 local!
-            ] [
-                drop
-                APP::draw-fd
-                0 local@ char-w * PANE_X +
-                1 local@ LINE_H * PANE_Y +
-                char-w LINE_H CLR_SEL DRAW::fill-rect
-                
-                0 local@ 1 + 0 local!
-                0 local@ COLUMNS >= [
-                    1 local@ 1 + 1 local!
-                    0 0 local!
-                ] ?
+@on-mouse ( mpkt -- )
+    MB_ADDR MENU::MB_ACTIVE + LOADI ( old-active )
+    MB_ADDR MENU::MB_HOVER + LOADI  ( old-hover )
+    get-abs-scroll-y                ( old-abs-sy )
+    cursor LOADI                    ( old-c )
+    4 frame! ( 0:old-c 1:old-abs-sy 2:old-hover 3:old-active )
+
+    ( Pass to menu bar )
+    MB_ADDR OVER EVENT::mouse-x 2 PICK EVENT::mouse-y 3 PICK EVENT::mouse-type EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: [ MENUS ] 3 MENU::menu-bar-update
+    
+    ( Pass to scrollbar if menu not active )
+    MB_ADDR MENU::MB_ACTIVE + LOADI -1 = [
+        SB_DATA OVER EVENT::mouse-x 2 PICK EVENT::mouse-y 3 PICK EVENT::mouse-btn UI::scrollbar-update ( new-abs-scroll-y )
+        dup 1 local@ = 0 = [
+            ( Jump to new absolute scroll position )
+            get-total-lines dup 0 = [ drop 0 ] [
+                swap total-size LOADI swap mul-div
             ] ?:
-            2 local@ 1 + 2 local!
-        ] |:
-        3 unframe!
+            load-chunk-at
+            
+            file-len LOADI 0 = [ 0 ] [
+                file-offset LOADI file-len LOADI rc-from-idx drop file-len LOADI mul-div
+            ] ?:
+            - scroll-y STOREI
+        ] [ drop ] ?:
     ] ?
+
+    ( Text interaction )
+    MB_ADDR MENU::MB_ACTIVE + LOADI -1 = [
+        dup EVENT::mouse-y PANE_Y >= [
+            dup EVENT::mouse-type EVENT::MOUSE_DOWN = [
+                dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy cursor STOREI
+                check-lazy-load
+            ] ?
+        ] ?
+    ] ?
+    
+    ensure-visible
+
+    ( Conditional Refresh )
+    cursor LOADI 0 local@ = 0 = ( cursor changed? )
+    get-abs-scroll-y 1 local@ = 0 = ( scroll changed? )
+    OR ( either changed? )
+    MB_ADDR MENU::MB_ACTIVE + LOADI 3 local@ = 0 = ( active menu changed? )
+    OR ( any of above changed? )
+    [
+        refresh
+    ] [
+        ( Otherwise, if only hover changed -> draw menu only )
+        MB_ADDR MENU::MB_HOVER + LOADI 2 local@ = 0 = [
+            APP::draw-fd MB_ADDR WIN_W [ MENUS ] 3 MENU::menu-bar-draw
+        ] ?
+    ] ?:
+    4 unframe!
+    drop
 ;
 
-( --- Snarf (system clipboard) --- )
+@on-kbd ( kpkt -- )
+    dup EVENT::kbd-type EVENT::KEY_DOWN = [
+        dup EVENT::kbd-key
+        dup EVENT::KEY_BACKSPACE = [ drop delete-char ] [
+            dup STR::printable? [ insert-char ] [
+                dup EVENT::KEY_UP_ARROW = [ drop cursor LOADI rc-from-idx drop 1 - 0 MAX target-col LOADI idx-from-rc cursor STOREI ] [
+                    dup EVENT::KEY_DOWN_ARROW = [ drop cursor LOADI rc-from-idx drop 1 + target-col LOADI idx-from-rc cursor STOREI ] [
+                        dup EVENT::KEY_LEFT_ARROW = [ drop cursor-left ] [
+                            dup EVENT::KEY_RIGHT_ARROW = [ drop cursor-right ] [
+                                drop
+                            ] ?:
+                        ] ?:
+                    ] ?:
+                ] ?:
+            ] ?:
+        ] ?:
+        check-lazy-load
+        ensure-visible refresh-text-pane
+        cursor LOADI rc-from-idx swap drop target-col STOREI
+    ] ? drop
+;
+
+( --- Snarf & File I/O --- )
 
 @snarf-selection ( -- )
     sel-active? [
@@ -398,429 +585,144 @@ IMPORT MENU
         dup 0 > [
             PASTE_BUF swap insert-bytes
         ] [ drop ] ?:
-        refresh
+        ensure-visible refresh-text-pane
         cursor LOADI rc-from-idx swap drop target-col STOREI
     ] [ drop ] ?:
 ;
 
-( --- Hex Formatting --- )
-
-@nibble-to-hex ( n -- ch )
-    dup 10 < [ 48 + ] [ 10 - 65 + ] ?:
-;
-
-@byte-to-hex ( byte buf -- )
-    2 frame!
-    1 local@ 4 SHR 15 AND nibble-to-hex 0 local@ store-byte
-    1 local@ 15 AND nibble-to-hex 0 local@ 1 + store-byte
-    2 unframe!
-;
-
-@addr-to-hex ( addr buf -- )
-    2 frame!
-    1 local@ 12 SHR 15 AND nibble-to-hex 0 local@ store-byte
-    1 local@ 8 SHR 15 AND nibble-to-hex 0 local@ 1 + store-byte
-    1 local@ 4 SHR 15 AND nibble-to-hex 0 local@ 2 + store-byte
-    1 local@ 15 AND nibble-to-hex 0 local@ 3 + store-byte
-    2 unframe!
-;
-
-@layout-and-render ( -- )
-    hex-mode LOADI 1 = [
-        0 ( start_idx )
-        [ dup file-len LOADI <= ] [
-            dup 0 2 frame! ( 0:i 1:start_idx )
-            
-            ( init buffer with spaces )
-            0 [ dup 72 < ] [ dup 32 HEX_LINE_BUF rot + store-byte 1 + ] |: drop
-            
-            1 local@ HEX_LINE_BUF addr-to-hex
-            
-            [ 0 local@ 16 < 1 local@ 0 local@ + file-len LOADI <= AND ] [
-                1 local@ 0 local@ + file-len LOADI = [
-                    ( EOF marker )
-                ] [
-                    FILE_BUF 1 local@ 0 local@ + + load-byte
-                    ( hex )
-                    dup HEX_LINE_BUF 6 + 0 local@ 3 * + byte-to-hex
-                    
-                    ( ascii )
-                    dup 32 >= OVER 126 <= AND [ ] [ drop 46 ] ?:
-                    HEX_LINE_BUF 56 + 0 local@ + store-byte
-                ] ?:
-                
-                0 local@ 1 + 0 local!
-            ] |:
-            
-            APP::draw-fd
-            PANE_X
-            1 local@ 16 / LINE_H * PANE_Y +
-            HEX_LINE_BUF
-            72
-            CLR_TEXT
-            FONT_SIZE
-            DRAW::draw-string
-            
-            2 unframe!
-            16 +
-        ] |:
-        
-        ( draw caret )
-        cursor LOADI rc-from-idx ( r c )
-        char-w * PANE_X + swap LINE_H * PANE_Y + caret-y STOREI caret-x STOREI
-        caret-x LOADI caret-y LOADI draw-caret
-    ] [
-        0 0 0 0 4 frame! ( 0:i 1:r 2:c 3:seg-start )
-        [ 0 local@ file-len LOADI <= ] [
-            ( Capture caret position )
-            0 local@ cursor LOADI = [
-                2 local@ char-w * PANE_X + caret-x STOREI
-                1 local@ LINE_H * PANE_Y + caret-y STOREI
-            ] ?
-
-            ( Advance )
-            0 local@ file-len LOADI < [
-                FILE_BUF 0 local@ + load-byte
-                dup 10 = [
-                    drop
-                    3 local@ 0 local@
-                    PANE_X
-                    1 local@ LINE_H * PANE_Y +
-                    flush-seg
-                    1 local@ 1 + 1 local!
-                    0 2 local!
-                    0 local@ 1 + 3 local!
-                ] [
-                    drop
-                    2 local@ 1 + 2 local!
-                    2 local@ COLUMNS >= [
-                        3 local@ 0 local@ 1 +
-                        PANE_X
-                        1 local@ LINE_H * PANE_Y +
-                        flush-seg
-                        1 local@ 1 + 1 local!
-                        0 2 local!
-                        0 local@ 1 + 3 local!
-                    ] ?
-                ] ?:
-            ] ?
-            0 local@ 1 + 0 local!
-        ] |:
-
-        ( Flush the final run, then draw the caret on top. )
-        3 local@ file-len LOADI PANE_X 1 local@ LINE_H * PANE_Y + flush-seg
-        caret-x LOADI caret-y LOADI draw-caret
-
-        4 unframe!
-    ] ?:
-;
-
-@refresh ( -- )
-    APP::draw-fd 0 0 WIN_W WIN_H CLR_BG DRAW::fill-rect
-
-    ( 1px inner frame at margin - 1 )
-    APP::draw-fd MARGIN 1 - PANE_Y 1 - PANE_W 2 + PANE_H 2 + CLR_FRAME DRAW::draw-rect
-    draw-selection
-    layout-and-render
-
-    APP::draw-fd MB_ADDR WIN_W [ MENUS ] 3 MENU::menu-bar-draw
-;
-
-( --- File I/O --- )
-
 @save-file ( -- )
-    T"manuscript.quill" FILE::name!
-    FILE_BUF FILE::buf!
-    file-len LOADI FILE::write drop
+    file-fd LOADI 0 < [
+        @current-path-buf make-vfs-path 2 VFS::open-mode ( fd )
+        dup 0 >= [
+            file-fd STOREI
+            file-len LOADI total-size STOREI
+            file-len LOADI orig-chunk-len STOREI
+        ] [ drop ] ?:
+    ] ?
+    save-current-chunk
     0 dirty STOREI
 ;
 
-( --- Keyboard --- )
+@load-file ( -- )
+    refresh
+    T"/sys/dialog" VFS::open ( fd )
+    dup 0 < [ drop refresh ] [
+        dup T"open" 4 VFS::write drop
 
-@handle-key-core ( keycode -- )
-    dup EVENT::KEY_BACKSPACE = [
-        drop delete-char refresh
-        cursor LOADI rc-from-idx swap drop target-col STOREI
-    ] [
-        dup EVENT::KEY_TAB = [
-            drop hex-mode LOADI 0 = [
-                32 insert-char 32 insert-char 32 insert-char 32 insert-char refresh
-                cursor LOADI rc-from-idx swap drop target-col STOREI
-            ] ?
+        ( Poll for result, storing length )
+        0 ( len )
+        [ dup 0 <= ] [
+            drop (the 0 len)
+            dup PATH_BUF 1024 VFS::read ( fd len )
+            dup 0 <= [ VFS::yield drop ] ?
+        ] |:
+        ( fd len )
+        
+        ( Null terminate )
+        over over PATH_BUF + 0 swap store-byte drop ( fd len )
+        
+        ( Close dialog )
+        swap VFS::close drop ( len )
+
+        PATH_BUF T"cancel" STR::streq [
+            drop refresh
         ] [
-            dup EVENT::KEY_ENTER = [
-                drop hex-mode LOADI 0 = [
-                    10 insert-char refresh
-                    cursor LOADI rc-from-idx swap drop target-col STOREI
-                ] ?
-            ] [
-                dup EVENT::KEY_UP_ARROW = [
-                    drop 
-                    cursor LOADI rc-from-idx ( r c )
-                    drop 1 - ( r-1 )
-                    dup 0 < [ drop 0 ] ?
-                    target-col LOADI
-                    idx-from-rc cursor STOREI refresh
-                ] [
-                    dup EVENT::KEY_DOWN_ARROW = [
-                        drop 
-                        cursor LOADI rc-from-idx ( r c )
-                        drop 1 + ( r+1 )
-                        target-col LOADI
-                        idx-from-rc cursor STOREI refresh
-                    ] [
-                        dup EVENT::KEY_LEFT_ARROW = [
-                            drop cursor-left refresh
-                        ] [
-                            dup EVENT::KEY_RIGHT_ARROW = [
-                                drop cursor-right refresh
-                            ] [
-                                dup STR::printable? [
-                                    hex-mode LOADI 1 = [
-                                        ( Hex typing: shift nibbles into current byte )
-                                        dup 48 >= OVER 57 <= AND OVER 65 >= 2 PICK 70 <= AND OR OVER 97 >= 2 PICK 102 <= AND OR [
-                                            dup 97 >= [ 87 - ] [ dup 65 >= [ 55 - ] [ 48 - ] ?: ] ?: ( val )
-                                            cursor LOADI file-len LOADI = [
-                                                0 insert-char
-                                                cursor LOADI 1 - cursor STOREI
-                                            ] ?
-                                            FILE_BUF cursor LOADI + load-byte 4 LSHIFT 255 AND OVER OR
-                                            FILE_BUF cursor LOADI + store-byte
-                                            1 dirty STOREI
-                                            drop
-                                        ] [ drop ] ?:
-                                        refresh
-                                    ] [
-                                        insert-char refresh
-                                        cursor LOADI rc-from-idx swap drop target-col STOREI
-                                    ] ?:
-                                ] [
-                                    drop
-                                ] ?:
-                            ] ?:
-                        ] ?:
-                    ] ?:
-                ] ?:
-            ] ?:
-        ] ?:
-    ] ?:
-;
-
-( Non-Cmd keyboard handling: Shift+arrow extension, selection-replace
-  on edit keys, then dispatch to handle-key-core unless the key was
-  fully handled here (e.g. backspace on a live selection). )
-@handle-key-normal ( keycode mods -- )
-    2 frame! ( 0:mods 1:keycode )
-    0   ( handled flag: 0 = pass to core, 1 = consumed here )
-
-    ( --- Arrow keys: shift extends selection, plain clears it --- )
-    1 local@ EVENT::KEY_LEFT_ARROW =
-    1 local@ EVENT::KEY_RIGHT_ARROW = OR
-    1 local@ EVENT::KEY_UP_ARROW    = OR
-    1 local@ EVENT::KEY_DOWN_ARROW  = OR [
-        0 local@ EVENT::MOD_SHIFT AND 0 = 0 = [
-            anchor LOADI -1 = [ cursor LOADI anchor STOREI ] ?
-        ] [
-            sel-clear
-        ] ?:
-    ] ?
-
-    ( --- Edit keys on a live selection: replace the range --- )
-    sel-active? [
-        1 local@ EVENT::KEY_BACKSPACE = [
-            delete-selection refresh
-            cursor LOADI rc-from-idx swap drop target-col STOREI
-            drop 1                          ( mark handled )
-        ] [
-            1 local@ EVENT::KEY_ENTER = [ delete-selection ] ?
-            1 local@ EVENT::KEY_TAB   = [ delete-selection ] ?
-            1 local@ STR::printable?    [ delete-selection ] ?
-        ] ?:
-    ] ?
-
-    ( If not handled, dispatch to the per-key core )
-    0 = [ 1 local@ handle-key-core ] ?
-
-    2 unframe!
-;
-
-( Top-level keyboard entry. Cmd shortcuts are dispatched here, before
-  any frame is opened, so quotation EXITs cannot leave dangling frame
-  state in the rest of the word. )
-@handle-key ( keycode mods -- )
-    dup EVENT::MOD_CMD AND 0 = 0 = [
-        drop                                 ( drop mods; keycode on top )
-        dup 99 = [
-            drop snarf-selection
-        ] [
-            dup 118 = [
-                drop paste-snarf
-            ] [
-                dup 120 = [
-                    drop snarf-selection delete-selection refresh
-                    cursor LOADI rc-from-idx swap drop target-col STOREI
-                ] [
-                    drop                     ( unknown Cmd combo: ignore )
-                ] ?:
-            ] ?:
-        ] ?:
-    ] [
-        handle-key-normal
-    ] ?:
-;
-
-@on-kbd ( kpkt -- )
-    dup EVENT::kbd-type EVENT::KEY_DOWN = [
-        dup EVENT::kbd-key
-        OVER EVENT::kbd-mods
-        TIME::unix@ last-key STOREI
-        handle-key
-    ] ?
-    drop
-;
-
-( --- Word Boundary Helpers --- )
-
-@is-space? ( ch -- bool )
-    dup 32 = OVER 10 = OR OVER 9 = OR swap drop
-;
-
-@select-word ( -- )
-    cursor LOADI dup 2 frame! ( 0:hi 1:lo )
-    
-    ( Walk left )
-    [ 
-        1 local@ 0 > [
-            FILE_BUF 1 local@ 1 - + load-byte is-space? 0 =
-        ] [ 0 ] ?:
-    ] [
-        1 local@ 1 - 1 local!
-    ] |:
-    
-    ( Walk right )
-    [ 
-        0 local@ file-len LOADI < [
-            FILE_BUF 0 local@ + load-byte is-space? 0 =
-        ] [ 0 ] ?:
-    ] [
-        0 local@ 1 + 0 local!
-    ] |:
-    
-    1 local@ anchor STOREI
-    0 local@ cursor STOREI
-    
-    2 unframe!
-;
-
-( Drag-selection inside the text pane. Mouse down (button 1) sets cursor
-  and anchor to the clicked character; mouse move while button is held
-  extends by moving the cursor only. Mouse up ends the drag. The menu
-  bar still gets first crack at the event. )
-@on-mouse ( mpkt -- )
-    ( Capture menu state before update )
-    MB_ADDR MENU::MB_ACTIVE + LOADI -1 > 1 frame! ( 0:menu-was-open )
-
-    ( Pass to menu bar first )
-    MB_ADDR
-    OVER EVENT::mouse-x
-    2 PICK EVENT::mouse-y
-    3 PICK EVENT::mouse-type EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?:
-    [ MENUS ] 3
-    MENU::menu-bar-update
-
-    ( Text-pane drag selection. Only honor events in the editable region. )
-    0 local@ 0 = [
-        dup EVENT::mouse-y PANE_Y >= [
-            dup EVENT::mouse-type EVENT::MOUSE_DOWN = [
-                dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy ( idx )
+            ( Load file )
+            drop ( len )
+            file-fd LOADI 0 >= [ file-fd LOADI VFS::close drop ] ?
+            
+            PATH_BUF @current-path-buf STR::strcpy
+            
+            @current-path-buf make-vfs-path 0 VFS::open-mode file-fd STOREI
+            file-fd LOADI 0 >= [
+                file-fd LOADI VFS::stat total-size STOREI
+                0 file-offset STOREI
+                file-fd LOADI FILE_BUF CHUNK_SIZE VFS::read
+                dup file-len STOREI
+                dup orig-chunk-len STOREI
                 
-                ( Check for double-click )
-                frame-count LOADI last-click-frame LOADI - 30 <=
-                OVER last-click-idx LOADI = AND [
-                    dup cursor STOREI
-                    select-word
-                    -1 last-click-idx STOREI ( Reset to prevent triple-click doing it again immediately )
-                ] [
-                    dup cursor STOREI
-                    dup anchor STOREI
-                    frame-count LOADI last-click-frame STOREI
-                    dup last-click-idx STOREI
-                    1 drag STOREI
-                ] ?:
-                drop
-            ] ?
-            dup EVENT::mouse-type EVENT::MOUSE_MOVE = drag LOADI 1 = AND [
-                dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy
-                cursor STOREI
-            ] ?
-            dup EVENT::mouse-type EVENT::MOUSE_UP = [
-                0 drag STOREI
-                cursor LOADI anchor LOADI = [
-                    -1 anchor STOREI
-                ] ?
-            ] ?
-        ] ?
-    ] ?
+                0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI
+                rebuild-lines
+            ] [
+                0 total-size STOREI 0 file-len STOREI 0 orig-chunk-len STOREI -1 file-fd STOREI
+                rebuild-lines
+            ] ?:
+            refresh
+        ] ?:
+    ] ?:
+;
 
+( --- Menus --- )
+@menu-new ( -- )
+    file-fd LOADI 0 >= [ file-fd LOADI VFS::close drop -1 file-fd STOREI ] ?
+    0 file-len STOREI 0 cursor STOREI -1 anchor STOREI 0 file-offset STOREI 0 total-size STOREI 0 orig-chunk-len STOREI
+    T"new.quill" @current-path-buf STR::strcpy
+    rebuild-lines
+    refresh
+;
+@menu-quit ( -- ) HALT ;
+@menu-cut ( -- ) sel-active? [ snarf-selection delete-selection refresh ] ? ;
+
+@MI_FILE ( i -- l s c )
+    dup 0 = [ drop T"New"  0 [ menu-new ]  ] [
+    dup 1 = [ drop T"Save" 0 [ save-file ] ] [
+    dup 2 = [ drop T"Load" 0 [ load-file ] ] [
+    dup 3 = [ drop T"Quit" 0 [ menu-quit ] ] [
+    drop 0 0 0 ] ?: ] ?: ] ?: ] ?:
+;
+@MN_FILE ( -- l q c ) T"File" [ MI_FILE ] 4 ;
+
+@MI_EDIT ( i -- l s c )
+    dup 0 = [ drop T"Cut"   0 [ menu-cut ]        ] [
+    dup 1 = [ drop T"Snarf" 0 [ snarf-selection ] ] [
+    dup 2 = [ drop T"Paste" 0 [ paste-snarf ]     ] [
+    drop 0 0 0 ] ?: ] ?: ] ?:
+;
+@MN_EDIT ( -- l q c ) T"Edit" [ MI_EDIT ] 3 ;
+
+@toggle-hex ( -- )
+    hex-mode LOADI 0 = [ 1 ] [ 0 ] ?: hex-mode STOREI
+    -1 anchor STOREI
     refresh
     cursor LOADI rc-from-idx swap drop target-col STOREI
-    drop
-    1 unframe!
 ;
+@MI_VIEW ( i -- l s c ) dup 0 = [ drop T"Toggle Hex" 0 [ toggle-hex ] ] [ drop 0 0 0 ] ?: ;
+@MN_VIEW ( -- l q c ) T"View" [ MI_VIEW ] 1 ;
 
-@on-frame ( -- )
-    frame-count LOADI 1 + frame-count STOREI
-    ( Autosave after 2s of inactivity )
-    dirty LOADI 1 = [
-        TIME::unix@ last-key LOADI - 2 >= [
-            save-file
-        ] ?
-    ] ?
+@MENUS ( i -- q )
+    dup 0 = [ drop [ MN_FILE ] ] [
+    dup 1 = [ drop [ MN_EDIT ] ] [
+    dup 2 = [ drop [ MN_VIEW ] ] [
+    drop 0 ] ?: ] ?: ] ?:
 ;
 
 ( --- Main --- )
 
 @start
-    ( 0. Set Window Title & Open devices )
     T"Quill" APP::init
-
-    ( 2. Initialize Menus )
-    init-menus
-
-    ( 3. Pick font + size on the draw device: 2 = GoMono )
-    APP::draw-fd 2 DRAW::set-font
-    APP::draw-fd FONT_SIZE DRAW::set-font-size
-
-    ( 4. Load system font widths for the chosen size )
-    T"/sys/font/widths" VFS::open dup 0 >= [
-        dup FONT_DATA 256 VFS::read drop
-        VFS::close drop
-    ] [ drop ] ?:
-
-    ( 5. Initialize char-w from 'A' width )
+    APP::draw-fd 2 DRAW::set-font APP::draw-fd FONT_SIZE DRAW::set-font-size
+    T"/sys/font/widths" VFS::open dup 0 >= [ dup FONT_DATA 256 VFS::read drop VFS::close drop ] [ drop ] ?:
     FONT_DATA 65 + load-byte char-w-val STOREI
-
-    ( 6. Load existing manuscript if present )
-    T"manuscript.quill" FILE_BUF 65535 FILE::load
-    dup 0 > [ file-len STOREI ] [ drop 0 file-len STOREI ] ?:
-
-    0 cursor STOREI
-    0 dirty STOREI
-    -1 anchor STOREI
-    0 drag STOREI
-    0 frame-count STOREI
-    -100 last-click-frame STOREI
-    -1 last-click-idx STOREI
-    TIME::unix@ last-key STOREI
-
-    refresh
-    cursor LOADI rc-from-idx swap drop target-col STOREI
-
-    [ on-mouse ] APP::on-mouse!
-    [ on-kbd   ] APP::on-kbd!
-    [ on-frame ] APP::on-frame!
-    APP::loop
+    
+    -1 MB_ADDR MENU::MB_ACTIVE + STOREI
+    -1 MB_ADDR MENU::MB_HOVER + STOREI
+    
+    T"manuscript.quill" @current-path-buf STR::strcpy
+    @current-path-buf make-vfs-path 0 VFS::open-mode file-fd STOREI
+    file-fd LOADI 0 >= [
+        file-fd LOADI VFS::stat total-size STOREI
+        0 file-offset STOREI
+        file-fd LOADI FILE_BUF CHUNK_SIZE VFS::read
+        dup file-len STOREI
+        dup orig-chunk-len STOREI
+        rebuild-lines
+    ] [
+        0 total-size STOREI 0 file-len STOREI 0 orig-chunk-len STOREI -1 file-fd STOREI
+        rebuild-lines
+    ] ?:
+    0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI 0 drag STOREI
+    
+    refresh [ on-mouse ] APP::on-mouse! [ on-kbd ] APP::on-kbd! APP::loop
 ;
-
 MAIN::start
 HALT

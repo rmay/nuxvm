@@ -188,8 +188,8 @@ MODULE MENU
                 [ 4 local@ 1 local@ < ] [
                     10 local@ 9 local@ 5 local@ @BAR_H 4 local@ @ITEM_H * + 0 local@ @ITEM_H UI::in-rect? [
                         4 local@ 2 local@ CALL swap drop swap drop ( callback )
-                        dup 0 > [ CALL ] [ drop ] ?:
                         -1 11 local@ MB_ACTIVE + STOREI
+                        dup 0 > [ CALL ] [ drop ] ?:
                         1 local@ 4 local! ( break loop )
                     ] ?
                     4 local@ 1 + 4 local! ( i++ )

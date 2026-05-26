@@ -36,9 +36,13 @@ func NewVFS() *VFS {
 }
 
 func (v *VFS) Open(s *System, path string) (int32, error) {
-	fmt.Fprintf(os.Stderr, "VFS: Open called for %q\n", path)
+	return v.OpenWithFlags(s, path, 0)
+}
 
-	file, err := v.openFile(s, path)
+func (v *VFS) OpenWithFlags(s *System, path string, flags int32) (int32, error) {
+	fmt.Fprintf(os.Stderr, "VFS: Open called for %q with flags %d\n", path, flags)
+
+	file, err := v.openFile(s, path, flags)
 	if err != nil {
 		return -1, err
 	}
@@ -52,7 +56,7 @@ func (v *VFS) Open(s *System, path string) (int32, error) {
 	return fd, nil
 }
 
-func (v *VFS) openFile(s *System, path string) (VFSFile, error) {
+func (v *VFS) openFile(s *System, path string, flags int32) (VFSFile, error) {
 	v.mu.RLock()
 	// 1. Check mount table first
 	if file, ok := v.mounts[path]; ok {
@@ -75,6 +79,8 @@ func (v *VFS) openFile(s *System, path string) (VFSFile, error) {
 		file = &debugFile{}
 	case path == "/sys/snarf":
 		file = &snarfFile{s: s}
+	case path == "/sys/dialog":
+		file = &dialogFile{s: s, replyChan: make(chan string, 1)}
 	case path == "/sys/font/widths":
 		file = &fontWidthsFile{s: s}
 	case path == "/sys/chan/new":
@@ -100,12 +106,15 @@ func (v *VFS) openFile(s *System, path string) (VFSFile, error) {
 			}
 			file = &vmFile{s: s, id: id, kind: kind}
 		}
+	case strings.HasPrefix(path, "/sys/dir/"):
+		dirPath := strings.TrimPrefix(path, "/sys/dir/")
+		file = &dirFile{s: s, path: dirPath}
 	case strings.HasPrefix(path, "/sys/file/"):
 		filePath := strings.TrimPrefix(path, "/sys/file/")
 		if s.Services == nil {
 			return nil, fmt.Errorf("services not available")
 		}
-		handle, err := s.Services.OpenFile(filePath)
+		handle, err := s.Services.OpenFileWithFlags(filePath, flags)
 		if err != nil {
 			return nil, err
 		}
@@ -113,7 +122,7 @@ func (v *VFS) openFile(s *System, path string) (VFSFile, error) {
 	case strings.HasPrefix(path, "/dev/"):
 		// Fallback: map /dev/* to /sys/* for standalone apps
 		name := strings.TrimPrefix(path, "/dev/")
-		return v.openFile(s, "/sys/"+name)
+		return v.openFile(s, "/sys/"+name, flags)
 	default:
 		fmt.Fprintf(os.Stderr, "VFS: File not found: %s\n", path)
 		return nil, fmt.Errorf("file not found: %s", path)
@@ -287,6 +296,10 @@ func (f *drawFile) Write(p []byte) (int, error) {
 			}
 			f.s.text.fontID = p[i]
 			i += 1
+		case 6: // BeginFrame
+			f.s.BeginFrame()
+		case 7: // EndFrame
+			f.s.EndFrame()
 		default:
 			return i - 1, fmt.Errorf("unknown draw command: %d", cmd)
 		}
@@ -416,6 +429,8 @@ func (f *channelFile) Read(p []byte) (int, error) {
 		return n, nil
 	case <-f.closed:
 		return 0, io.EOF
+	default:
+		return 0, nil
 	}
 }
 
@@ -429,6 +444,8 @@ func (f *channelFile) Write(p []byte) (int, error) {
 		return len(p), nil
 	case <-f.closed:
 		return 0, io.ErrClosedPipe
+	default:
+		return 0, nil
 	}
 }
 
@@ -531,3 +548,134 @@ func (f *fontWidthsFile) Read(p []byte) (n int, err error) {
 
 func (f *fontWidthsFile) Write(p []byte) (n int, err error) { return 0, io.ErrShortWrite }
 func (f *fontWidthsFile) Close() error                      { return nil }
+
+// dirFile implements directory listing via /sys/dir/
+type dirFile struct {
+	s      *System
+	path   string
+	buf    []byte
+	cursor int
+}
+
+func (f *dirFile) Read(p []byte) (int, error) {
+	if f.buf == nil {
+		// Populate buffer on first read
+		if f.s.Services == nil {
+			return 0, fmt.Errorf("services not available")
+		}
+		entries, err := f.s.Services.ListDirectory(f.path)
+		if err != nil {
+			return 0, err
+		}
+		// Join entries with newlines
+		f.buf = []byte(strings.Join(entries, "\n"))
+	}
+
+	if f.cursor >= len(f.buf) {
+		return 0, io.EOF
+	}
+
+	n := copy(p, f.buf[f.cursor:])
+	f.cursor += n
+	return n, nil
+}
+
+func (f *dirFile) Write(p []byte) (int, error) { return 0, io.ErrShortWrite }
+func (f *dirFile) Close() error {
+	return nil
+}
+
+// dialogFile implements /sys/dialog using a modal.
+type dialogFile struct {
+	s         *System
+	replyChan chan string
+}
+
+func (f *dialogFile) Read(p []byte) (n int, err error) {
+	select {
+	case msg := <-f.replyChan:
+		if f.s.Services != nil {
+			f.s.Services.SetModal(nil)
+		}
+		n = copy(p, msg)
+		if n < len(p) {
+			p[n] = 0
+		}
+		return n, nil
+	default:
+		return 0, nil
+	}
+}
+
+func (f *dialogFile) Write(p []byte) (n int, err error) {
+	if f.s.Services != nil {
+		f.s.Services.SetModal(newFileDialogModal(f.s, f.replyChan))
+	}
+	return len(p), nil
+}
+
+func (f *dialogFile) Close() error {
+	if f.s.Services != nil {
+		f.s.Services.SetModal(nil)
+	}
+	return nil
+}
+
+func (v *VFS) Seek(fd int32, offset int64) (int64, error) {
+	v.mu.RLock()
+	file, ok := v.fds[fd]
+	v.mu.RUnlock()
+
+	if !ok {
+		return -1, fmt.Errorf("invalid file descriptor: %d", fd)
+	}
+
+	if hf, ok := file.(*hostFile); ok {
+		err := hf.s.Services.SeekFile(hf.handle, offset)
+		return offset, err
+	}
+	return -1, fmt.Errorf("seek not supported on this file type")
+}
+
+func (v *VFS) Stat(fd int32) (int64, error) {
+	v.mu.RLock()
+	file, ok := v.fds[fd]
+	v.mu.RUnlock()
+
+	if !ok {
+		return -1, fmt.Errorf("invalid file descriptor: %d", fd)
+	}
+
+	if hf, ok := file.(*hostFile); ok {
+		return hf.s.Services.StatFile(hf.handle)
+	}
+	return -1, fmt.Errorf("stat not supported on this file type")
+}
+
+func (v *VFS) WriteChunk(fd int32, p []byte, offset int64, origLen int64) (int32, error) {
+	v.mu.RLock()
+	file, ok := v.fds[fd]
+	v.mu.RUnlock()
+
+	if !ok {
+		return -1, fmt.Errorf("invalid file descriptor: %d", fd)
+	}
+
+	if hf, ok := file.(*hostFile); ok {
+		msg := FileMsg{
+			Op:     FileOpWrite,
+			Handle: hf.handle,
+			Offset: offset,
+			Data:   p,
+			Flags:  uint32(origLen),
+		}
+		hf.s.Services.fileChan <- msg
+		reply := <-hf.s.Services.fileReply
+		if reply.Success {
+			return reply.Handle, nil
+		}
+		return -1, fmt.Errorf("%s", reply.Error)
+	}
+	return -1, fmt.Errorf("write chunk not supported on this file type")
+}
+

@@ -74,6 +74,9 @@ const (
 	SCIVFSRead  = 12
 	SCIVFSWrite = 13
 	SCIVFSBind  = 14
+	SCIVFSSeek  = 23
+	SCIVFSStat  = 24
+	SCIVFSWriteChunk = 25
 
 	SCICreateWin  = 1
 	SCICloseWin   = 2
@@ -129,8 +132,9 @@ type System struct {
 	memory []byte
 
 	// Hardware state
-	screenPixels []byte
-	screenWidth  int32
+	screenPixels    []byte
+	compositePixels []byte // buffer for compositing modals at render time
+	screenWidth     int32
 	screenHeight int32
 	rngState     uint32
 
@@ -202,7 +206,12 @@ type System struct {
 	snarfBuf []byte
 
 	yielded bool
+
+	// Double buffering state for /sys/draw
+	doubleBuffer       []byte
+	doubleBufferActive bool
 }
+
 
 func NewSystem() *System {
 	s := &System{
@@ -269,17 +278,69 @@ func NewSystemNoFallback() *System {
 
 // ScreenPixels returns the raw RGBA pixels of the screen.
 func (s *System) ScreenPixels() []byte {
-	return s.screenPixels
+	fb := s.getActiveFramebuffer()
+	if fb == nil {
+		return nil
+	}
+
+	var src []byte
+	if s.doubleBufferActive {
+		if len(s.doubleBuffer) != len(fb) {
+			s.doubleBuffer = make([]byte, len(fb))
+			copy(s.doubleBuffer, fb)
+		}
+		src = s.doubleBuffer
+	} else {
+		src = fb
+	}
+
+	if s.Services == nil || !s.Services.HasModal() {
+		return src
+	}
+
+	// Composite modal onto a copy of the framebuffer
+	if len(s.compositePixels) != len(src) {
+		s.compositePixels = make([]byte, len(src))
+	}
+	copy(s.compositePixels, src)
+
+	w := s.getScreenWidth()
+	h := s.getScreenHeight()
+	s.Services.DrawModal(s.compositePixels, w, h)
+
+	return s.compositePixels
 }
+
+func (s *System) BeginFrame() {
+	s.doubleBufferActive = true
+	fb := s.getActiveFramebuffer()
+	if fb != nil {
+		if len(s.doubleBuffer) != len(fb) {
+			s.doubleBuffer = make([]byte, len(fb))
+		}
+		copy(s.doubleBuffer, fb)
+	}
+}
+
+func (s *System) EndFrame() {
+	fb := s.getActiveFramebuffer()
+	if fb != nil {
+		if len(s.doubleBuffer) != len(fb) {
+			s.doubleBuffer = make([]byte, len(fb))
+		}
+		copy(s.doubleBuffer, fb)
+	}
+}
+
 
 // ScreenWidth returns the width of the screen in pixels.
 func (s *System) ScreenWidth() int32 {
-	return s.screenWidth
+	return s.getScreenWidth()
 }
 
 // ScreenHeight returns the height of the screen in pixels.
 func (s *System) ScreenHeight() int32 {
-	return s.screenHeight
+	return s.getScreenHeight()
 }
 
 // SetVectorCallbacks wires vector register read/write to the CPU (used by Machine).
@@ -371,7 +432,21 @@ func withinRoot(p, root string) bool {
 // If the service manager is not initialized or has no active window, falls back to screenPixels.
 func (s *System) getActiveFramebuffer() []byte {
 	if s.Services != nil {
+		// If we have a modal, we are likely being called from Tick which is NOT holding the lock,
+		// OR from a modal draw which IS holding the lock.
+		// However, GetActiveWindowFramebuf is thread-safe.
 		fb := s.Services.GetActiveWindowFramebuf()
+		if fb != nil {
+			return fb
+		}
+	}
+	return s.screenPixels
+}
+
+// getActiveFramebufferLocked is for use when sm.windowMu is already held.
+func (s *System) getActiveFramebufferLocked() []byte {
+	if s.Services != nil {
+		fb := s.Services.getActiveWindowFramebufLocked()
 		if fb != nil {
 			return fb
 		}
@@ -389,10 +464,28 @@ func (s *System) getScreenWidth() int32 {
 	return s.screenWidth
 }
 
+func (s *System) getScreenWidthLocked() int32 {
+	if s.Services != nil {
+		if win := s.Services.getActiveWindowLocked(); win != nil {
+			return win.Port.PortRect.Width()
+		}
+	}
+	return s.screenWidth
+}
+
 // getScreenHeight returns the height of the active window, or the global screen height if no service.
 func (s *System) getScreenHeight() int32 {
 	if s.Services != nil {
 		if win := s.Services.GetActiveWindow(); win != nil {
+			return win.Port.PortRect.Height()
+		}
+	}
+	return s.screenHeight
+}
+
+func (s *System) getScreenHeightLocked() int32 {
+	if s.Services != nil {
+		if win := s.Services.getActiveWindowLocked(); win != nil {
 			return win.Port.PortRect.Height()
 		}
 	}
@@ -802,6 +895,9 @@ func (s *System) read(address uint32) (int32, error) {
 		now := time.Now()
 		val := (int32(now.Hour()) << 16) | (int32(now.Minute()) << 8) | int32(now.Second())
 		return val, nil
+	}
+	if address == dateTimePort+16 { // 0x3080: Millisecond timer
+		return int32(time.Now().UnixMilli() & 0x7FFFFFFF), nil
 	}
 
 	// Window device:

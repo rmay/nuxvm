@@ -1,6 +1,7 @@
 ( UI Widget Library — Buttons, Checkboxes, Sliders )
 
 INCLUDE "lib/draw.lux"
+INCLUDE "lib/time.lux"
 
 MODULE UI
 
@@ -692,21 +693,18 @@ MODULE UI
 ;
 
 @slider-thumb-x ( addr -- thumb_x )
-    dup SL_X + LOADI      ( addr x )
-    over SL_MAX + LOADI   ( addr x max )
-    2 PICK SL_MIN + LOADI ( addr x max min )
-    OVER OVER = [         ( range is zero: thumb at x )
-        drop drop drop SL_X + LOADI
+    dup SL_MAX + LOADI
+    over SL_MIN + LOADI - ( range )
+    dup 0 = [
+        drop SL_X + LOADI
     ] [
-        - ( addr x range )
-        ROT ( x range addr )
-        dup SL_VAL + LOADI ( x range addr val )
-        OVER SL_MIN + LOADI - ( x range addr val-min )
-        ROT ( x range val-min addr )
-        SL_W + LOADI SL_THUMB_W - ( x range val-min track_w )
-        ROT * ( x range track_w*(val-min) )
-        SWAP / ( x offset )
-        +     ( thumb_x )
+        1 frame! ( 0:range )
+        dup SL_VAL + LOADI
+        over SL_MIN + LOADI - ( val-min )
+        over SL_W + LOADI SL_THUMB_W - ( track_w )
+        * 0 local@ /
+        swap SL_X + LOADI +
+        1 unframe!
     ] ?:
 ;
 
@@ -769,4 +767,255 @@ MODULE UI
     0 local@ 3 local@ SL_WAS_DOWN + STOREI
     3 local@ SL_VAL + LOADI
     4 unframe!
+;
+
+( ===== Scrollbar ===== )
+( Struct (40 bytes): x(4) y(4) w(4) h(4) min(4) max(4) val(4) dragging(4) was-down(4) thumb-h(4) )
+@SB_SIZE      40 ;
+@SB_X          0 ;
+@SB_Y          4 ;
+@SB_W          8 ;
+@SB_H         12 ;
+@SB_MIN       16 ;
+@SB_MAX       20 ;
+@SB_VAL       24 ;
+@SB_DRG       28 ;
+@SB_WAS_DOWN  32 ;
+@SB_THUMB_H   36 ;
+
+@scrollbar-init ( addr x y w h min max val thumb-h -- )
+    9 frame! ( 0:th 1:val 2:max 3:min 4:h 5:w 6:y 7:x 8:addr )
+    7 local@ 8 local@ SB_X + STOREI
+    6 local@ 8 local@ SB_Y + STOREI
+    5 local@ 8 local@ SB_W + STOREI
+    4 local@ 8 local@ SB_H + STOREI
+    3 local@ 8 local@ SB_MIN + STOREI
+    2 local@ 8 local@ SB_MAX + STOREI
+    1 local@ 8 local@ SB_VAL + STOREI
+    0        8 local@ SB_DRG + STOREI
+    0        8 local@ SB_WAS_DOWN + STOREI
+    0 local@ 8 local@ SB_THUMB_H + STOREI
+    9 unframe!
+;
+
+@scrollbar-thumb-y ( addr -- thumb_y )
+    dup SB_MAX + LOADI
+    over SB_MIN + LOADI - ( range )
+    dup 0 = [
+        drop SB_Y + LOADI
+    ] [
+        1 frame! ( 0:range )
+        dup SB_VAL + LOADI
+        over SB_MIN + LOADI - ( val-min )
+        over SB_H + LOADI
+        2 PICK SB_THUMB_H + LOADI - ( track_h )
+        * 0 local@ /
+        swap SB_Y + LOADI +
+        1 unframe!
+    ] ?:
+;
+
+@scrollbar-draw ( fd addr -- )
+    2 frame! ( 0:addr 1:fd )
+    ( background/track )
+    1 local@ 0 local@ SB_X + LOADI 0 local@ SB_Y + LOADI
+    0 local@ SB_W + LOADI 0 local@ SB_H + LOADI CLR_TRACK DRAW::fill-rect
+    ( border )
+    1 local@ 0 local@ SB_X + LOADI 0 local@ SB_Y + LOADI
+    0 local@ SB_W + LOADI 0 local@ SB_H + LOADI CLR_BORDER DRAW::draw-rect
+    
+    ( thumb )
+    0 local@ scrollbar-thumb-y ( thumb_y )
+    1 local@ 0 local@ SB_X + LOADI 1 + OVER 1 +
+    0 local@ SB_W + LOADI 2 -
+    0 local@ SB_THUMB_H + LOADI 2 -
+    CLR_BG draw-3d-rect
+    drop
+    2 unframe!
+;
+
+@scrollbar-update ( addr mx my btn -- value )
+    4 frame! ( 0:btn 1:my 2:mx 3:addr )
+    0 local@ 1 = [
+        2 local@ 1 local@
+        3 local@ SB_X + LOADI
+        3 local@ SB_Y + LOADI
+        3 local@ SB_W + LOADI
+        3 local@ SB_H + LOADI
+        in-rect? [ 1 3 local@ SB_DRG + STOREI ] ?
+    ] [
+        0 3 local@ SB_DRG + STOREI
+    ] ?:
+    
+    3 local@ SB_DRG + LOADI [
+        3 local@ SB_MAX + LOADI 3 local@ SB_MIN + LOADI - dup 0 > [
+            ( track_h = h - thumb_h )
+            3 local@ SB_H + LOADI 3 local@ SB_THUMB_H + LOADI - ( range track_h )
+            1 local@ 3 local@ SB_Y + LOADI - ( range track_h offset )
+            0 MAX OVER MIN ( clamp offset )
+            ROT * SWAP / ( offset * range / track_h )
+            3 local@ SB_MIN + LOADI +
+            3 local@ SB_VAL + STOREI
+        ] [
+            drop
+        ] ?:
+    ] ?
+    3 local@ SB_VAL + LOADI
+    4 unframe!
+;
+
+( ===== Listbox ===== )
+( Struct (56 bytes): x(4) y(4) w(4) h(4) buf-ptr(4) count(4) selected(4) sb-addr(4) item-h(4) callback(4) was-down(4) dbl-callback(4) last-time(4) last-idx(4) )
+@LB_SIZE      56 ;
+@LB_X          0 ;
+@LB_Y          4 ;
+@LB_W          8 ;
+@LB_H         12 ;
+@LB_BUF       16 ;
+@LB_COUNT     20 ;
+@LB_SEL       24 ;
+@LB_SB        28 ;
+@LB_ITEM_H    32 ;
+@LB_CALLBACK  36 ;
+@LB_WAS_DOWN  40 ;
+@LB_DBL_CB    44 ;
+@LB_LAST_TIME 48 ;
+@LB_LAST_IDX  52 ;
+
+@listbox-init ( addr x y w h buf-ptr count sb-addr item-h callback -- )
+    10 frame! ( 0:cb 1:ih 2:sb 3:cnt 4:buf 5:h 6:w 7:y 8:x 9:addr )
+    8 local@ 9 local@ LB_X + STOREI
+    7 local@ 9 local@ LB_Y + STOREI
+    6 local@ 9 local@ LB_W + STOREI
+    5 local@ 9 local@ LB_H + STOREI
+    4 local@ 9 local@ LB_BUF + STOREI
+    3 local@ 9 local@ LB_COUNT + STOREI
+    -1       9 local@ LB_SEL + STOREI
+    2 local@ 9 local@ LB_SB + STOREI
+    1 local@ 9 local@ LB_ITEM_H + STOREI
+    0 local@ 9 local@ LB_CALLBACK + STOREI
+    0        9 local@ LB_WAS_DOWN + STOREI
+    0        9 local@ LB_DBL_CB + STOREI
+    0        9 local@ LB_LAST_TIME + STOREI
+    -1       9 local@ LB_LAST_IDX + STOREI
+    
+    ( Initialize scrollbar )
+    2 local@ 
+    8 local@ 6 local@ + 16 - ( sb_x )
+    7 local@ ( sb_y )
+    16 ( sb_w )
+    5 local@ ( sb_h )
+    0 ( min )
+    3 local@ 5 local@ 1 local@ / - 0 MAX ( max: count - visible )
+    0 ( val )
+    16 ( thumb-h )
+    scrollbar-init
+    10 unframe!
+;
+
+@listbox-dbl-callback! ( addr cb -- ) swap LB_DBL_CB + STOREI ;
+
+@listbox-draw ( fd addr -- )
+    0 ( i )
+    0 ( yi )
+    0 local@ LB_SB + LOADI SB_VAL + LOADI ( scroll_val )
+    0 local@ LB_X + LOADI 4 + ( curr_x )
+    0 local@ LB_Y + LOADI 2 + ( curr_y )
+    0 local@ LB_BUF + LOADI ( buf )
+    0 local@ LB_COUNT + LOADI ( count )
+    9 frame! ( 0:cnt 1:buf 2:y 3:x 4:scroll 5:yi 6:i 7:addr 8:fd )
+    
+    ( find start of scrolled item )
+    [ 4 local@ 0 > ] [
+        [ 1 local@ load-byte dup 10 = swap 0 = OR [ 0 ] [ 1 ] ?: ] [ 1 local@ 1 + 1 local! ] |:
+        1 local@ load-byte 0 = [ 0 4 local! ] [ 1 local@ 1 + 1 local! 4 local@ 1 - 4 local! ] ?:
+    ] |:
+    
+    ( draw visible items )
+    [ 6 local@ 7 local@ LB_H + LOADI 7 local@ LB_ITEM_H + LOADI / < 
+      6 local@ 0 local@ < AND ] [
+        ( highlight if selected )
+        6 local@ 4 local@ + 7 local@ LB_SEL + LOADI = [
+            8 local@ 7 local@ LB_X + LOADI 1 + 2 local@ 5 local@ + 7 local@ LB_W + LOADI 17 - 7 local@ LB_ITEM_H + LOADI CLR_PRESS DRAW::fill-rect
+        ] ?
+        
+        ( find end of line )
+        1 local@ 0 ( slen )
+        [ OVER OVER + load-byte dup 10 = swap 0 = OR 0 = ] [
+            1 +
+        ] |:
+        ( sptr slen )
+        
+        ( draw string )
+        8 local@ 3 local@ 2 local@ 5 local@ + 
+        3 PICK 2 PICK
+        6 local@ 4 local@ + 7 local@ LB_SEL + LOADI = [ CLR_BG ] [ CLR_TEXT ] ?: 1 DRAW::draw-str-n
+        
+        ( next line )
+        ( sptr slen )
+        + 1 + 1 local! ( sptr += slen + 1 )
+        5 local@ 7 local@ LB_ITEM_H + LOADI + 5 local! ( yi += LB_ITEM_H )
+        6 local@ 1 + 6 local! ( i++ )
+    ] |:
+    
+    ( scrollbar )
+    8 local@ 7 local@ LB_SB + LOADI scrollbar-draw
+    9 unframe!
+;
+
+@listbox-update ( addr mx my btn -- )
+    4 frame! ( 0:btn 1:my 2:mx 3:addr )
+    ( scrollbar update )
+    3 local@ LB_SB + LOADI 2 local@ 1 local@ 0 local@ scrollbar-update drop
+    
+    ( item selection )
+    0 local@ 1 = [
+        2 local@ 1 local@
+        3 local@ LB_X + LOADI
+        3 local@ LB_Y + LOADI
+        3 local@ LB_W + LOADI 16 -
+        3 local@ LB_H + LOADI
+        in-rect? [
+            ( calculate clicked index )
+            1 local@ 3 local@ LB_Y + LOADI - 3 local@ LB_ITEM_H + LOADI /
+            3 local@ LB_SB + LOADI SB_VAL + LOADI +
+            dup 3 local@ LB_COUNT + LOADI < [
+                ( Check for double click )
+                TIME::milli@ ( current time )
+                OVER 3 local@ LB_LAST_IDX + LOADI = [
+                    dup 3 local@ LB_LAST_TIME + LOADI - 500 < [
+                        ( DOUBLE CLICK! )
+                        3 local@ LB_DBL_CB + LOADI dup 0 > [ CALL ] [ drop ] ?:
+                    ] ?
+                ] ?
+                3 local@ LB_LAST_TIME + STOREI
+                3 local@ LB_LAST_IDX + STOREI
+
+                3 local@ LB_SEL + STOREI
+                ( callback )
+                3 local@ LB_CALLBACK + LOADI dup 0 > [ CALL ] [ drop ] ?:
+            ] [ drop ] ?:
+        ] ?
+    ] ?
+    4 unframe!
+;
+
+@listbox-update-data ( addr buf-ptr count -- )
+    3 frame! ( 0:cnt 1:buf 2:addr )
+    1 local@ 2 local@ LB_BUF + STOREI
+    0 local@ 2 local@ LB_COUNT + STOREI
+    -1 2 local@ LB_SEL + STOREI
+    
+    ( Update scrollbar max )
+    2 local@ LB_SB + LOADI 
+    dup SB_X + LOADI ( sb_addr x )
+    over SB_Y + LOADI ( x y )
+    2 PICK SB_W + LOADI ( x y w )
+    3 PICK SB_H + LOADI ( x y w h )
+    0 ( min )
+    0 local@ 4 local@ LB_H + LOADI 4 local@ LB_ITEM_H + LOADI / - 0 MAX ( max )
+    0 ( val )
+    16 ( thumb-h )
+    scrollbar-init
+    3 unframe!
 ;

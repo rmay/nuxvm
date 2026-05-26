@@ -2,6 +2,8 @@ package system
 
 import (
 	"encoding/binary"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/rmay/nuxvm/pkg/vm"
@@ -83,5 +85,107 @@ func TestVFSMouse(t *testing.T) {
 	}
 	if binary.LittleEndian.Uint16(buf[2:4]) != 100 {
 		t.Errorf("Expected X=100, got %d", binary.LittleEndian.Uint16(buf[2:4]))
+	}
+}
+
+func TestVFSDialog(t *testing.T) {
+	machine := NewMachine(nil, vm.GraphicalBaseAddress, 32*1024)
+	sys := machine.System
+
+	fd, err := sys.vfs.Open(sys, "/sys/dialog")
+	if err != nil {
+		t.Fatalf("Open /sys/dialog failed: %v", err)
+	}
+
+	// First read should return 0 (nothing selected yet)
+	buf := make([]byte, 10)
+	n, err := sys.vfs.Read(fd, buf)
+	if err != nil {
+		t.Fatalf("Read from /sys/dialog failed: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("Expected 0 bytes, got %d", n)
+	}
+
+	// Trigger the modal
+	_, err = sys.vfs.Write(fd, []byte{1})
+	if err != nil {
+		t.Fatalf("Write to /sys/dialog failed: %v", err)
+	}
+
+	if sys.Services.modal == nil {
+		t.Errorf("Modal not set after write")
+	}
+
+	// Since we can't easily reach the internal field, let's just test the 0-return behavior.
+}
+
+func TestVFSSeekStatWriteChunk(t *testing.T) {
+	machine := NewMachine(nil, vm.GraphicalBaseAddress, 32*1024)
+	sys := machine.System
+
+	sm := NewServiceManager()
+	tempDir := t.TempDir()
+	sm.sandboxResolver = func(path string) (string, error) {
+		return filepath.Join(tempDir, path), nil
+	}
+	sm.StartFileSystemManager()
+	sys.Services = sm
+
+	// Create a test file
+	filePath := "test.txt"
+	absPath := filepath.Join(tempDir, filePath)
+	err := os.WriteFile(absPath, []byte("Hello, World! This is a test file for lazy loading."), 0644)
+	if err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+
+	// Open file via VFS
+	fd, err := sys.vfs.Open(sys, "/sys/file/test.txt")
+	if err != nil {
+		t.Fatalf("Failed to open file via VFS: %v", err)
+	}
+
+	// 1. Test VFS Stat
+	size, err := sys.vfs.Stat(fd)
+	if err != nil {
+		t.Fatalf("VFS Stat failed: %v", err)
+	}
+	expectedSize := int64(len("Hello, World! This is a test file for lazy loading."))
+	if size != expectedSize {
+		t.Errorf("Expected size %d, got %d", expectedSize, size)
+	}
+
+	// 2. Test VFS Seek
+	_, err = sys.vfs.Seek(fd, 7)
+	if err != nil {
+		t.Fatalf("VFS Seek failed: %v", err)
+	}
+
+	buf := make([]byte, 6)
+	n, err := sys.vfs.Read(fd, buf)
+	if err != nil {
+		t.Fatalf("VFS Read after Seek failed: %v", err)
+	}
+	if string(buf[:n]) != "World!" {
+		t.Errorf("Expected 'World!', got '%s'", string(buf[:n]))
+	}
+
+	// 3. Test VFS WriteChunk (Shifting write)
+	// Replace "World!" (length 6) at offset 7 with "Beautiful Universe!" (length 19)
+	newChunk := []byte("Beautiful Universe!")
+	_, err = sys.vfs.WriteChunk(fd, newChunk, 7, 6)
+	if err != nil {
+		t.Fatalf("VFS WriteChunk failed: %v", err)
+	}
+
+	// Verify the entire file on disk
+	content, err := os.ReadFile(absPath)
+	if err != nil {
+		t.Fatalf("Failed to read file content: %v", err)
+	}
+	expectedContent := "Hello, Beautiful Universe! This is a test file for lazy loading."
+	if string(content) != expectedContent {
+		t.Errorf("Expected '%s', got '%s'", expectedContent, string(content))
 	}
 }

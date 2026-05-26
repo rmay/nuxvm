@@ -270,12 +270,20 @@ func NewServiceManager() *ServiceManager {
 func (sm *ServiceManager) GetActiveWindow() *WindowRecord {
 	sm.windowMu.RLock()
 	defer sm.windowMu.RUnlock()
+	return sm.getActiveWindowLocked()
+}
+
+func (sm *ServiceManager) getActiveWindowLocked() *WindowRecord {
 	return sm.windows[sm.activeWinID]
 }
 
 func (sm *ServiceManager) GetActiveWindowFramebuf() []byte {
 	sm.windowMu.RLock()
 	defer sm.windowMu.RUnlock()
+	return sm.getActiveWindowFramebufLocked()
+}
+
+func (sm *ServiceManager) getActiveWindowFramebufLocked() []byte {
 	if win := sm.windows[sm.activeWinID]; win != nil {
 		return win.FrameBuf
 	}
@@ -508,9 +516,14 @@ func (sm *ServiceManager) PlaySound(soundID int32) error {
 // ============= File Service Operations =============
 
 func (sm *ServiceManager) OpenFile(path string) (int32, error) {
+	return sm.OpenFileWithFlags(path, 0)
+}
+
+func (sm *ServiceManager) OpenFileWithFlags(path string, flags int32) (int32, error) {
 	msg := FileMsg{
-		Op:   FileOpOpen,
-		Path: path,
+		Op:    FileOpOpen,
+		Path:  path,
+		Flags: uint32(flags),
 	}
 	sm.fileChan <- msg
 	reply := <-sm.fileReply
@@ -556,6 +569,39 @@ func (sm *ServiceManager) CloseFile(handle int32) error {
 	sm.fileChan <- msg
 	<-sm.fileReply
 	return nil
+}
+
+func (sm *ServiceManager) SeekFile(handle int32, offset int64) error {
+	msg := FileMsg{
+		Op:     FileOpSeek,
+		Handle: handle,
+		Offset: offset,
+	}
+	sm.fileChan <- msg
+	reply := <-sm.fileReply
+	if reply.Success {
+		return nil
+	}
+	return fmt.Errorf("%s", reply.Error)
+}
+
+func (sm *ServiceManager) StatFile(handle int32) (int64, error) {
+	msg := FileMsg{
+		Op:     FileOpStat,
+		Handle: handle,
+	}
+	sm.fileChan <- msg
+	reply := <-sm.fileReply
+	if reply.Success {
+		if sizeVal, ok := reply.Info["size"].(int64); ok {
+			return sizeVal, nil
+		}
+		if sizeVal, ok := reply.Info["size"].(float64); ok {
+			return int64(sizeVal), nil
+		}
+		return 0, fmt.Errorf("invalid size type in reply")
+	}
+	return -1, fmt.Errorf("%s", reply.Error)
 }
 
 // ============= Input Integration =============
@@ -629,6 +675,12 @@ func (sm *ServiceManager) SetSandboxResolver(resolver func(string) (string, erro
 // ListDirectory returns a sorted list of filenames in a directory, or an error
 // if the path cannot be resolved within the sandbox.
 func (sm *ServiceManager) ListDirectory(path string) ([]string, error) {
+	sm.windowMu.RLock()
+	defer sm.windowMu.RUnlock()
+	return sm.listDirectoryLocked(path)
+}
+
+func (sm *ServiceManager) listDirectoryLocked(path string) ([]string, error) {
 	if sm.sandboxResolver == nil {
 		return nil, fmt.Errorf("sandbox resolver not configured")
 	}
@@ -642,8 +694,13 @@ func (sm *ServiceManager) ListDirectory(path string) ([]string, error) {
 	}
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		names = append(names, entry.Name())
+		name := entry.Name()
+		if entry.IsDir() {
+			name += "/"
+		}
+		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names, nil
 }
 

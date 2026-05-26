@@ -45,12 +45,6 @@ func (s *System) fillRect(x, y, w, h int32, color uint32) {
 			}
 		}
 	}
-
-	if s.Services != nil {
-		if win := s.Services.GetActiveWindow(); win != nil {
-			win.Dirty = true
-		}
-	}
 }
 
 // drawRect draws a 1px border rectangle.
@@ -93,12 +87,6 @@ func (s *System) drawCharVFS(x, y int32, char byte, color uint32, scale byte) {
 	sub := screen.SubImage(image.Rect(paneMinX, paneMinY, paneMaxX, paneMaxY)).(*image.RGBA)
 
 	s.DrawGlyph(sub, x-int32(paneMinX), y-int32(paneMinY), char, color, sc)
-
-	if s.Services != nil {
-		if win := s.Services.GetActiveWindow(); win != nil {
-			win.Dirty = true
-		}
-	}
 }
 
 // kbdFile and mouseFile implementation details

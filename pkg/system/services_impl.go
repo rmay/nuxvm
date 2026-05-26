@@ -2,6 +2,7 @@ package system
 
 import (
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -231,6 +232,9 @@ func (sm *ServiceManager) handleFileMessage(msg FileMsg) FileReply {
 		if msg.Flags&1 != 0 {
 			mode |= os.O_APPEND
 		}
+		if msg.Flags&2 != 0 {
+			mode |= os.O_TRUNC
+		}
 		f, err := os.OpenFile(path, mode, 0644)
 		if err != nil {
 			return FileReply{Success: false, Error: err.Error()}
@@ -275,6 +279,60 @@ func (sm *ServiceManager) handleFileMessage(msg FileMsg) FileReply {
 		if !ok || f.file == nil {
 			return FileReply{Success: false, Error: "invalid file handle"}
 		}
+		originalLen := int64(msg.Flags)
+		if originalLen > 0 {
+			// Replace chunk with shifting/copying
+			_, err := f.file.Seek(0, io.SeekStart)
+			if err != nil {
+				return FileReply{Success: false, Error: err.Error()}
+			}
+			
+			tmpFile, err := os.CreateTemp("", "nuxvm-vfs-write-*")
+			if err != nil {
+				return FileReply{Success: false, Error: err.Error()}
+			}
+			defer os.Remove(tmpFile.Name())
+			defer tmpFile.Close()
+			
+			if msg.Offset > 0 {
+				_, err = io.CopyN(tmpFile, f.file, msg.Offset)
+				if err != nil {
+					return FileReply{Success: false, Error: err.Error()}
+				}
+			}
+			
+			_, err = tmpFile.Write(msg.Data)
+			if err != nil {
+				return FileReply{Success: false, Error: err.Error()}
+			}
+			
+			_, err = f.file.Seek(msg.Offset+originalLen, io.SeekStart)
+			if err != nil && err != io.EOF {
+				return FileReply{Success: false, Error: err.Error()}
+			}
+			
+			_, err = io.Copy(tmpFile, f.file)
+			if err != nil {
+				return FileReply{Success: false, Error: err.Error()}
+			}
+			
+			f.file.Close()
+			tmpFile.Close()
+			
+			err = os.Rename(tmpFile.Name(), f.Path)
+			if err != nil {
+				return FileReply{Success: false, Error: err.Error()}
+			}
+			
+			newF, err := os.OpenFile(f.Path, os.O_RDWR, 0644)
+			if err != nil {
+				return FileReply{Success: false, Error: err.Error()}
+			}
+			f.file = newF
+			
+			return FileReply{Success: true, Handle: int32(len(msg.Data))}
+		}
+
 		n, err := f.file.Write(msg.Data)
 		if err != nil {
 			return FileReply{Success: false, Error: err.Error()}
@@ -293,14 +351,24 @@ func (sm *ServiceManager) handleFileMessage(msg FileMsg) FileReply {
 		return FileReply{Success: true}
 
 	case FileOpStat:
-		if sm.sandboxResolver == nil {
-			return FileReply{Success: false, Error: "sandbox resolver not set"}
+		var info os.FileInfo
+		var err error
+		if msg.Handle != 0 {
+			f, ok := sm.openFiles[msg.Handle]
+			if !ok || f.file == nil {
+				return FileReply{Success: false, Error: "invalid file handle"}
+			}
+			info, err = f.file.Stat()
+		} else {
+			if sm.sandboxResolver == nil {
+				return FileReply{Success: false, Error: "sandbox resolver not set"}
+			}
+			path, err := sm.sandboxResolver(msg.Path)
+			if err != nil {
+				return FileReply{Success: false, Error: err.Error()}
+			}
+			info, err = os.Stat(path)
 		}
-		path, err := sm.sandboxResolver(msg.Path)
-		if err != nil {
-			return FileReply{Success: false, Error: err.Error()}
-		}
-		info, err := os.Stat(path)
 		if err != nil {
 			return FileReply{Success: false, Error: err.Error()}
 		}

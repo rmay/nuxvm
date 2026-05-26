@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rmay/nuxvm/pkg/vm"
 )
@@ -445,6 +446,23 @@ func TestTextNewlineResetsColumn(t *testing.T) {
 	cur, _ := sys.Read(textCursorAddr)
 	if cur != 13 { // row 13 col 0
 		t.Errorf("cursor after newline: got 0x%X, want row 13 col 0", cur)
+	}
+}
+
+func TestMillisecondTimer(t *testing.T) {
+	sys := NewSystem()
+	// Test millisecond timer
+	ms1, err := sys.Read(dateTimePort + 16)
+	if err != nil {
+		t.Fatalf("Read millisecond timer failed: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	ms2, err := sys.Read(dateTimePort + 16)
+	if err != nil {
+		t.Fatalf("Read millisecond timer failed: %v", err)
+	}
+	if ms2 <= ms1 {
+		t.Errorf("Millisecond timer did not advance: %d -> %d", ms1, ms2)
 	}
 }
 func TestWindowMMIO(t *testing.T) {
