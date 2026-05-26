@@ -82,6 +82,10 @@ func translateKey(k ebiten.Key) (int32, bool) {
 		return 19, true
 	case ebiten.KeyArrowRight:
 		return 20, true
+	case ebiten.KeyPageUp:
+		return 21, true
+	case ebiten.KeyPageDown:
+		return 22, true
 	case ebiten.KeySpace:
 		return 32, true
 	case ebiten.KeyTab:

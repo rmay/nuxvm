@@ -27,7 +27,7 @@ MODULE STR
         
         ( Find largest power of 10 <= val )
         1 ( power )
-        [ dup 10 * dup 0 > [ dup 1 local@ <= ] [ drop 0 ] ?: ] [
+        [ dup 10 * 1 local@ <= ] [
             10 *
         ] |:
         

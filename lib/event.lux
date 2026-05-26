@@ -24,6 +24,8 @@ MODULE EVENT
 @KEY_DOWN_ARROW  18 ;
 @KEY_LEFT_ARROW  19 ;
 @KEY_RIGHT_ARROW 20 ;
+@KEY_PAGE_UP     21 ;
+@KEY_PAGE_DOWN   22 ;
 
 ( --- Modifier Flag Bits (mirror pkg/system/services.go Mod*) --- )
 @MOD_SHIFT 1 ;

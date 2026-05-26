@@ -28,11 +28,13 @@ IMPORT MENU
 @MARGIN     16 ;
 @PANE_X     16 ;
 @PANE_Y     40 ;
-@PANE_H     664 ;
-@VISIBLE_LINES 25 ;
+@PANE_H     644 ;
+@VISIBLE_LINES 24 ;
 @LINE_H     26 ;
 @FONT_SIZE  18 ;
 @COLUMNS    80 ;
+@STATUS_H   20 ;
+@STATUS_BUF 0x910300 ;
 
 @CLR_BG     0xFFFFFF ;
 @CLR_FRAME  0xAAAAAA ;
@@ -75,6 +77,7 @@ IMPORT MENU
 @orig-chunk-len   0x91006C ;
 @CHUNK_SIZE       65536 ;
 @line-count       0x910070 ;
+@mouse-held       0x910074 ;
 @LINE_STARTS      0xA10000 ;
 
 @MB_ADDR        @MENU_DATA ;
@@ -392,7 +395,7 @@ IMPORT MENU
         [ dup file-len LOADI <= ] [
             dup 16 / scroll-y LOADI - ( rel_r )
             dup 0 >= OVER VISIBLE_LINES < AND [
-                0 0 3 frame! ( 0:i 1:idx 2:rel_r )
+                OVER 0 3 frame! ( 0:i 1:idx 2:rel_r )
                 0 [ dup 72 < ] [ dup 32 HEX_LINE_BUF rot + store-byte 1 + ] |: drop
                 1 local@ HEX_LINE_BUF addr-to-hex
                 [ 0 local@ 16 < 1 local@ 0 local@ + file-len LOADI <= AND ] [
@@ -410,9 +413,9 @@ IMPORT MENU
             16 +
         ] |:
         drop ( start_idx )
-        cursor LOADI rc-from-idx scroll-y LOADI - ( rel_r cc )
+        cursor LOADI rc-from-idx swap scroll-y LOADI - ( c rel_r )
         dup 0 >= OVER VISIBLE_LINES < AND [
-            char-w * PANE_X + swap LINE_H * PANE_Y + draw-caret
+            LINE_H * PANE_Y + swap char-w * PANE_X + swap draw-caret
         ] [ drop drop ] ?:
     ] [
         0 0 0 0 4 frame! ( 0:idx 1:r 2:c 3:seg-start )
@@ -445,9 +448,9 @@ IMPORT MENU
         1 local@ scroll-y LOADI - ( rel_r ) dup 0 >= OVER VISIBLE_LINES < AND [
             drop 3 local@ file-len LOADI PANE_X 1 local@ scroll-y LOADI - LINE_H * PANE_Y + flush-seg
         ] [ drop ] ?:
-        cursor LOADI rc-from-idx scroll-y LOADI - dup 0 >= OVER VISIBLE_LINES < AND [
-            drop drop caret-x LOADI caret-y LOADI draw-caret
-        ] [ drop drop ] ?:
+        cursor LOADI rc-from-idx swap drop scroll-y LOADI - dup 0 >= OVER VISIBLE_LINES < AND [
+            drop caret-x LOADI caret-y LOADI draw-caret
+        ] [ drop ] ?:
         4 unframe!
     ] ?:
 ;
@@ -458,22 +461,37 @@ IMPORT MENU
     get-abs-scroll-y 32 UI::scrollbar-init
 ;
 
+@draw-status-line ( -- )
+    ( Background status bar )
+    APP::draw-fd PANE_X PANE_Y PANE_H + PANE_W STATUS_H 0xEEEEEE DRAW::fill-rect
+    ( Top border of status bar )
+    APP::draw-fd PANE_X PANE_Y PANE_H + PANE_W 1 CLR_FRAME DRAW::draw-rect
+    
+    ( Format status text as X:Y )
+    cursor LOADI rc-from-idx 1 + swap 1 + swap 2 frame! ( 0:c 1:r )
+    1 local@ STATUS_BUF STR::int-to-str
+    T":" STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
+    0 local@ STATUS_BUF STATUS_BUF STR::strlen + STR::int-to-str
+    2 unframe!
+
+    ( Draw status text )
+    APP::draw-fd PANE_X 4 + PANE_Y PANE_H + 2 + STATUS_BUF STATUS_BUF STR::strlen CLR_TEXT FONT_SIZE 2 - DRAW::draw-string
+;
+
 @refresh-text-pane ( -- )
-    APP::draw-fd DRAW::begin-frame
     APP::draw-fd PANE_X PANE_Y PANE_W PANE_H CLR_BG DRAW::fill-rect
     update-scrollbar APP::draw-fd SB_DATA UI::scrollbar-draw
     draw-selection layout-and-render
-    APP::draw-fd DRAW::end-frame
+    draw-status-line
 ;
 
 @refresh ( -- )
-    APP::draw-fd DRAW::begin-frame
     APP::draw-fd 0 0 WIN_W WIN_H CLR_BG DRAW::fill-rect
     APP::draw-fd MARGIN 1 - PANE_Y 1 - PANE_W 2 + PANE_H 2 + CLR_FRAME DRAW::draw-rect
     update-scrollbar APP::draw-fd SB_DATA UI::scrollbar-draw
     draw-selection layout-and-render
+    draw-status-line
     APP::draw-fd MB_ADDR WIN_W [ MENUS ] 3 MENU::menu-bar-draw
-    APP::draw-fd DRAW::end-frame
 ;
 
 @ensure-visible ( -- )
@@ -486,6 +504,14 @@ IMPORT MENU
 ( --- Interaction --- )
 
 @on-mouse ( mpkt -- )
+    ( Track button-held state )
+    dup EVENT::mouse-type EVENT::MOUSE_DOWN = [
+        1 mouse-held STOREI
+    ] ?
+    dup EVENT::mouse-type EVENT::MOUSE_UP = [
+        0 mouse-held STOREI
+    ] ?
+
     MB_ADDR MENU::MB_ACTIVE + LOADI ( old-active )
     MB_ADDR MENU::MB_HOVER + LOADI  ( old-hover )
     get-abs-scroll-y                ( old-abs-sy )
@@ -497,7 +523,7 @@ IMPORT MENU
     
     ( Pass to scrollbar if menu not active )
     MB_ADDR MENU::MB_ACTIVE + LOADI -1 = [
-        SB_DATA OVER EVENT::mouse-x 2 PICK EVENT::mouse-y 3 PICK EVENT::mouse-btn UI::scrollbar-update ( new-abs-scroll-y )
+        SB_DATA OVER EVENT::mouse-x 2 PICK EVENT::mouse-y mouse-held LOADI UI::scrollbar-update ( new-abs-scroll-y )
         dup 1 local@ = 0 = [
             ( Jump to new absolute scroll position )
             get-total-lines dup 0 = [ drop 0 ] [
@@ -516,6 +542,12 @@ IMPORT MENU
     MB_ADDR MENU::MB_ACTIVE + LOADI -1 = [
         dup EVENT::mouse-y PANE_Y >= [
             dup EVENT::mouse-type EVENT::MOUSE_DOWN = [
+                dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy
+                dup cursor STOREI
+                anchor STOREI
+                check-lazy-load
+            ] ?
+            dup EVENT::mouse-type EVENT::MOUSE_MOVE = mouse-held LOADI 1 = AND [
                 dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy cursor STOREI
                 check-lazy-load
             ] ?
@@ -551,7 +583,17 @@ IMPORT MENU
                     dup EVENT::KEY_DOWN_ARROW = [ drop cursor LOADI rc-from-idx drop 1 + target-col LOADI idx-from-rc cursor STOREI ] [
                         dup EVENT::KEY_LEFT_ARROW = [ drop cursor-left ] [
                             dup EVENT::KEY_RIGHT_ARROW = [ drop cursor-right ] [
-                                drop
+                                dup EVENT::KEY_PAGE_UP = [ drop
+                                    scroll-y LOADI VISIBLE_LINES - 0 MAX scroll-y STOREI
+                                    cursor LOADI rc-from-idx drop VISIBLE_LINES - 0 MAX target-col LOADI idx-from-rc cursor STOREI
+                                ] [
+                                    dup EVENT::KEY_PAGE_DOWN = [ drop
+                                        scroll-y LOADI VISIBLE_LINES + get-total-lines VISIBLE_LINES - 0 MAX MIN scroll-y STOREI
+                                        cursor LOADI rc-from-idx drop VISIBLE_LINES + target-col LOADI idx-from-rc cursor STOREI
+                                    ] [
+                                        drop
+                                    ] ?:
+                                ] ?:
                             ] ?:
                         ] ?:
                     ] ?:
@@ -720,9 +762,9 @@ IMPORT MENU
         0 total-size STOREI 0 file-len STOREI 0 orig-chunk-len STOREI -1 file-fd STOREI
         rebuild-lines
     ] ?:
-    0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI 0 drag STOREI
+    0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI 0 drag STOREI 0 mouse-held STOREI
     
-    refresh [ on-mouse ] APP::on-mouse! [ on-kbd ] APP::on-kbd! APP::loop
+    refresh [ on-mouse ] APP::on-mouse! [ on-kbd ] APP::on-kbd! [ refresh ] APP::on-resume! APP::loop
 ;
 MAIN::start
 HALT
