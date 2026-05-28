@@ -1,0 +1,532 @@
+( --- NUXVM Master Shell (Actor 9) --- )
+
+INCLUDE "lib/app.lux"
+INCLUDE "lib/vfs.lux"
+INCLUDE "lib/draw.lux"
+INCLUDE "lib/event.lux"
+INCLUDE "lib/ui.lux"
+
+MODULE SHELL
+
+IMPORT APP
+IMPORT VFS
+IMPORT DRAW
+IMPORT EVENT
+IMPORT UI
+
+( State )
+@cfd   0x8D3000 ; ( Parent end of Child Draw Channel )
+@cmfd  0x8D3004 ; ( Parent end of Child Mouse Channel )
+@ckfd  0x8D3008 ; ( Parent end of Child Kbd Channel )
+@vfd   0x8D300C ; ( Parent end of Child Dialog Channel )
+@win_x 0x8D3010 ;
+@win_y 0x8D3014 ;
+@dragging 0x8D3018 ;
+@last_mx  0x8D301C ;
+@last_my  0x8D3020 ;
+
+( File Dialog State )
+@dlg_open 0x8D4000 ;
+@dlg_path 0x8D4004 ; ( 256 bytes for path )
+@dlg_buf  0x8D4104 ; ( 4096 bytes for dir list )
+@dlg_cnt  0x8D5104 ;
+@dlg_lb   0x8D5108 ; ( LB_SIZE )
+@dlg_sb   0x8D5200 ; ( SB_SIZE )
+@dlg_btn_open 0x8D5300 ; ( BTN_SIZE )
+@dlg_btn_can  0x8D5400 ; ( BTN_SIZE )
+
+@dlg_open@ dlg_open LOADI ; @dlg_open! dlg_open STOREI ;
+@vfd@ vfd LOADI ; @vfd! vfd STOREI ;
+@cfd@ cfd LOADI ; @cfd! cfd STOREI ;
+@cmfd@ cmfd LOADI ; @cmfd! cmfd STOREI ;
+@ckfd@ ckfd LOADI ; @ckfd! ckfd STOREI ;
+
+@win_x@ win_x LOADI ; @win_x! win_x STOREI ;
+@win_y@ win_y LOADI ; @win_y! win_y STOREI ;
+@dragging@ dragging LOADI ; @dragging! dragging STOREI ;
+@last_mx@ last_mx LOADI ; @last_mx! last_mx STOREI ;
+@last_my@ last_my LOADI ; @last_my! last_my STOREI ;
+
+( --- File Dialog Logic --- )
+
+@refresh-dir ( -- )
+    ( Read directory into dlg_buf )
+    T"/sys/dir" DRAW::BUF STR::strcpy
+    dlg_path load-byte 47 = [ ( path starts with / )
+        dlg_path DRAW::BUF STR::strlen + STR::strcpy
+    ] [
+        T"/" DRAW::BUF STR::strlen + STR::strcpy
+        dlg_path DRAW::BUF STR::strlen + STR::strcpy
+    ] ?:
+    
+    DRAW::BUF VFS::open ( dfd )
+    dup 0 > [
+        dup dlg_buf 4096 VFS::read ( len )
+        ( count newlines )
+        0 0 2 frame! ( 0:i, 1:cnt )
+        [ 0 local@ 2 local@ < ] [
+            dlg_buf 0 local@ + load-byte 10 = [ 1 local@ 1 + 1 local! ] ?
+            0 local@ 1 + 0 local!
+        ] |:
+        1 local@ 1 + dlg_cnt STOREI ( +1 for last item )
+        2 unframe!
+        VFS::close drop
+    ] [
+        drop
+        0 dlg_cnt STOREI
+    ] ?:
+;
+
+@on-dlg-open ( -- )
+    ( Get selected filename )
+    dlg_lb UI::LB_SEL + LOADI ( idx )
+    dup 0 >= [
+        ( Find filename in dlg_buf )
+        0 dlg_buf 3 frame! ( 0:i, 1:ptr, 2:idx )
+        [ 0 local@ 2 local@ < ] [
+            1 local@ load-byte 10 = [
+                0 local@ 1 + 0 local!
+            ] ?
+            1 local@ 1 + 1 local!
+        ] |:
+        
+        ( Copy current path + filename to DRAW::BUF )
+        dlg_path DRAW::BUF STR::strcpy
+        dlg_path STR::strlen ( len )
+        dup 0 > [
+            dlg_path swap 1 - + load-byte 47 <> [
+                T"/" DRAW::BUF STR::strlen + STR::strcpy
+            ] ?
+        ] ?
+
+        ( Copy filename until newline or null )
+        1 local@ ( ptr )
+        [ dup load-byte dup 10 <> swap 0 <> AND ] [
+            dup load-byte DRAW::BUF STR::strlen + store-byte
+            1 +
+        ] |:
+        drop
+
+        ( Null-terminate DRAW::BUF )
+        0 DRAW::BUF STR::strlen + store-byte
+
+        ( Write DRAW::BUF to child )
+        vfd@ DRAW::BUF DRAW::BUF STR::strlen VFS::write drop
+        3 unframe!
+    ] ?
+    0 dlg_open!
+;
+
+@on-dlg-cancel ( -- )
+    vfd@ T"cancel" 6 VFS::write drop
+    0 dlg_open!
+;
+
+@on-dlg-dbl-click ( -- )
+    ( Get selected filename )
+    dlg_lb UI::LB_SEL + LOADI ( idx )
+    dup 0 >= [
+        ( Find filename in dlg_buf )
+        0 dlg_buf 3 frame! ( 0:i, 1:ptr, 2:idx )
+        [ 0 local@ 2 local@ < ] [
+            1 local@ load-byte 10 = [
+                0 local@ 1 + 0 local!
+            ] ?
+            1 local@ 1 + 1 local!
+        ] |:
+        
+        ( Check if directory )
+        1 local@ ( ptr )
+        [ dup load-byte dup 10 <> swap 0 <> AND ] [ 1 + ] |:
+        1 - load-byte 47 = [ ( is dir )
+            ( Append to dlg_path )
+            dlg_path STR::strlen ( current len )
+            dup 0 > [
+                dlg_path over 1 - + load-byte 47 <> [
+                    T"/" dlg_path STR::strlen + STR::strcpy
+                ] ?
+            ] ?
+            
+            ( Copy name )
+            1 local@ ( ptr )
+            [ dup load-byte dup 10 <> swap 0 <> AND ] [
+                dup load-byte dlg_path STR::strlen + store-byte
+                1 +
+            ] |:
+            drop
+            0 dlg_path STR::strlen + store-byte ( Terminate )
+
+            refresh-dir
+            dlg_lb dlg_buf dlg_cnt LOADI UI::listbox-update-data
+        ] [
+            on-dlg-open
+        ] ?:
+        3 unframe!
+    ] [ drop ] ?:
+;
+
+@dlg_bc_open 0x8D4204 ;
+@dlg_bc_open@ dlg_bc_open LOADI ; @dlg_bc_open! dlg_bc_open STOREI ;
+@dlg_bc_rect 0x8D4208 ; ( x, y, w, h )
+
+@on-bc-click ( -- )
+    1 dlg_bc_open!
+;
+
+@init-file-dialog ( -- )
+    T"/" dlg_path STR::strcpy
+    refresh-dir
+    
+    dlg_lb 300 260 300 200 dlg_buf dlg_cnt LOADI dlg_sb 20 [ ] UI::listbox-init
+    dlg_lb $on-dlg-dbl-click UI::listbox-dbl-callback!
+    dlg_btn_open 610 470 60 24 T"Open" [ on-dlg-open ] UI::button-init
+    dlg_btn_can  540 470 60 24 T"Cancel" [ on-dlg-cancel ] UI::button-init
+    0 dlg_bc_open!
+;
+
+@handle-bc-mouse ( mpkt -- )
+    1 frame! ( 0:mpkt )
+    dlg_bc_open@ [
+        0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+            ( Check if in dropdown )
+            0 local@ EVENT::mouse-x 300 >=
+            0 local@ EVENT::mouse-x 460 < AND
+            0 local@ EVENT::mouse-y 230 >= AND [
+                ( Clicked in breadcrumbs )
+                ( count path segments )
+                0 0 2 frame! ( 0:seg_idx, 1:ptr )
+                dlg_path 1 local!
+                [ 1 local@ load-byte 0 <> ] [
+                    1 local@ load-byte 47 = [ 0 local@ 1 + 0 local! ] ?
+                    1 local@ 1 + 1 local!
+                ] |:
+                ( total segments in 0 local@ )
+                
+                ( Clicked segment = (mouseY - 230) / 16 )
+                0 local@ ( total )
+                0 local@ 0 local@ EVENT::mouse-y 230 - 16 / - ( clicked_seg_idx )
+                
+                dup 0 >= [
+                    ( Navigate to clicked_seg_idx )
+                    0 0 2 frame! ( 0:curr_idx, 1:ptr )
+                    dlg_path 1 local!
+                    [ 0 local@ 2 local@ < ] [
+                        1 local@ load-byte 47 = [ 0 local@ 1 + 0 local! ] ?
+                        1 local@ 1 + 1 local!
+                    ] |:
+                    ( ptr is now at end of segment )
+                    0 1 local@ store-byte ( Truncate path )
+                    
+                    dlg_path load-byte 0 = [ T"/" dlg_path STR::strcpy ] ?
+
+                    refresh-dir
+                    dlg_lb dlg_buf dlg_cnt LOADI UI::listbox-update-data
+                    0 dlg_bc_open!
+                    2 unframe!
+                ] ?
+                
+                2 unframe!
+            ] [
+                0 dlg_bc_open!
+            ] ?:
+        ] ?
+    ] [
+        0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+            0 local@ EVENT::mouse-x 300 >=
+            0 local@ EVENT::mouse-x 460 < AND
+            0 local@ EVENT::mouse-y 225 >= AND
+            0 local@ EVENT::mouse-y 245 < AND [
+                on-bc-click
+            ] ?
+        ] ?
+    ] ?:
+    1 unframe!
+;
+
+@handle-dlg-mouse ( mpkt -- )
+    1 frame! ( 0:mpkt )
+    0 local@ handle-bc-mouse
+    dlg_bc_open@ 0 = [
+        dlg_lb 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y 0 local@ EVENT::mouse-type UI::listbox-update
+        dlg_btn_open 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y 0 local@ EVENT::mouse-type UI::button-update drop
+        dlg_btn_can 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y 0 local@ EVENT::mouse-type UI::button-update drop
+    ] ?
+    1 unframe!
+;
+
+@draw-file-dialog ( -- )
+    ( x:280, y:210, w:400, h:300 )
+    APP::draw-fd 280 210 400 300 0xFFFFFF DRAW::fill-rect
+    APP::draw-fd 280 210 400 300 0x000000 DRAW::draw-rect
+    ( Shadow )
+    APP::draw-fd 680 214 4 300 0x000000 DRAW::fill-rect
+    APP::draw-fd 284 510 400 4 0x000000 DRAW::fill-rect
+    
+    ( Listbox )
+    APP::draw-fd dlg_lb UI::listbox-draw
+    
+    ( Buttons )
+    APP::draw-fd dlg_btn_open UI::button-draw
+    APP::draw-fd dlg_btn_can UI::button-draw
+    
+    ( Current Dir / Breadcrumb )
+    APP::draw-fd 300 225 160 20 0xEEEEEE DRAW::fill-rect
+    APP::draw-fd 300 225 160 20 0x000000 DRAW::draw-rect
+    
+    ( Draw current folder name - last segment of path )
+    dlg_path STR::strlen ( len )
+    dup 0 > [
+        1 - ( idx )
+        [ dup 0 > dlg_path over + load-byte 47 <> AND ] [ 1 - ] |:
+        dlg_path over + load-byte 47 = [ 1 + ] ?
+        ( ptr )
+        dlg_path swap + APP::draw-fd 305 230 ROT 0x000000 12 DRAW::draw-str
+    ] [
+        drop
+        APP::draw-fd 305 230 T"/" 0x000000 12 DRAW::draw-str
+    ] ?:
+
+    ( Dropdown if open )
+    dlg_bc_open@ [
+        ( Count segments to draw list )
+        0 0 2 frame! ( 0:seg_idx, 1:ptr )
+        dlg_path 1 local!
+        [ 1 local@ load-byte 0 <> ] [
+            1 local@ load-byte 47 = [ 
+                ( Draw segment name )
+                APP::draw-fd 300 230 0 local@ 1 + 16 * + 160 16 0xFFFFFF DRAW::fill-rect
+                APP::draw-fd 300 230 0 local@ 1 + 16 * + 160 16 0x000000 DRAW::draw-rect
+                
+                ( Find start of segment )
+                1 local@ ( end_ptr )
+                [ dup dlg_path > over 1 - load-byte 47 <> AND ] [ 1 - ] |:
+                ( start_ptr )
+                APP::draw-fd 305 234 0 local@ 1 + 16 * + ROT 1 local@ OVER - 0x000000 1 DRAW::draw-str-n
+
+                0 local@ 1 + 0 local! 
+            ] ?
+            1 local@ 1 + 1 local!
+        ] |:
+        2 unframe!
+    ] ?
+;
+
+@mbuf 0x8D2000 ;
+@pbuf 0x8D1000 ;
+@id_buf 0x8D0000 ;
+
+@on-mouse ( mpkt -- )
+    1 frame! ( 0:mpkt )
+    dlg_open@ [
+        0 local@ handle-dlg-mouse
+    ] [
+        0 local@ EVENT::mouse-type ( type )
+        0 local@ EVENT::mouse-x ( mx )
+        0 local@ EVENT::mouse-y ( my )
+        3 frame! ( 0:my, 1:mx, 2:type )
+        
+        2 local@ EVENT::MOUSE_MOVE = [
+            dragging@ [
+                win_x@ 1 local@ last_mx@ - + win_x!
+                win_y@ 0 local@ last_my@ - + win_y!
+            ] ?
+        ] [
+            2 local@ EVENT::MOUSE_DOWN = [
+                ( Check if in window )
+                1 local@ win_x@ >= 1 local@ win_x@ 960 + < AND
+                0 local@ win_y@ >= AND 0 local@ win_y@ 720 + < AND [
+                    1 dragging!
+                ] ?
+            ] [
+                2 local@ EVENT::MOUSE_UP = [
+                    0 dragging!
+                ] ?
+            ] ?:
+        ] ?:
+        
+        ( Proxy to child if active )
+        cmfd@ 0 > [
+            ( Match /sys/mouse format: [Type(1), Button(1), X(2), Y(2), Padding(2)] )
+            2 local@ DRAW::BUF store-byte
+            0 local@ EVENT::mouse-btn DRAW::BUF 1 + store-byte
+            1 local@ win_x@ - DRAW::BUF 2 + DRAW::store-word-le
+            0 local@ win_y@ - DRAW::BUF 4 + DRAW::store-word-le
+            0 DRAW::BUF 6 + store-byte
+            0 DRAW::BUF 7 + store-byte
+            cmfd@ DRAW::BUF 8 VFS::write drop
+        ] ?
+
+        1 local@ last_mx!
+        0 local@ last_my!
+
+        3 unframe!
+    ] ?:
+    1 unframe!
+;
+
+@on-kbd ( kpkt -- )
+    ( Forward 8-byte key packets from hardware to the child's /dev/kbd. )
+    ckfd@ 0 > [
+        ckfd@ swap 8 VFS::write drop
+    ] [ drop ] ?:
+;
+
+@offset-draw ( buf len -- )
+    3 frame! ( 0:tlen, 1:len, 2:buf )
+    [ 1 local@ 0 > ] [
+        2 local@ load-byte ( type )
+        dup 0 = OVER 3 = OR [ ( FillRect (0), DrawRect (3) )
+            2 local@ 1 + dup DRAW::load-word-le win_x@ + swap DRAW::store-word-le
+            2 local@ 3 + dup DRAW::load-word-le win_y@ + swap DRAW::store-word-le
+            APP::draw-fd 2 local@ 13 VFS::write drop
+            13 0 local!
+        ] [
+            dup 1 = [ ( DrawChar )
+                2 local@ 1 + dup DRAW::load-word-le win_x@ + swap DRAW::store-word-le
+                2 local@ 3 + dup DRAW::load-word-le win_y@ + swap DRAW::store-word-le
+                APP::draw-fd 2 local@ 11 VFS::write drop
+                11 0 local!
+            ] [
+                dup 2 = [ ( DrawString )
+                    2 local@ 1 + dup DRAW::load-word-le win_x@ + swap DRAW::store-word-le
+                    2 local@ 3 + dup DRAW::load-word-le win_y@ + swap DRAW::store-word-le
+                    2 local@ 10 + DRAW::load-word-le ( slen )
+                    12 + 0 local!
+                    APP::draw-fd 2 local@ 0 local@ VFS::write drop
+                ] [
+                    dup 4 = [ ( SetFontSize )
+                        APP::draw-fd 2 local@ 2 VFS::write drop
+                        2 0 local!
+                    ] [
+                        dup 5 = [ ( SetFont )
+                            APP::draw-fd 2 local@ 2 VFS::write drop
+                            2 0 local!
+                        ] [
+                            ( Unknown: skip 1 byte to avoid infinite loop )
+                            1 0 local!
+                        ] ?:
+                    ] ?:
+                ] ?:
+            ] ?:
+        ] ?:
+        drop ( type )
+        ( Update len and buf using tlen )
+        1 local@ 0 local@ - 1 local!
+        2 local@ 0 local@ + 2 local!
+    ] |:
+    3 unframe!
+;
+
+@proxy-draw ( -- )
+    [ cfd@ pbuf 1024 VFS::read dup 0 > ] [
+        pbuf swap offset-draw
+    ] |:
+    drop
+;
+
+@poll-dialog ( -- )
+    vfd@ pbuf 1 VFS::read 1 = [
+        ( Child requested something )
+        1 dlg_open!
+        init-file-dialog
+    ] ?
+;
+
+@on-frame ( -- )
+    ( 1. Background )
+    APP::draw-fd 0 0 APP::width APP::height 0x222222 DRAW::fill-rect
+    
+    ( 2. Window Frame )
+    APP::draw-fd win_x@ 1 - win_y@ 1 - 962 722 0x000000 DRAW::draw-rect
+    APP::draw-fd win_x@ win_y@ 960 720 0xFFFFFF DRAW::fill-rect
+    
+    ( 3. Proxy Child Graphics )
+    proxy-draw
+
+    ( 4. File Dialog Overlay )
+    dlg_open@ [
+        draw-file-dialog
+    ] ?
+;
+
+@on-tick ( -- )
+    poll-dialog
+    on-frame
+;
+
+@launch-app ( path -- )
+    6 frame! ( 0:cid, 1:dfd, 2:kfd, 3:mfd, 4:drfd, 5:path )
+    
+    ( 1. Create Channels )
+    VFS::PATH_CHAN_NEW VFS::open cfd!
+    VFS::PATH_CHAN_PEER VFS::open 4 local! ( dr_peer_fd )
+    
+    VFS::PATH_CHAN_NEW VFS::open cmfd!
+    VFS::PATH_CHAN_PEER VFS::open 3 local! ( mouse_peer_fd )
+    
+    VFS::PATH_CHAN_NEW VFS::open ckfd!
+    VFS::PATH_CHAN_PEER VFS::open 2 local! ( kbd_peer_fd )
+
+    VFS::PATH_CHAN_NEW VFS::open vfd!
+    VFS::PATH_CHAN_PEER VFS::open 1 local! ( dlg_peer_fd )
+    
+    ( 2. Spawn Child VM )
+    VFS::PATH_VM_NEW VFS::open ( vm_ctl_fd )
+    5 local@ dup STR::strlen 2 PICK VFS::write drop
+
+    ( 3. Get Child ID )
+    dup id_buf 4 VFS::read drop
+    id_buf LOADI 0 local! ( child_id )
+
+    ( 4. Bind into Child Namespace )
+    T"/sys/vm/" DRAW::BUF STR::strcpy
+    0 local@ DRAW::BUF STR::strlen + STR::int-to-str
+    T"/ns/dev/draw" DRAW::BUF STR::strlen + STR::strcpy
+    4 local@ DRAW::BUF VFS::bind drop
+    
+    T"/sys/vm/" DRAW::BUF STR::strcpy
+    0 local@ DRAW::BUF STR::strlen + STR::int-to-str
+    T"/ns/dev/mouse" DRAW::BUF STR::strlen + STR::strcpy
+    3 local@ DRAW::BUF VFS::bind drop
+    
+    T"/sys/vm/" DRAW::BUF STR::strcpy
+    0 local@ DRAW::BUF STR::strlen + STR::int-to-str
+    T"/ns/dev/kbd" DRAW::BUF STR::strlen + STR::strcpy
+    2 local@ DRAW::BUF VFS::bind drop
+    
+    T"/sys/vm/" DRAW::BUF STR::strcpy
+    0 local@ DRAW::BUF STR::strlen + STR::int-to-str
+    T"/ns/dev/dialog" DRAW::BUF STR::strlen + STR::strcpy
+    1 local@ DRAW::BUF VFS::bind drop
+
+    ( 5. Cleanup )
+    4 local@ VFS::close drop
+    3 local@ VFS::close drop
+    2 local@ VFS::close drop
+    1 local@ VFS::close drop
+    VFS::close drop ( vm_ctl_fd )
+    
+    6 unframe!
+;
+
+@start
+    T"Master Shell" APP::init
+
+    ( Initial Window Pos )
+    100 win_x!
+    100 win_y!
+    0 dragging!
+    0 last_mx!
+    0 last_my!
+
+    T"apps/Quill.lux" launch-app
+
+    [ on-tick ] APP::on-frame!
+    [ on-mouse ] APP::on-mouse!
+    [ on-kbd ] APP::on-kbd!
+
+    APP::loop
+;
+
+SHELL::start
+HALT

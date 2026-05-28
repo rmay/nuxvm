@@ -1,0 +1,72 @@
+( --- SYSTEM MEMORY MAP ---
+  Standardized memory addresses for shared libraries.
+  The gap between VideoFramebufferEnd (0x511000) and
+  UserMemoryOffset (0x600000) is used for system state. )
+
+MODULE MEMORY
+
+( --- Controls System State (0x520000 range) --- )
+@CTRL_X 0x520000 ;
+@CTRL_Y 0x520004 ;
+@CTRL_W 0x520008 ;
+@CTRL_H 0x52000C ;
+@CTRL_BASE 0x520010 ;
+@CTRL_TEMP 0x520014 ;
+
+( --- Floating Point / Math State --- )
+@FP_ADDR 0x521000 ;
+@FP_STACK 0x521400 ;
+
+( --- File System Iteration --- )
+@FILE_DIR_QUOT 0x522000 ;
+@FILE_DIR_MAX  0x522004 ;
+
+( --- Dialog System State (0x530000 range) --- )
+@DIALOG_ITEMS_BUF 0x530000 ;
+@DIALOG_LIST_BASE 0x530800 ;
+@DIALOG_RESULT_PTR_ADDR 0x530818 ;
+@DIALOG_CALLBACK_ADDR 0x53081C ;
+@DIALOG_SAVED_SCREEN_ADDR 0x530820 ;
+@DIALOG_SAVED_CTRL_ADDR 0x530824 ;
+@DIALOG_SAVED_MOUSE_ADDR 0x530828 ;
+@DIALOG_TITLE_PTR_ADDR 0x53082C ;
+@DIALOG_OK_PTR_ADDR 0x530830 ;
+@DIALOG_CANCEL_PTR_ADDR 0x530834 ;
+@DIALOG_W_ADDR 0x530838 ;
+@DIALOG_H_ADDR 0x53083C ;
+@DIALOG_DRAWING_ADDR 0x530840 ;
+@DIALOG_SAVED_PANE 0x530844 ;
+@DIALOG_SCRATCH_BUF 0x530900 ;
+
+( --- File Dialog State --- )
+@FILE_DIALOG_ITEMS_BUF 0x531000 ;
+@FILE_DIALOG_LIST_BASE 0x533000 ;
+@FILE_DIALOG_CURRENT_PATH 0x533200 ;
+@FILE_DIALOG_SELECTED_DIR 0x533400 ;
+@FILE_DIALOG_FILTER_EXT_ADDR 0x533600 ;
+
+( --- Memory Manipulation --- )
+
+@move-mem ( src dest len -- )
+    3 frame!
+    2 local@ 1 local@ < [
+        ( Backward copy: src < dest, copy from high to low to avoid clobber )
+        2 local@ 0 local@ + 1 -
+        1 local@ 0 local@ + 1 -
+        [ 0 local@ 0 > ] [
+            OVER load-byte OVER store-byte
+            1 - swap 1 - swap
+            0 local@ 1 - 0 local!
+        ] |:
+        drop drop
+    ] [
+        ( Forward copy )
+        [ 0 local@ 0 > ] [
+            2 local@ load-byte 1 local@ store-byte
+            2 local@ 1 + 2 local!
+            1 local@ 1 + 1 local!
+            0 local@ 1 - 0 local!
+        ] |:
+    ] ?:
+    3 unframe!
+;

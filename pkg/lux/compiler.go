@@ -4,1271 +4,190 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/rmay/nuxvm/pkg/vm"
 )
 
-// Built-in words map to opcodes
-var builtins = map[string]byte{
-	// Stack operations
-	"DUP":  vm.OpDup,
-	"DROP": vm.OpPop,
-	"SWAP": vm.OpSwap,
-	"ROLL": vm.OpRoll,
-	"ROT":  vm.OpRot,
-	// Arithmetic
-	"+":   vm.OpAdd,
-	"-":   vm.OpSub,
-	"*":   vm.OpMul,
-	"/":   vm.OpDiv,
-	"MOD": vm.OpMod,
-	"INC": vm.OpInc,
-	"DEC": vm.OpDec,
-	// Bitwise
-	"AND":    vm.OpAnd,
-	"OR":     vm.OpOr,
-	"XOR":    vm.OpXor,
-	"NOT":    vm.OpNot,
-	"LSHIFT": vm.OpShl,
-	// Comparison
-	"=": vm.OpEq,
-	"<": vm.OpLt,
-	// Memory (indirect / dynamic address)
-	"LOADI":  vm.OpLoadI,
-	"STOREI": vm.OpStoreI,
-	// Control flow
-	"EXIT":  vm.OpRet,
-	"HALT":  vm.OpHalt,
-	"YIELD": vm.OpYield,
-}
-
-// Control flow combinators
-var combinators = map[string]bool{
-	"?:":   true,
-	"?":    true,
-	"!:":   true,
-	"|:":   true,
-	"#:":   true,
-	"CALL": true,
-	"DIP":  true,
-	"KEEP": true,
-}
-
-// Word represents a user-defined word
 type Word struct {
 	Name    string
 	Address int32
 	Module  string
 }
 
-// Quotation represents a compiled code block
 type Quotation struct {
-	Address  int32  // Where the quotation code starts
-	EndAddr  int32  // Where it ends
-	Code     []byte // Compiled bytecode
-	TempAddr int32  // Temporary address for patching
+	TempAddr      int32          // Virtual address during compilation
+	Address       int32          // Final VM address
+	Code          []byte         // Compiled bytecode
+	InternalJumps []InternalJump // Jumps within Code that need absolute-address patching
 }
 
-// UnresolvedReference tracks a word in a quotation that needs resolution
+type InternalJump struct {
+	PlaceholderAt int32 // Offset within Quotation.Code where the 4-byte address is
+	TargetOffset  int32 // Offset within Quotation.Code where the jump should go
+}
+
+type PatchRequest struct {
+	QuotIdx  int // -1 for main bytecode
+	Offset   int32
+	TempAddr int32
+}
+
 type UnresolvedReference struct {
-	Word      string // Word name (e.g., "fib")
-	Offset    int32  // Bytecode offset where address needs patching
-	Quotation int    // Index of quotation in c.quotations
-	Line      int    // For error reporting
+	Word      string
+	Offset    int32
+	Line      int
 	Column    int
+	QuotIdx   int
+	Module    string
+	IsAddress bool
 }
 
-// UnresolvedJmp tracks a jump instruction that needs address patching
-type UnresolvedJmp struct {
-	Offset   int32 // Bytecode offset where the address placeholder starts (after the opcode)
-	TempAddr int32 // Temporary address key (to look up the real address in addrMap)
-}
-
-// Compiler compiles LUX source to bytecode
 type Compiler struct {
 	tokens         []Token
 	pos            int
 	bytecode       []byte
 	dictionary     map[string]Word
 	quotations     []Quotation
+	quotationStack []int // indices of quotations currently being compiled
+	activeQuotIdx  int   // -1 if compiling main code
 	currentModule  string
+	currentWord    string
 	imports        map[string]string
-	baseAddr       int32                 // Added for address calculations
-	tempAlloc      int32                 // Added for temporary memory allocation in reserved area
-	unresolved     []UnresolvedReference // Track words to resolve after definitions
-	unresolvedJmps []UnresolvedJmp       // To handle recursion
-	trace          bool                  // Trace compilation steps, defaults to false
+	baseAddr       int32
+	tempAlloc      int32
+	nextStringHeap int32
+	unresolved     []UnresolvedReference
+	patchRequests  []PatchRequest
+	includeDepth   int
+	includedFiles  map[string]bool
+	trace          bool
+
+	stringPatches []StringPatch
 }
 
-// Compile converts LUX source to NUXVM bytecode
-func Compile(source string, trace ...bool) ([]byte, error) {
-	traceEnabled := false
+type StringPatch struct {
+	Offset   int32
+	QuotIdx  int
+	TempAddr int32
+}
+
+var builtins = map[string]byte{
+	"DUP":      vm.OpDup,
+	"DROP":     vm.OpPop,
+	"SWAP":     vm.OpSwap,
+	"ROT":      vm.OpRot,
+	"OVER":     vm.OpOver,
+	"PICK":     vm.OpPick,
+	"ROLL":     vm.OpRoll,
+	"LOAD":     vm.OpLoad,
+	"STORE":    vm.OpStore,
+	"LOADI":    vm.OpLoadI,
+	"STOREI":   vm.OpStoreI,
+	"EXIT":     vm.OpRet,
+	"HALT":     vm.OpHalt,
+	"YIELD":    vm.OpYield,
+	"JNZ":      vm.OpJnz,
+	"NEGATE":   vm.OpNeg,
+	"ADD":      vm.OpAdd,
+	"+":        vm.OpAdd,
+	"SUB":      vm.OpSub,
+	"-":        vm.OpSub,
+	"MUL":      vm.OpMul,
+	"*":        vm.OpMul,
+	"DIV":      vm.OpDiv,
+	"/":        vm.OpDiv,
+	"MOD":      vm.OpMod,
+	"INC":      vm.OpInc,
+	"DEC":      vm.OpDec,
+	"AND":      vm.OpAnd,
+	"OR":       vm.OpOr,
+	"XOR":      vm.OpXor,
+	"NOT":      vm.OpNot,
+	"SHL":      vm.OpShl,
+	"LSHIFT":   vm.OpShl,
+	"SHR":      vm.OpShr,
+	"SAR":      vm.OpSar,
+	"RSHIFT":   vm.OpShr,
+	"EQ":       vm.OpEq,
+	"=":        vm.OpEq,
+	"LT":       vm.OpLt,
+	"<":        vm.OpLt,
+	"GT":       vm.OpGt,
+	">":        vm.OpGt,
+	"NEQ":      vm.OpNeq,
+	"<>":       vm.OpNeq,
+	"LTE":      vm.OpLte,
+	"<=":       vm.OpLte,
+	"GTE":      vm.OpGte,
+	">=":       vm.OpGte,
+	"ABS":      vm.OpAbs,
+	"MIN":      vm.OpMin,
+	"MAX":      vm.OpMax,
+	"DIVMOD":   vm.OpDivmod,
+	"CALLSTACK": vm.OpCallStack,
+	"JMPSTACK":  vm.OpJmpStack,
+	"PUSHR":     vm.OpPushR,
+	"POPR":      vm.OpPopR,
+	"PEEKR":     vm.OpPeekR,
+	"PEEKR2":    vm.OpPeekR2,
+	"FRAME!":   vm.OpFrame,
+	"UNFRAME!": vm.OpUnframe,
+	"LOCAL@":   vm.OpLocalGet,
+	"LOCAL!":   vm.OpLocalSet,
+}
+
+var combinators = map[string]bool{
+	"CALL": true, "?:": true, "?": true, "!:": true, "|:": true, "#:": true, "DIP": true, "KEEP": true,
+}
+
+func NewCompiler(tokens []Token, baseAddr int32, trace ...bool) *Compiler {
+	tr := false
 	if len(trace) > 0 {
-		traceEnabled = trace[0]
+		tr = trace[0]
 	}
-
-	lexer := NewLexer(source, traceEnabled)
-	tokens, err := lexer.Tokenize()
-	if err != nil {
-		return nil, err
+	return &Compiler{
+		tokens: tokens, dictionary: make(map[string]Word), imports: make(map[string]string),
+		includedFiles:  make(map[string]bool),
+		quotationStack: make([]int, 0),
+		activeQuotIdx:  -1, baseAddr: baseAddr, nextStringHeap: 0,
+		tempAlloc: 0x8000,
+		trace:     tr,
 	}
-
-	compiler := &Compiler{
-		tokens:         tokens,
-		pos:            0,
-		bytecode:       []byte{},
-		dictionary:     make(map[string]Word),
-		quotations:     []Quotation{},
-		currentModule:  "",
-		imports:        make(map[string]string),
-		baseAddr:       int32(vm.UserMemoryOffset),
-		tempAlloc:      0,
-		unresolved:     []UnresolvedReference{},
-		unresolvedJmps: []UnresolvedJmp{},
-		trace:          traceEnabled,
-	}
-	return compiler.compile()
 }
 
-// compile is the main compilation loop
-func (c *Compiler) compile() ([]byte, error) {
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "compile: Starting, tokens=%v\n", c.tokens)
-	}
-	jmpAddr := int32(len(c.bytecode))
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "compile: Emitting initial JMP at offset=%d\n", jmpAddr)
-	}
-	c.emit(vm.OpJmp)
-	c.emit(0, 0, 0, 0)
-	startPos := c.pos
-	maxIterations := len(c.tokens) * 2
-	iterations := 0
-	// First pass: Handle directives and word definitions
-	for c.pos < len(c.tokens) && c.peek().Type != TokenEOF {
-		iterations++
-		if iterations > maxIterations {
-			return nil, fmt.Errorf("infinite loop detected in first pass at pos=%d, token=%v", c.pos, c.peek())
-		}
-		token := c.peek()
-		if c.trace {
-			fmt.Fprintf(os.Stderr, "compile: First pass, pos=%d, token=%v\n", c.pos, token)
-		}
-		if token.Type == TokenWord && strings.ToUpper(token.Value) == "MODULE" {
-			if err := c.handleModuleDirective(); err != nil {
-				return nil, err
-			}
-		} else if token.Type == TokenWord && strings.ToUpper(token.Value) == "IMPORT" {
-			if err := c.handleImportDirective(); err != nil {
-				return nil, err
-			}
-		} else if token.Type == TokenAtSign {
-			if err := c.compileWordDefinition(); err != nil {
-				return nil, err
-			}
-		} else {
-			c.advance()
-		}
-	}
-	// Resolve unresolved word references
-	for _, unresolved := range c.unresolved {
-		word, found := c.resolveWord(unresolved.Word)
-		if !found {
-			return nil, fmt.Errorf("unknown word '%s' in quotation at line %d, column %d", unresolved.Word, unresolved.Line, unresolved.Column)
-		}
-		// Patch placeholder with CALL to word address
-		c.bytecode[unresolved.Offset] = vm.OpCall
-		copy(c.bytecode[unresolved.Offset+1:unresolved.Offset+5], vm.EncodeInt32(word.Address))
-		if c.trace {
-			fmt.Fprintf(os.Stderr, "compile: Patched unresolved word %s at offset %d to CALL addr %d\n", unresolved.Word, unresolved.Offset, word.Address)
-		}
-	}
-	c.unresolved = nil // Clear resolved references
-	mainStart := c.currentAddress()
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "compile: Main code starts at addr=%d\n", mainStart)
-	}
-	mainStartBytes := vm.EncodeInt32(mainStart)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "compile: Patching JMP at %d with addr=%d\n", jmpAddr+1, mainStart)
-	}
-	copy(c.bytecode[jmpAddr+1:jmpAddr+5], mainStartBytes)
-	c.pos = startPos
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "compile: Starting second pass, pos=%d\n", c.pos)
-	}
-	// Second pass: Compile main code and quotations
-	for c.pos < len(c.tokens) && c.peek().Type != TokenEOF {
-		token := c.peek()
-		if c.trace {
-			fmt.Fprintf(os.Stderr, "compile: Second pass, pos=%d, token=%v\n", c.pos, token)
-		}
-		if token.Type == TokenWord {
-			upperVal := strings.ToUpper(token.Value)
-			if upperVal == "MODULE" {
-				c.advance()
-				c.advance()
-				if c.trace {
-					fmt.Fprintf(os.Stderr, "compile: Skipped MODULE directive\n")
-				}
-				continue
-			} else if upperVal == "IMPORT" {
-				c.advance()
-				c.advance()
-				if c.peek().Type == TokenWord && strings.ToUpper(c.peek().Value) == "AS" {
-					c.advance()
-					c.advance()
-				}
-				if c.trace {
-					fmt.Fprintf(os.Stderr, "compile: Skipped IMPORT directive\n")
-				}
-				continue
-			}
-		}
-		if token.Type == TokenAtSign {
-			if c.trace {
-				fmt.Fprintf(os.Stderr, "compile: Skipping word definition\n")
-			}
-			c.skipWordDefinition()
-		} else if token.Type == TokenLBracket {
-			// Initialize quotation and emit PUSH
-			if err := c.compileToken(token); err != nil {
-				return nil, err
-			}
-			c.advance() // Skip [
-			// Compile quotation code
-			if err := c.compileQuotation(); err != nil {
-				return nil, err
-			}
-		} else if token.Type != TokenEOF {
-			if c.trace {
-				fmt.Fprintf(os.Stderr, "compile: Compiling token %v\n", token)
-			}
-			if err := c.compileToken(token); err != nil {
-				return nil, err
-			}
-			c.advance()
-		} else {
-			break
-		}
-	}
-	// After main code completes, emit JMP to skip quotation storage area
-	skipQuotationsLabel := len(c.bytecode)
-	c.emit(vm.OpJmp)
-	c.emit(0, 0, 0, 0) // Placeholder, will be patched to point to HALT
-	// Store the position where main code ends (before quotations)
-	mainEndPos := len(c.bytecode)
-	// Build a map of temp addresses to real addresses as we place quotations
-	addrMap := make(map[int32]int32)
-	// Append quotations at the end and record their real addresses
-	for i := range c.quotations {
-		c.quotations[i].Address = c.currentAddress()
-		addrMap[c.quotations[i].TempAddr] = c.quotations[i].Address
-		if c.trace {
-			fmt.Fprintf(os.Stderr, "compile: Placing quotation %d at addr=%d (was temp %d)\n",
-				i, c.quotations[i].Address, c.quotations[i].TempAddr)
-		}
-		c.bytecode = append(c.bytecode, c.quotations[i].Code...)
-		c.quotations[i].EndAddr = c.currentAddress()
-	}
-	// Now patch all PUSH instructions that reference quotation addresses
-	// First patch addresses in the main code section
-	for j := 0; j < mainEndPos; j++ {
-		if c.bytecode[j] == vm.OpPush && j+4 < mainEndPos {
-			addr := int32(binary.BigEndian.Uint32(c.bytecode[j+1 : j+5]))
-			if realAddr, ok := addrMap[addr]; ok {
-				binary.BigEndian.PutUint32(c.bytecode[j+1:j+5], uint32(realAddr))
-				if c.trace {
-					fmt.Fprintf(os.Stderr, "compile: Patched PUSH at %d with addr=%d (was %d)\n",
-						j+1, realAddr, addr)
-				}
-			}
-		}
-	}
-	// Also patch addresses within the quotation bytecode itself
-	// This handles nested quotations that reference other quotations
-	currentPos := mainEndPos
-	for i := range c.quotations {
-		quotCode := c.bytecode[currentPos : currentPos+len(c.quotations[i].Code)]
-		for j := 0; j < len(quotCode); j++ {
-			if quotCode[j] == vm.OpPush && j+4 < len(quotCode) {
-				addr := int32(binary.BigEndian.Uint32(quotCode[j+1 : j+5]))
-				if realAddr, ok := addrMap[addr]; ok {
-					binary.BigEndian.PutUint32(quotCode[j+1:j+5], uint32(realAddr))
-					if c.trace {
-						fmt.Fprintf(os.Stderr, "compile: Patched nested PUSH in quotation %d at bytecode pos %d with addr=%d (was %d)\n",
-							i, currentPos+j+1, realAddr, addr)
-					}
-				}
-			}
-		}
-		currentPos += len(c.quotations[i].Code)
-	}
-	// Patch unresolved jumps
-	for _, uj := range c.unresolvedJmps {
-		realAddr, ok := addrMap[uj.TempAddr]
-		if !ok {
-			return nil, fmt.Errorf("unresolved jump for temp addr %d not found", uj.TempAddr)
-		}
-		copy(c.bytecode[uj.Offset:uj.Offset+4], vm.EncodeInt32(realAddr))
-		if c.trace {
-			fmt.Fprintf(os.Stderr, "compile: Patched JMP at offset %d with addr=%d (was temp %d)\n", uj.Offset, realAddr, uj.TempAddr)
-		}
-	}
-	c.unresolvedJmps = nil
-	// Emit HALT and patch the skip quotations JMP
-	haltAddr := c.currentAddress()
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "compile: Emitting HALT at addr=%d, bytecode length=%d\n", haltAddr, len(c.bytecode))
-	}
-	c.emit(vm.OpHalt)
-	// Patch the JMP that skips quotations to jump to HALT
-	haltAddrBytes := vm.EncodeInt32(haltAddr)
-	copy(c.bytecode[skipQuotationsLabel+1:skipQuotationsLabel+5], haltAddrBytes)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "compile: Patched skip-quotations JMP at %d to jump to HALT at %d\n",
-			skipQuotationsLabel+1, haltAddr)
-		fmt.Fprintf(os.Stderr, "compile: Final bytecode=%v\n", c.bytecode)
-	}
-	return c.bytecode, nil
-}
-
-// handleModuleDirective processes MODULE directives
-func (c *Compiler) handleModuleDirective() error {
-	c.advance() // Skip MODULE
-	nameToken := c.peek()
-	if nameToken.Type != TokenWord {
-		return fmt.Errorf("expected module name after MODULE at line %d", nameToken.Line)
-	}
-	c.currentModule = strings.ToUpper(nameToken.Value)
-	c.advance()
-	return nil
-}
-
-// handleImportDirective processes IMPORT directives
-func (c *Compiler) handleImportDirective() error {
-	c.advance() // Skip IMPORT
-	nameToken := c.peek()
-	if nameToken.Type != TokenWord {
-		return fmt.Errorf("expected module name after IMPORT at line %d", nameToken.Line)
-	}
-	moduleName := strings.ToUpper(nameToken.Value)
-	c.advance()
-	if c.peek().Type == TokenWord && strings.ToUpper(c.peek().Value) == "AS" {
-		c.advance() // Skip AS
-		shorthandToken := c.peek()
-		if shorthandToken.Type != TokenWord {
-			return fmt.Errorf("expected shorthand name after AS at line %d", shorthandToken.Line)
-		}
-		shorthand := strings.ToUpper(shorthandToken.Value)
-		c.imports[shorthand] = moduleName
-		c.advance()
-	}
-	return nil
-}
-
-// resolveWord resolves a word reference
-func (c *Compiler) resolveWord(wordName string) (Word, bool) {
-	upperName := strings.ToUpper(wordName)
-	if word, ok := c.dictionary[upperName]; ok {
-		return word, true
-	}
-	if !strings.Contains(upperName, "::") && c.currentModule != "" {
-		qualified := c.currentModule + "::" + upperName
-		if word, ok := c.dictionary[qualified]; ok {
-			return word, true
-		}
-	}
-	if strings.Contains(upperName, "::") {
-		parts := strings.SplitN(upperName, "::", 2)
-		prefix, wordPart := parts[0], parts[1]
-		if fullModule, ok := c.imports[prefix]; ok {
-			qualified := fullModule + "::" + wordPart
-			if word, ok := c.dictionary[qualified]; ok {
-				return word, true
-			}
-		}
-	}
-	return Word{}, false
-}
-
-// compileToken compiles a single token
-func (c *Compiler) compileToken(token Token) error {
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "compileToken: Processing token=%v\n", token)
-	}
-	switch token.Type {
-	case TokenNumber:
-		value, err := ParseNumber(token)
-		if err != nil {
-			return err
-		}
-		if c.trace {
-			fmt.Fprintf(os.Stderr, "compileToken: Emitting PUSH %d\n", value)
-		}
-		c.emit(vm.OpPush)
-		c.emit(vm.EncodeInt32(value)...)
-	case TokenString:
-		for _, ch := range token.Value {
-			c.emit(vm.OpPush)
-			c.emit(vm.EncodeInt32(int32(ch))...)
-			c.emit(vm.OpPush)
-			c.emit(vm.EncodeInt32(1)...)
-			c.emit(vm.OpOut)
-		}
-	case TokenWord:
-		wordName := strings.ToUpper(token.Value)
-		if c.trace {
-			fmt.Fprintf(os.Stderr, "compileToken: Word '%s' (upper='%s')\n", token.Value, wordName)
-		}
-		if wordName == "." {
-			c.emit(vm.OpPush)
-			c.emit(vm.EncodeInt32(0)...)
-			c.emit(vm.OpOut)
-			return nil
-		}
-		if wordName == "EMIT" {
-			c.emit(vm.OpPush)
-			c.emit(vm.EncodeInt32(1)...)
-			c.emit(vm.OpOut)
-			return nil
-		}
-		if word, ok := c.resolveWord(wordName); ok {
-			if c.trace {
-				fmt.Fprintf(os.Stderr, "compileToken: Emitting CALL to word '%s' at addr=%d\n", word.Name, word.Address)
-			}
-			c.emit(vm.OpCall)
-			c.emit(vm.EncodeInt32(word.Address)...)
-			return nil
-		}
-		if combinators[wordName] {
-			if c.trace {
-				fmt.Fprintf(os.Stderr, "compileToken: Dispatching to combinator '%s'\n", wordName)
-			}
-			return c.compileCombinator(wordName, token.Line)
-		}
-		// Removed opcodes — expand inline.
-		if wordName == ">" {
-			c.emit(vm.OpSwap, vm.OpLt)
-			return nil
-		}
-		if wordName == "NEGATE" {
-			c.emit(vm.OpPush)
-			c.emit(vm.EncodeInt32(0)...)
-			c.emit(vm.OpSwap, vm.OpSub)
-			return nil
-		}
-		if wordName == "RND" {
-			c.emit(vm.OpPush)
-			c.emit(vm.EncodeInt32(int32(vm.RNGDataAddr))...)
-			c.emit(vm.OpLoadI)
-			return nil
-		}
-		if wordName == "SND" {
-			c.emit(vm.OpPush)
-			c.emit(vm.EncodeInt32(int32(vm.AudioSampleBufferAddr))...)
-			return nil
-		}
-		if opcode, ok := builtins[wordName]; ok {
-			if c.trace {
-				fmt.Fprintf(os.Stderr, "compileToken: Emitting builtin opcode=%s\n", vm.OpcodeName(opcode))
-			}
-			c.emit(opcode)
-			return nil
-		}
-		return fmt.Errorf("unknown word '%s' at line %d", token.Value, token.Line)
-	case TokenLBracket:
-		// Use a temporary address that won't conflict with real addresses
-		// We use 0x1000 + quotation index * 0x100 to ensure uniqueness
-		tempAddr := int32(0x1000 + len(c.quotations)*0x100)
-		if c.trace {
-			fmt.Fprintf(os.Stderr, "compileToken: Emitting PUSH for quotation at temp addr=%d\n", tempAddr)
-		}
-		c.quotations = append(c.quotations, Quotation{TempAddr: tempAddr, Code: []byte{}})
-		c.emit(vm.OpPush)
-		c.emit(vm.EncodeInt32(tempAddr)...)
-	case TokenRBracket:
-		return fmt.Errorf("unexpected ] at line %d", token.Line)
-	default:
-		if c.trace {
-			fmt.Fprintf(os.Stderr, "compileToken: Unexpected token type=%v\n", token.Type)
-		}
-		return fmt.Errorf("unexpected token type %v at line %d", token.Type, token.Line)
-	}
-	return nil
-}
-
-// compileWordDefinition compiles a word definition
-func (c *Compiler) compileWordDefinition() error {
-	c.advance() // Skip @
-	nameToken := c.advance()
-	if nameToken.Type != TokenWord {
-		return fmt.Errorf("expected word name after '@', got %v at line %d", nameToken.Type, nameToken.Line)
-	}
-	baseName := strings.ToUpper(nameToken.Value)
-	var wordName string
-	if c.currentModule != "" && !strings.Contains(baseName, "::") {
-		wordName = c.currentModule + "::" + baseName
+func (c *Compiler) emit(bytes ...byte) {
+	if c.activeQuotIdx >= 0 && c.activeQuotIdx < len(c.quotations) {
+		c.quotations[c.activeQuotIdx].Code = append(c.quotations[c.activeQuotIdx].Code, bytes...)
 	} else {
-		wordName = baseName
-	}
-	// Add to dictionary before compiling body
-	wordAddress := c.currentAddress()
-	c.dictionary[wordName] = Word{Name: wordName, Address: wordAddress, Module: c.currentModule}
-	// Compile the word body
-	for {
-		token := c.peek()
-		if token.Type == TokenEOF {
-			return fmt.Errorf("unexpected end of file in word definition '%s'", wordName)
-		}
-		if token.Type == TokenSemicolon {
-			c.advance()
-			break
-		}
-		if token.Type == TokenAtSign {
-			return fmt.Errorf("nested word definitions not allowed at line %d", token.Line)
-		}
-		// Special handling for quotations in word definitions
-		switch token.Type {
-		case TokenLBracket:
-			// Create a quotation entry
-			tempAddr := c.currentAddress() + 5 // Address after the PUSH instruction
-			c.quotations = append(c.quotations, Quotation{TempAddr: tempAddr, Code: []byte{}})
-			// Emit PUSH with temporary address
-			c.emit(vm.OpPush)
-			c.emit(vm.EncodeInt32(tempAddr)...)
-			// Skip the [
-			c.advance()
-			// Compile the quotation with context about current word
-			if err := c.compileQuotationInDefinition(wordName, wordAddress); err != nil {
-				return err
-			}
-			// The ] has been consumed by compileQuotationInDefinition
-		case TokenRBracket:
-			return fmt.Errorf("unexpected ] in word definition at line %d", token.Line)
-		default:
-			if err := c.compileToken(token); err != nil {
-				return err
-			}
-			c.advance()
-		}
-	}
-	// Emit RET to end the word
-	c.emit(vm.OpRet)
-
-	// Apply TRO if tail call (simple case: CALL followed by RET)
-	offset := len(c.bytecode)
-	if offset >= 6 && c.bytecode[offset-6] == vm.OpCall && c.bytecode[offset-1] == vm.OpRet {
-		callAddr := int32(binary.BigEndian.Uint32(c.bytecode[offset-5 : offset-1]))
-		// Only optimize if it's a recursive call
-		if callAddr == wordAddress {
-			c.bytecode[offset-6] = vm.OpJmp
-			c.bytecode = c.bytecode[:offset-1]
-			if c.trace {
-				fmt.Fprintf(os.Stderr, "compileWordDefinition: Applied simple TRO for recursive call to %s\n", wordName)
-			}
-		}
-	}
-
-	return nil
-}
-
-// compileQuotationInDefinition is a special version for compiling quotations inside word definitions
-func (c *Compiler) compileQuotationInDefinition(currentWordName string, currentWordAddr int32) error {
-	quotIndex := len(c.quotations) - 1
-	if quotIndex < 0 {
-		return fmt.Errorf("no quotation started for [ at line %d", c.peek().Line)
-	}
-	quot := &c.quotations[quotIndex]
-
-	depth := 1
-	for c.pos < len(c.tokens) && depth > 0 && c.peek().Type != TokenEOF {
-		token := c.peek()
-
-		if token.Type == TokenLBracket {
-			// Handle nested quotation
-			depth++
-			// Calculate a temporary address for the nested quotation
-			tempAddr := int32(0x1000 + len(c.quotations)*0x100)
-
-			// Emit PUSH instruction in the parent quotation
-			quot.Code = append(quot.Code, vm.OpPush)
-			quot.Code = append(quot.Code, vm.EncodeInt32(tempAddr)...)
-
-			// Create new quotation entry
-			c.quotations = append(c.quotations, Quotation{TempAddr: tempAddr, Code: []byte{}})
-
-			// Advance past the [
-			c.advance()
-
-			// Recursively compile the nested quotation
-			if err := c.compileQuotationInDefinition(currentWordName, currentWordAddr); err != nil {
-				return err
-			}
-
-			// Refresh our quotation pointer
-			quot = &c.quotations[quotIndex]
-
-		} else if token.Type == TokenRBracket {
-			depth--
-			if depth == 0 {
-				// This is our closing bracket
-				break
-			}
-			// Shouldn't get here with proper nesting
-			return fmt.Errorf("unexpected ] in quotation at line %d", token.Line)
-
-		} else if token.Type == TokenSemicolon {
-			// Semicolon inside quotation is an error
-			return fmt.Errorf("unexpected ; inside quotation at line %d", token.Line)
-
-		} else {
-			// Compile regular tokens into quotation bytecode
-			switch token.Type {
-			case TokenNumber:
-				num, err := ParseNumber(token)
-				if err != nil {
-					return err
-				}
-				quot.Code = append(quot.Code, vm.OpPush)
-				quot.Code = append(quot.Code, vm.EncodeInt32(num)...)
-				c.advance()
-
-			case TokenWord:
-				upperVal := strings.ToUpper(token.Value)
-
-				if upperVal == "." {
-					quot.Code = append(quot.Code, vm.OpPush)
-					quot.Code = append(quot.Code, vm.EncodeInt32(0)...)
-					quot.Code = append(quot.Code, vm.OpOut)
-					c.advance()
-				} else if upperVal == "EMIT" {
-					quot.Code = append(quot.Code, vm.OpPush)
-					quot.Code = append(quot.Code, vm.EncodeInt32(1)...)
-					quot.Code = append(quot.Code, vm.OpOut)
-					c.advance()
-				} else if upperVal == ">" {
-					quot.Code = append(quot.Code, vm.OpSwap, vm.OpLt)
-					c.advance()
-				} else if upperVal == "NEGATE" {
-					quot.Code = append(quot.Code, vm.OpPush)
-					quot.Code = append(quot.Code, vm.EncodeInt32(0)...)
-					quot.Code = append(quot.Code, vm.OpSwap, vm.OpSub)
-					c.advance()
-				} else if opcode, ok := builtins[upperVal]; ok {
-					quot.Code = append(quot.Code, opcode)
-					c.advance()
-				} else if combinators[upperVal] {
-					c.advance()
-					if err := c.compileQuotationCombinator(upperVal, quot); err != nil {
-						return err
-					}
-				} else if word, ok := c.resolveWord(upperVal); ok {
-					quot.Code = append(quot.Code, vm.OpCall)
-					quot.Code = append(quot.Code, vm.EncodeInt32(word.Address)...)
-					c.advance()
-				} else {
-					return fmt.Errorf("unknown word '%s' in quotation at line %d", token.Value, token.Line)
-				}
-
-			case TokenString:
-				for _, ch := range token.Value {
-					quot.Code = append(quot.Code, vm.OpPush)
-					quot.Code = append(quot.Code, vm.EncodeInt32(int32(ch))...)
-					quot.Code = append(quot.Code, vm.OpPush)
-					quot.Code = append(quot.Code, vm.EncodeInt32(1)...)
-					quot.Code = append(quot.Code, vm.OpOut)
-				}
-				c.advance()
-
-			default:
-				return fmt.Errorf("invalid token %v in quotation at line %d", token.Type, token.Line)
-			}
-		}
-	}
-
-	if c.peek().Type != TokenRBracket {
-		return fmt.Errorf("unclosed quotation at line %d", c.tokens[c.pos-1].Line)
-	}
-
-	// Append RET to end the quotation
-	quot.Code = append(quot.Code, vm.OpRet)
-
-	// Apply TRO if the quotation ends with a tail call to the current word
-	quotLen := len(quot.Code)
-	if quotLen >= 6 && quot.Code[quotLen-6] == vm.OpCall && quot.Code[quotLen-1] == vm.OpRet {
-		// Get the call address
-		callAddr := int32(binary.BigEndian.Uint32(quot.Code[quotLen-5 : quotLen-1]))
-		if c.trace {
-			fmt.Fprintf(os.Stderr, "  Pattern matched! callAddr=%d, currentWordAddr=%d\n", callAddr, currentWordAddr)
-		}
-		// Check if it's a recursive call to the word being defined
-		if callAddr == currentWordAddr {
-			// Add panic recovery to debug any crashes
-			defer func() {
-				if r := recover(); r != nil {
-					fmt.Fprintf(os.Stderr, ">>> PANIC during TRO application: %v\n", r)
-					panic(r) // Re-panic after logging
-				}
-			}()
-
-			if c.trace {
-				fmt.Fprintf(os.Stderr, ">>> About to apply TRO...\n")
-			}
-
-			// This is a tail recursive call, optimize it
-			quot.Code[quotLen-6] = vm.OpJmp
-
-			if c.trace {
-				fmt.Fprintf(os.Stderr, ">>> Converted CALL to JMP\n")
-			}
-
-			// Remove the RET instruction
-			quot.Code = quot.Code[:quotLen-1]
-
-			if c.trace {
-				fmt.Fprintf(os.Stderr, "compileQuotationInDefinition: ✓ Applied TRO for tail call to %s at addr %d\n", currentWordName, currentWordAddr)
-				fmt.Fprintf(os.Stderr, "  New quotation length: %d, ends with JMP\n", len(quot.Code))
-				fmt.Fprintf(os.Stderr, ">>> TRO APPLIED! Converted CALL to JMP, removed RET\n")
-				fmt.Fprintf(os.Stderr, "    New quotation length: %d\n", len(quot.Code))
-				if len(quot.Code) >= 5 {
-					fmt.Fprintf(os.Stderr, "    New last 5 bytes: %v\n", quot.Code[len(quot.Code)-5:])
-				}
-			}
-		} else {
-			if c.trace {
-				fmt.Fprintf(os.Stderr, "  ✗ Address mismatch - TRO not applied\n")
-			}
-		}
-	} else {
-		if c.trace {
-			fmt.Fprintf(os.Stderr, "  ✗ Pattern not matched - TRO not applied\n")
-		}
-	}
-
-	// Skip the closing ]
-	c.advance()
-
-	return nil
-}
-
-// skipWordDefinition skips a word definition
-func (c *Compiler) skipWordDefinition() {
-	c.advance() // Skip @
-	c.advance() // Skip name
-	depth := 0
-	for c.peek().Type != TokenEOF {
-		token := c.peek()
-		if token.Type == TokenLBracket {
-			depth++
-		} else if token.Type == TokenRBracket {
-			depth--
-		} else if token.Type == TokenSemicolon && depth == 0 {
-			c.advance()
-			break
-		}
-		c.advance()
+		c.bytecode = append(c.bytecode, bytes...)
 	}
 }
 
-// compileQuotation compiles a [ ... ] block
-func (c *Compiler) compileQuotation() error {
-	quotIndex := len(c.quotations) - 1
-	if quotIndex < 0 {
-		return fmt.Errorf("no quotation started for [ at line %d", c.peek().Line)
+func (c *Compiler) currentAddress() int32 {
+	if c.activeQuotIdx >= 0 && c.activeQuotIdx < len(c.quotations) {
+		return int32(len(c.quotations[c.activeQuotIdx].Code))
 	}
-	quot := &c.quotations[quotIndex]
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "compileQuotation: Compiling quotation %d at temp addr=%d\n", quotIndex, quot.TempAddr)
-	}
-	depth := 1
-	for c.pos < len(c.tokens) && depth > 0 && c.peek().Type != TokenEOF {
-		token := c.peek()
-		if c.trace {
-			fmt.Fprintf(os.Stderr, "compile: Compiling quotation token %v, depth=%d\n", token, depth)
-		}
-
-		if token.Type == TokenLBracket {
-			// Found a nested quotation - we need to:
-			// 1. Emit PUSH instruction in parent quotation
-			// 2. Create and compile the nested quotation
-
-			// Calculate a temporary address for the nested quotation
-			// This will be patched later when we know the real address
-			tempAddr := int32(0x1000 + len(c.quotations)*0x100) // Temporary unique address
-
-			// Emit PUSH instruction in the parent quotation with temp address
-			quot.Code = append(quot.Code, vm.OpPush)
-			quot.Code = append(quot.Code, vm.EncodeInt32(tempAddr)...)
-
-			// Create new quotation entry
-			c.quotations = append(c.quotations, Quotation{TempAddr: tempAddr, Code: []byte{}})
-
-			// Advance past the [
-			c.advance()
-
-			// Recursively compile the nested quotation
-			if err := c.compileQuotation(); err != nil {
-				return err
-			}
-
-			// After recursive call, refresh our quotation pointer as the slice may have been reallocated
-			quot = &c.quotations[quotIndex]
-			// Note: The recursive call consumed everything including the closing ]
-
-		} else if token.Type == TokenRBracket {
-			depth--
-			if depth == 0 {
-				// This is our closing bracket
-				break
-			} else {
-				// This shouldn't happen if nesting is handled correctly
-				return fmt.Errorf("unexpected ] in quotation at line %d", token.Line)
-			}
-		} else {
-			// Compile regular tokens into the quotation's bytecode
-			switch token.Type {
-			case TokenNumber:
-				num, err := ParseNumber(token)
-				if err != nil {
-					return err
-				}
-				quot.Code = append(quot.Code, vm.OpPush)
-				quot.Code = append(quot.Code, vm.EncodeInt32(num)...)
-				c.advance()
-
-			case TokenWord:
-				upperVal := strings.ToUpper(token.Value)
-				// Check for special output words
-				if upperVal == "." {
-					quot.Code = append(quot.Code, vm.OpPush)
-					quot.Code = append(quot.Code, vm.EncodeInt32(0)...)
-					quot.Code = append(quot.Code, vm.OpOut)
-					c.advance()
-				} else if upperVal == "EMIT" {
-					quot.Code = append(quot.Code, vm.OpPush)
-					quot.Code = append(quot.Code, vm.EncodeInt32(1)...)
-					quot.Code = append(quot.Code, vm.OpOut)
-					c.advance()
-				} else if upperVal == ">" {
-					quot.Code = append(quot.Code, vm.OpSwap, vm.OpLt)
-					c.advance()
-				} else if upperVal == "NEGATE" {
-					quot.Code = append(quot.Code, vm.OpPush)
-					quot.Code = append(quot.Code, vm.EncodeInt32(0)...)
-					quot.Code = append(quot.Code, vm.OpSwap, vm.OpSub)
-					c.advance()
-				} else if opcode, ok := builtins[upperVal]; ok {
-					quot.Code = append(quot.Code, opcode)
-					c.advance()
-				} else if combinators[upperVal] {
-					c.advance()
-					if err := c.compileQuotationCombinator(upperVal, quot); err != nil {
-						return err
-					}
-				} else if word, ok := c.resolveWord(upperVal); ok {
-					quot.Code = append(quot.Code, vm.OpCall)
-					quot.Code = append(quot.Code, vm.EncodeInt32(word.Address)...)
-					c.advance()
-				} else {
-					return fmt.Errorf("unknown word '%s' in quotation at line %d", token.Value, token.Line)
-				}
-
-			case TokenString:
-				// Handle string literals in quotations
-				for _, ch := range token.Value {
-					quot.Code = append(quot.Code, vm.OpPush)
-					quot.Code = append(quot.Code, vm.EncodeInt32(int32(ch))...)
-					quot.Code = append(quot.Code, vm.OpPush)
-					quot.Code = append(quot.Code, vm.EncodeInt32(1)...)
-					quot.Code = append(quot.Code, vm.OpOut)
-				}
-				c.advance()
-
-			default:
-				return fmt.Errorf("invalid token %v in quotation at line %d", token.Type, token.Line)
-			}
-		}
-	}
-
-	// Check for the closing bracket
-	if c.peek().Type != TokenRBracket {
-		return fmt.Errorf("unclosed quotation at line %d", c.tokens[c.pos-1].Line)
-	}
-
-	// Append RET to mark the end of the quotation
-	quot.Code = append(quot.Code, vm.OpRet)
-
-	// Skip the closing ]
-	c.advance()
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "compile: Quotation %d compiled, code=%v\n", quotIndex, quot.Code)
-	}
-	return nil
+	return c.baseAddr + int32(len(c.bytecode))
 }
 
-// compileQuotationCombinator compiles a combinator within a quotation
-func (c *Compiler) compileQuotationCombinator(name string, quot *Quotation) error {
-	switch strings.ToUpper(name) {
-	case "DIP":
-		// DIP in a quotation just emits CALLSTACK
-		// At runtime: stack has [... x quotation-addr]
-		// DIP will pop quotation-addr and call it, leaving x on stack
-		quot.Code = append(quot.Code, vm.OpCallStack)
-
-	case "KEEP":
-		// KEEP: x [ quot ] keep -> x (quot x) x
-		quot.Code = append(quot.Code, vm.OpSwap)      // quot x
-		quot.Code = append(quot.Code, vm.OpDup)       // quot x x
-		quot.Code = append(quot.Code, vm.OpRot)       // x x quot
-		quot.Code = append(quot.Code, vm.OpCallStack) // x result
-
-	case "CALL":
-		// CALL just executes the quotation on top of stack
-		quot.Code = append(quot.Code, vm.OpCallStack)
-
-	default:
-		// For now, other combinators aren't supported in quotations
-		return fmt.Errorf("combinator '%s' not yet supported in quotations", name)
+func (c *Compiler) currentOffset() int32 {
+	if c.activeQuotIdx >= 0 && c.activeQuotIdx < len(c.quotations) {
+		return int32(len(c.quotations[c.activeQuotIdx].Code))
 	}
-	return nil
+	return int32(len(c.bytecode))
 }
 
-// compileCombinator compiles control flow combinators
-func (c *Compiler) compileCombinator(name string, line int) error {
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "compileCombinator: Starting, bytecode length=%d, baseAddr=%d\n", len(c.bytecode), c.baseAddr)
-		fmt.Fprintf(os.Stderr, "compileCombinator: name=%s, line=%d\n", name, line)
+func (c *Compiler) advance() Token {
+	if c.pos >= len(c.tokens) {
+		return Token{Type: TokenEOF}
 	}
-	switch strings.ToUpper(name) {
-	case "CALL":
-		c.emit(vm.OpCallStack)
-		return nil
-	case "?:":
-		return c.compileIfElse()
-	case "?":
-		return c.compileIf()
-	case "!:":
-		return c.compileUnless()
-	case "|:":
-		return c.compileWhile()
-	case "#:":
-		return c.compileTimes()
-	case "DIP":
-		return c.compileDip()
-	case "KEEP":
-		return c.compileKeep()
-	default:
-		return fmt.Errorf("unknown combinator '%s' at line %d", name, line)
-	}
+	t := c.tokens[c.pos]
+	c.pos++
+	return t
 }
 
-// compileIfElse compiles: condition [ true ] [ false ] ?:
-func (c *Compiler) compileIfElse() error {
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "compileIfElse: Starting, bytecode length=%d, baseAddr=%d\n", len(c.bytecode), c.baseAddr)
-	}
-	if len(c.quotations) < 2 {
-		return fmt.Errorf("if-else requires two quotations at line %d", c.peek().Line)
-	}
-
-	// Check if the false (else) quotation ends with JMP (i.e., was TRO-optimized)
-	falseQuot := c.quotations[len(c.quotations)-1]
-	isTailRecursive := len(falseQuot.Code) >= 5 &&
-		falseQuot.Code[len(falseQuot.Code)-5] == vm.OpJmp
-
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "compileIfElse: Checking false quotation for TRO\n")
-		fmt.Fprintf(os.Stderr, "  False quot length=%d\n", len(falseQuot.Code))
-		if len(falseQuot.Code) >= 5 {
-			fmt.Fprintf(os.Stderr, "  falseQuot.Code[len-5]=0x%02X (OpJmp=0x%02X)\n",
-				falseQuot.Code[len(falseQuot.Code)-5], vm.OpJmp)
-		}
-		fmt.Fprintf(os.Stderr, "  isTailRecursive=%v\n", isTailRecursive)
-	}
-
-	c.emit(vm.OpSwap)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Emitted SWAP, bytecode=%v\n", c.bytecode)
-	}
-	c.emit(vm.OpRot)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Emitted ROT, bytecode=%v\n", c.bytecode)
-	}
-	elseLabel := len(c.bytecode)
-	c.emit(vm.OpJz)
-	c.emit(0, 0, 0, 0)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Emitted JZ, elseLabel=%d (relative), bytecode length=%d\n", elseLabel, len(c.bytecode))
-	}
-	c.emit(vm.OpSwap)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Emitted SWAP (true branch), bytecode=%v\n", c.bytecode)
-	}
-	c.emit(vm.OpPop)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Emitted POP (true branch), bytecode=%v\n", c.bytecode)
-	}
-	c.emit(vm.OpCallStack)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Emitted CALLSTACK (true branch), bytecode=%v\n", c.bytecode)
-	}
-	endLabel := len(c.bytecode)
-	c.emit(vm.OpJmp)
-	c.emit(0, 0, 0, 0)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Emitted JMP, endLabel=%d (relative), bytecode length=%d\n", endLabel, len(c.bytecode))
-	}
-	elseBranch := c.currentAddress()
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Else branch starts at absolute addr=%d, isTailRecursive=%v\n", elseBranch, isTailRecursive)
-	}
-	c.emit(vm.OpPop)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Emitted POP (else branch), bytecode=%v\n", c.bytecode)
-	}
-
-	if isTailRecursive {
-		// For tail recursive quotations, we need to pop BOTH quotation addresses
-		// The first POP already removed the true quotation address
-		// Now we need to pop the false quotation address too
-		c.emit(vm.OpPop)
-
-		// For tail recursive quotations, pop the false quotation address
-		// and get the jump target from the quotation
-		// Extract the JMP target address from the quotation
-		jmpTarget := int32(binary.BigEndian.Uint32(falseQuot.Code[len(falseQuot.Code)-4:]))
-
-		// Inline the quotation code EXCEPT the final JMP
-		// Then emit a direct JMP (not via CALLSTACK)
-		quotCode := falseQuot.Code[:len(falseQuot.Code)-5] // Remove JMP instruction
-		c.emit(quotCode...)
-		c.emit(vm.OpJmp)
-		c.emit(vm.EncodeInt32(jmpTarget)...)
-
-		if c.trace {
-			fmt.Fprintf(os.Stderr, "Inlined tail-recursive quotation and emitted direct JMP to %d\n", jmpTarget)
-		}
-	} else {
-		// Normal case: call the quotation
-		c.emit(vm.OpCallStack)
-		if c.trace {
-			fmt.Fprintf(os.Stderr, "Emitted CALLSTACK (else branch), bytecode=%v\n", c.bytecode)
-		}
-	}
-
-	// Calculate end address AFTER emitting else branch code
-	end := c.currentAddress()
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "End at absolute addr=%d\n", end)
-	}
-	// Patch JZ to jump to else branch
-	elseLabelBytes := vm.EncodeInt32(elseBranch)
-	copy(c.bytecode[elseLabel+1:elseLabel+5], elseLabelBytes)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Patching JZ at %d with addr=%d\n", elseLabel+1, elseBranch)
-		fmt.Fprintf(os.Stderr, "After JZ patch, bytecode=%v\n", c.bytecode)
-	}
-	// Patch JMP to jump to end (after else branch)
-	endLabelBytes := vm.EncodeInt32(end)
-	copy(c.bytecode[endLabel+1:endLabel+5], endLabelBytes)
-	if c.trace {
-		fmt.Fprintf(os.Stderr, "Patching JMP at %d with addr=%d\n", endLabel+1, end)
-		fmt.Fprintf(os.Stderr, "After JMP patch, bytecode=%v\n", c.bytecode)
-	}
-	return nil
-}
-
-// compileIf compiles: condition [ true ] ?
-func (c *Compiler) compileIf() error {
-	if len(c.quotations) < 1 {
-		return fmt.Errorf("if requires one quotation at line %d", c.peek().Line)
-	}
-	c.emit(vm.OpSwap)
-	c.emit(vm.OpJz)
-	skipLabel := c.currentOffset() // Use offset, not address
-	c.emit(0, 0, 0, 0)
-	c.emit(vm.OpCallStack)
-	c.emit(vm.OpJmp)
-	endLabel := c.currentOffset() // Use offset, not address
-	c.emit(0, 0, 0, 0)
-	skip := c.currentAddress() // Keep this as address for the jump target
-	c.emit(vm.OpPop)
-	end := c.currentAddress() // Keep this as address for the jump target
-	skipBytes := vm.EncodeInt32(skip)
-	copy(c.bytecode[skipLabel:skipLabel+4], skipBytes) // Now skipLabel is a valid offset
-	endBytes := vm.EncodeInt32(end)
-	copy(c.bytecode[endLabel:endLabel+4], endBytes) // Now endLabel is a valid offset
-	return nil
-}
-
-// compileUnless compiles: condition [ false ] !:
-func (c *Compiler) compileUnless() error {
-	if len(c.quotations) < 1 {
-		return fmt.Errorf("unless requires one quotation at line %d", c.peek().Line)
-	}
-	c.emit(vm.OpSwap)
-	c.emit(vm.OpPush)
-	c.emit(vm.EncodeInt32(0)...)
-	c.emit(vm.OpEq)
-	c.emit(vm.OpJz)
-	skipLabel := c.currentOffset()
-	c.emit(0, 0, 0, 0)
-	c.emit(vm.OpCallStack)
-	c.emit(vm.OpJmp)
-	endLabel := c.currentOffset()
-	c.emit(0, 0, 0, 0)
-	skip := c.currentAddress()
-	c.emit(vm.OpPop)
-	end := c.currentAddress()
-	skipBytes := vm.EncodeInt32(skip)
-	copy(c.bytecode[skipLabel:skipLabel+4], skipBytes)
-	endBytes := vm.EncodeInt32(end)
-	copy(c.bytecode[endLabel:endLabel+4], endBytes)
-	return nil
-}
-
-// compileWhile compiles: [ condition ] [ body ] |:
-func (c *Compiler) compileWhile() error {
-	if len(c.quotations) < 2 {
-		return fmt.Errorf("while requires two quotations at line %d", c.peek().Line)
-	}
-	tempCondAddr, err := c.allocTemp(4)
-	if err != nil {
-		return err
-	}
-	tempBodyAddr, err := c.allocTemp(4)
-	if err != nil {
-		return err
-	}
-
-	c.emit(vm.OpStore)
-	c.emit(vm.EncodeInt32(tempBodyAddr)...)
-	c.emit(vm.OpStore)
-	c.emit(vm.EncodeInt32(tempCondAddr)...)
-
-	loopStart := c.currentAddress()
-
-	c.emit(vm.OpDup)
-
-	c.emit(vm.OpLoad)
-	c.emit(vm.EncodeInt32(tempCondAddr)...)
-	c.emit(vm.OpCallStack)
-	// Stack: [... original-value result]
-
-	// NO SWAP - result is already on top for JZ
-
-	c.emit(vm.OpJz)
-	exitLabel := c.currentOffset()
-	c.emit(0, 0, 0, 0)
-	// JZ pops result, leaves original-value
-
-	c.emit(vm.OpLoad)
-	c.emit(vm.EncodeInt32(tempBodyAddr)...)
-	c.emit(vm.OpCallStack)
-
-	c.emit(vm.OpJmp)
-	c.emit(vm.EncodeInt32(loopStart)...)
-
-	exit := c.currentAddress()
-	exitBytes := vm.EncodeInt32(exit)
-	copy(c.bytecode[exitLabel:exitLabel+4], exitBytes)
-
-	return nil
-}
-
-// compileTimes compiles: [ body ] n #:
-// Stack before #:: [... data... quot-addr count]
-// Stack after: [... data'... ] (quotation executed count times on data)
-//
-// The quotation should operate on the data BELOW the loop control variables.
-// We need to temporarily remove quot-addr and count, execute the quotation,
-// then restore them for the next iteration.
-func (c *Compiler) compileTimes() error {
-	// Use reserved memory to save loop variables
-	// This is similar to the dip combinator
-	tempQuotAddr, err := c.allocTemp(4)
-	if err != nil {
-		return err
-	}
-	tempCountAddr, err := c.allocTemp(4)
-	if err != nil {
-		return err
-	}
-
-	loopStart := c.currentAddress()
-
-	// Stack: [... data... quot-addr count]
-	c.emit(vm.OpDup) // [... data... quot-addr count count]
-	c.emit(vm.OpJz)  // [... data... quot-addr count], jump if 0
-	exitLabel := c.currentOffset()
-	c.emit(0, 0, 0, 0)
-
-	// Save count-1 to memory
-	c.emit(vm.OpDec)   // [... data... quot-addr count-1]
-	c.emit(vm.OpStore) // [... data... quot-addr]
-	c.emit(vm.EncodeInt32(tempCountAddr)...)
-
-	// Save quot-addr to memory
-	c.emit(vm.OpStore) // [... data...]
-	c.emit(vm.EncodeInt32(tempQuotAddr)...)
-
-	// Execute quotation on the data
-	c.emit(vm.OpLoad) // [... data... quot-addr]
-	c.emit(vm.EncodeInt32(tempQuotAddr)...)
-	c.emit(vm.OpCallStack) // [... data'...], quotation executes
-
-	// Restore loop variables
-	c.emit(vm.OpLoad) // [... data'... quot-addr]
-	c.emit(vm.EncodeInt32(tempQuotAddr)...)
-	c.emit(vm.OpLoad) // [... data'... quot-addr count-1]
-	c.emit(vm.EncodeInt32(tempCountAddr)...)
-
-	c.emit(vm.OpJmp)
-	c.emit(vm.EncodeInt32(loopStart)...)
-
-	// Exit: clean up
-	exit := c.currentAddress()
-	c.emit(vm.OpPop) // Pop count (0)
-	c.emit(vm.OpPop) // Pop quot-addr
-
-	copy(c.bytecode[exitLabel:exitLabel+4], vm.EncodeInt32(exit))
-	return nil
-}
-
-// compileDip compiles: [body] dip
-func (c *Compiler) compileDip() error {
-	// Stack: [... x body-addr]
-	// Execute body directly
-	c.emit(vm.OpCallStack) // Execute body: [... x']
-
-	return nil
-}
-
-// compileKeep compiles: x [ quot ] keep
-func (c *Compiler) compileKeep() error {
-	// Initial stack assumption: ... x quot (quot is the address of the quotation to execute)
-	// Step 1: Emit SWAP to rearrange the stack so quot is below x
-	c.emit(vm.OpSwap)
-	// Stack after: ... quot x
-
-	// Step 2: Emit DUP to duplicate x (this creates a copy for the quotation to consume)
-	c.emit(vm.OpDup)
-	// Stack after: ... quot x x
-
-	// Step 3: Emit ROT to rotate the top three items, positioning quot on top for execution
-	c.emit(vm.OpRot)
-	// Stack after: ... x x quot
-
-	// Step 4: Emit CALLSTACK to pop quot (as the address), push the return address to the return stack, and jump to execute the quotation
-	// The quotation executes on the top x (consumes it and produces result), leaving the original x preserved below
-	c.emit(vm.OpCallStack)
-
-	return nil
-}
-
-// Helper methods
 func (c *Compiler) peek() Token {
 	if c.pos >= len(c.tokens) {
 		return Token{Type: TokenEOF}
@@ -1276,34 +195,704 @@ func (c *Compiler) peek() Token {
 	return c.tokens[c.pos]
 }
 
-func (c *Compiler) advance() Token {
-	token := c.peek()
-	if c.pos < len(c.tokens) {
-		c.pos++
+func Compile(source string, baseAddr int32, trace ...bool) ([]byte, error) {
+	tr := false
+	if len(trace) > 0 {
+		tr = trace[0]
 	}
-	return token
+	l := NewLexer(source, tr)
+	tokens, err := l.Tokenize()
+	if err != nil {
+		return nil, err
+	}
+	return NewCompiler(tokens, baseAddr, tr).compile()
 }
 
-func (c *Compiler) emit(bytes ...byte) {
-	c.bytecode = append(c.bytecode, bytes...)
+func (c *Compiler) compile() ([]byte, error) {
+	c.emit(vm.OpJmp, 0, 0, 0, 0)
+	initialJmpLabel := int32(1)
+
+	// Pass 1: Definitions
+	startPos := c.pos
+	for c.pos < len(c.tokens) && c.peek().Type != TokenEOF {
+		t := c.advance()
+		if t.Type == TokenWord {
+			u := strings.ToUpper(t.Value)
+			if u == "MODULE" {
+				if err := c.handleModuleDirective(); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			if u == "IMPORT" {
+				if err := c.handleImportDirective(); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			if u == "INCLUDE" {
+				if err := c.handleIncludeDirective(); err != nil {
+					return nil, err
+				}
+				continue
+			}
+		} else if t.Type == TokenAtSign {
+			if err := c.compileWordDefinition(); err != nil {
+				return nil, err
+			}
+			continue
+		}
+	}
+
+	mainStart := c.currentAddress()
+	binary.BigEndian.PutUint32(c.bytecode[initialJmpLabel:initialJmpLabel+4], uint32(mainStart))
+
+	// Pass 2: Main Code
+	c.pos = startPos
+	c.currentModule = ""
+	c.imports = make(map[string]string)
+	c.quotationStack = []int{}
+	for c.pos < len(c.tokens) && c.peek().Type != TokenEOF {
+		t := c.advance()
+		if t.Type == TokenAtSign {
+			c.advance() // name
+			for c.pos < len(c.tokens) && c.peek().Type != TokenSemicolon {
+				c.advance()
+			}
+			c.advance()
+			continue
+		}
+		if t.Type == TokenWord {
+			u := strings.ToUpper(t.Value)
+			if u == "MODULE" {
+				if err := c.handleModuleDirective(); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			if u == "IMPORT" {
+				if err := c.handleImportDirective(); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			if u == "INCLUDE" {
+				c.advance() // path
+				continue
+			}
+		}
+		if err := c.compileToken(t); err != nil {
+			return nil, err
+		}
+	}
+
+	skipQuotPos := c.currentOffset()
+	c.emit(vm.OpJmp, 0, 0, 0, 0)
+	addrMap := make(map[int32]int32)
+	for i := range c.quotations {
+		c.quotations[i].Address = c.currentAddress()
+		if c.trace {
+			fmt.Fprintf(os.Stderr, "Compiler: quotation %d assigned address %d (temp 0x%X)\n", i, c.quotations[i].Address, c.quotations[i].TempAddr)
+		}
+		addrMap[c.quotations[i].TempAddr] = c.quotations[i].Address
+		c.emit(c.quotations[i].Code...)
+	}
+
+	for i := range c.quotations {
+		qStart := int(c.quotations[i].Address - c.baseAddr)
+		for _, ij := range c.quotations[i].InternalJumps {
+			target := c.quotations[i].Address + ij.TargetOffset
+			binary.BigEndian.PutUint32(c.bytecode[qStart+int(ij.PlaceholderAt):qStart+int(ij.PlaceholderAt)+4], uint32(target))
+		}
+	}
+
+	for _, u := range c.unresolved {
+		c.currentModule = u.Module
+		w, ok := c.resolveWord(u.Word)
+		if !ok {
+			return nil, fmt.Errorf("unknown word '%s' at line %d", u.Word, u.Line)
+		}
+		var base int
+		if u.QuotIdx == -1 {
+			base = 0
+		} else {
+			base = int(c.quotations[u.QuotIdx].Address - c.baseAddr)
+		}
+		if u.IsAddress {
+			c.bytecode[base+int(u.Offset)] = vm.OpPush
+		} else {
+			c.bytecode[base+int(u.Offset)] = vm.OpCall
+		}
+		binary.BigEndian.PutUint32(c.bytecode[base+int(u.Offset)+1:base+int(u.Offset)+5], uint32(w.Address))
+	}
+
+	for _, pr := range c.patchRequests {
+		real, ok := addrMap[pr.TempAddr]
+		if !ok {
+			return nil, fmt.Errorf("failed to resolve temp address 0x%X", pr.TempAddr)
+		}
+		var base int
+		if pr.QuotIdx == -1 {
+			base = 0
+		} else {
+			base = int(c.quotations[pr.QuotIdx].Address - c.baseAddr)
+		}
+		binary.BigEndian.PutUint32(c.bytecode[base+int(pr.Offset):base+int(pr.Offset)+4], uint32(real))
+	}
+
+	haltAddr := c.currentAddress()
+	c.emit(vm.OpHalt)
+	binary.BigEndian.PutUint32(c.bytecode[int(skipQuotPos)+1:int(skipQuotPos)+5], uint32(haltAddr))
+
+	stringHeapBase := c.baseAddr + int32(len(c.bytecode))
+	for _, sp := range c.stringPatches {
+		var base int
+		if sp.QuotIdx == -1 {
+			base = 0
+		} else {
+			base = int(c.quotations[sp.QuotIdx].Address - c.baseAddr)
+		}
+		binary.BigEndian.PutUint32(c.bytecode[base+int(sp.Offset):base+int(sp.Offset)+4], uint32(stringHeapBase+sp.TempAddr))
+	}
+
+	// Append padding for the string heap so NewVM allocates enough space
+	padding := make([]byte, int(c.nextStringHeap))
+	c.bytecode = append(c.bytecode, padding...)
+
+	return c.bytecode, nil
 }
 
-// currentOffset returns the current position in the bytecode slice
-func (c *Compiler) currentOffset() int32 {
-	return int32(len(c.bytecode))
+func (c *Compiler) compileToken(t Token) error {
+	if c.trace {
+		fmt.Fprintf(os.Stderr, "Compiler: compileToken: type=%d, value=%s, line=%d, col=%d\n", t.Type, t.Value, t.Line, t.Column)
+	}
+	switch t.Type {
+	case TokenNumber:
+		n, _ := c.ParseNumber(t.Value)
+		c.emit(vm.OpPush)
+		c.emit(vm.EncodeInt32(n)...)
+		return nil
+	case TokenWord:
+		u := strings.ToUpper(t.Value)
+		if u == "." {
+			c.emit(vm.OpPush)
+			c.emit(vm.EncodeInt32(0)...)
+			c.emit(vm.OpOut)
+			return nil
+		}
+		if u == "EMIT" {
+			c.emit(vm.OpPush)
+			c.emit(vm.EncodeInt32(1)...)
+			c.emit(vm.OpOut)
+			return nil
+		}
+		if combinators[u] {
+			if c.trace {
+				fmt.Fprintf(os.Stderr, "Compiler: combinator=%s, quotStackLen=%d\n", u, len(c.quotationStack))
+			}
+			if (u == "?:" || u == "|:") && len(c.quotationStack) < 2 {
+				return fmt.Errorf("%s requires two quotations", u)
+			}
+			if (u == "?" || u == "!:" || u == "#:" || u == "DIP" || u == "KEEP") && len(c.quotationStack) < 1 {
+				return fmt.Errorf("%s requires one quotation", u)
+			}
+			return c.compileCombinator(u, t.Line)
+		}
+		if op, ok := builtins[u]; ok {
+			c.emit(op)
+			return nil
+		}
+		if w, ok := c.resolveWord(t.Value); ok {
+			// TRO: if this is a recursive call at the very end of a word definition or quotation
+			next := c.peek().Type
+			if c.currentWord == w.Name && (next == TokenSemicolon || next == TokenRBracket) {
+				c.emit(vm.OpJmp)
+				c.emit(vm.EncodeInt32(w.Address)...)
+				return nil
+			}
+			c.emit(vm.OpCall)
+			c.emit(vm.EncodeInt32(w.Address)...)
+			return nil
+		}
+		if n, err := c.ParseNumber(t.Value); err == nil {
+			c.emit(vm.OpPush)
+			c.emit(vm.EncodeInt32(n)...)
+			return nil
+		}
+		off := c.currentOffset()
+		c.unresolved = append(c.unresolved, UnresolvedReference{Word: t.Value, Offset: off, Line: t.Line, Column: t.Column, QuotIdx: c.activeQuotIdx, Module: c.currentModule})
+		c.emit(vm.OpPush, 0, 0, 0, 0)
+	case TokenDollar:
+		// Handle $word -> push the bytecode address of word (function pointer / address-of)
+		t = c.advance()
+		if t.Type != TokenWord {
+			return fmt.Errorf("expected word name after $ at line %d", t.Line)
+		}
+		if w, ok := c.resolveWord(t.Value); ok {
+			c.emit(vm.OpPush)
+			c.emit(vm.EncodeInt32(w.Address)...)
+			return nil
+		}
+		// Unresolved word address: patch it later as a PUSH
+		off := c.currentOffset()
+		c.unresolved = append(c.unresolved, UnresolvedReference{Word: t.Value, Offset: off, Line: t.Line, Column: t.Column, QuotIdx: c.activeQuotIdx, Module: c.currentModule, IsAddress: true})
+		c.emit(vm.OpPush, 0, 0, 0, 0)
+		return nil
+	case TokenLBracket:
+		return c.compileQuotation()
+	case TokenString:
+		c.emitFileString(t.Value)
+	case TokenRBracket:
+		return fmt.Errorf("unexpected ]")
+	}
+	return nil
 }
 
-// currentAddress returns the absolute VM address
-func (c *Compiler) currentAddress() int32 {
-	return int32(c.baseAddr + int32(len(c.bytecode)))
+func (c *Compiler) compileWordDefinition() error {
+	c.quotationStack = []int{}
+	name := strings.ToUpper(c.advance().Value)
+	isExported := strings.HasPrefix(name, ".")
+	if isExported {
+		name = name[1:]
+	} else if c.currentModule != "" && !strings.Contains(name, "::") {
+		name = c.currentModule + "::" + name
+	}
+	c.currentWord = name
+	addr := c.currentAddress()
+	c.dictionary[name] = Word{Name: name, Address: addr, Module: c.currentModule}
+	for c.pos < len(c.tokens) && c.peek().Type != TokenSemicolon {
+		if c.peek().Type == TokenEOF {
+			return fmt.Errorf("unexpected end of file")
+		}
+		if err := c.compileToken(c.advance()); err != nil {
+			return err
+		}
+	}
+	t := c.advance()
+	if t.Type != TokenSemicolon {
+		return fmt.Errorf("expected ;")
+	}
+	c.emit(vm.OpRet)
+	c.currentWord = ""
+	return nil
+}
+func (c *Compiler) compileQuotation() error {
+	idx := len(c.quotations)
+	temp := int32(0x7FFF0000 + idx)
+	c.quotations = append(c.quotations, Quotation{TempAddr: temp, Code: []byte{}})
+	prev := c.activeQuotIdx
+	c.activeQuotIdx = idx
+
+	oldStack := c.quotationStack
+	c.quotationStack = []int{}
+
+	if c.trace {
+		fmt.Fprintf(os.Stderr, "Compiler: compileQuotation: pushed quotIdx=%d, stackLen=%d\n", idx, len(c.quotationStack))
+	}
+	for c.pos < len(c.tokens) && c.peek().Type != TokenRBracket {
+		t := c.advance()
+		if c.trace {
+			fmt.Fprintf(os.Stderr, "Compiler: compileQuotation: token type=%d, value=%s\n", t.Type, t.Value)
+		}
+		if err := c.compileToken(t); err != nil {
+			return err
+		}
+	}
+	t := c.advance()
+	if t.Type == TokenEOF {
+		return fmt.Errorf("unclosed quotation")
+	}
+	if t.Type != TokenRBracket {
+		return fmt.Errorf("unexpected ]")
+	}
+	c.emit(vm.OpRet)
+	c.activeQuotIdx = prev
+
+	c.quotationStack = oldStack
+	if c.trace {
+		fmt.Fprintf(os.Stderr, "Compiler: compileQuotation: left stackLen=%d\n", len(c.quotationStack))
+	}
+	c.emit(vm.OpPush)
+	off := c.currentOffset()
+	c.emit(vm.EncodeInt32(temp)...)
+	c.patchRequests = append(c.patchRequests, PatchRequest{QuotIdx: prev, Offset: off, TempAddr: temp})
+	c.quotationStack = append(c.quotationStack, idx)
+	return nil
 }
 
-// allocTemp allocates space in reserved memory for temporary variables
+func (c *Compiler) compileCombinator(name string, line int) error {
+	getBuf := func() []byte {
+		if c.activeQuotIdx >= 0 {
+			return c.quotations[c.activeQuotIdx].Code
+		}
+		return c.bytecode
+	}
+	switch name {
+	case "CALL":
+		if len(c.quotationStack) > 0 {
+			c.quotationStack = c.quotationStack[:len(c.quotationStack)-1]
+		}
+		c.emit(vm.OpCallStack)
+	case "?:":
+		c.quotationStack = c.quotationStack[:len(c.quotationStack)-2]
+		next := c.peek().Type
+		isTailCall := next == TokenSemicolon || next == TokenRBracket
+		// Stack at runtime: [ ... cond addr_if addr_else ]
+		// We want to move cond to top: [ ... addr_if addr_else cond ]
+		// OpRot works on top 3: a=cond, b=addr_if, c=addr_else -> b, c, a
+		c.emit(vm.OpRot, vm.OpJz) // -> [ ... addr_if addr_else cond ] -> Jz pops cond
+		jzAt := c.currentOffset()
+		c.emit(0, 0, 0, 0)
+
+		// True branch: [ ... addr_if addr_else ]
+		c.emit(vm.OpPop) // -> [ ... addr_if ]
+		var jmpAt int32
+		if isTailCall {
+			c.emit(vm.OpJmpStack)
+		} else {
+			c.emit(vm.OpCallStack)
+			c.emit(vm.OpJmp)
+			jmpAt = int32(c.currentOffset())
+			c.emit(0, 0, 0, 0)
+		}
+
+		// False branch: [ ... addr_if addr_else ] (cond was 0)
+		elseAt := c.currentAddress()
+		c.emit(vm.OpSwap, vm.OpPop) // -> [ ... addr_else ]
+		if isTailCall {
+			c.emit(vm.OpJmpStack)
+		} else {
+			c.emit(vm.OpCallStack)
+		}
+		endAt := c.currentAddress()
+
+		if c.activeQuotIdx >= 0 {
+			if isTailCall {
+				c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{int32(jzAt), int32(elseAt)})
+			} else {
+				c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{int32(jzAt), int32(elseAt)}, InternalJump{jmpAt, int32(endAt)})
+			}
+		} else {
+			binary.BigEndian.PutUint32(getBuf()[jzAt:jzAt+4], uint32(elseAt))
+			if !isTailCall {
+				binary.BigEndian.PutUint32(getBuf()[int(jmpAt):int(jmpAt)+4], uint32(endAt))
+			}
+		}
+		return nil
+	case "?":
+		if len(c.quotationStack) < 1 {
+			return fmt.Errorf("if requires one quotation")
+		}
+		c.quotationStack = c.quotationStack[:len(c.quotationStack)-1]
+		next := c.peek().Type
+		isTailCall := next == TokenSemicolon || next == TokenRBracket
+		// Stack at runtime: [ cond addr ]
+		c.emit(vm.OpSwap, vm.OpJz) // -> [ addr cond ] -> Jz pops cond
+		jzAt := c.currentOffset()
+		c.emit(0, 0, 0, 0)
+		// True branch: [ addr ]
+		if isTailCall {
+			c.emit(vm.OpJmpStack)
+		} else {
+			c.emit(vm.OpCallStack)
+			c.emit(vm.OpJmp)
+			jmpAt := c.currentOffset()
+			c.emit(0, 0, 0, 0)
+
+			// False branch: [ addr ]
+			elseAt := c.currentAddress()
+			c.emit(vm.OpPop)
+			endAt := c.currentAddress()
+			if c.activeQuotIdx >= 0 {
+				c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, elseAt}, InternalJump{jmpAt, endAt})
+			} else {
+				binary.BigEndian.PutUint32(getBuf()[jzAt:jzAt+4], uint32(elseAt))
+				binary.BigEndian.PutUint32(getBuf()[jmpAt:jmpAt+4], uint32(endAt))
+			}
+			return nil
+		}
+		// If tail call, False branch (skip)
+		elseAt := c.currentAddress()
+		c.emit(vm.OpPop)
+		if c.activeQuotIdx >= 0 {
+			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, elseAt})
+		} else {
+			binary.BigEndian.PutUint32(getBuf()[jzAt:jzAt+4], uint32(elseAt))
+		}
+		return nil
+	case "!:":
+		if len(c.quotationStack) < 1 {
+			return fmt.Errorf("unless requires one quotation")
+		}
+		c.quotationStack = c.quotationStack[:len(c.quotationStack)-1]
+		next := c.peek().Type
+		isTailCall := next == TokenSemicolon || next == TokenRBracket
+		c.emit(vm.OpSwap, vm.OpJnz)
+		jnzAt := c.currentOffset()
+		c.emit(0, 0, 0, 0)
+		if isTailCall {
+			c.emit(vm.OpJmpStack, vm.OpJmp)
+		} else {
+			c.emit(vm.OpCallStack, vm.OpJmp)
+		}
+		jmpAt := c.currentOffset()
+		c.emit(0, 0, 0, 0)
+		skipAt := c.currentAddress()
+		c.emit(vm.OpPop)
+		endAt := c.currentAddress()
+		if c.activeQuotIdx >= 0 {
+			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jnzAt, skipAt}, InternalJump{jmpAt, endAt})
+		} else {
+			binary.BigEndian.PutUint32(getBuf()[jnzAt:jnzAt+4], uint32(skipAt))
+			binary.BigEndian.PutUint32(getBuf()[jmpAt:jmpAt+4], uint32(endAt))
+		}
+	case "|:":
+		if len(c.quotationStack) < 2 {
+			return fmt.Errorf("while requires two quotations")
+		}
+		c.quotationStack = c.quotationStack[:len(c.quotationStack)-2]
+
+		// At runtime: [ ... cond body ]
+		c.emit(vm.OpPushR) // body to R
+		c.emit(vm.OpPushR) // cond to R
+
+		start := c.currentAddress()
+
+		c.emit(vm.OpPeekR)     // cond
+		c.emit(vm.OpCallStack) // calls cond. Result on stack.
+
+		c.emit(vm.OpJz)
+		jzAt := c.currentOffset()
+		c.emit(0, 0, 0, 0)
+
+		c.emit(vm.OpPeekR2)    // [ body cond ]
+		c.emit(vm.OpPop)       // drop cond copy. Stack: [ body ]
+		c.emit(vm.OpCallStack) // calls body
+
+		c.emit(vm.OpJmp)
+		jmpAt := c.currentOffset()
+		c.emit(0, 0, 0, 0)
+
+		exit := c.currentAddress()
+		c.emit(vm.OpPopR) // cond
+		c.emit(vm.OpPopR) // body
+		c.emit(vm.OpPop)  // drop cond
+		c.emit(vm.OpPop)  // drop body
+
+		if c.activeQuotIdx >= 0 {
+			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, exit}, InternalJump{jmpAt, start})
+		} else {
+			binary.BigEndian.PutUint32(getBuf()[jzAt:jzAt+4], uint32(exit))
+			binary.BigEndian.PutUint32(getBuf()[jmpAt:jmpAt+4], uint32(start))
+		}
+	case "#:":
+		c.quotationStack = c.quotationStack[:len(c.quotationStack)-1]
+
+		// At runtime: [ ... addr count ]
+		c.emit(vm.OpPushR) // count to R
+		c.emit(vm.OpPushR) // addr to R
+
+		start := c.currentAddress()
+
+		c.emit(vm.OpPopR) // addr
+		c.emit(vm.OpPopR) // count
+
+		// Terminate if count <= 0
+		c.emit(vm.OpDup)
+		c.emit(vm.OpPush)
+		c.emit(vm.EncodeInt32(0)...)
+		c.emit(vm.OpGt, vm.OpJz) // If !(count > 0), jump to exit
+		jzAt := c.currentOffset()
+		c.emit(0, 0, 0, 0)
+
+		c.emit(vm.OpDec)       // count--
+		c.emit(vm.OpPushR)     // count-1 back to R
+		c.emit(vm.OpDup)       // addr copy
+		c.emit(vm.OpPushR)     // addr back to R
+		c.emit(vm.OpCallStack) // calls addr
+
+		c.emit(vm.OpJmp)
+		jmpAt := c.currentOffset()
+		c.emit(0, 0, 0, 0)
+
+		exit := c.currentAddress()
+		c.emit(vm.OpPop) // pops extra count (0)
+		c.emit(vm.OpPop) // pops extra addr
+
+		if c.activeQuotIdx >= 0 {
+			c.quotations[c.activeQuotIdx].InternalJumps = append(c.quotations[c.activeQuotIdx].InternalJumps, InternalJump{jzAt, exit}, InternalJump{jmpAt, start})
+		} else {
+			binary.BigEndian.PutUint32(getBuf()[jzAt:jzAt+4], uint32(exit))
+			binary.BigEndian.PutUint32(getBuf()[jmpAt:jmpAt+4], uint32(start))
+		}
+	case "DIP":
+		c.quotationStack = c.quotationStack[:len(c.quotationStack)-1]
+		t, _ := c.allocTemp(4)
+		c.emit(vm.OpSwap, vm.OpPush)
+		c.emit(vm.EncodeInt32(t)...)
+		c.emit(vm.OpStoreI)
+		c.emit(vm.OpCallStack)
+		c.emit(vm.OpPush)
+		c.emit(vm.EncodeInt32(t)...)
+		c.emit(vm.OpLoadI)
+	case "KEEP":
+		c.quotationStack = c.quotationStack[:len(c.quotationStack)-1]
+		t, _ := c.allocTemp(4)
+		c.emit(vm.OpSwap, vm.OpPush)
+		c.emit(vm.EncodeInt32(t)...)
+		c.emit(vm.OpStoreI)
+		c.emit(vm.OpPush)
+		c.emit(vm.EncodeInt32(t)...)
+		c.emit(vm.OpLoadI)
+		c.emit(vm.OpSwap, vm.OpCallStack, vm.OpPush)
+		c.emit(vm.EncodeInt32(t)...)
+		c.emit(vm.OpLoadI)
+	}
+	return nil
+}
+
+func (c *Compiler) resolveWord(name string) (Word, bool) {
+	upper := strings.ToUpper(name)
+	if w, ok := c.dictionary[upper]; ok {
+		return w, true
+	}
+	if c.currentModule != "" && !strings.Contains(upper, "::") {
+		if w, ok := c.dictionary[c.currentModule+"::"+upper]; ok {
+			return w, true
+		}
+	}
+	parts := strings.Split(upper, "::")
+	if len(parts) == 2 {
+		if mod, ok := c.imports[parts[0]]; ok {
+			if w, ok := c.dictionary[mod+"::"+parts[1]]; ok {
+				return w, true
+			}
+		}
+	}
+	return Word{}, false
+}
+
+func (c *Compiler) ParseNumber(s string) (int32, error) {
+	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+		v, _ := strconv.ParseUint(s[2:], 16, 32)
+		return int32(v), nil
+	}
+	v, err := strconv.ParseInt(s, 10, 32)
+	return int32(v), err
+}
+
+func (c *Compiler) handleModuleDirective() error {
+	t := c.advance()
+	if t.Type != TokenWord {
+		return fmt.Errorf("expected module name")
+	}
+	name := strings.ToUpper(t.Value)
+	if name == "GLOBAL" {
+		c.currentModule = ""
+	} else {
+		c.currentModule = name
+	}
+	return nil
+}
+
+func (c *Compiler) handleImportDirective() error {
+	t := c.advance()
+	if t.Type != TokenWord {
+		return fmt.Errorf("expected module name")
+	}
+	mod := strings.ToUpper(t.Value)
+	alias := mod
+	if strings.ToUpper(c.peek().Value) == "AS" {
+		c.advance()
+		t = c.advance()
+		if t.Type != TokenWord {
+			return fmt.Errorf("expected shorthand name")
+		}
+		alias = strings.ToUpper(t.Value)
+	}
+	c.imports[alias] = mod
+	return nil
+}
+
+func (c *Compiler) handleIncludeDirective() error {
+	if c.includeDepth > 10 {
+		return fmt.Errorf("include depth exceeded")
+	}
+	c.includeDepth++
+	defer func() { c.includeDepth-- }()
+	t := c.advance()
+	if c.trace {
+		fmt.Fprintf(os.Stderr, "Lexer: handleIncludeDirective: token type=%d, value=%s\n", t.Type, t.Value)
+	}
+	if t.Type != TokenWord && t.Type != TokenString {
+		return fmt.Errorf("expected file path, got type %d", t.Type)
+	}
+
+	path := t.Value
+	if c.includedFiles[path] {
+		// Already included, remove the INCLUDE token and path from the stream
+		c.tokens = append(c.tokens[:c.pos-2], c.tokens[c.pos:]...)
+		c.pos -= 2
+		return nil
+	}
+	c.includedFiles[path] = true
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("include failed: %v", err)
+	}
+	l := NewLexer(string(data), c.trace)
+	tokens, err := l.Tokenize()
+	if err != nil {
+		return err
+	}
+	if len(tokens) > 0 && tokens[len(tokens)-1].Type == TokenEOF {
+		tokens = tokens[:len(tokens)-1]
+	}
+	restore := c.currentModule
+	if restore == "" {
+		restore = "GLOBAL"
+	}
+	tokens = append(tokens, Token{TokenWord, "MODULE", 0, 0}, Token{TokenWord, restore, 0, 0})
+
+	newTokens := make([]Token, 0, len(c.tokens)+len(tokens))
+	newTokens = append(newTokens, c.tokens[:c.pos-2]...)
+	newTokens = append(newTokens, tokens...)
+	newTokens = append(newTokens, c.tokens[c.pos:]...)
+	c.tokens = newTokens
+	c.pos -= 2
+	return nil
+}
 func (c *Compiler) allocTemp(size int32) (int32, error) {
 	addr := c.tempAlloc
 	c.tempAlloc += size
-	if c.tempAlloc > vm.ReservedMemorySize {
-		return 0, fmt.Errorf("reserved memory overflow: exceeded %d bytes", vm.ReservedMemorySize)
-	}
 	return addr, nil
+}
+
+func (c *Compiler) emitFileString(s string) {
+	addr := c.nextStringHeap
+	aligned := (int32(len(s)) + 4) & ^3
+	c.nextStringHeap += aligned
+	for i := int32(0); i < aligned/4; i++ {
+		var chunk int32
+		for j := 0; j < 4; j++ {
+			p := i*4 + int32(j)
+			b := byte(0)
+			if p < int32(len(s)) {
+				b = s[p]
+			}
+			chunk = (chunk << 8) | int32(b)
+		}
+		c.emit(vm.OpPush)
+		c.emit(vm.EncodeInt32(chunk)...)
+		c.emit(vm.OpPush)
+		off := c.currentOffset()
+		c.stringPatches = append(c.stringPatches, StringPatch{Offset: off, QuotIdx: c.activeQuotIdx, TempAddr: addr + i*4})
+		c.emit(0, 0, 0, 0) // placeholder for address
+		c.emit(vm.OpStoreI)
+	}
+	c.emit(vm.OpPush)
+	off := c.currentOffset()
+	c.stringPatches = append(c.stringPatches, StringPatch{Offset: off, QuotIdx: c.activeQuotIdx, TempAddr: addr})
+	c.emit(0, 0, 0, 0) // placeholder for start address
 }

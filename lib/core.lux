@@ -1,0 +1,127 @@
+( --- Fundamental Utilities --- )
+@OVER 1 PICK ;
+@TWO-DUP OVER OVER ;
+@TWO-DROP DROP DROP ;
+
+@MAX ( a b -- max )
+    TWO-DUP < [ swap ] ? drop
+;
+
+@MIN ( a b -- min )
+    TWO-DUP > [ swap ] ? drop
+;
+
+@load-byte ( addr -- byte )
+    dup 4 MOD               ( addr offset )
+    swap 4 / 4 * LOADI      ( offset val )
+    swap                    ( val offset )
+
+    dup 0 = [ drop 24 RSHIFT 255 AND ] [
+        dup 1 = [ drop 16 RSHIFT 255 AND ] [
+            dup 2 = [ drop 8 RSHIFT 255 AND ] [ drop 255 AND ] ?:
+        ] ?:
+    ] ?:
+;
+
+@store-byte ( byte addr -- )
+    2 frame! ( 0:addr, 1:byte )
+    0 local@ 4 MOD ( offset )
+    0 local@ 4 / 4 * ( aligned )
+    dup LOADI ( offset aligned old )
+    
+    ( offset aligned old )
+    2 PICK ( offset )
+    0 = [ 1 local@ 24 LSHIFT 0x00FFFFFF 2 PICK AND OR ] [
+        2 PICK ( offset )
+        1 = [ 1 local@ 16 LSHIFT 0xFF00FFFF 2 PICK AND OR ] [
+            2 PICK ( offset )
+            2 = [ 1 local@ 8 LSHIFT 0xFFFF00FF 2 PICK AND OR ] [
+                1 local@ 0xFFFFFF00 2 PICK AND OR
+            ] ?:
+        ] ?:
+    ] ?:
+    
+    ( offset aligned old_ignored new_val )
+    swap drop ( offset aligned new_val )
+    swap STOREI
+    drop ( offset )
+    2 unframe!
+;
+
+INCLUDE "lib/memory.lux"
+IMPORT MEMORY
+
+@x@ MEMORY::CTRL_X LOADI ; @x! MEMORY::CTRL_X STOREI ;
+@y@ MEMORY::CTRL_Y LOADI ; @y! MEMORY::CTRL_Y STOREI ;
+@w@ MEMORY::CTRL_W LOADI ; @w! MEMORY::CTRL_W STOREI ;
+@h@ MEMORY::CTRL_H LOADI ; @h! MEMORY::CTRL_H STOREI ;
+@base@ MEMORY::CTRL_BASE LOADI ; @base! MEMORY::CTRL_BASE STOREI ;
+@temp@ MEMORY::CTRL_TEMP LOADI ; @temp! MEMORY::CTRL_TEMP STOREI ;
+
+@strcpy-safe ( src dest -- )
+    2 frame! ( 0:dest, 1:src )
+    [ 1 local@ load-byte 0 > ] [
+        1 local@ load-byte 0 local@ store-byte
+        1 local@ 1 + 1 local!
+        0 local@ 1 + 0 local!
+    ] |:
+    0 0 local@ store-byte
+    2 unframe!
+;
+
+@strlen ( ptr -- len )
+    MEMORY::CTRL_TEMP STOREI ( save ptr )
+    0 ( len )
+    [ MEMORY::CTRL_TEMP LOADI load-byte 0 > ] [
+        1 +
+        MEMORY::CTRL_TEMP LOADI 1 + MEMORY::CTRL_TEMP STOREI
+    ] |:
+;
+
+@strends ( str_ptr ext_ptr -- bool )
+    2 frame! ( 0:ext, 1:str )
+    1 local@ strlen 0 local@ strlen
+    TWO-DUP < [
+        drop drop 0
+    ] [
+        - 1 local@ + ( a_ptr )
+        1 ( match )
+        [
+            0 local@ load-byte 0 >
+            OVER 1 = AND
+        ] [
+            drop ( match )
+            dup load-byte 0 local@ load-byte = [
+                0 local@ 1 + 0 local!
+                1 ( match )
+            ] [
+                0 ( match )
+            ] ?:
+            swap 1 + swap ( a_ptr++ )
+        ] |:
+        swap drop ( a_ptr )
+    ] ?:
+    2 unframe!
+;
+
+@strcat ( src dest -- )
+    2 frame! ( 0:dest, 1:src )
+    0 local@ strlen 0 local@ + ( ptr to end )
+    1 local@ swap strcpy-safe
+    2 unframe!
+;
+
+@init-locals ( -- ) ;
+
+@type ( ptr -- )
+    [ dup load-byte 0 > ] [
+        dup load-byte emit
+        1 +
+    ] |:
+    drop
+;
+
+@frame!   FRAME!   ;
+@unframe! UNFRAME! ;
+@local@   LOCAL@   ;
+@local!   LOCAL!   ;

@@ -1,0 +1,55 @@
+( Hardware Event Abstractions — Mouse and Keyboard )
+
+INCLUDE "lib/core.lux"
+INCLUDE "lib/draw.lux"
+
+MODULE EVENT
+
+( --- Event Types --- )
+@MOUSE_MOVE 2 ;
+@MOUSE_DOWN 3 ;
+@MOUSE_UP   4 ;
+
+@KEY_DOWN 0 ;
+@KEY_UP   1 ;
+
+( --- Standard Keycodes --- )
+@KEY_BACKSPACE 8 ;
+@KEY_TAB       9 ;
+@KEY_ENTER     13 ;
+@KEY_ESC       27 ;
+@KEY_SPACE     32 ;
+
+@KEY_UP_ARROW    17 ;
+@KEY_DOWN_ARROW  18 ;
+@KEY_LEFT_ARROW  19 ;
+@KEY_RIGHT_ARROW 20 ;
+@KEY_PAGE_UP     21 ;
+@KEY_PAGE_DOWN   22 ;
+
+( --- Modifier Flag Bits (mirror pkg/system/services.go Mod*) --- )
+@MOD_SHIFT 1 ;
+@MOD_CTRL  2 ;
+@MOD_ALT   4 ;
+@MOD_CMD   8 ;
+
+( --- Mouse Packet Parsing (8 bytes) --- )
+( Format: Type(1), Button(1), X(2), Y(2), Padding(2) )
+
+@mouse-type ( buf -- type ) load-byte ;
+@mouse-btn  ( buf -- btn  ) 1 + load-byte ;
+@mouse-x    ( buf -- x    ) 2 + DRAW::load-word-le ;
+@mouse-y    ( buf -- y    ) 4 + DRAW::load-word-le ;
+
+( --- Keyboard Packet Parsing (8 bytes) --- )
+( Format: Type(1), Padding(1), KeyCode(2), Modifiers(4) )
+
+@kbd-type ( buf -- type ) load-byte ;
+@kbd-key  ( buf -- key  ) 2 + DRAW::load-word-le ;
+( Modifiers are written little-endian by the host kbdFile, so read both
+  halves LE and combine. LOADI would do a big-endian load and corrupt the
+  byte order. )
+@kbd-mods ( buf -- mods )
+    4 +
+    dup DRAW::load-word-le swap 2 + DRAW::load-word-le 16 LSHIFT OR
+;

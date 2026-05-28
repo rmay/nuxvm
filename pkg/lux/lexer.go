@@ -18,9 +18,10 @@ const (
 	TokenAtSign                     // @
 	TokenSemicolon                  // ;
 	TokenComment                    // ( ... )
-	TokenString                     // "chars"
+	TokenString                     // "chars" or T"chars" — emits string bytes to heap at compile-time, pushes address
 	TokenLBracket                   // [ - start quotation
 	TokenRBracket                   // ] - end quotation
+	TokenDollar                     // $ - address-of (e.g. $WORD pushes the bytecode address of WORD)
 	TokenEOF                        // End of file
 )
 
@@ -84,65 +85,77 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 func (l *Lexer) NextToken() (Token, error) {
 	l.skipWhitespace()
 	if l.trace {
-		fmt.Fprintf(os.Stderr, "Lexer: NextToken: pos=%d, line=%d, column=%d\n", l.pos, l.line, l.column)
+		fmt.Fprintf(os.Stderr, "Lexer: NextToken: pos=%d, line=%d, column=%d", l.pos, l.line, l.column)
 	}
 
 	if l.pos >= len(l.input) {
 		if l.trace {
-			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reached EOF\n")
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reached EOF")
 		}
 		return Token{Type: TokenEOF, Line: l.line, Column: l.column}, nil
 	}
 
 	ch := l.peek()
 	if l.trace {
-		fmt.Fprintf(os.Stderr, "Lexer: NextToken: Processing char='%c'\n", ch)
+		fmt.Fprintf(os.Stderr, "Lexer: NextToken: Processing char='%c'", ch)
 	}
 
 	switch {
 	case ch == '(':
 		if l.trace {
-			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading comment\n")
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading comment")
 		}
 		return l.readComment()
 	case ch == '/' && l.pos+1 < len(l.input) && l.input[l.pos+1] == '/':
 		if l.trace {
-			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading line comment\n")
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading line comment")
 		}
 		return l.readLineComment()
-	case ch == '"':
+	case ch == '"': // Standard string literal
 		if l.trace {
-			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading string\n")
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading string")
 		}
 		return l.readString()
+	case ch == 'T' && l.pos+1 < len(l.input) && l.input[l.pos+1] == '"':
+		if l.trace {
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading T-string")
+		}
+		l.advance() // skip T; readString consumes the surrounding quotes
+		return l.readString()
+
 	case ch == '@':
 		if l.trace {
-			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading @\n")
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading @")
 		}
 		return l.readSingleChar(TokenAtSign), nil
+	case ch == '$':
+		if l.trace {
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading $")
+		}
+		return l.readSingleChar(TokenDollar), nil
 	case ch == ';':
 		if l.trace {
-			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading ;\n")
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading ;")
 		}
 		return l.readSingleChar(TokenSemicolon), nil
 	case ch == '[':
 		if l.trace {
-			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading [\n")
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading [")
 		}
 		return l.readSingleChar(TokenLBracket), nil
 	case ch == ']':
 		if l.trace {
-			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading ]\n")
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading ]")
 		}
 		return l.readSingleChar(TokenRBracket), nil
 	case l.isNumberStart(ch):
 		if l.trace {
-			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading number\n")
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading number")
 		}
 		return l.readNumber(), nil
 	case ch == '?' && l.pos+1 < len(l.input) && l.input[l.pos+1] == ':':
 		if l.trace {
-			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading ?: combinator\n")
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading ?: combinator")
 		}
 		token := Token{Type: TokenWord, Value: "?:", Line: l.line, Column: l.column}
 		l.pos += 2
@@ -150,7 +163,7 @@ func (l *Lexer) NextToken() (Token, error) {
 		return token, nil
 	case ch == '!' && l.pos+1 < len(l.input) && l.input[l.pos+1] == ':':
 		if l.trace {
-			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading !: combinator\n")
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading !: combinator")
 		}
 		token := Token{Type: TokenWord, Value: "!:", Line: l.line, Column: l.column}
 		l.pos += 2
@@ -158,7 +171,7 @@ func (l *Lexer) NextToken() (Token, error) {
 		return token, nil
 	case ch == '|' && l.pos+1 < len(l.input) && l.input[l.pos+1] == ':':
 		if l.trace {
-			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading |: combinator\n")
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading |: combinator")
 		}
 		token := Token{Type: TokenWord, Value: "|:", Line: l.line, Column: l.column}
 		l.pos += 2
@@ -166,7 +179,7 @@ func (l *Lexer) NextToken() (Token, error) {
 		return token, nil
 	case ch == '#' && l.pos+1 < len(l.input) && l.input[l.pos+1] == ':':
 		if l.trace {
-			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading #: combinator\n")
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading #: combinator")
 		}
 		token := Token{Type: TokenWord, Value: "#:", Line: l.line, Column: l.column}
 		l.pos += 2
@@ -174,7 +187,7 @@ func (l *Lexer) NextToken() (Token, error) {
 		return token, nil
 	default:
 		if l.trace {
-			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading word\n")
+			fmt.Fprintf(os.Stderr, "Lexer: NextToken: Reading word")
 		}
 		return l.readWord()
 	}
@@ -378,7 +391,7 @@ func (l *Lexer) readWord() (Token, error) {
 
 		// Stop at whitespace, brackets, or special characters
 		if unicode.IsSpace(rune(ch)) || ch == '(' || ch == ')' ||
-			ch == ';' || ch == '@' || ch == '"' || ch == '[' || ch == ']' {
+			ch == ';' || ch == '"' || ch == '[' || ch == ']' {
 			break
 		}
 
@@ -399,7 +412,7 @@ func (l *Lexer) readWord() (Token, error) {
 		if unicode.IsLetter(rune(ch)) || unicode.IsDigit(rune(ch)) || ch == '_' ||
 			ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == '%' ||
 			ch == '&' || ch == '|' || ch == '^' || ch == '!' || ch == '?' || ch == '>' ||
-			ch == '<' || ch == '.' || ch == '=' {
+			ch == '<' || ch == '.' || ch == '=' || ch == '@' {
 			word.WriteByte(l.advance())
 		} else {
 			break
@@ -411,7 +424,7 @@ func (l *Lexer) readWord() (Token, error) {
 		return Token{}, fmt.Errorf("empty word at line %d, column %d", startLine, startCol)
 	}
 	if l.trace {
-		fmt.Fprintf(os.Stderr, "Lexer: readWord: Produced token={Type:%v, Value:%s, Line:%d, Column:%d}\n", TokenWord, value, startLine, startCol)
+		fmt.Fprintf(os.Stderr, "Lexer: readWord: Produced token={Type:%v, Value:%s, Line:%d, Column:%d}", TokenWord, value, startLine, startCol)
 	}
 	return Token{
 		Type:   TokenWord,
@@ -445,12 +458,13 @@ func ParseNumber(token Token) (int32, error) {
 
 	// Handle hexadecimal
 	if strings.HasPrefix(token.Value, "0x") || strings.HasPrefix(token.Value, "0X") {
-		val, err := strconv.ParseInt(token.Value[2:], 16, 32)
+		// Use ParseUint to allow values like 0xFF00FFFF which exceed int32 but fit in uint32
+		val, err := strconv.ParseUint(token.Value[2:], 16, 32)
 		if err != nil {
 			return 0, fmt.Errorf("invalid hex number '%s' at line %d: %v",
 				token.Value, token.Line, err)
 		}
-		return int32(val), nil
+		return int32(uint32(val)), nil
 	}
 
 	// Handle decimal

@@ -32,6 +32,8 @@ IMPORT moduleName          (( Use as moduleName::word ))
 IMPORT moduleName AS alias (( Use as alias::word ))
 ```
 
+If no `AS` alias is provided, the module name itself becomes the default shorthand.
+
 ### Calling Module Words
 
 Three ways to call a word from a module:

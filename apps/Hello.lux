@@ -1,0 +1,29 @@
+( --- Hello World App (Modernized with APP framework) --- )
+
+INCLUDE "lib/app.lux"
+
+MODULE HELLO
+
+@tx 0x8E000C ; @ty 0x8E0010 ;
+
+@on-frame
+    ( Clear to black )
+    APP::draw-fd 0 0 APP::width APP::height 0x000000 DRAW::fill-rect
+
+    ( Draw "Hello" in white at 2x scale using Chicago 12x12 CFF )
+    APP::draw-fd tx LOADI ty LOADI T"Hello, World!" 0xFFFFFF 2 DRAW::draw-str
+;
+
+@start
+    T"Hello from Lux!" APP::init
+
+    ( Compute centered origin: "Hello" at scale 2 is 64px wide, 32px tall )
+    APP::width 64 - 2 / tx STOREI
+    APP::height 32 - 2 / ty STOREI
+
+    [ on-frame ] APP::on-frame!
+    APP::loop
+;
+
+HELLO::start
+HALT

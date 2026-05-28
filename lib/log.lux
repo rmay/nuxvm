@@ -1,0 +1,24 @@
+( Logger Module for Lux )
+
+INCLUDE "lib/sci.lux"
+
+MODULE LOG
+
+( Memory for logging state )
+@ENABLED-FLAG 0x803000 ;
+
+@ENABLE ( -- )
+    1 ENABLED-FLAG STOREI
+;
+
+@DISABLE ( -- )
+    0 ENABLED-FLAG STOREI
+;
+
+@MSG ( ptr -- )
+    ENABLED-FLAG LOADI [
+        SCI::DEBUG-PRINT
+    ] [
+        drop
+    ] ?:
+;

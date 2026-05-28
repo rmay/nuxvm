@@ -1,0 +1,77 @@
+( String Utilities — Formatting and Classification )
+
+INCLUDE "lib/core.lux"
+
+MODULE STR
+
+( --- Character Classification --- )
+
+@printable? ( ch -- bool )
+    dup 32 >= OVER 126 <= AND swap drop
+;
+
+( --- Formatting --- )
+
+( Convert integer to null-terminated decimal string in buf )
+@int-to-str ( val buf -- )
+    2 frame! ( 0:buf 1:val )
+    1 local@ 0 = [
+        48 0 local@ store-byte
+        0 0 local@ 1 + store-byte
+    ] [
+        1 local@ 0 < [
+            45 0 local@ store-byte
+            0 local@ 1 + 0 local!
+            0 1 local@ - 1 local!
+        ] ?
+        
+        ( Find largest power of 10 <= val )
+        1 ( power )
+        [ dup 10 * 1 local@ <= ] [
+            10 *
+        ] |:
+        
+        ( Emit digits )
+        [ dup 0 > ] [
+            1 local@ OVER / 48 + 0 local@ store-byte
+            0 local@ 1 + 0 local!
+            1 local@ OVER MOD 1 local!
+            10 /
+        ] |:
+        drop ( power )
+        0 0 local@ store-byte
+    ] ?:
+    2 unframe!
+;
+
+( --- String Manipulation & Comparison --- )
+
+@strcpy ( src dest -- )
+    strcpy-safe
+;
+
+@strlen ( ptr -- len )
+    strlen
+;
+
+@streq ( s1 s2 -- bool )
+    2 frame! ( 0:s2 1:s1 )
+    1 local@ 0 local@ ( p1 p2 )
+    1 ( match )
+    3 frame! ( 0:match 1:p2 2:p1 )
+    [ 
+        2 local@ load-byte 0 >
+        1 local@ load-byte 0 >
+        OR
+        0 local@ AND
+    ] [
+        2 local@ load-byte 1 local@ load-byte = 0 = [
+            0 0 local!
+        ] ?
+        2 local@ 1 + 2 local!
+        1 local@ 1 + 1 local!
+    ] |:
+    0 local@
+    3 unframe!
+    2 unframe!
+;

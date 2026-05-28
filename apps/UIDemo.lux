@@ -1,0 +1,136 @@
+( UI Widget Library Demo — run with: ./bin/cloister apps/UIDemo.bin )
+
+INCLUDE "lib/vfs.lux"
+INCLUDE "lib/ui.lux"
+INCLUDE "lib/event.lux"
+
+MODULE DEMO
+
+IMPORT VFS
+IMPORT UI
+IMPORT EVENT
+IMPORT DRAW
+
+( File descriptors and input state )
+@dfd_addr    0x8A0000 ; @dfd@ dfd_addr LOADI ; @dfd! dfd_addr STOREI ;
+@mfd_addr    0x8A0004 ; @mfd@ mfd_addr LOADI ; @mfd! mfd_addr STOREI ;
+@mx_addr     0x8A0008 ; @mx@  mx_addr LOADI  ; @mx!  mx_addr STOREI  ;
+@my_addr     0x8A000C ; @my@  my_addr LOADI  ; @my!  my_addr STOREI  ;
+@mbtn_addr   0x8A0010 ; @mbtn@ mbtn_addr LOADI ; @mbtn! mbtn_addr STOREI ;
+@clicks_addr 0x8A0014 ; @clicks@ clicks_addr LOADI ; @clicks! clicks_addr STOREI ;
+@dirty_addr  0x8A0018 ; @dirty@ dirty_addr LOADI ; @dirty! dirty_addr STOREI ;
+@sl_val_addr 0x8A001C ; @sl-val@ sl_val_addr LOADI ; @sl-val! sl_val_addr STOREI ;
+
+@mbuf 0x8A0100 ; ( 8 bytes: mouse event packet )
+@tbuf 0x8A0200 ; ( 1024 bytes: text widget buffer )
+
+( Widget state blocks )
+@BTN1 0x8A1000 ; ( button:   36 bytes )
+@CB1  0x8A1030 ; ( checkbox: 24 bytes )
+@RD1  0x8A1050 ; ( radio:    24 bytes )
+@RD2  0x8A1070 ; ( radio:    24 bytes )
+@SL1  0x8A1090 ; ( slider:   36 bytes )
+@TX1  0x8A10C0 ; ( text:     48 bytes )
+
+( String constants )
+@STR_CLICK   T"Click Me!"  ;
+@STR_OPT_A   T"Option A"   ;
+@STR_OPT_B   T"Option B"   ;
+@STR_OPT_C   T"Option C"   ;
+@STR_TITLE   T"lux ui demo" ;
+@STR_CLICKS  T"clicks: "   ;
+@STR_VALUE   T"value: "    ;
+@STR_TEXT    T"type here:" ;
+
+( char width at scale 2: 14px )
+@CHAR_W 14 ;
+
+@init
+    VFS::PATH_DRAW  VFS::open dfd!
+    VFS::PATH_MOUSE VFS::open mfd!
+    VFS::PATH_KBD   VFS::open 0x8A0020 STOREI ( kfd )
+    0 mx!  0 my!  0 mbtn!
+    0 clicks!  50 sl-val!
+    1 dirty!
+
+    BTN1 290 174 220 44 STR_CLICK [ clicks@ 1 + clicks! ] UI::button-init
+    CB1  329 270 24 STR_OPT_A    UI::checkbox-init
+    RD1  329 310 24 STR_OPT_B    UI::checkbox-init
+    RD2  329 350 24 STR_OPT_C    UI::checkbox-init
+    SL1  290 426 220 20 0 100 50 UI::slider-init
+    TX1  290 480 220 100 tbuf 1024 UI::text-init
+;
+
+@draw-all
+    ( background )
+    dfd@ 0 0 960 720 UI::CLR_BG DRAW::fill-rect
+    ( title bar stripe )
+    dfd@ 0 0 960 30 UI::CLR_BORDER DRAW::fill-rect
+    dfd@ 960 STR_TITLE strlen CHAR_W * - 2 / 7 STR_TITLE UI::CLR_BG 2 DRAW::draw-str
+    ( button )
+    dfd@ BTN1 UI::button-draw
+    ( click counter )
+    dfd@ 290 226 STR_CLICKS UI::CLR_TEXT 2 DRAW::draw-str
+    dfd@ 290 STR_CLICKS strlen CHAR_W * + 226 clicks@ UI::CLR_TEXT 2 DRAW::draw-int
+    ( checkbox )
+    dfd@ CB1 UI::checkbox-draw
+    ( radio buttons )
+    dfd@ RD1 UI::radio-draw
+    dfd@ RD2 UI::radio-draw
+    ( slider )
+    dfd@ 290 386 STR_VALUE UI::CLR_TEXT 2 DRAW::draw-str
+    dfd@ 290 STR_VALUE strlen CHAR_W * + 386 sl-val@ UI::CLR_TEXT 2 DRAW::draw-int
+    dfd@ SL1 UI::slider-draw
+    ( text )
+    dfd@ 290 460 STR_TEXT UI::CLR_TEXT 1 DRAW::draw-str
+    dfd@ TX1 UI::text-draw
+    0 dirty!
+;
+
+@handle-mouse
+    mfd@ mbuf 8 VFS::read
+    8 = [
+        mbuf EVENT::mouse-x mx!
+        mbuf EVENT::mouse-y my!
+        mbuf EVENT::mouse-type dup mbtn! ( use mbtn to store type for updates )
+        
+        TX1 mx@ my@ mbtn@ UI::text-update-mouse
+    ] ?
+;
+
+@handle-kbd
+    0x8A0020 LOADI ( kfd ) mbuf 8 VFS::read
+    8 = [
+        mbuf EVENT::kbd-type EVENT::KEY_DOWN = [
+            TX1 mbuf EVENT::kbd-key mbuf EVENT::kbd-mods UI::text-update-kbd
+        ] ?
+    ] ?
+;
+
+@update-widgets
+    BTN1 mx@ my@ mbtn@ EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: UI::button-tick
+    CB1 mx@ my@ mbtn@ EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: UI::checkbox-update drop
+    RD1 mx@ my@ mbtn@ EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: UI::checkbox-update [
+        1 RD1 UI::CB_CHK + STOREI
+        0 RD2 UI::CB_CHK + STOREI
+    ] ?
+    RD2 mx@ my@ mbtn@ EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: UI::checkbox-update [
+        0 RD1 UI::CB_CHK + STOREI
+        1 RD2 UI::CB_CHK + STOREI
+    ] ?
+    SL1 mx@ my@ mbtn@ EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: UI::slider-update sl-val!
+    1 dirty!
+;
+
+@start
+    init
+    [ 1 ] [
+        handle-mouse
+        handle-kbd
+        update-widgets
+        dirty@ [ draw-all ] ?
+        VFS::yield drop
+    ] |:
+;
+
+DEMO::start

@@ -1,0 +1,211 @@
+( Menu Bar Library — Quotation Driven )
+
+INCLUDE "lib/draw.lux"
+INCLUDE "lib/str.lux"
+INCLUDE "lib/ui.lux"
+
+MODULE MENU
+
+( --- Theme Colors (System 6 style) --- )
+@CLR_BG      0xFFFFFF ;
+@CLR_BORDER  0x000000 ;
+@CLR_TEXT    0x000000 ;
+@CLR_HILIGHT 0x000000 ;
+@CLR_HILIGHT_TEXT 0xFFFFFF ;
+
+@BAR_H       24 ;
+@FONT_CHAR_W  10 ;
+@FONT_CHAR_H 20 ;
+@MENU_PADDING 10 ;
+@ITEM_H      24 ;
+@MENU_ROOT_W 80 ; ( Fixed width for root items )
+@MENU_ITEM_W 160 ; ( Fixed width for dropdown subitems )
+
+( --- State Struct (8 bytes) --- )
+@MB_SIZE    8 ;
+@MB_ACTIVE  0 ; ( index of active menu, -1 if none )
+@MB_HOVER   4 ; ( index of hovered item in active menu, -1 if none )
+
+( --- API --- )
+
+@menu-bar-draw ( fd addr win-w menus-quot count -- )
+    @MENU_PADDING ( x )
+    0 ( i )
+    -1 ( active-idx )
+    0 ( label )
+    0 ( items-q )
+    0 ( item-count )
+    0 ( w )
+    12 frame!
+    ( 0:w, 1:item-count, 2:items-q, 3:label, 4:active-idx, 5:i, 6:x, 7:count, 8:menus-quot, 9:win-w, 10:addr, 11:fd )
+
+    ( 1. Background )
+    11 local@ 0 0 9 local@ @BAR_H @CLR_BG DRAW::fill-rect
+    11 local@ 0 @BAR_H 1 - 9 local@ 1 @CLR_BORDER DRAW::fill-rect
+
+    ( 2. Labels )
+    [ 5 local@ 7 local@ < ] [
+        ( Get menu label )
+        5 local@ 8 local@ CALL CALL ( label items-q item-count )
+        drop drop ( count items-q )
+        3 local! ( label )
+
+        ( Fixed root width )
+        @MENU_ROOT_W 0 local! ( w )
+
+        ( Draw Label )
+        5 local@ 10 local@ MB_ACTIVE + LOADI = [
+            11 local@ 6 local@ 0 0 local@ @BAR_H @CLR_HILIGHT DRAW::fill-rect
+        ] ?
+
+        11 local@ ( fd )
+        6 local@ @MENU_PADDING + ( x, left aligned )
+        @BAR_H @FONT_CHAR_H - 2 / ( y )
+        3 local@ ( label )
+        5 local@ 10 local@ MB_ACTIVE + LOADI = [ @CLR_HILIGHT_TEXT ] [ @CLR_TEXT ] ?:
+        16 DRAW::draw-str
+
+        ( Update x and i )
+        6 local@ 0 local@ + 6 local! ( x += w )
+        5 local@ 1 + 5 local! ( i++ )
+    ] |:
+
+    ( 3. Dropdown )
+    10 local@ MB_ACTIVE + LOADI dup 4 local! ( active-idx )
+    -1 > [
+        ( Find x of active menu )
+        @MENU_PADDING 6 local! ( x = padding )
+        0 5 local! ( i = 0 )
+        [ 5 local@ 4 local@ < ] [
+            @MENU_ROOT_W 6 local@ + 6 local! ( x += w )
+            5 local@ 1 + 5 local! ( i++ )
+        ] |:
+
+        ( Get active menu data )
+        4 local@ 8 local@ CALL CALL 
+        1 local! ( item-count )
+        2 local! ( items-q )
+        3 local! ( label )
+
+        ( Fixed Dropdown Width )
+        @MENU_ITEM_W 0 local! ( w )
+
+        ( Box )
+        11 local@ ( fd )
+        6 local@ ( x )
+        @BAR_H ( y )
+        0 local@ ( w )
+        1 local@ @ITEM_H * ( h )
+        @CLR_BG UI::draw-border-rect
+
+        ( Items )
+        0 5 local! ( i = 0 )
+        [ 5 local@ 1 local@ < ] [
+            ( Hover highlight )
+            5 local@ 10 local@ MB_HOVER + LOADI = [
+                11 local@ ( fd )
+                6 local@ ( x )
+                @BAR_H 5 local@ @ITEM_H * + ( y )
+                0 local@ ( w )
+                @ITEM_H ( h )
+                @CLR_HILIGHT DRAW::fill-rect
+            ] ?
+
+            ( Item Label )
+            5 local@ 2 local@ CALL drop drop 3 local! ( label )
+            11 local@ ( fd )
+            6 local@ @MENU_PADDING + ( x, left aligned )
+            @BAR_H 5 local@ @ITEM_H * + @ITEM_H @FONT_CHAR_H - 2 / + ( y )
+            3 local@ ( label )
+            5 local@ 10 local@ MB_HOVER + LOADI = [ @CLR_HILIGHT_TEXT ] [ @CLR_TEXT ] ?:
+            16 DRAW::draw-str
+
+            5 local@ 1 + 5 local! ( i++ )
+        ] |:
+    ] ?
+
+    12 unframe!
+;
+
+@menu-bar-update ( addr mx my btn menus-quot count -- )
+    @MENU_PADDING ( x )
+    0 ( i )
+    -1 ( active-idx )
+    0 ( items-q )
+    0 ( item-count )
+    0 ( w )
+    12 frame!
+    ( 0:w, 1:item-count, 2:items-q, 3:active-idx, 4:i, 5:x, 6:count, 7:menus-quot, 8:btn, 9:my, 10:mx, 11:addr )
+
+    11 local@ MB_ACTIVE + LOADI dup 3 local! ( active-idx )
+    -1 = [
+        ( No active menu )
+        8 local@ 1 = [
+            @MENU_PADDING 5 local! ( x )
+            0 4 local! ( i )
+            [ 4 local@ 6 local@ < ] [
+                ( Fixed width )
+                @MENU_ROOT_W 0 local! ( w )
+                
+                ( Check collision )
+                10 local@ 9 local@ ( mx my )
+                5 local@ 0 ( x y )
+                0 local@ @BAR_H ( w h )
+                UI::in-rect? [
+                    4 local@ 11 local@ MB_ACTIVE + STOREI
+                    -1 11 local@ MB_HOVER + STOREI
+                    6 local@ 4 local! ( break loop )
+                ] ?
+
+                5 local@ 0 local@ + 5 local! ( x += w )
+                4 local@ 1 + 4 local! ( i++ )
+            ] |:
+        ] ?
+    ] [
+        ( Active Menu Dropdown Interaction )
+        ( Find x of active menu )
+        @MENU_PADDING 5 local! ( x = padding )
+        0 4 local! ( i = 0 )
+        [ 4 local@ 3 local@ < ] [
+            @MENU_ROOT_W 5 local@ + 5 local! ( x += w )
+            4 local@ 1 + 4 local! ( i++ )
+        ] |:
+
+        ( Get active menu data )
+        3 local@ 7 local@ CALL CALL 
+        1 local! ( item-count )
+        2 local! ( items-q )
+        drop ( label )
+
+        ( Fixed width of dropdown )
+        @MENU_ITEM_W 0 local! ( w )
+
+        8 local@ 1 = [
+            ( Mouse down: check if inside dropdown )
+            10 local@ 9 local@ 5 local@ @BAR_H 0 local@ 1 local@ @ITEM_H * UI::in-rect? [
+                ( Clicked inside dropdown, execute callback and close )
+                0 4 local! ( i = 0 )
+                [ 4 local@ 1 local@ < ] [
+                    10 local@ 9 local@ 5 local@ @BAR_H 4 local@ @ITEM_H * + 0 local@ @ITEM_H UI::in-rect? [
+                        4 local@ 2 local@ CALL swap drop swap drop ( callback )
+                        -1 11 local@ MB_ACTIVE + STOREI
+                        dup 0 > [ CALL ] [ drop ] ?:
+                        1 local@ 4 local! ( break loop )
+                    ] ?
+                    4 local@ 1 + 4 local! ( i++ )
+                ] |:
+            ] [
+                ( Clicked outside, close dropdown )
+                -1 11 local@ MB_ACTIVE + STOREI
+            ] ?:
+        ] [
+            ( Mouse move/up: update hover )
+            -1 11 local@ MB_HOVER + STOREI
+            10 local@ 9 local@ 5 local@ @BAR_H 0 local@ 1 local@ @ITEM_H * UI::in-rect? [
+                9 local@ @BAR_H - @ITEM_H / 11 local@ MB_HOVER + STOREI
+            ] ?
+        ] ?:
+    ] ?:
+
+    12 unframe!
+;

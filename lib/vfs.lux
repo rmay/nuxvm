@@ -1,0 +1,130 @@
+( Virtual File System (VFS) Word Definitions )
+
+MODULE VFS
+
+( SCI Port Addresses )
+@SCI-PORT 0x100D0 ;
+@SCI-CMD  0x100D4 ;
+@SCI-ARG1 0x100D8 ;
+@SCI-ARG2 0x100DC ;
+@SCI-ARG3 0x10124 ;
+
+( VFS SCI Command Codes )
+@CMD_OPEN  10 ;
+@CMD_CLOSE 11 ;
+@CMD_READ  12 ;
+@CMD_WRITE 13 ;
+@CMD_BIND  14 ;
+@CMD_SEEK  23 ;
+@CMD_STAT  24 ;
+@CMD_WRITE_CHUNK 25 ;
+
+@CMD_CREATE_WIN 1 ;
+@CMD_CLOSE_WIN  2 ;
+@CMD_MOVE_WIN   3 ;
+@CMD_FOCUS_WIN  8 ;
+@CMD_POLL_EVENT 9 ;
+@CMD_YIELD 16 ;
+@CMD_GET_ACTIVE_WIN 18;
+@CMD_FILE_DIALOG 21 ;
+@CMD_SET_WINDOW_TITLE 22 ;
+@CMD_GET_WIN_SIZE 7;
+@CMD_DEBUG_PRINT 20;
+
+
+( Standard Paths )
+@PATH_CHAN_NEW  T"/sys/chan/new" ;
+@PATH_CHAN_PEER T"/sys/chan/peer" ;
+@PATH_VM_NEW    T"/sys/vm/new" ;
+@PATH_DRAW      T"/sys/draw" ;
+@PATH_MOUSE     T"/sys/mouse" ;
+@PATH_KBD       T"/sys/kbd" ;
+
+( Helper: Execute an SCI command )
+@EXEC ( cmd arg1 arg2 -- result )
+    ROT SCI-CMD STOREI
+    SWAP SCI-ARG1 STOREI
+    SCI-ARG2 STOREI
+    SCI-PORT LOADI
+;
+
+( VFS Primitives )
+
+@open ( path-ptr -- fd )
+    CMD_OPEN swap 0 EXEC
+;
+
+@close ( fd -- status )
+    CMD_CLOSE swap 0 EXEC
+;
+
+@read ( fd buf-ptr len -- bytes-read )
+    3 frame! ( 0:len, 1:buf, 2:fd )
+    0 local@ SCI-ARG3 STOREI
+    CMD_READ
+    2 local@
+    1 local@
+    EXEC
+    3 unframe!
+;
+
+@write ( fd buf-ptr len -- bytes-written )
+    3 frame! ( 0:len, 1:buf, 2:fd )
+    0 local@ SCI-ARG3 STOREI
+    CMD_WRITE
+    2 local@
+    1 local@
+    EXEC
+    3 unframe!
+;
+
+@bind ( fd target-path-ptr -- status )
+    CMD_BIND rot rot EXEC
+;
+
+@open-mode ( path-ptr mode -- fd )
+    CMD_OPEN rot rot EXEC
+;
+
+@seek ( fd offset -- status )
+    CMD_SEEK rot rot EXEC
+;
+
+@stat ( fd -- size )
+    CMD_STAT swap 0 EXEC
+;
+
+@write-chunk ( param-block-ptr -- bytes-written )
+    CMD_WRITE_CHUNK swap 0 EXEC
+;
+
+@yield ( -- status )
+    CMD_YIELD 0 0 EXEC
+;
+
+@debug-print ( str-ptr -- )
+    CMD_DEBUG_PRINT swap 0 EXEC drop
+;
+
+@open-file-dialog ( mode buf-ptr -- status )
+    CMD_FILE_DIALOG rot rot EXEC
+;
+@get-active-window ( -- win-id )
+    CMD_GET_ACTIVE_WIN 0 0 EXEC
+;
+
+@get-window-size ( win-id -- size )
+    CMD_GET_WIN_SIZE swap 0 EXEC
+;
+
+@create-window ( name-ptr size -- win-id )
+    CMD_CREATE_WIN rot rot EXEC
+;
+
+@poll-event ( -- event )
+    CMD_POLL_EVENT 0 0 EXEC
+;
+
+@set-window-title ( title-ptr -- )
+    CMD_SET_WINDOW_TITLE swap 0 EXEC drop
+;

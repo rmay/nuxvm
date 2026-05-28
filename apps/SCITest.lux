@@ -1,0 +1,8 @@
+INCLUDE "lib/vfs.lux"
+
+@start
+    ( cmd arg1 arg2 -- result )
+    20 T"SCI Test: Debug Print Works!" 0 VFS::EXEC DROP
+    21 0 0 VFS::EXEC DROP ( Trigger File Dialog )
+    HALT
+;

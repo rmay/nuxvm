@@ -1,0 +1,90 @@
+( === FILE OPERATIONS LIBRARY === )
+
+INCLUDE "lib/core.lux"
+INCLUDE "lib/memory.lux"
+IMPORT MEMORY
+
+MODULE FILE
+@addr 0x10060 ;
+
+( Command register layout, packed into the +12 STOREI value:
+    bits 31..24: command  (1=READ 2=WRITE 3=STAT 4=DELETE 5=SEEK)
+    bits 23..16: flags    (bit 0 = append mode for WRITE)
+    bits 15..0 : length   (buffer size for READ/WRITE/STAT) )
+
+@vector! addr STOREI ;
+@name!   ( ptr -- ) addr 4 + STOREI ;
+@buf!    ( ptr -- ) addr 8 + STOREI ;
+
+@read ( len -- res )
+    16777216 OR            ( cmd 1 << 24 )
+    addr 12 + STOREI
+    addr 12 + LOADI
+;
+
+@write ( len -- res )
+    33554432 OR            ( cmd 2 << 24 )
+    addr 12 + STOREI
+    addr 12 + LOADI
+;
+
+@append! ( len -- res )
+    33619968 OR            ( cmd 2 << 24 | flags 1 << 16 )
+    addr 12 + STOREI
+    addr 12 + LOADI
+;
+
+@size ( -- size )
+    50331648               ( cmd 3 << 24 )
+    addr 12 + STOREI
+    addr 12 + LOADI
+;
+
+@delete ( -- res )
+    67108864               ( cmd 4 << 24 )
+    addr 12 + STOREI
+    addr 12 + LOADI
+;
+
+@seek ( -- res )
+    83886080               ( cmd 5 << 24 )
+    addr 12 + STOREI
+    addr 12 + LOADI
+;
+
+@list ( len -- res ) read ;
+
+( --- High-level words --- )
+
+( @load    ( name-ptr buf-ptr max -- len )
+  Load a file. Sets FILE name/buf, calls read, returns length. )
+@load ( name-ptr buf-ptr max -- len )
+    rot name! swap buf! read
+;
+
+( @save    ( name-ptr buf-ptr len -- res )
+  Write to a file. Sets FILE name/buf, calls write, returns result. )
+@save ( name-ptr buf-ptr len -- res )
+    rot name! swap buf! write
+;
+
+( @exists? ( name-ptr -- bool )
+  Check if file exists. Returns >= 0 (true) or < 0 (false). )
+@exists? ( name-ptr -- bool )
+    name!
+    size
+    0 >=
+;
+
+@dir-each ( name-ptr line-buf max quot -- )
+    4 frame! ( 0:quot, 1:max, 2:line-buf, 3:name-ptr )
+    2 local@ buf!
+    3 local@ name!
+    
+    [ 1 local@ list dup 0 > ] [
+        ( len )
+        0 local@ CALL
+    ] |:
+    drop ( Drop the final 0 length )
+    4 unframe!
+;
