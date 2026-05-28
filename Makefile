@@ -1,95 +1,51 @@
-.PHONY: all build test clean install run examples vmbuild cloisterbuild luxbuild replbuild buildall help appsbuild
+CC = gcc
+CFLAGS = -Wall -Wextra -Iinclude -O2
+LDFLAGS = 
 
-# Default: build the full toolchain into bin/.
-all: buildall
+SRC_DIR = src
+INC_DIR = include
+OBJ_DIR = obj
+BIN_DIR = bin
 
-# Build the nux binary
-vmbuild:
-	go build -o bin/nux ./cmd/nux
+VM_SRCS = $(SRC_DIR)/vm.c
+COMPILER_SRCS = $(SRC_DIR)/lexer.c $(SRC_DIR)/compiler.c
 
-# Build the cloister graphical emulator
-cloisterbuild:
-	go build -o bin/cloister ./cmd/cloister
+NUX_SRCS = $(VM_SRCS) $(SRC_DIR)/nux.c
+LUXC_SRCS = $(VM_SRCS) $(COMPILER_SRCS) $(SRC_DIR)/luxc.c
+REPL_SRCS = $(VM_SRCS) $(COMPILER_SRCS) $(SRC_DIR)/repl.c
 
-test:
-	go test ./...
+NUX_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(NUX_SRCS))
+LUXC_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(LUXC_SRCS))
+REPL_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(REPL_SRCS))
 
-# Run tests with coverage
-vmcoverage:
-	cd pkg/vm && go test -coverprofile=coverage.out
-	cd pkg/vm && go tool cover -html=coverage.out
+TARGETS = $(BIN_DIR)/nux $(BIN_DIR)/luxc $(BIN_DIR)/luxrepl
 
-# Clean build artifacts
-vmclean:
-	rm -rf bin/
-	rm -f pkg/vm/coverage.out
+all: dir $(TARGETS)
 
-# Install nux to $GOPATH/bin
-vminstall:
-	go install ./cmd/nux
+dir:
+	@mkdir -p $(OBJ_DIR)
+	@mkdir -p $(BIN_DIR)
 
-# Install cloister to $GOPATH/bin
-cloisterinstall:
-	go install ./cmd/cloister
+$(BIN_DIR)/nux: $(NUX_OBJS)
+	@echo "Linking nux..."
+	@$(CC) $(NUX_OBJS) -o $@ $(LDFLAGS)
+	@echo "Built bin/nux successfully!"
 
-# Run examples
-vmexamples:
-	cd examples && go run examples.go
+$(BIN_DIR)/luxc: $(LUXC_OBJS)
+	@echo "Linking luxc..."
+	@$(CC) $(LUXC_OBJS) -o $@ $(LDFLAGS)
+	@echo "Built bin/luxc successfully!"
 
-# Build the converter
-png2cff:
-	go build -o bin/png2cff ./cmd/png2cff
+$(BIN_DIR)/luxrepl: $(REPL_OBJS)
+	@echo "Linking luxrepl..."
+	@$(CC) $(REPL_OBJS) -o $@ $(LDFLAGS)
+	@echo "Built bin/luxrepl successfully!"
 
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
+	@echo "Compiling $<..."
+	@$(CC) $(CFLAGS) -c $< -o $@
 
-buildall:
-	mkdir -p bin
-	go build -o bin/nux ./cmd/nux
-	go build -o bin/luxc ./cmd/luxc
-	go build -o bin/luxrepl ./cmd/luxrepl
-	go build -o bin/cloister ./cmd/cloister
-	$(MAKE) appsbuild
+clean:
+	rm -rf $(OBJ_DIR) $(BIN_DIR)
 
-appsbuild: bin/luxc
-	@echo "Building apps..."
-	@for f in apps/*.lux; do \
-		./bin/luxc $$f; \
-	done
-	
-luxbuild:
-	go build -o bin/luxc cmd/luxc/main.go
-
-# Run compiler tests
-compilertest:
-	cd pkg/lux && go test -v
-
-replbuild:
-	go build -o bin/luxrepl cmd/luxrepl/main.go
-
-# Format code
-fmt:
-	go fmt ./...
-
-# Lint code (requires golangci-lint)
-lint:
-	golangci-lint run
-
-# Run all checks
-check: fmt test appsbuild
-
-# Help
-help:
-	@echo "Available targets:"
-	@echo "  all          - Build nux, cloister, luxc, luxrepl into bin/ (default)"
-	@echo "  vmbuild      - Build the nux binary"
-	@echo "  cloisterbuild - Build the CLOISTER graphical emulator"
-	@echo "  vmtest       - Run tests"
-	@echo "  vmcoverage   - Run tests with coverage report"
-	@echo "  vmclean      - Remove build artifacts"
-	@echo "  vminstall    - Install nux to GOPATH/bin"
-	@echo "  cloisterinstall - Install cloister to GOPATH/bin"
-	@echo "  vmexamples   - Run example programs"
-	@echo "  compilertest - Run compiler tests"
-	@echo "  buildall     - Build all the things"
-	@echo "  fmt          - Format code"
-	@echo "  lint         - Lint code"
-	@echo "  check        - Run fmt and test"
+.PHONY: all clean dir
