@@ -2,8 +2,7 @@
 
 INCLUDE "lib/app.lux"
 INCLUDE "lib/core.lux"
-INCLUDE "lib/time.lux"
-INCLUDE "lib/file.lux"
+
 INCLUDE "lib/str.lux"
 INCLUDE "lib/ui.lux"
 INCLUDE "lib/menu.lux"
@@ -13,8 +12,6 @@ MODULE MAIN
 IMPORT APP
 IMPORT VFS
 IMPORT DRAW
-IMPORT TIME
-IMPORT FILE
 IMPORT EVENT
 IMPORT STR
 IMPORT UI
@@ -32,7 +29,8 @@ IMPORT MENU
 @VISIBLE_LINES 24 ;
 @LINE_H     26 ;
 @FONT_SIZE  18 ;
-@COLUMNS    80 ;
+@COLUMNS-VAL 0x91007C ;
+@COLUMNS ( -- n ) COLUMNS-VAL LOADI ;
 @STATUS_H   20 ;
 @STATUS_BUF 0x910300 ;
 
@@ -78,6 +76,7 @@ IMPORT MENU
 @CHUNK_SIZE       65536 ;
 @line-count       0x910070 ;
 @mouse-held       0x910074 ;
+@needs-redraw     0x910078 ;
 @LINE_STARTS      0xA10000 ;
 
 @MB_ADDR        @MENU_DATA ;
@@ -456,7 +455,7 @@ IMPORT MENU
 ;
 
 @update-scrollbar ( -- )
-    SB_DATA WIN_W SB_W - PANE_Y SB_W PANE_H 0
+    SB_DATA PANE_X PANE_W + PANE_Y SB_W PANE_H 0
     get-total-lines VISIBLE_LINES - 0 MAX
     get-abs-scroll-y 32 UI::scrollbar-init
 ;
@@ -479,19 +478,25 @@ IMPORT MENU
 ;
 
 @refresh-text-pane ( -- )
-    APP::draw-fd PANE_X PANE_Y PANE_W PANE_H CLR_BG DRAW::fill-rect
-    update-scrollbar APP::draw-fd SB_DATA UI::scrollbar-draw
-    draw-selection layout-and-render
-    draw-status-line
+    needs-redraw LOADI 1 = [
+        APP::draw-fd PANE_X PANE_Y PANE_W PANE_H CLR_BG DRAW::fill-rect
+        update-scrollbar APP::draw-fd SB_DATA UI::scrollbar-draw
+        draw-selection layout-and-render
+        draw-status-line
+        0 needs-redraw STOREI
+    ] ?
 ;
 
 @refresh ( -- )
-    APP::draw-fd 0 0 WIN_W WIN_H CLR_BG DRAW::fill-rect
-    APP::draw-fd MARGIN 1 - PANE_Y 1 - PANE_W 2 + PANE_H 2 + CLR_FRAME DRAW::draw-rect
-    update-scrollbar APP::draw-fd SB_DATA UI::scrollbar-draw
-    draw-selection layout-and-render
-    draw-status-line
-    APP::draw-fd MB_ADDR WIN_W [ MENUS ] 3 MENU::menu-bar-draw
+    needs-redraw LOADI 1 = [
+        APP::draw-fd 0 0 WIN_W WIN_H CLR_BG DRAW::fill-rect
+        APP::draw-fd MARGIN 1 - PANE_Y 1 - PANE_W 2 + PANE_H 2 + CLR_FRAME DRAW::draw-rect
+        update-scrollbar APP::draw-fd SB_DATA UI::scrollbar-draw
+        draw-selection layout-and-render
+        draw-status-line
+        APP::draw-fd MB_ADDR WIN_W [ MENUS ] 3 MENU::menu-bar-draw
+        0 needs-redraw STOREI
+    ] ?
 ;
 
 @ensure-visible ( -- )
@@ -526,6 +531,7 @@ IMPORT MENU
         SB_DATA OVER EVENT::mouse-x 2 PICK EVENT::mouse-y mouse-held LOADI UI::scrollbar-update ( new-abs-scroll-y )
         dup 1 local@ = 0 = [
             ( Jump to new absolute scroll position )
+            dup ( DUP new-abs-scroll-y for later subtraction )
             get-total-lines dup 0 = [ drop 0 ] [
                 swap total-size LOADI swap mul-div
             ] ?:
@@ -563,6 +569,7 @@ IMPORT MENU
     MB_ADDR MENU::MB_ACTIVE + LOADI 3 local@ = 0 = ( active menu changed? )
     OR ( any of above changed? )
     [
+        1 needs-redraw STOREI
         refresh
     ] [
         ( Otherwise, if only hover changed -> draw menu only )
@@ -576,6 +583,7 @@ IMPORT MENU
 
 @on-kbd ( kpkt -- )
     dup EVENT::kbd-type EVENT::KEY_DOWN = [
+        1 needs-redraw STOREI
         dup EVENT::kbd-key
         dup EVENT::KEY_BACKSPACE = [ drop delete-char ] [
             dup STR::printable? [ insert-char ] [
@@ -601,6 +609,7 @@ IMPORT MENU
             ] ?:
         ] ?:
         check-lazy-load
+        1 needs-redraw STOREI
         ensure-visible refresh-text-pane
         cursor LOADI rc-from-idx swap drop target-col STOREI
     ] ? drop
@@ -627,6 +636,7 @@ IMPORT MENU
         dup 0 > [
             PASTE_BUF swap insert-bytes
         ] [ drop ] ?:
+        1 needs-redraw STOREI
         ensure-visible refresh-text-pane
         cursor LOADI rc-from-idx swap drop target-col STOREI
     ] [ drop ] ?:
@@ -743,8 +753,13 @@ IMPORT MENU
 @start
     T"Quill" APP::init
     APP::draw-fd 2 DRAW::set-font APP::draw-fd FONT_SIZE DRAW::set-font-size
+    80 COLUMNS-VAL STOREI
     T"/sys/font/widths" VFS::open dup 0 >= [ dup FONT_DATA 256 VFS::read drop VFS::close drop ] [ drop ] ?:
     FONT_DATA 65 + load-byte char-w-val STOREI
+
+    ( Fit columns + PANE_W so scrollbar at WIN right abuts the bordered text pane with zero gap.
+      This fixes the "UI is off" detached sb + overflowing long lines. )
+    WIN_W PANE_X - SB_W - char-w-val LOADI / COLUMNS-VAL STOREI
     
     -1 MB_ADDR MENU::MB_ACTIVE + STOREI
     -1 MB_ADDR MENU::MB_HOVER + STOREI
@@ -763,6 +778,7 @@ IMPORT MENU
         rebuild-lines
     ] ?:
     0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI 0 drag STOREI 0 mouse-held STOREI
+    1 needs-redraw STOREI
     
     refresh [ on-mouse ] APP::on-mouse! [ on-kbd ] APP::on-kbd! [ refresh ] APP::on-resume! APP::loop
 ;

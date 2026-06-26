@@ -25,10 +25,7 @@ func NewMachine(program []byte, baseAddress uint32, memSize uint32, trace ...boo
 
 	// Wire vector callbacks: when Lux code writes to a vector register,
 	// the Bus calls back to set/get the vector in the CPU.
-	sys.SetVectorCallbacks(
-		func(index int) uint32 { return cpu.GetVector(index) },
-		func(index int, addr uint32) { cpu.SetVector(index, addr) },
-	)
+	
 
 	cpu.SetBus(sys)
 
@@ -76,10 +73,7 @@ func NewMachineSharedServices(program []byte, baseAddress uint32, memSize uint32
 	sys := NewSystemNoFallback()
 	sys.Services = services
 	sys.SetMemory(cpu.Memory())
-	sys.SetVectorCallbacks(
-		func(index int) uint32 { return cpu.GetVector(index) },
-		func(index int, addr uint32) { cpu.SetVector(index, addr) },
-	)
+	
 	cpu.SetBus(sys)
 
 	sys.SoundHandler = func(soundID int32) {
@@ -162,22 +156,22 @@ func (m *Machine) Tick() (bool, error) {
 
 func (m *Machine) PushKey(key int32) error {
 	m.System.SetKey(key)
-	return m.CPU.TriggerVector(ControllerVectorIdx)
+return nil
 }
 
 func (m *Machine) PushButton(mask uint32) error {
 	m.System.SetButton(mask)
-	return m.CPU.TriggerVector(ControllerVectorIdx)
+return nil
 }
 
 func (m *Machine) MoveMouse(x, y int32) error {
 	m.System.SetMouse(x, y, m.System.mouseButton)
-	return m.CPU.TriggerVector(MouseVectorIdx)
+return nil
 }
 
 func (m *Machine) PushMouseButton(mask uint32) error {
 	m.System.SetMouse(m.System.mouseX, m.System.mouseY, mask)
-	return m.CPU.TriggerVector(MouseVectorIdx)
+return nil
 }
 
 // SetSandboxRoot pins the File device's filesystem sandbox to dir. All File
@@ -189,12 +183,12 @@ func (m *Machine) SetSandboxRoot(dir string) error {
 
 // VBlank triggers the screen vector. Called every frame.
 func (m *Machine) VBlank() error {
-	return m.CPU.TriggerVector(ScreenVectorIdx)
+return nil
 }
 
 // TriggerAudio triggers the audio vector.
 func (m *Machine) TriggerAudio() error {
-	return m.CPU.TriggerVector(AudioVectorIdx)
+return nil
 }
 
 // Services returns the OS service manager for IPC.
@@ -274,14 +268,14 @@ func (m *Machine) DrainInputEvents() {
 		switch evt.Type {
 		case InputKeyDown:
 			m.System.SetKey(evt.KeyCode)
-			_ = m.CPU.TriggerVector(ControllerVectorIdx)
+
 			select {
 			case m.System.kbdEvents <- *evt:
 			default:
 			}
 		case InputKeyUp:
 			m.System.SetKey(0) // clear key on release
-			_ = m.CPU.TriggerVector(ControllerVectorIdx)
+
 			select {
 			case m.System.kbdEvents <- *evt:
 			default:
@@ -315,16 +309,16 @@ func (m *Machine) DrainInputEvents() {
 			}
 		case InputWheel:
 			m.System.SetWheel(int32(evt.WheelY))
-			_ = m.CPU.TriggerVector(WheelVectorIdx)
+
 		case InputResize:
 			m.System.SetResize(evt.ResizeW, evt.ResizeH)
-			_ = m.CPU.TriggerVector(ResizeVectorIdx)
+
 		}
 	}
 
 done:
 	if mouseChanged {
 		m.System.SetMouse(mouseX, mouseY, mouseBtn)
-		_ = m.CPU.TriggerVector(MouseVectorIdx)
+
 	}
 }

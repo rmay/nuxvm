@@ -307,10 +307,16 @@ const (
 )
 
 func (s *System) screenImage() *image.RGBA {
+	fb := s.getActiveFramebuffer()
+	if fb == nil {
+		return nil
+	}
+	w := int(s.getScreenWidth())
+	h := int(s.getScreenHeight())
 	return &image.RGBA{
-		Pix:    s.screenPixels,
-		Stride: int(s.screenWidth) * 4,
-		Rect:   image.Rect(0, 0, int(s.screenWidth), int(s.screenHeight)),
+		Pix:    fb,
+		Stride: w * 4,
+		Rect:   image.Rect(0, 0, w, h),
 	}
 }
 
@@ -410,9 +416,9 @@ func (s *System) drawChar(c byte) {
 		return
 	}
 
-	// Respect pane clipping for screen drawing
-	sw := int(s.screenWidth)
-	sh := int(s.screenHeight)
+	// Respect pane clipping for screen drawing (pane only applies in legacy full-screen mode; window fbs are 0-based)
+	sw := int(s.getScreenWidth())
+	sh := int(s.getScreenHeight())
 	paneMinX := int(s.paneX)
 	paneMinY := int(s.paneY)
 	paneMaxX := int(s.paneX + s.paneW)
@@ -449,8 +455,8 @@ func (s *System) drawCFFRaw(data []byte, char byte, x, y int32, colorVal uint32,
 	}
 
 	// For raw CFF drawing, we target the whole screen but respect panes
-	sw := int(s.screenWidth)
-	sh := int(s.screenHeight)
+	sw := int(s.getScreenWidth())
+	sh := int(s.getScreenHeight())
 	paneMinX := int(s.paneX)
 	paneMinY := int(s.paneY)
 	paneMaxX := int(s.paneX + s.paneW)

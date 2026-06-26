@@ -185,8 +185,8 @@ IMPORT EVENT
     kfd STOREI
 
     ( Get Resolution )
-    0x10024 LOADI win-w STOREI
-    0x10028 LOADI win-h STOREI
+    960 win-w STOREI
+    720 win-h STOREI
 ;
 
 ( --- Framework Lifecycle --- )

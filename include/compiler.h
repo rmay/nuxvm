@@ -19,6 +19,7 @@ typedef struct {
 
 typedef struct {
     int32_t temp_addr;
+    int parent_quot_idx;
     int32_t address;
     uint8_t* code;
     size_t code_len;
@@ -32,6 +33,7 @@ typedef struct {
     int quot_idx;
     int32_t offset;
     int32_t temp_addr;
+    int parent_quot_idx;
 } PatchRequest;
 
 typedef struct {
@@ -42,7 +44,21 @@ typedef struct {
     int quot_idx;
     char* module;
     bool is_address;
+    bool is_tail_call;
 } UnresolvedRef;
+
+typedef struct {
+    int32_t offset;
+    int quot_idx;
+    char* str;
+} StringPatch;
+
+typedef struct {
+    int* stack;
+    size_t count;
+    size_t cap;
+    int active_quot_idx;
+} QuotStackFrame;
 
 typedef struct {
     TokenList* token_list;
@@ -63,6 +79,10 @@ typedef struct {
     int* quot_stack;
     size_t quot_stack_count;
     size_t quot_stack_cap;
+
+    QuotStackFrame* quot_saved_frames;
+    size_t quot_saved_count;
+    size_t quot_saved_cap;
     
     int active_quot_idx;
     char* current_module;
@@ -79,6 +99,22 @@ typedef struct {
     size_t patches_count;
     size_t patches_cap;
     
+
+    char** included_files;
+    size_t included_count;
+    size_t included_cap;
+
+    StringPatch* string_patches;
+    size_t string_patches_count;
+    size_t string_patches_cap;
+
+    struct {
+        char* alias;
+        char* module;
+    }* imports;
+    size_t import_count;
+    size_t import_cap;
+
     bool trace;
 } Compiler;
 

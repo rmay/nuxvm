@@ -99,6 +99,36 @@ static bool resolve_word(Compiler* c, const char* name, WordDef* out_word) {
             return true;
         }
     }
+    char buf[256];
+    if (c->current_module && c->current_module[0] != '\0') {
+        snprintf(buf, sizeof(buf), "%s::%s", c->current_module, name);
+        for (size_t i = 0; i < c->dict_count; i++) {
+            if (strcasecmp(c->dictionary[i].name, buf) == 0) {
+                *out_word = c->dictionary[i];
+                return true;
+            }
+        }
+    }
+    char* colon = strstr(name, "::");
+    if (colon) {
+        size_t plen = colon - name;
+        char prefix[128];
+        if (plen < 127) {
+            strncpy(prefix, name, plen);
+            prefix[plen] = '\0';
+            for (size_t i = 0; i < c->import_count; i++) {
+                if (strcasecmp(c->imports[i].alias, prefix) == 0) {
+                    snprintf(buf, sizeof(buf), "%s::%s", c->imports[i].module, colon + 2);
+                    for (size_t j = 0; j < c->dict_count; j++) {
+                        if (strcasecmp(c->dictionary[j].name, buf) == 0) {
+                            *out_word = c->dictionary[j];
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
     return false;
 }
 
@@ -113,7 +143,326 @@ static void add_dict(Compiler* c, const char* name, int32_t address) {
     c->dict_count++;
 }
 
+
+static void push_quot_stack(Compiler* c, int idx) {
+    if (c->quot_stack_count >= c->quot_stack_cap) {
+        c->quot_stack_cap = c->quot_stack_cap == 0 ? 16 : c->quot_stack_cap * 2;
+        c->quot_stack = realloc(c->quot_stack, c->quot_stack_cap * sizeof(int));
+    }
+    c->quot_stack[c->quot_stack_count++] = idx;
+}
+
+static void push_quot_stack_frame(Compiler* c) {
+    if (c->quot_saved_count >= c->quot_saved_cap) {
+        c->quot_saved_cap = c->quot_saved_cap == 0 ? 16 : c->quot_saved_cap * 2;
+        c->quot_saved_frames = realloc(c->quot_saved_frames, c->quot_saved_cap * sizeof(QuotStackFrame));
+    }
+    QuotStackFrame* frame = &c->quot_saved_frames[c->quot_saved_count++];
+    frame->stack = c->quot_stack;
+    frame->count = c->quot_stack_count;
+    frame->cap = c->quot_stack_cap;
+    frame->active_quot_idx = c->active_quot_idx;
+    c->quot_stack = NULL;
+    c->quot_stack_count = 0;
+    c->quot_stack_cap = 0;
+}
+
+static void pop_quot_stack_frame(Compiler* c) {
+    if (c->quot_saved_count == 0) return;
+    c->quot_saved_count--;
+    QuotStackFrame* frame = &c->quot_saved_frames[c->quot_saved_count];
+    c->quot_stack = frame->stack;
+    c->quot_stack_count = frame->count;
+    c->quot_stack_cap = frame->cap;
+    c->active_quot_idx = frame->active_quot_idx;
+}
+
+static void compile_quotation_start(Compiler* c) {
+    if (c->quot_count >= c->quot_cap) {
+        c->quot_cap = c->quot_cap == 0 ? 16 : c->quot_cap * 2;
+        c->quotations = realloc(c->quotations, c->quot_cap * sizeof(Quotation));
+    }
+    int idx = c->quot_count++;
+    Quotation* q = &c->quotations[idx];
+    memset(q, 0, sizeof(Quotation));
+    
+    q->temp_addr = c->temp_alloc;
+    c->temp_alloc += 4;
+    
+    push_quot_stack_frame(c);
+    c->active_quot_idx = idx;
+}
+
+static void compile_quotation_end(Compiler* c) {
+    emit_byte(c, OP_RET);
+    int idx = c->active_quot_idx;
+    pop_quot_stack_frame(c);
+    
+    push_quot_stack(c, idx);
+    
+    emit_byte(c, OP_PUSH);
+    int32_t off = current_offset(c);
+    emit_int32(c, 0); // Placeholder
+    
+    if (c->patches_count >= c->patches_cap) {
+        c->patches_cap = c->patches_cap == 0 ? 16 : c->patches_cap * 2;
+        c->patches = realloc(c->patches, c->patches_cap * sizeof(PatchRequest));
+    }
+    c->patches[c->patches_count++] = (PatchRequest){ idx, off, 0, c->active_quot_idx };
+}
+
+static void add_jump(Compiler* c, int32_t at, int32_t to) {
+    if (c->active_quot_idx >= 0) {
+        Quotation* q = &c->quotations[c->active_quot_idx];
+        if (q->jumps_count >= q->jumps_cap) {
+            q->jumps_cap = q->jumps_cap == 0 ? 16 : q->jumps_cap * 2;
+            q->jumps = realloc(q->jumps, q->jumps_cap * sizeof(InternalJump));
+        }
+        q->jumps[q->jumps_count++] = (InternalJump){ at, to };
+    } else {
+        c->bytecode[at] = (to >> 24) & 0xFF;
+        c->bytecode[at+1] = (to >> 16) & 0xFF;
+        c->bytecode[at+2] = (to >> 8) & 0xFF;
+        c->bytecode[at+3] = to & 0xFF;
+    }
+}
+
+static bool compile_combinator(Compiler* c, const char* name) {
+    if (strcasecmp(name, "CALL") == 0) {
+        if (c->quot_stack_count > 0) c->quot_stack_count--;
+        emit_byte(c, OP_CALLSTACK);
+        return true;
+    }
+    
+    if (strcmp(name, "?:") == 0) {
+        if (c->quot_stack_count < 2) return false;
+        c->quot_stack_count -= 2;
+        
+        bool is_tail = false;
+        Token next = peek(c);
+        if (next.type == TOKEN_SEMICOLON || next.type == TOKEN_RBRACKET) is_tail = true;
+        
+        emit_byte(c, OP_ROT);
+        emit_byte(c, OP_JZ);
+        int32_t jz_at = current_offset(c);
+        emit_int32(c, 0);
+        
+        emit_byte(c, OP_POP);
+        int32_t jmp_at = 0;
+        if (is_tail) {
+            emit_byte(c, OP_JMPSTACK);
+        } else {
+            emit_byte(c, OP_CALLSTACK);
+            emit_byte(c, OP_JMP);
+            jmp_at = current_offset(c);
+            emit_int32(c, 0);
+        }
+        
+        int32_t else_at = current_address(c);
+        emit_byte(c, OP_SWAP);
+        emit_byte(c, OP_POP);
+        if (is_tail) {
+            emit_byte(c, OP_JMPSTACK);
+        } else {
+            emit_byte(c, OP_CALLSTACK);
+        }
+        int32_t end_at = current_address(c);
+        
+        add_jump(c, jz_at, else_at);
+        if (!is_tail) add_jump(c, jmp_at, end_at);
+        return true;
+    }
+
+    if (strcmp(name, "?") == 0) {
+        if (c->quot_stack_count < 1) return false;
+        c->quot_stack_count -= 1;
+        bool is_tail = false;
+        Token next = peek(c);
+        if (next.type == TOKEN_SEMICOLON || next.type == TOKEN_RBRACKET) is_tail = true;
+        
+        emit_byte(c, OP_SWAP);
+        emit_byte(c, OP_JZ);
+        int32_t jz_at = current_offset(c);
+        emit_int32(c, 0);
+        
+        if (is_tail) {
+            emit_byte(c, OP_JMPSTACK);
+            add_jump(c, jz_at, current_address(c));
+            emit_byte(c, OP_POP);
+            return true;
+        } else {
+            emit_byte(c, OP_CALLSTACK);
+            emit_byte(c, OP_JMP);
+            int32_t jmp_at = current_offset(c);
+            emit_int32(c, 0);
+            add_jump(c, jz_at, current_address(c));
+            emit_byte(c, OP_POP);
+            add_jump(c, jmp_at, current_address(c));
+            return true;
+        }
+    }
+
+    if (strcmp(name, "!:") == 0) {
+        if (c->quot_stack_count < 1) return false;
+        c->quot_stack_count -= 1;
+        bool is_tail = false;
+        Token next = peek(c);
+        if (next.type == TOKEN_SEMICOLON || next.type == TOKEN_RBRACKET) is_tail = true;
+        
+        emit_byte(c, OP_SWAP);
+        emit_byte(c, OP_JNZ);
+        int32_t jnz_at = current_offset(c);
+        emit_int32(c, 0);
+        
+        if (is_tail) {
+            emit_byte(c, OP_JMPSTACK);
+        } else {
+            emit_byte(c, OP_CALLSTACK);
+            emit_byte(c, OP_JMP);
+            int32_t jmp_at = current_offset(c);
+            emit_int32(c, 0);
+            int32_t end_at = current_address(c);
+            add_jump(c, jnz_at, current_address(c));
+            emit_byte(c, OP_POP);
+            add_jump(c, jmp_at, current_address(c));
+            return true;
+        }
+        
+        int32_t end_at = current_address(c);
+        add_jump(c, jnz_at, end_at);
+        return true;
+    }
+
+    if (strcmp(name, "|:") == 0) {
+        if (c->quot_stack_count < 2) return false;
+        c->quot_stack_count -= 2;
+        emit_byte(c, OP_PUSHR);
+        emit_byte(c, OP_PUSHR);
+        int32_t start_at = current_address(c);
+        emit_byte(c, OP_PEEKR);
+        emit_byte(c, OP_CALLSTACK);
+        emit_byte(c, OP_JZ);
+        int32_t jz_at = current_offset(c);
+        emit_int32(c, 0);
+        emit_byte(c, OP_PEEKR2);
+        emit_byte(c, OP_CALLSTACK);
+        emit_byte(c, OP_JMP);
+        int32_t jmp_at = current_offset(c);
+        emit_int32(c, 0);
+        int32_t exit_at = current_address(c);
+        emit_byte(c, OP_POPR);
+        emit_byte(c, OP_POPR);
+        emit_byte(c, OP_POP);
+        emit_byte(c, OP_POP);
+        
+        add_jump(c, jz_at, exit_at);
+        add_jump(c, jmp_at, start_at);
+        return true;
+    }
+
+    if (strcmp(name, "#:") == 0) {
+        if (c->quot_stack_count < 1) return false;
+        c->quot_stack_count -= 1;
+        emit_byte(c, OP_SWAP);
+        emit_byte(c, OP_PUSHR);
+        emit_byte(c, OP_PUSHR);
+        int32_t start_at = current_address(c);
+        emit_byte(c, OP_PEEKR);
+        emit_byte(c, OP_JZ);
+        int32_t jz_at = current_offset(c);
+        emit_int32(c, 0);
+        emit_byte(c, OP_PEEKR2);
+        emit_byte(c, OP_CALLSTACK);
+        emit_byte(c, OP_POPR);
+        emit_byte(c, OP_DEC);
+        emit_byte(c, OP_PUSHR);
+        emit_byte(c, OP_JMP);
+        int32_t jmp_at = current_offset(c);
+        emit_int32(c, 0);
+        int32_t exit_at = current_address(c);
+        emit_byte(c, OP_POPR);
+        emit_byte(c, OP_POPR);
+        emit_byte(c, OP_POP);
+        emit_byte(c, OP_POP);
+        
+        add_jump(c, jz_at, exit_at);
+        add_jump(c, jmp_at, start_at);
+        return true;
+    }
+
+    if (strcmp(name, "DIP") == 0) {
+        if (c->quot_stack_count < 1) return false;
+        c->quot_stack_count -= 1;
+        emit_byte(c, OP_SWAP);
+        emit_byte(c, OP_PUSHR);
+        emit_byte(c, OP_CALLSTACK);
+        emit_byte(c, OP_POPR);
+        return true;
+    }
+    
+    if (strcmp(name, "KEEP") == 0) {
+        if (c->quot_stack_count < 1) return false;
+        c->quot_stack_count -= 1;
+        emit_byte(c, OP_SWAP);
+        emit_byte(c, OP_DUP);
+        emit_byte(c, OP_PUSHR);
+        emit_byte(c, OP_SWAP);
+        emit_byte(c, OP_CALLSTACK);
+        emit_byte(c, OP_POPR);
+        return true;
+    }
+
+    return false;
+}
+
+static bool is_combinator_token(const char* name) {
+    return strcasecmp(name, "CALL") == 0 ||
+           strcmp(name, "?:") == 0 ||
+           strcmp(name, "?") == 0 ||
+           strcmp(name, "!:") == 0 ||
+           strcmp(name, "|:") == 0 ||
+           strcmp(name, "#:") == 0 ||
+           strcasecmp(name, "DIP") == 0 ||
+           strcasecmp(name, "KEEP") == 0;
+}
+
+static bool report_combinator_error(const char* name, Token t) {
+    if (strcmp(name, "?:") == 0 || strcmp(name, "|:") == 0) {
+        fprintf(stderr, "%s requires two quotations at line %d\n", name, t.line);
+        return true;
+    }
+    if (strcmp(name, "?") == 0 || strcmp(name, "!:") == 0 || strcmp(name, "#:") == 0 ||
+        strcasecmp(name, "DIP") == 0 || strcasecmp(name, "KEEP") == 0) {
+        fprintf(stderr, "%s requires one quotation at line %d\n", name, t.line);
+        return true;
+    }
+    return false;
+}
+
+static bool compile_token(Compiler* c, Token t);
+
+
 static bool compile_token(Compiler* c, Token t) {
+    if (t.type == TOKEN_LBRACKET) {
+        compile_quotation_start(c);
+        return true;
+    }
+    if (t.type == TOKEN_RBRACKET) {
+        compile_quotation_end(c);
+        return true;
+    }
+    if (t.type == TOKEN_STRING) {
+        // T-string
+        emit_byte(c, OP_PUSH);
+        int32_t off = current_offset(c);
+        emit_int32(c, 0); // placeholder
+        if (c->string_patches_count >= c->string_patches_cap) {
+            c->string_patches_cap = c->string_patches_cap == 0 ? 16 : c->string_patches_cap * 2;
+            c->string_patches = realloc(c->string_patches, c->string_patches_cap * sizeof(StringPatch));
+        }
+        c->string_patches[c->string_patches_count++] = (StringPatch){ off, c->active_quot_idx, strdup(t.value) };
+        return true;
+    }
     if (t.type == TOKEN_NUMBER) {
         int32_t val;
         parse_number(&t, &val);
@@ -131,6 +480,39 @@ static bool compile_token(Compiler* c, Token t) {
             emit_byte(c, OP_PUSH); emit_int32(c, 1); emit_byte(c, OP_OUT);
             return true;
         }
+        if (strcmp(t.value, "MODULE") == 0) {
+            Token name = advance(c);
+            if (c->current_module) free(c->current_module);
+            c->current_module = strdup(name.value);
+            return true;
+        }
+        if (strcmp(t.value, "IMPORT") == 0) {
+            Token mod = advance(c);
+            Token as_tok = advance(c);
+            char* alias_val = NULL;
+            if (as_tok.type == TOKEN_WORD && strcmp(as_tok.value, "AS") == 0) {
+                Token alias = advance(c);
+                alias_val = strdup(alias.value);
+            } else {
+                c->pos--; // backtrack AS
+            }
+            if (c->import_count >= c->import_cap) {
+                c->import_cap = c->import_cap == 0 ? 16 : c->import_cap * 2;
+                c->imports = realloc(c->imports, c->import_cap * sizeof(*c->imports));
+            }
+            c->imports[c->import_count].module = strdup(mod.value);
+            c->imports[c->import_count].alias = alias_val;
+            c->import_count++;
+            return true;
+        }
+        
+        if (compile_combinator(c, t.value)) {
+            return true;
+        }
+        if (is_combinator_token(t.value)) {
+            report_combinator_error(t.value, t);
+            return false;
+        }
         
         uint8_t op;
         if (is_builtin(t.value, &op)) {
@@ -138,9 +520,12 @@ static bool compile_token(Compiler* c, Token t) {
             return true;
         }
         
+        Token next = peek(c);
+        bool is_tail = (next.type == TOKEN_SEMICOLON || next.type == TOKEN_RBRACKET);
         WordDef w;
         if (resolve_word(c, t.value, &w)) {
-            emit_byte(c, OP_CALL);
+            if (is_tail) emit_byte(c, OP_JMP);
+            else emit_byte(c, OP_CALL);
             emit_int32(c, w.address);
             return true;
         }
@@ -152,30 +537,53 @@ static bool compile_token(Compiler* c, Token t) {
             return true;
         }
         
-        // Unresolved
         if (c->unresolved_count >= c->unresolved_cap) {
             c->unresolved_cap = c->unresolved_cap == 0 ? 16 : c->unresolved_cap * 2;
             c->unresolved = realloc(c->unresolved, c->unresolved_cap * sizeof(UnresolvedRef));
         }
-        UnresolvedRef ref = { strdup(t.value), current_offset(c), t.line, t.column, c->active_quot_idx, NULL, false };
+        UnresolvedRef ref = { strdup(t.value), current_offset(c), t.line, t.column, c->active_quot_idx, NULL, false, is_tail };
         c->unresolved[c->unresolved_count++] = ref;
         
         emit_byte(c, OP_PUSH);
         emit_int32(c, 0); // Placeholder
         return true;
     }
-    return true; // Ignore other tokens for now
+    if (t.type == TOKEN_DOLLAR) {
+        Token target = advance(c);
+        if (c->unresolved_count >= c->unresolved_cap) {
+            c->unresolved_cap = c->unresolved_cap == 0 ? 16 : c->unresolved_cap * 2;
+            c->unresolved = realloc(c->unresolved, c->unresolved_cap * sizeof(UnresolvedRef));
+        }
+        UnresolvedRef ref = { strdup(target.value), current_offset(c), t.line, t.column, c->active_quot_idx, NULL, true, false };
+        c->unresolved[c->unresolved_count++] = ref;
+        
+        emit_byte(c, OP_PUSH);
+        emit_int32(c, 0); // Placeholder
+        return true;
+    }
+    return true;
 }
 
 static bool compile_word_def(Compiler* c) {
     Token name_tok = advance(c);
     if (name_tok.type != TOKEN_WORD) return false;
+
+    c->quot_stack_count = 0;
+    
+    char* final_name = name_tok.value;
+    char buf[256];
+    if (name_tok.value[0] == '.') {
+        final_name = name_tok.value + 1;
+    } else if (c->current_module && c->current_module[0] != '\0' && !strstr(name_tok.value, "::")) {
+        snprintf(buf, sizeof(buf), "%s::%s", c->current_module, name_tok.value);
+        final_name = buf;
+    }
     
     int32_t addr = current_address(c);
-    add_dict(c, name_tok.value, addr);
+    add_dict(c, final_name, addr);
     
     while (c->pos < (int)c->token_list->count && peek(c).type != TOKEN_SEMICOLON) {
-        compile_token(c, advance(c));
+        if (!compile_token(c, advance(c))) return false;
     }
     
     advance(c); // Skip ;
@@ -203,10 +611,118 @@ void compiler_free(Compiler* c) {
         free(c->unresolved[i].word);
     }
     if (c->unresolved) free(c->unresolved);
+    if (c->quot_stack) free(c->quot_stack);
+    for (size_t i = 0; i < c->quot_saved_count; i++) {
+        if (c->quot_saved_frames[i].stack) free(c->quot_saved_frames[i].stack);
+    }
+    if (c->quot_saved_frames) free(c->quot_saved_frames);
     free(c);
 }
 
+static bool preprocess_includes(Compiler* c) {
+    char* current_module = NULL;
+    c->pos = 0;
+    while (c->pos < (int)c->token_list->count && peek(c).type != TOKEN_EOF) {
+        Token t = advance(c);
+        if (t.type == TOKEN_WORD && strcmp(t.value, "MODULE") == 0) {
+            Token name = peek(c); 
+            if (current_module) free(current_module);
+            current_module = strdup(name.value);
+            continue;
+        }
+        if (t.type == TOKEN_WORD && strcmp(t.value, "INCLUDE") == 0) {
+            Token file = advance(c);
+            if (file.type != TOKEN_STRING && file.type != TOKEN_WORD) {
+                fprintf(stderr, "Error: expected string after INCLUDE\n");
+                return false;
+            }
+            
+            bool already_included = false;
+            for (size_t i = 0; i < c->included_count; i++) {
+                if (strcmp(c->included_files[i], file.value) == 0) {
+                    already_included = true;
+                    break;
+                }
+            }
+            
+            if (already_included) {
+                size_t move_count = c->token_list->count - c->pos;
+                memmove(&c->token_list->tokens[c->pos - 2], 
+                        &c->token_list->tokens[c->pos], 
+                        move_count * sizeof(Token));
+                c->token_list->count -= 2;
+                c->pos -= 2;
+                continue;
+            }
+            
+            if (c->included_count >= c->included_cap) {
+                c->included_cap = c->included_cap == 0 ? 16 : c->included_cap * 2;
+                c->included_files = realloc(c->included_files, c->included_cap * sizeof(char*));
+            }
+            c->included_files[c->included_count++] = strdup(file.value);
+            
+            FILE* f = fopen(file.value, "rb");
+            if (!f) return false;
+            fseek(f, 0, SEEK_END);
+            long fsize = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            char* source = malloc(fsize + 1);
+            fread(source, 1, fsize, f);
+            source[fsize] = '\0';
+            fclose(f);
+            
+            TokenList* inc_list = tokenize(source);
+            free(source);
+            
+            size_t inc_count = inc_list->count;
+            if (inc_count > 0 && inc_list->tokens[inc_count-1].type == TOKEN_EOF) {
+                inc_count--;
+            }
+            
+            int net_change = (int)inc_count; // + MODULE restore
+            
+            size_t new_total = c->token_list->count + net_change;
+            if (new_total > c->token_list->capacity) {
+                while (c->token_list->capacity < new_total) {
+                    c->token_list->capacity = c->token_list->capacity == 0 ? 16 : c->token_list->capacity * 2;
+                }
+                c->token_list->tokens = realloc(c->token_list->tokens, c->token_list->capacity * sizeof(Token));
+            }
+            
+            size_t move_count = c->token_list->count - c->pos;
+            memmove(&c->token_list->tokens[c->pos - 2 + inc_count + 2], 
+                    &c->token_list->tokens[c->pos], 
+                    move_count * sizeof(Token));
+            
+            for (size_t i = 0; i < inc_count; i++) {
+                c->token_list->tokens[c->pos - 2 + i] = inc_list->tokens[i];
+                inc_list->tokens[i].value = NULL; 
+            }
+            
+            c->token_list->tokens[c->pos - 2 + inc_count].type = TOKEN_WORD;
+            c->token_list->tokens[c->pos - 2 + inc_count].value = strdup("MODULE");
+            c->token_list->tokens[c->pos - 2 + inc_count].line = 0;
+            c->token_list->tokens[c->pos - 2 + inc_count].column = 0;
+            
+            c->token_list->tokens[c->pos - 2 + inc_count + 1].type = TOKEN_WORD;
+            c->token_list->tokens[c->pos - 2 + inc_count + 1].value = current_module ? strdup(current_module) : strdup("");
+            c->token_list->tokens[c->pos - 2 + inc_count + 1].line = 0;
+            c->token_list->tokens[c->pos - 2 + inc_count + 1].column = 0;
+            
+            c->token_list->count += net_change;
+            token_list_free(inc_list);
+            
+            c->pos -= 2;
+        }
+    }
+    if (current_module) free(current_module);
+    return true;
+}
+
 uint8_t* compiler_compile(Compiler* c, size_t* out_len) {
+    if (!preprocess_includes(c)) return NULL;
+    c->pos = 0;
+
     emit_byte(c, OP_JMP);
     emit_int32(c, 0); // Placeholder
     
@@ -215,10 +731,19 @@ uint8_t* compiler_compile(Compiler* c, size_t* out_len) {
     // Pass 1: Words
     while (c->pos < (int)c->token_list->count && peek(c).type != TOKEN_EOF) {
         Token t = advance(c);
-        if (t.type == TOKEN_AT_SIGN) {
-            compile_word_def(c);
+        if (t.type == TOKEN_WORD && strcmp(t.value, "MODULE") == 0) {
+            Token name = advance(c);
+            if (c->current_module) free(c->current_module);
+            c->current_module = strdup(name.value);
+        } else if (t.type == TOKEN_AT_SIGN) {
+            if (!compile_word_def(c)) return NULL;
         }
     }
+    
+    // Reset current_module for Pass 2
+    if (c->current_module) free(c->current_module);
+    c->current_module = NULL;
+    c->quot_stack_count = 0;
     
     int32_t main_start = current_address(c);
     c->bytecode[1] = (main_start >> 24) & 0xFF;
@@ -236,10 +761,39 @@ uint8_t* compiler_compile(Compiler* c, size_t* out_len) {
             advance(c); // ;
             continue;
         }
-        compile_token(c, t);
+        if (!compile_token(c, t)) return NULL;
     }
     
-    // Resolve unresolved
+    emit_byte(c, OP_HALT);
+    // Compute quotation addresses
+    int32_t curr_addr = current_address(c);
+    for (size_t i = 0; i < c->quot_count; i++) {
+        c->quotations[i].address = curr_addr;
+        curr_addr += c->quotations[i].code_len;
+    }
+    
+    // Resolve string patches
+    int32_t string_heap = curr_addr;
+    for (size_t i = 0; i < c->string_patches_count; i++) {
+        StringPatch* p = &c->string_patches[i];
+        int32_t str_addr = string_heap;
+        size_t slen = strlen(p->str);
+        string_heap += slen + 1;
+        
+        if (p->quot_idx >= 0) {
+            c->quotations[p->quot_idx].code[p->offset] = (str_addr >> 24) & 0xFF;
+            c->quotations[p->quot_idx].code[p->offset+1] = (str_addr >> 16) & 0xFF;
+            c->quotations[p->quot_idx].code[p->offset+2] = (str_addr >> 8) & 0xFF;
+            c->quotations[p->quot_idx].code[p->offset+3] = str_addr & 0xFF;
+        } else {
+            c->bytecode[p->offset] = (str_addr >> 24) & 0xFF;
+            c->bytecode[p->offset+1] = (str_addr >> 16) & 0xFF;
+            c->bytecode[p->offset+2] = (str_addr >> 8) & 0xFF;
+            c->bytecode[p->offset+3] = str_addr & 0xFF;
+        }
+    }
+    
+    // Patch unresolved inside quotations BEFORE flattening
     for (size_t i = 0; i < c->unresolved_count; i++) {
         UnresolvedRef* u = &c->unresolved[i];
         WordDef w;
@@ -247,15 +801,70 @@ uint8_t* compiler_compile(Compiler* c, size_t* out_len) {
             fprintf(stderr, "Unknown word '%s'\n", u->word);
             return NULL;
         }
-        
-        c->bytecode[u->offset] = OP_CALL;
-        c->bytecode[u->offset + 1] = (w.address >> 24) & 0xFF;
-        c->bytecode[u->offset + 2] = (w.address >> 16) & 0xFF;
-        c->bytecode[u->offset + 3] = (w.address >> 8) & 0xFF;
-        c->bytecode[u->offset + 4] = w.address & 0xFF;
+        if (u->quot_idx >= 0) {
+            if (!u->is_address) c->quotations[u->quot_idx].code[u->offset] = u->is_tail_call ? OP_JMP : OP_CALL;
+            c->quotations[u->quot_idx].code[u->offset+1] = (w.address >> 24) & 0xFF;
+            c->quotations[u->quot_idx].code[u->offset+2] = (w.address >> 16) & 0xFF;
+            c->quotations[u->quot_idx].code[u->offset+3] = (w.address >> 8) & 0xFF;
+            c->quotations[u->quot_idx].code[u->offset+4] = w.address & 0xFF;
+        } else {
+            if (!u->is_address) c->bytecode[u->offset] = u->is_tail_call ? OP_JMP : OP_CALL;
+            c->bytecode[u->offset+1] = (w.address >> 24) & 0xFF;
+            c->bytecode[u->offset+2] = (w.address >> 16) & 0xFF;
+            c->bytecode[u->offset+3] = (w.address >> 8) & 0xFF;
+            c->bytecode[u->offset+4] = w.address & 0xFF;
+        }
+    }
+    c->unresolved_count = 0; // Prevent second loop
+    
+    // Patch quotation pushes
+    for (size_t i = 0; i < c->patches_count; i++) {
+        PatchRequest* p = &c->patches[i];
+        int32_t addr = c->quotations[p->quot_idx].address;
+        // The offset where OP_PUSH was emitted is p->offset
+        // But wait! We need to know WHICH quotation emitted it.
+        // It's the parent quotation! Wait, we don't track parent in PatchRequest.
+        // For now let's assume it was emitted in main bytecode
+        if (p->parent_quot_idx >= 0) {
+            c->quotations[p->parent_quot_idx].code[p->offset] = (addr >> 24) & 0xFF;
+            c->quotations[p->parent_quot_idx].code[p->offset+1] = (addr >> 16) & 0xFF;
+            c->quotations[p->parent_quot_idx].code[p->offset+2] = (addr >> 8) & 0xFF;
+            c->quotations[p->parent_quot_idx].code[p->offset+3] = addr & 0xFF;
+        } else {
+            c->bytecode[p->offset] = (addr >> 24) & 0xFF;
+            c->bytecode[p->offset+1] = (addr >> 16) & 0xFF;
+            c->bytecode[p->offset+2] = (addr >> 8) & 0xFF;
+            c->bytecode[p->offset+3] = addr & 0xFF;
+        }
     }
     
-    emit_byte(c, OP_HALT);
+    // Append quotations
+    for (size_t i = 0; i < c->quot_count; i++) {
+        Quotation* q = &c->quotations[i];
+        
+        // Patch internal jumps
+        for (size_t j = 0; j < q->jumps_count; j++) {
+            InternalJump* ij = &q->jumps[j];
+            int32_t target = q->address + ij->target_offset;
+            q->code[ij->placeholder_at] = (target >> 24) & 0xFF;
+            q->code[ij->placeholder_at+1] = (target >> 16) & 0xFF;
+            q->code[ij->placeholder_at+2] = (target >> 8) & 0xFF;
+            q->code[ij->placeholder_at+3] = target & 0xFF;
+        }
+        
+        // Append code
+        for (size_t j = 0; j < q->code_len; j++) {
+            emit_byte(c, q->code[j]);
+        }
+    }
+    
+    // Append string literals
+    for (size_t i = 0; i < c->string_patches_count; i++) {
+        StringPatch* p = &c->string_patches[i];
+        size_t slen = strlen(p->str);
+        for (size_t j = 0; j < slen; j++) emit_byte(c, p->str[j]);
+        emit_byte(c, 0); // null term
+    }
     
     *out_len = c->bytecode_len;
     uint8_t* result = malloc(c->bytecode_len);

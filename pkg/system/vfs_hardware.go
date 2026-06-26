@@ -8,13 +8,18 @@ import (
 
 // fillRect draws a filled rectangle directly to the physical screen pixels.
 func (s *System) fillRect(x, y, w, h int32, color uint32) {
+	fb := s.getActiveFramebuffer()
+	if fb == nil {
+		return
+	}
+
 	r := byte((color >> 16) & 0xFF)
 	g := byte((color >> 8) & 0xFF)
 	b := byte(color & 0xFF)
 	a := byte(255)
 
-	sw := int(s.screenWidth)
-	sh := int(s.screenHeight)
+	sw := int(s.getScreenWidth())
+	sh := int(s.getScreenHeight())
 
 	paneMinX := s.paneX
 	paneMinY := s.paneY
@@ -37,11 +42,11 @@ func (s *System) fillRect(x, y, w, h int32, color uint32) {
 				continue
 			}
 			offset := (int(py)*sw + int(px)) * 4
-			if offset+4 <= len(s.screenPixels) {
-				s.screenPixels[offset] = r
-				s.screenPixels[offset+1] = g
-				s.screenPixels[offset+2] = b
-				s.screenPixels[offset+3] = a
+			if offset+4 <= len(fb) {
+				fb[offset] = r
+				fb[offset+1] = g
+				fb[offset+2] = b
+				fb[offset+3] = a
 			}
 		}
 	}
@@ -70,8 +75,8 @@ func (s *System) drawCharVFS(x, y int32, char byte, color uint32, scale byte) {
 		sc = float64(scale) * 16.0
 	}
 
-	sw := int(s.screenWidth)
-	sh := int(s.screenHeight)
+	sw := int(s.getScreenWidth())
+	sh := int(s.getScreenHeight())
 	paneMinX := int(s.paneX)
 	paneMinY := int(s.paneY)
 	paneMaxX := int(s.paneX + s.paneW)
@@ -84,6 +89,9 @@ func (s *System) drawCharVFS(x, y int32, char byte, color uint32, scale byte) {
 	}
 
 	screen := s.screenImage()
+	if screen == nil {
+		return
+	}
 	sub := screen.SubImage(image.Rect(paneMinX, paneMinY, paneMaxX, paneMaxY)).(*image.RGBA)
 
 	s.DrawGlyph(sub, x-int32(paneMinX), y-int32(paneMinY), char, color, sc)
@@ -97,9 +105,6 @@ func (f *kbdFile) Read(p []byte) (n int, err error) {
 	}
 	select {
 	case evt := <-f.s.kbdEvents:
-		// [Type (1), Padding (1), KeyCode (2), Modifiers (4)]
-		// Modifiers are only written when the caller passes an 8+ byte buffer;
-		// older apps that pass a 4-byte buffer still get the legacy layout.
 		p[0] = byte(evt.Type)
 		p[1] = 0
 		binary.LittleEndian.PutUint16(p[2:4], uint16(evt.KeyCode))
@@ -109,6 +114,7 @@ func (f *kbdFile) Read(p []byte) (n int, err error) {
 		}
 		return 4, nil
 	default:
+		f.s.yielded = true
 		return 0, nil
 	}
 }
@@ -119,13 +125,13 @@ func (f *mouseFile) Read(p []byte) (n int, err error) {
 	}
 	select {
 	case evt := <-f.s.mouseEvents:
-		// [Type (1), Buttons (1), X (2), Y (2), Padding (2)]
 		p[0] = byte(evt.Type)
 		p[1] = byte(evt.MouseBtn)
 		binary.LittleEndian.PutUint16(p[2:4], uint16(evt.MouseX))
 		binary.LittleEndian.PutUint16(p[4:6], uint16(evt.MouseY))
 		return 8, nil
 	default:
+		f.s.yielded = true
 		return 0, nil
 	}
 }

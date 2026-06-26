@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "bus.h"
 
 #define MAX_STACK_SIZE 8192
 #define MAX_RETURN_STACK_SIZE 1024
@@ -15,6 +16,10 @@
 
 #define HEADLESS_BASE_ADDRESS 0x11000
 #define GRAPHICAL_BASE_ADDRESS 0x600000
+
+#define VIDEO_FRAMEBUFFER_START HEADLESS_BASE_ADDRESS
+#define VIDEO_FRAMEBUFFER_MAX_SIZE (1280 * 1024 * 4)
+#define VIDEO_FRAMEBUFFER_END (VIDEO_FRAMEBUFFER_START + VIDEO_FRAMEBUFFER_MAX_SIZE)
 
 typedef struct {
     int32_t stack[MAX_STACK_SIZE];
@@ -36,15 +41,21 @@ typedef struct {
     bool trace;
     
     int32_t locals[MAX_LOCALS_SIZE];
-    int32_t fp; // Frame pointer
-    
+    int32_t locals_count; // Number of slots used in locals[]
+    int32_t fp; // Frame pointer: index of saved-FP slot for current frame, -1 if none
+
     int32_t loop_stack[MAX_LOOP_STACK_SIZE];
     int32_t loop_stack_ptr;
-    
+
     uint8_t last_opcode;
-    
+
+    // SCI (system call interface) result register, read via DEVICE_MEMORY_OFFSET + 0xD0.
+    int32_t sci_result;
+
     // Callbacks
     void (*output_handler)(int32_t value, int32_t format);
+
+    DeviceBus* bus;
 } VM;
 
 // Initialize a new VM. memory_size must be >= base_address + program_size
@@ -52,6 +63,9 @@ VM* vm_create(const uint8_t* program, uint32_t program_size, uint32_t base_addre
 
 // Free the VM
 void vm_free(VM* vm);
+
+// Set device bus
+void vm_set_bus(VM* vm, DeviceBus* bus);
 
 // Run the VM until halted or an error occurs
 void vm_run(VM* vm);
@@ -62,7 +76,18 @@ bool vm_tick(VM* vm);
 // Push a value to the main stack
 bool vm_push(VM* vm, int32_t value);
 
+bool vm_call_vector(VM* vm, uint32_t addr);
+
 // Pop a value from the main stack
 bool vm_pop(VM* vm, int32_t* value);
+
+// Introspection helpers (debug/trace CLI)
+uint32_t vm_get_pc(const VM* vm);
+int vm_get_stack_count(const VM* vm);
+void vm_get_stack_copy(const VM* vm, int32_t* out, int max_count);
+
+// Yield state: OP_YIELD sets running=false and records yield via last_opcode.
+bool vm_yielded(const VM* vm);
+void vm_clear_yield(VM* vm);
 
 #endif // VM_H

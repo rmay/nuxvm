@@ -59,7 +59,6 @@ type VM struct {
 	trace              bool
 	traceCount         int
 
-	vectors [16]uint32 // Interrupt/Jump vectors
 	bus     Bus        // External I/O bus
 
 	// OutputHandler is called by OpOut instead of writing to stdout.
@@ -236,55 +235,7 @@ func (vm *VM) Halt() {
 	vm.running = false
 }
 
-// WriteVector sets a jump address for a specific vector index.
-func (vm *VM) WriteVector(index int, address uint32) error {
-	if index < 0 || index >= len(vm.vectors) {
-		return fmt.Errorf("invalid vector index: %d", index)
-	}
-	vm.vectors[index] = address
-	return nil
-}
 
-// GetVector returns the address stored in a vector register.
-func (vm *VM) GetVector(index int) uint32 {
-	if index < 0 || index >= len(vm.vectors) {
-		return 0
-	}
-	return vm.vectors[index]
-}
-
-// SetVector sets a vector register (used by Bus callbacks).
-func (vm *VM) SetVector(index int, addr uint32) {
-	if index >= 0 && index < len(vm.vectors) {
-		vm.vectors[index] = addr
-	}
-}
-
-// TriggerVector calls the specified vector, pushing the current PC onto the
-// return stack so the handler's terminating RET resumes the interrupted code.
-// Sets the VM to running state if it was halted.
-func (vm *VM) TriggerVector(index int) error {
-	if index < 0 || index >= len(vm.vectors) {
-		return fmt.Errorf("invalid vector index: %d", index)
-	}
-
-	addr := vm.vectors[index]
-	if addr == 0 {
-		return nil // Vector not set
-	}
-
-	if addr >= uint32(len(vm.memory)) {
-		return fmt.Errorf("vector address 0x%X out of bounds", addr)
-	}
-
-	if len(vm.returnStack) >= MaxReturnStackSize {
-		return fmt.Errorf("return stack overflow on vector trigger")
-	}
-	vm.returnStack = append(vm.returnStack, int32(vm.pc))
-	vm.pc = addr
-	vm.running = true
-	return nil
-}
 
 // LastOpcode returns the name of the most recently executed opcode.
 func (vm *VM) LastOpcode() string {
@@ -1459,12 +1410,11 @@ func (vm *VM) ExecuteInstruction() (uint32, error) {
 		if len(vm.loopStack) < 2 {
 			return currentPC, fmt.Errorf("peekr2 failed: loop stack underflow")
 		}
-		if len(vm.stack)+2 >= MaxStackSize {
+		if len(vm.stack) >= MaxStackSize {
 			return currentPC, fmt.Errorf("peekr2 failed: stack overflow")
 		}
-		b := vm.loopStack[len(vm.loopStack)-1]
 		a := vm.loopStack[len(vm.loopStack)-2]
-		vm.stack = append(vm.stack, a, b)
+		vm.stack = append(vm.stack, a)
 	default:
 		vm.pc-- // Rewind to faulty opcode
 		vm.running = false

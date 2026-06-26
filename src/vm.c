@@ -102,9 +102,26 @@ void vm_free(VM* vm) {
     }
 }
 
+void vm_set_bus(VM* vm, DeviceBus* bus) {
+    if (vm) {
+        vm->bus = bus;
+    }
+}
+
+bool vm_call_vector(VM* vm, uint32_t addr) {
+    if (vm->return_stack_ptr >= MAX_RETURN_STACK_SIZE) {
+        fprintf(stderr, "Return stack overflow\n");
+        vm->running = false;
+        return false;
+    }
+    vm->return_stack[vm->return_stack_ptr++] = vm->pc;
+    vm->pc = addr - vm->user_memory_start;
+    return true;
+}
+
 bool vm_push(VM* vm, int32_t value) {
     if (vm->stack_ptr >= MAX_STACK_SIZE) {
-        fprintf(stderr, "Stack overflow\n");
+        fprintf(stderr, "Data stack overflow at PC 0x%08X\n", vm->pc);
         vm->running = false;
         return false;
     }
@@ -114,7 +131,7 @@ bool vm_push(VM* vm, int32_t value) {
 
 bool vm_pop(VM* vm, int32_t* value) {
     if (vm->stack_ptr <= 0) {
-        fprintf(stderr, "Stack underflow\n");
+        fprintf(stderr, "Stack underflow at PC 0x%08X\n", vm->pc);
         vm->running = false;
         return false;
     }
@@ -135,8 +152,17 @@ static int32_t read_int32(VM* vm) {
     return (int32_t)read_uint32(vm);
 }
 
+static bool is_device_addr(VM* vm, uint32_t addr) {
+    if (addr >= vm->user_memory_start) {
+        return false;
+    }
+    return (addr >= DEVICE_MEMORY_OFFSET && addr < DEVICE_MEMORY_OFFSET + DEVICE_MEMORY_SIZE)
+        || (addr >= VIDEO_FRAMEBUFFER_START && addr < VIDEO_FRAMEBUFFER_END);
+}
+
+
 static void write_mem32(VM* vm, uint32_t addr, int32_t val) {
-    if (addr + 4 > vm->memory_size) {
+    if (addr > vm->memory_size || addr + 4 > vm->memory_size) {
         fprintf(stderr, "Memory write out of bounds at 0x%08X\n", addr);
         vm->running = false;
         return;
@@ -145,10 +171,31 @@ static void write_mem32(VM* vm, uint32_t addr, int32_t val) {
     vm->memory[addr+1] = (val >> 16) & 0xFF;
     vm->memory[addr+2] = (val >> 8) & 0xFF;
     vm->memory[addr+3] = val & 0xFF;
+    
+    if (is_device_addr(vm, addr)) {
+        if (vm->bus && vm->bus->write) {
+            vm->bus->write(vm->bus, addr, val);
+        }
+    }
 }
 
 static int32_t read_mem32(VM* vm, uint32_t addr) {
-    if (addr + 4 > vm->memory_size) {
+    if (is_device_addr(vm, addr)) {
+        if (vm->bus && vm->bus->read) {
+            bool success = false;
+            int32_t val = vm->bus->read(vm->bus, addr, &success);
+            if (success) {
+                return val;
+            }
+            fprintf(stderr, "Device read failed at 0x%08X\n", addr);
+            vm->running = false;
+            return 0;
+        }
+        fprintf(stderr, "No bus: device read at 0x%08X\n", addr);
+        vm->running = false;
+        return 0;
+    }
+    if (addr > vm->memory_size || addr + 4 > vm->memory_size) {
         fprintf(stderr, "Memory read out of bounds at 0x%08X\n", addr);
         vm->running = false;
         return 0;
@@ -344,6 +391,7 @@ bool vm_tick(VM* vm) {
         case OP_CALL:
             addr = read_uint32(vm);
             if (vm->return_stack_ptr >= MAX_RETURN_STACK_SIZE) {
+                fprintf(stderr, "Return stack overflow at PC 0x%08X\n", vm->pc);
                 vm->running = false;
             } else {
                 vm->return_stack[vm->return_stack_ptr++] = vm->pc;
@@ -360,6 +408,7 @@ bool vm_tick(VM* vm) {
         case OP_CALLSTACK:
             if (vm_pop(vm, &a)) {
                 if (vm->return_stack_ptr >= MAX_RETURN_STACK_SIZE) {
+                    fprintf(stderr, "Return stack overflow at PC 0x%08X\n", vm->pc);
                     vm->running = false;
                 } else {
                     vm->return_stack[vm->return_stack_ptr++] = vm->pc;
@@ -386,7 +435,10 @@ bool vm_tick(VM* vm) {
             break;
         case OP_PUSHR:
             if (vm_pop(vm, &a)) {
-                if (vm->loop_stack_ptr >= MAX_LOOP_STACK_SIZE) vm->running = false;
+                if (vm->loop_stack_ptr >= MAX_LOOP_STACK_SIZE) {
+                    fprintf(stderr, "Loop stack overflow at PC 0x%08X\n", vm->pc);
+                    vm->running = false;
+                }
                 else vm->loop_stack[vm->loop_stack_ptr++] = a;
             }
             break;
@@ -400,14 +452,11 @@ bool vm_tick(VM* vm) {
             break;
         case OP_PEEKR2:
             if (vm->loop_stack_ptr <= 1) vm->running = false;
-            else {
-                vm_push(vm, vm->loop_stack[vm->loop_stack_ptr - 2]);
-                vm_push(vm, vm->loop_stack[vm->loop_stack_ptr - 1]);
-            }
+            else vm_push(vm, vm->loop_stack[vm->loop_stack_ptr - 2]);
             break;
         case OP_FRAME:
             if (vm_pop(vm, &a)) {
-                if (vm->fp + 1 + a >= MAX_LOCALS_SIZE) vm->running = false;
+                if (a < 0 || vm->fp + 1 + a >= MAX_LOCALS_SIZE) vm->running = false;
                 else {
                     vm->locals[++vm->fp] = (int32_t)vm->fp - 1; // Store old fp roughly
                     // Actually, let's keep it simple: push old FP, then locals
@@ -426,7 +475,7 @@ bool vm_tick(VM* vm) {
             break;
         case OP_UNFRAME:
             if (vm_pop(vm, &a)) {
-                if (vm->fp - a < 0) vm->running = false;
+                if (a < 0 || vm->fp - a < 0 || vm->fp - a >= MAX_LOCALS_SIZE) vm->running = false;
                 else {
                     vm->fp = vm->locals[vm->fp - a];
                 }
@@ -435,13 +484,17 @@ bool vm_tick(VM* vm) {
         case OP_LOCALGET:
             if (vm_pop(vm, &a)) {
                 int32_t base = vm->fp; // We need to be careful with Go's implementation
-                vm_push(vm, vm->locals[base - a]);
+                int32_t idx = base - a;
+                if (idx < 0 || idx >= MAX_LOCALS_SIZE) vm->running = false;
+                else vm_push(vm, vm->locals[idx]);
             }
             break;
         case OP_LOCALSET:
-            if (vm_pop(vm, &b) && vm_pop(vm, &a)) { // [val, offset]
+            if (vm_pop(vm, &b) && vm_pop(vm, &a)) { // [val, offset] (b=offset, a=val)
                 int32_t base = vm->fp;
-                vm->locals[base - a] = b;
+                int32_t idx = base - b;
+                if (idx < 0 || idx >= MAX_LOCALS_SIZE) vm->running = false;
+                else vm->locals[idx] = a;
             }
             break;
         case OP_OUT:
@@ -460,7 +513,7 @@ bool vm_tick(VM* vm) {
             vm->running = false;
             break;
         case OP_YIELD:
-            // Yield not fully implemented yet, just continue or break out depending on host
+            vm->running = false;
             break;
         default:
             fprintf(stderr, "Unknown opcode 0x%02X at 0x%08X\n", op, vm->pc - 1);
@@ -471,8 +524,36 @@ bool vm_tick(VM* vm) {
     return vm->running;
 }
 
+
+uint32_t vm_get_pc(const VM* vm) {
+    return vm ? vm->pc : 0;
+}
+
+int vm_get_stack_count(const VM* vm) {
+    return vm ? vm->stack_ptr : 0;
+}
+
+void vm_get_stack_copy(const VM* vm, int32_t* out, int max_count) {
+    if (!vm || !out || max_count <= 0) return;
+    int n = vm->stack_ptr;
+    if (n > max_count) n = max_count;
+    for (int i = 0; i < n; i++) {
+        out[i] = vm->stack[i];
+    }
+}
+
+bool vm_yielded(const VM* vm) {
+    return vm && vm->last_opcode == OP_YIELD;
+}
+
+void vm_clear_yield(VM* vm) {
+    if (vm) vm->last_opcode = 0xFF;
+}
+
 void vm_run(VM* vm) {
-    while (vm->running) {
-        vm_tick(vm);
+    while (vm->running && !vm->halted) {
+        if (!vm_tick(vm)) {
+            break;
+        }
     }
 }

@@ -160,14 +160,13 @@ MODULE SNAKE
         len@ 0 ( i )
         [ dup len@ < ] [
             head-idx@ OVER - get-seg ( sx sy )
-            food-y@ = [ 
-                food-x@ = [ 0 spawn_valid STOREI ] ?
-            ] [ 
-                drop 
-            ] ?:
+            food-y@ = [ food-x@ = ] [ drop 0 ] ?: [
+                0 spawn_valid STOREI
+                drop len@ exit
+            ] ?
             1 +
         ] |:
-        drop ( i )
+        drop drop ( i len )
         
         ( Loop if invalid )
         spawn_valid LOADI 0 =
@@ -235,11 +234,11 @@ MODULE SNAKE
             save-hi-if-new
             110 play-sound
             1 dirty!
-            drop exit
+            drop len@ exit
         ] ?
         1 +
     ] |:
-    drop ( i )
+    drop drop ( i len )
 
     ( Update Head Index )
     head-idx@ 1 + head-idx!
@@ -351,7 +350,7 @@ MODULE SNAKE
         CLR_SNAKE draw-tile
         1 +
     ] |:
-    drop
+    drop drop
 
     ( Draw food )
     food-x@ food-y@ CLR_FOOD draw-tile
@@ -558,8 +557,8 @@ MODULE SNAKE
 ;
 
 @init-layout
-    0x10024 LOADI screen-w!
-    0x10028 LOADI screen-h!
+    960 screen-w!
+    720 screen-h!
     
     ( Calculate tile-size )
     screen-w@ screen-h@ Y_OFFSET - < [ screen-w@ ] [ screen-h@ Y_OFFSET - ] ?:

@@ -665,8 +665,7 @@ func (c *Compiler) compileCombinator(name string, line int) error {
 		jzAt := c.currentOffset()
 		c.emit(0, 0, 0, 0)
 
-		c.emit(vm.OpPeekR2)    // [ body cond ]
-		c.emit(vm.OpPop)       // drop cond copy. Stack: [ body ]
+		c.emit(vm.OpPeekR2)    // [ body ]
 		c.emit(vm.OpCallStack) // calls body
 
 		c.emit(vm.OpJmp)

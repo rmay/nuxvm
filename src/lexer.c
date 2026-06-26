@@ -108,26 +108,37 @@ TokenList* tokenize(const char* input) {
             
             char buffer[4096];
             int bidx = 0;
-            
+            const int blimit = (int)sizeof(buffer) - 1;
+            bool overflow = false;
+
             while (peek(&l) != '\0') {
                 char c = peek(&l);
                 if (c == '"') {
                     advance(&l);
                     break;
                 }
+                char emit;
                 if (c == '\\') {
                     advance(&l);
                     char next = advance(&l);
-                    if (next == 'n') buffer[bidx++] = '\n';
-                    else if (next == 't') buffer[bidx++] = '\t';
-                    else if (next == '\\') buffer[bidx++] = '\\';
-                    else if (next == '"') buffer[bidx++] = '"';
-                    else buffer[bidx++] = next;
+                    switch (next) {
+                        case 'n': emit = '\n'; break;
+                        case 't': emit = '\t'; break;
+                        case '\\': emit = '\\'; break;
+                        case '"': emit = '"'; break;
+                        default: emit = next; break;
+                    }
                 } else {
-                    buffer[bidx++] = advance(&l);
+                    emit = advance(&l);
                 }
+                if (bidx < blimit) buffer[bidx++] = emit;
+                else overflow = true;
             }
             buffer[bidx] = '\0';
+            if (overflow) {
+                fprintf(stderr, "lexer: string literal at %d:%d exceeds %d bytes (truncated)\n",
+                        start_line, start_col, blimit);
+            }
             Token t = { TOKEN_STRING, strdup(buffer), start_line, start_col };
             token_list_append(list, t);
             continue;
@@ -171,21 +182,24 @@ TokenList* tokenize(const char* input) {
         if (is_number_start(&l, ch)) {
             char buffer[64];
             int bidx = 0;
+            const int blimit = (int)sizeof(buffer) - 1;
+            #define NUM_PUT(c) do { if (bidx < blimit) buffer[bidx++] = (c); else (void)advance(&l); } while (0)
             if (ch == '-') {
-                buffer[bidx++] = advance(&l);
+                NUM_PUT(advance(&l));
             }
             if (peek(&l) == '0' && (l.input[l.pos+1] == 'x' || l.input[l.pos+1] == 'X')) {
-                buffer[bidx++] = advance(&l);
-                buffer[bidx++] = advance(&l);
+                NUM_PUT(advance(&l));
+                NUM_PUT(advance(&l));
                 while (is_hex_digit(peek(&l))) {
-                    buffer[bidx++] = advance(&l);
+                    NUM_PUT(advance(&l));
                 }
             } else {
                 while (isdigit((unsigned char)peek(&l))) {
-                    buffer[bidx++] = advance(&l);
+                    NUM_PUT(advance(&l));
                 }
             }
             buffer[bidx] = '\0';
+            #undef NUM_PUT
             Token t = { TOKEN_NUMBER, strdup(buffer), start_line, start_col };
             token_list_append(list, t);
             continue;
@@ -194,34 +208,42 @@ TokenList* tokenize(const char* input) {
         // Word or combinator
         char buffer[256];
         int bidx = 0;
-        
+        const int blimit = (int)sizeof(buffer) - 1;
+        bool word_overflow = false;
+        #define WORD_PUT(c) do { if (bidx < blimit) buffer[bidx++] = (c); else word_overflow = true; } while (0)
+
         if ((ch == '?' || ch == '!' || ch == '|' || ch == '#') && l.input[l.pos+1] == ':') {
-            buffer[bidx++] = advance(&l);
-            buffer[bidx++] = advance(&l);
+            WORD_PUT(advance(&l));
+            WORD_PUT(advance(&l));
             buffer[bidx] = '\0';
             Token t = { TOKEN_WORD, strdup(buffer), start_line, start_col };
             token_list_append(list, t);
             continue;
         }
-        
+
         while (peek(&l) != '\0') {
             char c = peek(&l);
             if (isspace((unsigned char)c) || c == '(' || c == ')' || c == ';' || c == '"' || c == '[' || c == ']') {
                 break;
             }
             if (c == ':' && l.input[l.pos+1] == ':') {
-                buffer[bidx++] = advance(&l);
-                buffer[bidx++] = advance(&l);
+                WORD_PUT(advance(&l));
+                WORD_PUT(advance(&l));
                 continue;
             }
             if (isalnum((unsigned char)c) || c == '_' || c == '+' || c == '-' || c == '*' || c == '/' || c == '%' ||
                 c == '&' || c == '|' || c == '^' || c == '!' || c == '?' || c == '>' || c == '<' || c == '.' || c == '=' || c == '@' || c == ':') {
-                buffer[bidx++] = advance(&l);
+                WORD_PUT(advance(&l));
             } else {
                 break;
             }
         }
         buffer[bidx] = '\0';
+        if (word_overflow) {
+            fprintf(stderr, "lexer: word at %d:%d exceeds %d bytes (truncated)\n",
+                    start_line, start_col, blimit);
+        }
+        #undef WORD_PUT
         if (bidx > 0) {
             Token t = { TOKEN_WORD, strdup(buffer), start_line, start_col };
             token_list_append(list, t);
