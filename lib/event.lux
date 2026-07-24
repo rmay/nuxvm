@@ -27,7 +27,7 @@ MODULE EVENT
 @KEY_PAGE_UP     21 ;
 @KEY_PAGE_DOWN   22 ;
 
-( --- Modifier Flag Bits (mirror pkg/system/services.go Mod*) --- )
+( --- Modifier Flag Bits (mirror src/cloister.c current_modifiers) --- )
 @MOD_SHIFT 1 ;
 @MOD_CTRL  2 ;
 @MOD_ALT   4 ;
