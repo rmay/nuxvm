@@ -1,0 +1,2 @@
+( hello.lux — prints "hello" )
+104 EMIT 101 EMIT 108 EMIT 108 EMIT 111 EMIT 10 EMIT

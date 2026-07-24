@@ -1,6 +1,6 @@
 # NUX
 
-A simple stack-based virtual machine written in Go.
+A simple stack-based virtual machine written in C.
 
 ## Features
 
@@ -14,78 +14,81 @@ A simple stack-based virtual machine written in Go.
 ## Installation
 
 ```bash
-cd nux
-go mod download
-go build ./cmd/nux
+# From the repo root; needs a C compiler, pkg-config, and SDL2
+make
 ```
 
 ## Usage
 
 ### Run a program
 ```bash
-./nux program.nux
+./bin/nux program.bin      # precompiled bytecode
+./bin/nux program.lux      # compiles on the fly
 ```
 
 ### Debug mode (step-by-step execution)
 ```bash
-./nux -debug program.nux
+./bin/nux -debug program.bin
 ```
 
 ### Trace mode (show all steps)
 ```bash
-./nux -trace program.nux
+./bin/nux -trace program.bin
 ```
 
-### Run examples
+### Run example modules
 ```bash
-cd examples
-go run examples.go
+./bin/luxc -target headless examples/modules/module_basic.lux
+./bin/nux examples/modules/module_basic.bin
 ```
 
 ### Run tests
 ```bash
-cd pkg/vm
-go test -v
+make test
 ```
 
 ## Architecture
 
-- **Stack**: 1024 x 32-bit integers
+- **Stack**: 8192 x 32-bit integers
 - **Memory**: Byte-addressable (program + data)
 - **PC**: 32-bit program counter
 - **Encoding**: Big-endian
 
 ## Quick Example
 
-```go
-import "github.com/rmay/nuxvm"
+```c
+#include "vm.h"
 
 // Create a simple program: 5 + 3
-program := []byte{}
-program = append(program, vm.PushInstruction(5)...)
-program = append(program, vm.PushInstruction(3)...)
-program = append(program, vm.OpAdd)
-program = append(program, vm.OpOut)
-program = append(program, vm.OpHalt)
+uint8_t program[] = {
+    OP_PUSH, 0, 0, 0, 5,
+    OP_PUSH, 0, 0, 0, 3,
+    OP_ADD,
+    OP_PUSH, 0, 0, 0, 0,   // output format: number
+    OP_OUT,
+    OP_HALT,
+};
 
 // Run it
-machine := vm.NewVM(program)
-machine.Run() // Outputs: 8
+VM* vm = vm_create(program, sizeof(program), HEADLESS_BASE_ADDRESS,
+                   4 * 1024 * 1024, false);
+vm_run(vm);   // Outputs: 8
+vm_free(vm);
 ```
 
 ## Project Structure
 
 ```
-nux/
-├── cmd/nux/          # CLI application
-├── pkg/vm/           # VM implementation
+nuxvm/
+├── src/              # C sources (VM, compiler, tools, tests)
+├── include/          # C headers
 ├── examples/         # Example programs
 └── docs/             # Documentation
 ```
 
 ## Documentation
 
-See [examples/README.md](examples/README.md) for detailed examples and tutorials.
+See [examples/README.md](../examples/README.md) for detailed examples and tutorials.
 
 ## License
 

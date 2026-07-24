@@ -15,7 +15,7 @@ Output: [Number(5), Number(10), Word(+), Word(.), EOF]
 ```go
 package main
 
-import "your-project/pkg/lux"
+#include "lexer.h"
 
 func main() {
     source := "5 10 + ."
@@ -81,7 +81,7 @@ Step 10: End of input → emit TokenEOF
 Save as `lexer_test.go` in the same package and run:
 
 ```bash
-go test -v
+make test
 ```
 
 You should see all tests pass.

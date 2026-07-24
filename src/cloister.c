@@ -10,6 +10,7 @@
 #include "chicago.h"
 #include "vfs.h"
 #include "compiler.h"
+#include "dialog.h"
 
 #define WIN_WIDTH 960
 #define WIN_HEIGHT 720
@@ -130,21 +131,105 @@ static void fill_rect(uint32_t* pixels, int pitch, int x, int y, int w, int h, u
 }
 
 
-static void queue_event(Machine* m, uint32_t type, uint32_t data) {
+static void queue_event(Machine* m, uint32_t type, uint32_t data, uint32_t mods) {
     if (!m || !m->system) return;
     int next = (m->system->event_tail + 1) % 64;
     if (next != m->system->event_head) {
         m->system->events[m->system->event_tail] = (type << 24) | (data & 0xFFFFFF);
         m->system->event_tail = next;
     }
-    if (type == 0 || type == 1) {
-        system_push_kbd_event(m->system, (uint8_t)type, (int32_t)(data & 0xFFFFFF), 0);
+    if (type == 0) {
+        // Only KeyDown feeds /sys/kbd — the Go host never queued KeyUps there.
+        system_push_kbd_event(m->system, (uint8_t)type, (int32_t)(data & 0xFFFFFF), mods);
     } else if (type >= 2 && type <= 4) {
         int32_t mx = (int32_t)(data >> 12);
         int32_t my = (int32_t)(data & 0xFFF);
         uint8_t btn = (type == 3) ? 1 : 0;
         system_push_mouse_event(m->system, (uint8_t)type, mx, my, btn);
     }
+}
+
+// Packs SDL modifier state into the bitmask expected by Lux apps
+// (mirrors lib/event.lux MOD_*: shift=1, ctrl=2, alt=4, cmd=8).
+static uint32_t current_modifiers(SDL_Keymod m) {
+    uint32_t mods = 0;
+    if (m & KMOD_SHIFT) mods |= 1;
+    if (m & KMOD_CTRL)  mods |= 2;
+    if (m & KMOD_ALT)   mods |= 4;
+    if (m & KMOD_GUI)   mods |= 8;
+    return mods;
+}
+
+// Maps an SDL keycode to the integer keycode that Lux apps see. Letters/digits
+// become ASCII; arrows use the dedicated 17-20 codes that Snake.lux and other
+// apps key off. Returns false for keys that should not produce an event.
+static bool translate_key(SDL_Keycode k, bool shift, int32_t* out) {
+    switch (k) {
+        case SDLK_UP:        *out = 17; return true;
+        case SDLK_DOWN:      *out = 18; return true;
+        case SDLK_LEFT:      *out = 19; return true;
+        case SDLK_RIGHT:     *out = 20; return true;
+        case SDLK_PAGEUP:    *out = 21; return true;
+        case SDLK_PAGEDOWN:  *out = 22; return true;
+        case SDLK_SPACE:     *out = 32; return true;
+        case SDLK_TAB:       *out = 9;  return true;
+        case SDLK_RETURN:
+        case SDLK_KP_ENTER:  *out = 13; return true;
+        case SDLK_ESCAPE:    *out = 27; return true;
+        case SDLK_BACKSPACE:
+        case SDLK_DELETE:    *out = 8;  return true;
+        default: break;
+    }
+
+    if (k >= SDLK_a && k <= SDLK_z) {
+        *out = shift ? ('A' + (k - SDLK_a)) : k;
+        return true;
+    }
+
+    if (k >= SDLK_0 && k <= SDLK_9) {
+        static const char shifted[] = ")!@#$%^&*(";
+        *out = shift ? shifted[k - SDLK_0] : k;
+        return true;
+    }
+
+    switch (k) {
+        case '-':  *out = shift ? '_' : k; return true;
+        case '=':  *out = shift ? '+' : k; return true;
+        case '[':  *out = shift ? '{' : k; return true;
+        case ']':  *out = shift ? '}' : k; return true;
+        case '\\': *out = shift ? '|' : k; return true;
+        case ';':  *out = shift ? ':' : k; return true;
+        case '\'': *out = shift ? '"' : k; return true;
+        case ',':  *out = shift ? '<' : k; return true;
+        case '.':  *out = shift ? '>' : k; return true;
+        case '/':  *out = shift ? '?' : k; return true;
+        case '`':  *out = shift ? '~' : k; return true;
+        default: break;
+    }
+
+    if (k >= SDLK_KP_1 && k <= SDLK_KP_9) {
+        *out = '1' + (k - SDLK_KP_1);
+        return true;
+    }
+    if (k == SDLK_KP_0) {
+        *out = '0';
+        return true;
+    }
+
+    return false;
+}
+
+static void cloister_set_title(void* ctx, const char* title) {
+    SDL_SetWindowTitle((SDL_Window*)ctx, title);
+}
+
+// The single modal file dialog; opened via the /sys/dialog VFS write (or
+// SCI_OPEN_FILE_DIALOG), driven by the SDL event loop below.
+static FileDialog g_dialog;
+
+static void cloister_open_dialog(void* ctx) {
+    FileDialog* d = (FileDialog*)ctx;
+    dialog_open(d, d->sys);
 }
 
 int main(int argc, char** argv) {
@@ -175,9 +260,6 @@ int main(int argc, char** argv) {
     if (audio_device != 0) {
         SDL_PauseAudioDevice(audio_device, 0);
     }
-
-    // Register our simple synth with the VFS layer for /sys/audio writes from Lux code
-    vfs_set_sound_handler(cloister_play_sound);
 
     char apps[100][256];
     int num_apps = 0;
@@ -228,7 +310,14 @@ int main(int argc, char** argv) {
                 machine = machine_create(program, fsize, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
                 if (machine && machine->system) system_set_resolution(machine->system, WIN_WIDTH, WIN_HEIGHT);
             }
-            if (machine && machine->system) machine->system->play_sound = cloister_play_sound;
+            if (machine && machine->system) {
+                machine->system->play_sound = cloister_play_sound;
+                machine->system->set_window_title = cloister_set_title;
+                machine->system->title_ctx = win;
+                machine->system->open_file_dialog = cloister_open_dialog;
+                machine->system->dialog_ctx = &g_dialog;
+                g_dialog.sys = machine->system;
+            }
             launcher_mode = false;
         } else {
             fprintf(stderr, "Could not open %s\n", argv[1]);
@@ -241,6 +330,20 @@ int main(int argc, char** argv) {
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) {
                 quit = true;
+            } else if (!launcher_mode && g_dialog.active) {
+                // Modal file dialog consumes all input while active.
+                if (e.type == SDL_KEYDOWN) {
+                    int32_t code;
+                    bool shift = (e.key.keysym.mod & KMOD_SHIFT) != 0;
+                    if (translate_key(e.key.keysym.sym, shift, &code)) {
+                        dialog_key(&g_dialog, code);
+                    }
+                } else if (e.type == SDL_MOUSEBUTTONDOWN) {
+                    dialog_mouse_down(&g_dialog, e.button.x, e.button.y);
+                } else if (e.type == SDL_MOUSEWHEEL) {
+                    dialog_wheel(&g_dialog, e.wheel.y);
+                }
+                // Mouse motion / key up are consumed silently.
             } else if (e.type == SDL_KEYDOWN) {
                 if (launcher_mode) {
                     if (esc_menu_open) {
@@ -290,21 +393,30 @@ int main(int argc, char** argv) {
                                     if (machine && machine->system) {
                                         system_set_resolution(machine->system, WIN_WIDTH, WIN_HEIGHT);
                                         machine->system->play_sound = cloister_play_sound;
+                                        machine->system->set_window_title = cloister_set_title;
+                                        machine->system->title_ctx = win;
+                                        machine->system->open_file_dialog = cloister_open_dialog;
+                                        machine->system->dialog_ctx = &g_dialog;
+                                        g_dialog.sys = machine->system;
                                     }
-                                    launcher_mode = false;
-                                    
                                     launcher_mode = false;
                                 }
                             }
                         }
                     }
-                } else {
-                    // Send keys to VM (simplified)
-                    // we'll leave input translation for later refinement or use standard ASCII
-                    if (e.key.keysym.sym == SDLK_ESCAPE) {
-                        launcher_mode = true;
-                        esc_menu_open = true;
-                        esc_menu_hover = 1;
+                } else if (machine) {
+                    // App mode: translate the key and deliver it to the app.
+                    // Escape is delivered too (27) — apps handle their own menus;
+                    // we return to the launcher when the app halts.
+                    int32_t code;
+                    bool shift = (e.key.keysym.mod & KMOD_SHIFT) != 0;
+                    if (translate_key(e.key.keysym.sym, shift, &code)) {
+                        uint32_t mods = current_modifiers((SDL_Keymod)e.key.keysym.mod);
+                        queue_event(machine, 0, (uint32_t)code & 0xFFFFFF, mods);
+                        if (machine->system->get_vector) {
+                            uint32_t vec = machine->system->get_vector(machine->system, 4); // Controller
+                            if (vec != 0) vm_call_vector(machine->cpu, vec);
+                        }
                     }
                 }
             } else if (e.type == SDL_MOUSEMOTION) {
@@ -324,7 +436,7 @@ int main(int argc, char** argv) {
                 } else if (!launcher_mode && machine) {
                     machine->system->mouse_x = e.motion.x;
                     machine->system->mouse_y = e.motion.y;
-                    queue_event(machine, 2, (e.motion.x << 12) | (e.motion.y & 0xFFF));
+                    queue_event(machine, 2, (e.motion.x << 12) | (e.motion.y & 0xFFF), 0);
                     if (machine->system->get_vector) {
                         uint32_t vec = machine->system->get_vector(machine->system, 5); // Mouse Vector
 
@@ -341,33 +453,23 @@ int main(int argc, char** argv) {
                     else esc_menu_open = false;
                 } else if (!launcher_mode && machine) {
                     machine->system->mouse_btn |= 1;
-                    queue_event(machine, 3, (e.button.x << 12) | (e.button.y & 0xFFF));
+                    queue_event(machine, 3, (e.button.x << 12) | (e.button.y & 0xFFF), 0);
                 }
             } else if (e.type == SDL_MOUSEBUTTONUP) {
                 if (!launcher_mode && machine) {
                     machine->system->mouse_btn &= ~1;
-                    queue_event(machine, 4, (e.button.x << 12) | (e.button.y & 0xFFF));
+                    queue_event(machine, 4, (e.button.x << 12) | (e.button.y & 0xFFF), 0);
                 }
-            } else if (e.type == SDL_KEYDOWN && !launcher_mode) {
-                if (e.key.keysym.sym == SDLK_ESCAPE) {
-                    launcher_mode = true;
-                    esc_menu_open = true;
-                    esc_menu_hover = 1;
-                } else {
-                    queue_event(machine, 0, e.key.keysym.sym & 0xFFFFFF); // type 0 = KeyDown
+            } else if (e.type == SDL_KEYUP && !launcher_mode && machine) {
+                int32_t code;
+                bool shift = (e.key.keysym.mod & KMOD_SHIFT) != 0;
+                if (translate_key(e.key.keysym.sym, shift, &code)) {
+                    queue_event(machine, 1, (uint32_t)code & 0xFFFFFF, 0); // type 1 = KeyUp
                     if (machine->system->get_vector) {
                         uint32_t vec = machine->system->get_vector(machine->system, 4); // Controller
                         if (vec != 0) vm_call_vector(machine->cpu, vec);
                     }
                 }
-            } else if (e.type == SDL_KEYUP && !launcher_mode) {
-                queue_event(machine, 1, e.key.keysym.sym & 0xFFFFFF); // type 1 = KeyUp
-                if (machine->system->get_vector) {
-                    uint32_t vec = machine->system->get_vector(machine->system, 4); // Controller
-                    if (vec != 0) vm_call_vector(machine->cpu, vec);
-                }
-            } else if (e.type == SDL_KEYUP && !launcher_mode) {
-                queue_event(machine, 1, e.key.keysym.sym & 0xFFFFFF); // type 1 = KeyUp
             }
         }
 
@@ -375,6 +477,9 @@ int main(int argc, char** argv) {
             // Tick machine
             if (!machine_tick(machine)) {
                 launcher_mode = true;
+                SDL_SetWindowTitle(win, "Cloister");
+                dialog_free(&g_dialog);
+                g_dialog.sys = NULL;
             }
         }
 
@@ -415,6 +520,9 @@ int main(int argc, char** argv) {
                 }
             }
         } else if (machine && machine->system->screen_pixels) {
+            if (g_dialog.active) {
+                dialog_draw(&g_dialog);
+            }
             int w = machine->system->screen_width;
             int h = machine->system->screen_height;
             for (int y = 0; y < h; y++) {

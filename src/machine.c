@@ -77,12 +77,20 @@ bool machine_tick(Machine* machine) {
     while (machine->cpu->running && !vm_yielded(machine->cpu) && !machine->system->yielded && cycles < 100000) {
         vm_tick(machine->cpu);
         if (machine->cpu->halted) {
-            return false;
+            break;
         }
         if (!machine->cpu->running && !vm_yielded(machine->cpu) && !machine->system->yielded) {
             return false; // Runtime error
         }
         cycles++;
+    }
+
+    // Tick children after the parent's slice, including the tick where the
+    // parent halts (Go: Machine.Tick ticks childMachines before returning).
+    for (int i = 0; i < SYS_MAX_CHILD_VMS; i++) {
+        if (machine->system->child_vms[i]) {
+            machine_tick(machine->system->child_vms[i]);
+        }
     }
 
     return !machine->cpu->halted;

@@ -146,11 +146,11 @@ static void handle_sci(System* sys) {
                 path[i] = c;
             }
             path[255] = '\0';
-            sys->sci_result = vfs_open(path, arg2, sys);
+            sys->sci_result = vfs_open(sys, path, arg2);
             break;
         }
         case SCI_VFS_CLOSE: {
-            int res = vfs_close(arg1);
+            int res = vfs_close(sys, arg1);
             if (res != 0) sys->sci_result = -1;
             break;
         }
@@ -168,7 +168,7 @@ static void handle_sci(System* sys) {
             if ((uint32_t)length > sys->memory_size - (uint32_t)arg2) {
                 length = (int32_t)(sys->memory_size - (uint32_t)arg2);
             }
-            sys->sci_result = vfs_read(fd, &sys->memory[arg2], length);
+            sys->sci_result = vfs_read(sys, fd, &sys->memory[arg2], length);
             break;
         }
         case SCI_VFS_WRITE: {
@@ -185,19 +185,19 @@ static void handle_sci(System* sys) {
             if ((uint32_t)length > sys->memory_size - (uint32_t)arg2) {
                 length = (int32_t)(sys->memory_size - (uint32_t)arg2);
             }
-            sys->sci_result = vfs_write(fd, &sys->memory[arg2], length);
+            sys->sci_result = vfs_write(sys, fd, &sys->memory[arg2], length);
             break;
         }
         case SCI_VFS_SEEK:
-            sys->sci_result = (int32_t)vfs_seek(arg1, (int64_t)arg2);
+            sys->sci_result = (int32_t)vfs_seek(sys, arg1, (int64_t)arg2);
             break;
         case SCI_VFS_STAT:
-            sys->sci_result = (int32_t)vfs_stat(arg1);
+            sys->sci_result = (int32_t)vfs_stat(sys, arg1);
             break;
         case SCI_VFS_BIND: {
             char mpath[256];
             read_cstring(sys, (uint32_t)arg2, mpath, sizeof(mpath));
-            sys->sci_result = vfs_bind(arg1, mpath, sys);
+            sys->sci_result = vfs_bind(sys, arg1, mpath);
             break;
         }
         case SCI_VFS_WRITE_CHUNK: {
@@ -213,7 +213,7 @@ static void handle_sci(System* sys) {
                 sys->sci_result = -1;
                 break;
             }
-            sys->sci_result = vfs_write(fd, &sys->memory[bufPtr], length);
+            sys->sci_result = vfs_write(sys, fd, &sys->memory[bufPtr], length);
             break;
         }
 
@@ -378,6 +378,7 @@ System* system_create(void) {
 
 void system_free(System* sys) {
     if (!sys) return;
+    vfs_state_free(sys);
     for (int i = 0; i < SYS_MAX_CHILD_VMS; i++) {
         if (sys->child_vms[i]) {
             machine_free(sys->child_vms[i]);
@@ -591,6 +592,7 @@ void system_draw_text(System* sys, int32_t x, int32_t y, const char* str, uint32
 
 void system_begin_frame(System* sys) {
     // If we wanted to clear back_pixels we could, but typical nuxvm apps fill_rect anyway
+    (void)sys;
 }
 
 void system_end_frame(System* sys) {

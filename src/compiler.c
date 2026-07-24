@@ -321,7 +321,6 @@ static bool compile_combinator(Compiler* c, const char* name) {
             emit_byte(c, OP_JMP);
             int32_t jmp_at = current_offset(c);
             emit_int32(c, 0);
-            int32_t end_at = current_address(c);
             add_jump(c, jnz_at, current_address(c));
             emit_byte(c, OP_POP);
             add_jump(c, jmp_at, current_address(c));
@@ -482,6 +481,10 @@ static bool compile_token(Compiler* c, Token t) {
         }
         if (strcmp(t.value, "MODULE") == 0) {
             Token name = advance(c);
+            if (name.type != TOKEN_WORD || !name.value) {
+                fprintf(stderr, "Error: expected name after MODULE\n");
+                return false;
+            }
             if (c->current_module) free(c->current_module);
             c->current_module = strdup(name.value);
             return true;
@@ -625,7 +628,12 @@ static bool preprocess_includes(Compiler* c) {
     while (c->pos < (int)c->token_list->count && peek(c).type != TOKEN_EOF) {
         Token t = advance(c);
         if (t.type == TOKEN_WORD && strcmp(t.value, "MODULE") == 0) {
-            Token name = peek(c); 
+            Token name = peek(c);
+            if (name.type != TOKEN_WORD || !name.value) {
+                fprintf(stderr, "Error: expected name after MODULE\n");
+                if (current_module) free(current_module);
+                return false;
+            }
             if (current_module) free(current_module);
             current_module = strdup(name.value);
             continue;
@@ -733,6 +741,10 @@ uint8_t* compiler_compile(Compiler* c, size_t* out_len) {
         Token t = advance(c);
         if (t.type == TOKEN_WORD && strcmp(t.value, "MODULE") == 0) {
             Token name = advance(c);
+            if (name.type != TOKEN_WORD || !name.value) {
+                fprintf(stderr, "Error: expected name after MODULE\n");
+                return NULL;
+            }
             if (c->current_module) free(c->current_module);
             c->current_module = strdup(name.value);
         } else if (t.type == TOKEN_AT_SIGN) {
@@ -764,6 +776,11 @@ uint8_t* compiler_compile(Compiler* c, size_t* out_len) {
         if (!compile_token(c, t)) return NULL;
     }
     
+    if (c->active_quot_idx >= 0 || c->quot_stack_count > 0) {
+        fprintf(stderr, "Unclosed quotation\n");
+        return NULL;
+    }
+
     emit_byte(c, OP_HALT);
     // Compute quotation addresses
     int32_t curr_addr = current_address(c);

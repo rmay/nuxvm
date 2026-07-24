@@ -20,14 +20,13 @@ Lux is the higher-level language that generates the Nux opcodes. I drew heavily 
 
 While I did write code, I also argued with LLMs, especially Grok and Claude, to clean up, extend, expand, and fix my mistakes. An infinite number of monkeys would be hard pressed to beat what the vector math did. 
 
-## Why Go?
+## Why C?
 
-I picked Go over something like C because of:
+NUXVM started life in Go, but the whole system is now pure C:
 
-- Simplicity
-- Performance
-- Cross-Platform
-- Memory Management -- And this was the most import reason for me.
+- Minimal dependencies (a C compiler, pkg-config, and SDL2)
+- Full control over memory layout and the framebuffer
+- One small `Makefile` builds every tool and test
 
 ---
 
@@ -94,7 +93,8 @@ NUX uses a dual-stack architecture:
 
 ### Prerequisites
 
-- Go 1.25+ (for building from source)
+- A C compiler (gcc or clang)
+- pkg-config and SDL2 development headers (`brew install sdl2` / `apt install libsdl2-dev`)
 - Basic understanding of stack-based computing
 
 ### Installation
@@ -104,17 +104,11 @@ NUX uses a dual-stack architecture:
 git clone <repository-url>
 cd nuxvm
 
-# Build all tools
-go build -o bin/nux cmd/nux/main.go
-go build -o bin/cloister cmd/cloister/main.go
-go build -o bin/luxc cmd/luxc/main.go
-go build -o bin/luxrepl cmd/luxrepl/main.go
+# Build all tools (bin/nux, bin/luxc, bin/luxrepl, bin/cloister)
+make
 
-# Or use go install
-go install ./cmd/nux
-go install ./cmd/cloister
-go install ./cmd/luxc
-go install ./cmd/luxrepl
+# Run the test suite
+make test
 ```
 
 ### Quick Start
@@ -480,31 +474,24 @@ JMP 0x100:   21 00 00 01 00
 
 ### Writing Bytecode Manually
 
-```go
-package main
+```c
+#include "vm.h"
 
-import "github.com/rmay/nuxvm/pkg/vm"
+int main(void) {
+    uint8_t program[] = {
+        OP_PUSH, 0x00, 0x00, 0x00, 0x05,  // PUSH 5
+        OP_PUSH, 0x00, 0x00, 0x00, 0x0A,  // PUSH 10
+        OP_ADD,                           // ADD
+        OP_PUSH, 0x00, 0x00, 0x00, 0x00,  // format 0 = number
+        OP_OUT,                           // OUT
+        OP_HALT,                          // HALT
+    };
 
-func main() {
-    program := []byte{}
-    
-    // PUSH 5
-    program = append(program, vm.PushInstruction(5)...)
-    
-    // PUSH 10
-    program = append(program, vm.PushInstruction(10)...)
-    
-    // ADD
-    program = append(program, vm.OpAdd)
-    
-    // OUT (format: 0 = number)
-    program = append(program, vm.OutNumber()...)
-    
-    // HALT
-    program = append(program, vm.OpHalt)
-    
-    machine := vm.NewVM(program)
-    machine.Run()
+    VM* vm = vm_create(program, sizeof(program), HEADLESS_BASE_ADDRESS,
+                       4 * 1024 * 1024, false);
+    vm_run(vm);
+    vm_free(vm);
+    return 0;
 }
 ```
 
@@ -719,13 +706,15 @@ lux> .s
 ```
 nuxvm/
 ├── apps/           - Sample Lux applications
-├── cmd/
-│   ├── nux/        - VM console runner
-│   ├── cloister/   - Graphical tiny OS
-│   ├── luxc/       - Lux compiler
-│   └── luxrepl/    - Interactive REPL
 ├── docs/           - Extended documentation
 ├── examples/       - Example Lux programs and modules
+├── include/        - C headers
+│   ├── vm.h        - Core VM
+│   ├── opcodes.h   - Opcode definitions
+│   ├── system.h    - Hardware abstraction layer
+│   ├── vfs.h       - Virtual filesystem
+│   ├── compiler.h  - Lux compiler
+│   └── lexer.h     - Tokenizer
 ├── lib/            - Lux standard library
 │   ├── core.lux
 │   ├── draw.lux
@@ -734,45 +723,30 @@ nuxvm/
 │   ├── memory.lux
 │   ├── time.lux
 │   └── vfs.lux
-├── pkg/
-│   ├── vm/         - Virtual machine implementation
-│   │   ├── vm.go       - Core VM
-│   │   ├── opcodes.go  - Opcode definitions
-│   │   ├── bus.go      - Device bus
-│   │   └── display.go  - Display device
-│   ├── system/     - Hardware abstraction layer
-│   │   ├── machine.go  - Machine (CPU + System)
-│   │   ├── system.go   - MMIO and devices
-│   │   ├── vfs.go      - Virtual filesystem
-│   │   └── sci.go      - System call interface
-│   ├── luxrepl/    - REPL implementation
-│   └── lux/        - Lux language implementation
-│       ├── lexer.go    - Tokenizer
-│       ├── compiler.go - Bytecode compiler
-│       └── load.go     - File loading
+├── src/
+│   ├── vm.c        - Core VM interpreter
+│   ├── system.c    - MMIO devices + system call interface
+│   ├── vfs.c       - Virtual filesystem
+│   ├── machine.c   - Machine (CPU + System)
+│   ├── lexer.c     - Tokenizer
+│   ├── compiler.c  - Bytecode compiler
+│   ├── dialog.c    - File dialog modal
+│   ├── nux.c       - VM console runner
+│   ├── luxc.c      - Lux compiler CLI
+│   ├── repl.c      - Interactive REPL
+│   ├── cloister.c  - Graphical tiny OS (SDL2)
+│   └── test_*.c    - Test suites
 ├── resources/      - Static assets (fonts, etc.)
+├── Makefile
 └── README.md
 ```
 
 ### Running Tests
 
 ```bash
-# Test the VM
-go test ./pkg/vm -v
-
-# Test the compiler
-go test ./pkg/lux -v
-
-# Test everything
-go test ./... -v
-
-# Run with coverage
-go test ./... -cover
+# Build everything and run all test suites (VM, VFS, compiler)
+make test
 ```
-
-### Makefile
-
-The Makefile contains many shortcuts to doing the above commands.
 
 ### Contributing
 
@@ -879,7 +853,7 @@ I’m not standing against the world, against tides and trends, opposing this ph
 A: Stack machines are simple, have minimal syntax, and teach fundamental CS concepts.
 
 **Q: Can I embed NUXVM in other programs?**  
-A: Yes! The VM is a pure Go package. Import it and feed it bytecode.
+A: Yes! The VM is plain C with no dependencies outside the standard library. Link `src/vm.c` and feed it bytecode.
 
 **Q: Is LUX Turing complete?**  
 A: Yes, with word definitions, conditionals (via jumps), and recursion.

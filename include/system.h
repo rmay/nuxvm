@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include "bus.h"
 #include "vm.h"
+#include "vfs.h"
 
 #define SCREEN_PORT      (DEVICE_MEMORY_OFFSET + 0x0020)
 #define AUDIO_PORT       (DEVICE_MEMORY_OFFSET + 0x0030)
@@ -90,6 +91,8 @@ typedef struct System {
 
     char dialog_result[512];
     bool dialog_ready;
+
+    VFSState vfs;
 
     void (*play_sound)(int32_t sound_id);
     void (*set_window_title)(void* ctx, const char* title);

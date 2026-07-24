@@ -4,6 +4,12 @@
 #include <stdbool.h>
 #include "vm.h"
 #include "machine.h"
+#include "compiler.h"
+
+static bool has_suffix_ci(const char* s, const char* suffix) {
+    size_t sl = strlen(s), xl = strlen(suffix);
+    return sl >= xl && strncasecmp(s + sl - xl, suffix, xl) == 0;
+}
 
 static uint8_t* load_program(const char* filename, long* out_size) {
     FILE* f = fopen(filename, "rb");
@@ -117,7 +123,7 @@ static void run_trace(Machine* machine) {
 }
 
 static void usage(const char* prog) {
-    fprintf(stderr, "Usage: %s [options] <program.bin>\n\n", prog);
+    fprintf(stderr, "Usage: %s [options] <program.bin|program.lux>\n\n", prog);
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  -debug    Enable step-by-step debugging\n");
     fprintf(stderr, "  -trace    Show execution trace\n");
@@ -147,9 +153,31 @@ int main(int argc, char** argv) {
     }
 
     long fsize = 0;
-    uint8_t* program = load_program(filename, &fsize);
-    if (!program) {
-        return 1;
+    uint8_t* program = NULL;
+    if (has_suffix_ci(filename, ".lux")) {
+        long src_len = 0;
+        uint8_t* raw = load_program(filename, &src_len);
+        if (!raw) {
+            return 1;
+        }
+        char* source = malloc((size_t)src_len + 1);
+        memcpy(source, raw, (size_t)src_len);
+        source[src_len] = '\0';
+        free(raw);
+
+        size_t code_len = 0;
+        program = compile_source(source, HEADLESS_BASE_ADDRESS, &code_len, false);
+        free(source);
+        if (!program) {
+            fprintf(stderr, "Error: compilation failed for %s\n", filename);
+            return 1;
+        }
+        fsize = (long)code_len;
+    } else {
+        program = load_program(filename, &fsize);
+        if (!program) {
+            return 1;
+        }
     }
 
     uint32_t total_memory = 32 * 1024 * 1024;

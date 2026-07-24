@@ -12,33 +12,20 @@
 #include <sys/stat.h>
 #include <errno.h>
 
-#define MAX_FDS 1024
-#define FD_BASE 100
-#define MAX_MOUNTS 32
+// All VFS state lives in sys->vfs (per-System, so child VMs get isolated
+// namespaces). Files are refcounted: each fd slot and each mount entry holds
+// one reference; the file's close destructor runs when the last is released.
 
-static VFSFile* fd_table[MAX_FDS];
-
-typedef struct {
-    char path[256];
-    VFSFile* file;
-} VFSMount;
-
-static VFSMount mount_table[MAX_MOUNTS];
-static int mount_count = 0;
-
-static void (*g_play_sound)(int32_t) = NULL;
-static VFSFile* g_last_chan_peer = NULL;
-
-void vfs_set_sound_handler(void (*fn)(int32_t sound_id)) {
-    g_play_sound = fn;
+static void vfs_file_retain(VFSFile* file) {
+    file->refcount++;
 }
 
-void vfs_init(void) {
-    for (int i = 0; i < MAX_FDS; i++) {
-        fd_table[i] = NULL;
+static void vfs_file_release(VFSFile* file) {
+    if (!file) return;
+    file->refcount--;
+    if (file->refcount <= 0 && file->close) {
+        file->close(file);
     }
-    mount_count = 0;
-    g_last_chan_peer = NULL;
 }
 
 // --- path helpers ---
@@ -54,20 +41,23 @@ static bool resolve_host_path(System* sys, const char* rel, char* out, size_t ou
     return n > 0 && (size_t)n < outlen;
 }
 
-static VFSFile* lookup_mount(const char* path) {
-    for (int i = 0; i < mount_count; i++) {
-        if (strcmp(mount_table[i].path, path) == 0) {
-            return mount_table[i].file;
+static VFSFile* lookup_mount(System* sys, const char* path) {
+    if (!sys) return NULL;
+    for (int i = 0; i < sys->vfs.mount_count; i++) {
+        if (strcmp(sys->vfs.mounts[i].path, path) == 0) {
+            return sys->vfs.mounts[i].file;
         }
     }
     return NULL;
 }
 
-static int alloc_fd(VFSFile* file) {
-    for (int i = FD_BASE; i < MAX_FDS; i++) {
-        if (fd_table[i] == NULL) {
+static int alloc_fd(System* sys, VFSFile* file) {
+    if (!sys) return -1;
+    for (int i = VFS_FD_BASE; i < VFS_MAX_FDS; i++) {
+        if (sys->vfs.fd_table[i] == NULL) {
             file->fd = i;
-            fd_table[i] = file;
+            sys->vfs.fd_table[i] = file;
+            vfs_file_retain(file);
             return i;
         }
     }
@@ -172,12 +162,16 @@ typedef struct {
     bool closed;
 } ChanEndpoint;
 
+// Both endpoints of a pair share one block; it is freed when the last
+// endpoint file is destroyed.
 typedef struct {
-    ChanEndpoint* a;
-    ChanEndpoint* b;
-} ChanPair;
+    ChanEndpoint a;
+    ChanEndpoint b;
+    int alive; // endpoint files not yet destroyed
+} ChanShared;
 
 typedef struct {
+    ChanShared* shared;
     ChanEndpoint* self;
     ChanEndpoint* peer;
 } ChanEpRef;
@@ -221,17 +215,33 @@ static int chan_write(VFSFile* file, const uint8_t* buf, int len) {
     return len;
 }
 
+static void chan_drain(ChanEndpoint* ep) {
+    while (ep->head != ep->tail) {
+        free(ep->queue[ep->head].data);
+        ep->queue[ep->head].data = NULL;
+        ep->head = (ep->head + 1) % 64;
+    }
+}
+
 static int chan_close(VFSFile* file) {
     ChanEpRef* ref = (ChanEpRef*)file->private_data;
     if (ref) {
-        if (ref->self) ref->self->closed = true;
+        if (ref->self) {
+            ref->self->closed = true;
+            chan_drain(ref->self);
+        }
+        if (ref->shared && --ref->shared->alive <= 0) {
+            chan_drain(&ref->shared->a);
+            chan_drain(&ref->shared->b);
+            free(ref->shared);
+        }
         free(ref);
     }
     free(file);
     return 0;
 }
 
-static VFSFile* create_chan_endpoint(ChanEndpoint* self, ChanEndpoint* peer) {
+static VFSFile* create_chan_endpoint(ChanShared* shared, ChanEndpoint* self, ChanEndpoint* peer) {
     ChanEpRef* ref = (ChanEpRef*)calloc(1, sizeof(ChanEpRef));
     VFSFile* file = (VFSFile*)calloc(1, sizeof(VFSFile));
     if (!ref || !file) {
@@ -239,27 +249,15 @@ static VFSFile* create_chan_endpoint(ChanEndpoint* self, ChanEndpoint* peer) {
         free(file);
         return NULL;
     }
+    ref->shared = shared;
     ref->self = self;
     ref->peer = peer;
+    shared->alive++;
     file->private_data = ref;
     file->read = chan_read;
     file->write = chan_write;
     file->close = chan_close;
     return file;
-}
-
-static ChanPair* new_channel_pair(void) {
-    ChanPair* pair = (ChanPair*)calloc(1, sizeof(ChanPair));
-    if (!pair) return NULL;
-    pair->a = (ChanEndpoint*)calloc(1, sizeof(ChanEndpoint));
-    pair->b = (ChanEndpoint*)calloc(1, sizeof(ChanEndpoint));
-    if (!pair->a || !pair->b) {
-        free(pair->a);
-        free(pair->b);
-        free(pair);
-        return NULL;
-    }
-    return pair;
 }
 
 // --- snarf ---
@@ -614,6 +612,12 @@ static int vm_write(VFSFile* file, const uint8_t* buf, int len) {
     if (id >= 0 && id < SYS_MAX_CHILD_VMS) {
         Machine* child = machine_create(program, (uint32_t)prog_len, HEADLESS_BASE_ADDRESS, 32 * 1024 * 1024, false);
         if (child) {
+            if (child->system) {
+                // Children inherit the parent's sandbox and sound output.
+                memcpy(child->system->sandbox_root, d->sys->sandbox_root,
+                       sizeof(child->system->sandbox_root));
+                child->system->play_sound = d->sys->play_sound;
+            }
             d->sys->child_vms[id] = child;
             d->last_created_id = id;
         }
@@ -745,21 +749,28 @@ static VFSFile* create_draw_file(void* system_ctx) {
 }
 
 static int audio_write(VFSFile* file, const uint8_t* buf, int len) {
-    (void)file;
+    System* sys = (System*)file->private_data;
     if (len < 4) return 0;
-    if (g_play_sound) {
+    if (sys && sys->play_sound) {
         int32_t sound_id = (int32_t)(buf[0] | (buf[1]<<8) | (buf[2]<<16) | (buf[3]<<24));
-        g_play_sound(sound_id);
+        sys->play_sound(sound_id);
     }
     return 4;
 }
 
-static VFSFile* create_audio_file(void) {
+static int audio_close(VFSFile* file) {
+    // private_data is the System, not owned by this file
+    free(file);
+    return 0;
+}
+
+static VFSFile* create_audio_file(System* sys) {
     VFSFile* file = (VFSFile*)calloc(1, sizeof(VFSFile));
     if (!file) return NULL;
+    file->private_data = sys;
     file->read = generic_eof_read;
     file->write = audio_write;
-    file->close = generic_close;
+    file->close = audio_close;
     return file;
 }
 
@@ -800,19 +811,18 @@ static VFSFile* create_dummy_file(void) {
 // --- open / bind ---
 
 static VFSFile* open_path(System* sys, const char* path, int32_t flags) {
-    VFSFile* mounted = lookup_mount(path);
+    // Mount table first: opening a bound path returns the same file object
+    // (shared state), exactly as the Go VFS hands out the mounted VFSFile.
+    VFSFile* mounted = lookup_mount(sys, path);
     if (mounted) {
-        VFSFile* clone = (VFSFile*)calloc(1, sizeof(VFSFile));
-        if (!clone) return NULL;
-        *clone = *mounted;
-        return clone;
+        return mounted;
     }
 
     if (strcmp(path, "/sys/draw") == 0 || strcmp(path, "/dev/draw") == 0) {
         return create_draw_file(sys);
     }
     if (strncmp(path, "/sys/audio", 10) == 0 || strncmp(path, "/dev/audio", 10) == 0) {
-        return create_audio_file();
+        return create_audio_file(sys);
     }
     if (strcmp(path, "/sys/font/widths") == 0) {
         return create_font_widths_file();
@@ -833,16 +843,30 @@ static VFSFile* open_path(System* sys, const char* path, int32_t flags) {
         return create_dialog_file(sys);
     }
     if (strcmp(path, "/sys/chan/new") == 0) {
-        ChanPair* pair = new_channel_pair();
-        if (!pair) return NULL;
-        VFSFile* ep = create_chan_endpoint(pair->a, pair->b);
-        g_last_chan_peer = create_chan_endpoint(pair->b, pair->a);
+        ChanShared* shared = (ChanShared*)calloc(1, sizeof(ChanShared));
+        if (!shared) return NULL;
+        VFSFile* ep = create_chan_endpoint(shared, &shared->a, &shared->b);
+        VFSFile* peer = create_chan_endpoint(shared, &shared->b, &shared->a);
+        if (!ep || !peer) {
+            if (ep) ep->close(ep);
+            else if (peer) peer->close(peer);
+            else free(shared);
+            return NULL;
+        }
+        // Any previously unclaimed peer is orphaned; destroy it.
+        if (sys && sys->vfs.last_chan_peer) {
+            vfs_file_release(sys->vfs.last_chan_peer);
+        }
+        // The pending-peer slot holds a reference until claimed.
+        vfs_file_retain(peer);
+        if (sys) sys->vfs.last_chan_peer = peer;
         return ep;
     }
     if (strcmp(path, "/sys/chan/peer") == 0) {
-        if (!g_last_chan_peer) return NULL;
-        VFSFile* ep = g_last_chan_peer;
-        g_last_chan_peer = NULL;
+        if (!sys || !sys->vfs.last_chan_peer) return NULL;
+        VFSFile* ep = sys->vfs.last_chan_peer;
+        sys->vfs.last_chan_peer = NULL;
+        ep->refcount--; // transfer the pending-peer reference to the caller
         return ep;
     }
     if (strncmp(path, "/sys/vm/", 8) == 0) {
@@ -880,65 +904,106 @@ static VFSFile* open_path(System* sys, const char* path, int32_t flags) {
     return create_host_file(path, flags);
 }
 
-int32_t vfs_open(const char* path, int32_t flags, void* system_ctx) {
-    System* sys = (System*)system_ctx;
+static VFSFile* get_fd(System* sys, int32_t fd) {
+    if (!sys || fd < 0 || fd >= VFS_MAX_FDS) return NULL;
+    return sys->vfs.fd_table[fd];
+}
+
+int32_t vfs_open(System* sys, const char* path, int32_t flags) {
+    if (!sys || !path) return -1;
     VFSFile* file = open_path(sys, path, flags);
     if (!file) return -1;
-    int fd = alloc_fd(file);
+    int fd = alloc_fd(sys, file);
     if (fd < 0) {
-        if (file->close) file->close(file);
+        // Fresh files (no other reference) are destroyed; mounted files live on.
+        if (file->refcount <= 0 && file->close) file->close(file);
         return -1;
     }
     return fd;
 }
 
-int vfs_read(int32_t fd, uint8_t* buf, int len) {
-    if (fd < 0 || fd >= MAX_FDS) return -1;
-    VFSFile* file = fd_table[fd];
+int vfs_read(System* sys, int32_t fd, uint8_t* buf, int len) {
+    VFSFile* file = get_fd(sys, fd);
     if (!file || !file->read) return -1;
     return file->read(file, buf, len);
 }
 
-int vfs_write(int32_t fd, const uint8_t* buf, int len) {
-    if (fd < 0 || fd >= MAX_FDS) return -1;
-    VFSFile* file = fd_table[fd];
+int vfs_write(System* sys, int32_t fd, const uint8_t* buf, int len) {
+    VFSFile* file = get_fd(sys, fd);
     if (!file || !file->write) return -1;
     return file->write(file, buf, len);
 }
 
-int vfs_close(int32_t fd) {
-    if (fd < 0 || fd >= MAX_FDS) return -1;
-    VFSFile* file = fd_table[fd];
+int vfs_close(System* sys, int32_t fd) {
+    VFSFile* file = get_fd(sys, fd);
     if (!file) return -1;
-    int res = 0;
-    if (file->close) res = file->close(file);
-    fd_table[fd] = NULL;
-    return res;
+    sys->vfs.fd_table[fd] = NULL;
+    vfs_file_release(file);
+    return 0;
 }
 
-int64_t vfs_seek(int32_t fd, int64_t offset) {
-    if (fd < 0 || fd >= MAX_FDS) return -1;
-    VFSFile* file = fd_table[fd];
+int64_t vfs_seek(System* sys, int32_t fd, int64_t offset) {
+    VFSFile* file = get_fd(sys, fd);
     if (!file || !file->seek) return -1;
     return file->seek(file, offset);
 }
 
-int64_t vfs_stat(int32_t fd) {
-    if (fd < 0 || fd >= MAX_FDS) return -1;
-    VFSFile* file = fd_table[fd];
+int64_t vfs_stat(System* sys, int32_t fd) {
+    VFSFile* file = get_fd(sys, fd);
     if (!file || !file->stat_size) return -1;
     return file->stat_size(file);
 }
 
-int vfs_bind(int32_t fd, const char* mount_path, void* system_ctx) {
-    (void)system_ctx;
-    if (fd < 0 || fd >= MAX_FDS || !mount_path) return -1;
-    VFSFile* file = fd_table[fd];
-    if (!file) return -1;
-    if (mount_count >= MAX_MOUNTS) return -1;
-
-    strncpy(mount_table[mount_count].path, mount_path, sizeof(mount_table[mount_count].path) - 1);
-    mount_table[mount_count].file = file;
-    mount_count++;
+static int vfs_bind_file(System* target, VFSFile* file, const char* mount_path) {
+    if (!target || target->vfs.mount_count >= VFS_MAX_MOUNTS) return -1;
+    VFSMount* m = &target->vfs.mounts[target->vfs.mount_count++];
+    strncpy(m->path, mount_path, sizeof(m->path) - 1);
+    m->path[sizeof(m->path) - 1] = '\0';
+    m->file = file;
+    vfs_file_retain(file);
     return 0;
+}
+
+int vfs_bind(System* sys, int32_t fd, const char* mount_path) {
+    if (!mount_path) return -1;
+    VFSFile* file = get_fd(sys, fd);
+    if (!file) return -1;
+
+    // Binding into a child namespace: /sys/vm/<id>/ns/<rest> mounts the file
+    // at /<rest> inside that child's VFS (Go: VFS.BindFile).
+    if (strncmp(mount_path, "/sys/vm/", 8) == 0) {
+        char* end = NULL;
+        long id = strtol(mount_path + 8, &end, 10);
+        if (end && end != mount_path + 8 && strncmp(end, "/ns/", 4) == 0) {
+            if (id < 0 || id >= SYS_MAX_CHILD_VMS || !sys->child_vms[id] ||
+                !sys->child_vms[id]->system) {
+                return -1;
+            }
+            char child_path[256];
+            snprintf(child_path, sizeof(child_path), "/%s", end + 4);
+            return vfs_bind_file(sys->child_vms[id]->system, file, child_path);
+        }
+    }
+
+    return vfs_bind_file(sys, file, mount_path);
+}
+
+void vfs_state_free(System* sys) {
+    if (!sys) return;
+    for (int i = 0; i < VFS_MAX_FDS; i++) {
+        if (sys->vfs.fd_table[i]) {
+            VFSFile* f = sys->vfs.fd_table[i];
+            sys->vfs.fd_table[i] = NULL;
+            vfs_file_release(f);
+        }
+    }
+    for (int i = 0; i < sys->vfs.mount_count; i++) {
+        vfs_file_release(sys->vfs.mounts[i].file);
+        sys->vfs.mounts[i].file = NULL;
+    }
+    sys->vfs.mount_count = 0;
+    if (sys->vfs.last_chan_peer) {
+        vfs_file_release(sys->vfs.last_chan_peer);
+        sys->vfs.last_chan_peer = NULL;
+    }
 }

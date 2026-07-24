@@ -1,5 +1,7 @@
 #include "vfs.h"
 #include "system.h"
+#include "machine.h"
+#include "compiler.h"
 #include "chicago.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,26 +74,29 @@ void test_host_file() {
     
     // Create a temporary file to test with
     const char* test_path = "/sys/file/test_vfs_temp.txt";
+    System* sys = system_create();
+    assert(sys != NULL);
     // 0x04 flag could be for write
-    int32_t fd = vfs_open(test_path, 0x04, NULL);
+    int32_t fd = vfs_open(sys, test_path, 0x04);
     assert(fd >= 100);
     
     const char* msg = "Hello from VFS!";
-    int written = vfs_write(fd, (const uint8_t*)msg, strlen(msg));
+    int written = vfs_write(sys, fd, (const uint8_t*)msg, strlen(msg));
     assert(written == (int)strlen(msg));
     
-    vfs_close(fd);
+    vfs_close(sys, fd);
     
     // Open for read
-    int32_t fd2 = vfs_open(test_path, 0, NULL); // 0 or whatever flag for read
+    int32_t fd2 = vfs_open(sys, test_path, 0); // 0 or whatever flag for read
     assert(fd2 >= 100);
     
     uint8_t buf[64] = {0};
-    int read_bytes = vfs_read(fd2, buf, sizeof(buf));
+    int read_bytes = vfs_read(sys, fd2, buf, sizeof(buf));
     assert(read_bytes == (int)strlen(msg));
     assert(strcmp((char*)buf, msg) == 0);
     
-    vfs_close(fd2);
+    vfs_close(sys, fd2);
+    system_free(sys);
     
     // Cleanup
     remove("test_vfs_temp.txt");
@@ -101,17 +106,20 @@ void test_host_file() {
 void test_dummy_file() {
     printf("Testing dummy sys file operations...\n");
 
-    int32_t fd = vfs_open("/sys/unknown", 0, NULL);
+    System* sys = system_create();
+    assert(sys != NULL);
+    int32_t fd = vfs_open(sys, "/sys/unknown", 0);
     assert(fd >= 100);
 
     uint8_t buf[16] = {0};
-    int read_bytes = vfs_read(fd, buf, 16);
+    int read_bytes = vfs_read(sys, fd, buf, 16);
     assert(read_bytes == 0);
 
-    int written = vfs_write(fd, (const uint8_t*)"test", 4);
+    int written = vfs_write(sys, fd, (const uint8_t*)"test", 4);
     assert(written == 0);
 
-    vfs_close(fd);
+    vfs_close(sys, fd);
+    system_free(sys);
     printf("Dummy sys file tests passed.\n");
 }
 
@@ -119,21 +127,21 @@ static void test_kbd_vfs(void) {
     printf("Testing /sys/kbd VFS...\n");
     System* sys = system_create();
     assert(sys != NULL);
-    int32_t fd = vfs_open("/sys/kbd", 0, sys);
+    int32_t fd = vfs_open(sys, "/sys/kbd", 0);
     assert(fd >= 100);
 
     uint8_t buf[8] = {0};
-    assert(vfs_read(fd, buf, 8) == 0);
+    assert(vfs_read(sys, fd, buf, 8) == 0);
     assert(sys->yielded == true);
     sys->yielded = false;
 
     system_push_kbd_event(sys, 0, 65, 0);
-    int n = vfs_read(fd, buf, 8);
+    int n = vfs_read(sys, fd, buf, 8);
     assert(n == 8);
     assert(buf[0] == 0);
     assert(buf[2] == 65);
 
-    vfs_close(fd);
+    vfs_close(sys, fd);
     system_free(sys);
     printf("  kbd VFS: OK\n");
 }
@@ -153,7 +161,7 @@ static void test_draw_file() {
     }
 
     // Open /sys/draw with the system context
-    int32_t fd = vfs_open("/sys/draw", 0x02 /* write-ish */, &sys);
+    int32_t fd = vfs_open(&sys, "/sys/draw", 0x02 /* write-ish */);
     if (fd < 100) {
         printf("  draw test: open failed\n");
         free(sys.screen_pixels);
@@ -177,7 +185,7 @@ static void test_draw_file() {
     cmd[11] = 0x00;
     cmd[12] = 0x00;
 
-    int written = vfs_write(fd, cmd, 13);
+    int written = vfs_write(&sys, fd, cmd, 13);
     if (written != 13) {
         printf("  draw test: write failed\n");
     }
@@ -209,9 +217,9 @@ static void test_draw_file() {
     cmd3[11] = 0x00;
     cmd3[12] = 0xFF; // blue-ish (B=FF in our storage)
 
-    vfs_write(fd, cmd3, 13);
+    vfs_write(&sys, fd, cmd3, 13);
 
-    vfs_close(fd);
+    vfs_close(&sys, fd);
     free(sys.screen_pixels);
     printf("/sys/draw rect tests passed.\n");
 }
@@ -261,14 +269,14 @@ static void test_draw_string_vfs_scale18(void) {
     printf("Testing VFS DrawString scale=18...\n");
     System* sys = make_test_screen(240, 64);
 
-    int32_t fd = vfs_open("/sys/draw", 0x02, sys);
+    int32_t fd = vfs_open(sys, "/sys/draw", 0x02);
     assert(fd >= 100);
 
     uint8_t set_font[] = {5, 2};
-    assert(vfs_write(fd, set_font, 2) == 2);
+    assert(vfs_write(sys, fd, set_font, 2) == 2);
 
     uint8_t set_size[] = {4, 18};
-    assert(vfs_write(fd, set_size, 2) == 2);
+    assert(vfs_write(sys, fd, set_size, 2) == 2);
 
     fill_screen_white(sys);
 
@@ -281,7 +289,7 @@ static void test_draw_string_vfs_scale18(void) {
     packet[10] = 2; packet[11] = 0;
     packet[12] = 'H';
     packet[13] = 'i';
-    assert(vfs_write(fd, packet, sizeof(packet)) == (int)sizeof(packet));
+    assert(vfs_write(sys, fd, packet, sizeof(packet)) == (int)sizeof(packet));
 
     int right = rightmost_ink_x(sys, 12, 6, 200, 40);
     assert(right >= 12);
@@ -289,7 +297,7 @@ static void test_draw_string_vfs_scale18(void) {
 
     assert(!pixel_is_ink(sys, 120, 6));
 
-    vfs_close(fd);
+    vfs_close(sys, fd);
     free_test_screen(sys);
     printf("  VFS DrawString scale=18: OK\n");
 }
@@ -333,17 +341,17 @@ static void test_snarf_roundtrip(void) {
     System* sys = system_create();
     assert(sys != NULL);
     const char* msg = "hello, snarf";
-    int32_t fd = vfs_open("/sys/snarf", 0, sys);
+    int32_t fd = vfs_open(sys, "/sys/snarf", 0);
     assert(fd >= 100);
-    assert(vfs_write(fd, (const uint8_t*)msg, (int)strlen(msg)) == (int)strlen(msg));
-    vfs_close(fd);
+    assert(vfs_write(sys, fd, (const uint8_t*)msg, (int)strlen(msg)) == (int)strlen(msg));
+    vfs_close(sys, fd);
 
-    fd = vfs_open("/sys/snarf", 0, sys);
+    fd = vfs_open(sys, "/sys/snarf", 0);
     char buf[64] = {0};
-    int n = vfs_read(fd, (uint8_t*)buf, sizeof(buf) - 1);
+    int n = vfs_read(sys, fd, (uint8_t*)buf, sizeof(buf) - 1);
     assert(n == (int)strlen(msg));
     assert(strcmp(buf, msg) == 0);
-    vfs_close(fd);
+    vfs_close(sys, fd);
     system_free(sys);
     printf("  snarf roundtrip: OK\n");
 }
@@ -352,18 +360,18 @@ static void test_snarf_shared(void) {
     printf("Testing /sys/snarf shared buffer...\n");
     System* sys = system_create();
     assert(sys != NULL);
-    int32_t a = vfs_open("/sys/snarf", 0, sys);
-    vfs_write(a, (const uint8_t*)"first", 5);
-    vfs_close(a);
+    int32_t a = vfs_open(sys, "/sys/snarf", 0);
+    vfs_write(sys, a, (const uint8_t*)"first", 5);
+    vfs_close(sys, a);
 
-    int32_t b = vfs_open("/sys/snarf", 0, sys);
-    vfs_write(b, (const uint8_t*)"second", 6);
-    vfs_close(b);
+    int32_t b = vfs_open(sys, "/sys/snarf", 0);
+    vfs_write(sys, b, (const uint8_t*)"second", 6);
+    vfs_close(sys, b);
 
-    int32_t c = vfs_open("/sys/snarf", 0, sys);
+    int32_t c = vfs_open(sys, "/sys/snarf", 0);
     char buf[16] = {0};
-    int n = vfs_read(c, (uint8_t*)buf, sizeof(buf));
-    vfs_close(c);
+    int n = vfs_read(sys, c, (uint8_t*)buf, sizeof(buf));
+    vfs_close(sys, c);
     assert(n == 6);
     assert(strcmp(buf, "second") == 0);
     system_free(sys);
@@ -373,24 +381,162 @@ static void test_snarf_shared(void) {
 static void test_host_seek_stat(void) {
     printf("Testing host seek/stat...\n");
     const char* path = "/sys/file/vfs_seek_stat_tmp.txt";
-    int32_t fd = vfs_open(path, 0x06, NULL);
+    System* sys = system_create();
+    assert(sys != NULL);
+    int32_t fd = vfs_open(sys, path, 0x06);
     assert(fd >= 100);
     const char* msg = "abcdef";
-    vfs_write(fd, (const uint8_t*)msg, 6);
-    int64_t sz = vfs_stat(fd);
+    vfs_write(sys, fd, (const uint8_t*)msg, 6);
+    int64_t sz = vfs_stat(sys, fd);
     assert(sz == 6);
-    vfs_seek(fd, 2);
+    vfs_seek(sys, fd, 2);
     char buf[4] = {0};
-    int n = vfs_read(fd, (uint8_t*)buf, 3);
+    int n = vfs_read(sys, fd, (uint8_t*)buf, 3);
     assert(n == 3);
     assert(memcmp(buf, "cde", 3) == 0);
-    vfs_close(fd);
+    vfs_close(sys, fd);
+    system_free(sys);
     remove("vfs_seek_stat_tmp.txt");
     printf("  host seek/stat: OK\n");
 }
 
+// --- per-System / refcount / child-VM regression tests ---
+
+static void test_bind_mount_aliasing(void) {
+    printf("Testing bind/mount aliasing...\n");
+    System* sys = system_create();
+    assert(sys != NULL);
+
+    // Bind an open snarf fd to /n/clip; both paths must hit the same buffer.
+    int32_t fd = vfs_open(sys, "/sys/snarf", 0);
+    assert(fd >= 100);
+    assert(vfs_bind(sys, fd, "/n/clip") == 0);
+
+    int32_t clip = vfs_open(sys, "/n/clip", 0);
+    assert(clip >= 100);
+    assert(vfs_write(sys, clip, (const uint8_t*)"alias", 5) == 5);
+
+    // Fresh /sys/snarf open reads the shared System buffer.
+    int32_t check = vfs_open(sys, "/sys/snarf", 0);
+    char buf[16] = {0};
+    assert(vfs_read(sys, check, (uint8_t*)buf, sizeof(buf)) == 5);
+    assert(strcmp(buf, "alias") == 0);
+
+    vfs_close(sys, check);
+    vfs_close(sys, clip);
+    vfs_close(sys, fd);
+    system_free(sys);
+    printf("  bind/mount aliasing: OK\n");
+}
+
+static void test_chan_lifecycle(void) {
+    printf("Testing channel lifecycle (Shell pattern)...\n");
+    System* sys = system_create();
+    assert(sys != NULL);
+
+    int32_t cfd = vfs_open(sys, "/sys/chan/new", 0);
+    assert(cfd >= 100);
+    int32_t pfd = vfs_open(sys, "/sys/chan/peer", 0);
+    assert(pfd >= 100);
+
+    // Bind the peer endpoint, then close its fd (as Shell.lux does).
+    // The mount's reference must keep the endpoint alive.
+    assert(vfs_bind(sys, pfd, "/dev/kbd") == 0);
+    assert(vfs_close(sys, pfd) == 0);
+
+    int32_t kbd = vfs_open(sys, "/dev/kbd", 0);
+    assert(kbd >= 100);
+
+    assert(vfs_write(sys, cfd, (const uint8_t*)"evt1", 4) == 4);
+    char buf[16] = {0};
+    assert(vfs_read(sys, kbd, (uint8_t*)buf, sizeof(buf)) == 4);
+    assert(memcmp(buf, "evt1", 4) == 0);
+
+    // And the other direction still works.
+    assert(vfs_write(sys, kbd, (const uint8_t*)"reply", 5) == 5);
+    memset(buf, 0, sizeof(buf));
+    assert(vfs_read(sys, cfd, (uint8_t*)buf, sizeof(buf)) == 5);
+    assert(memcmp(buf, "reply", 5) == 0);
+
+    vfs_close(sys, kbd);
+    vfs_close(sys, cfd);
+    system_free(sys);
+    printf("  channel lifecycle: OK\n");
+}
+
+static void test_child_vm_ns(void) {
+    printf("Testing child VM spawn + ns bind + tick...\n");
+
+    // Parent runs a trivial program that yields forever.
+    size_t plen = 0;
+    uint8_t* pprog = compile_source("[ 1 ] [ YIELD ] |:", HEADLESS_BASE_ADDRESS, &plen, false);
+    assert(pprog != NULL);
+    Machine* parent = machine_create(pprog, (uint32_t)plen, HEADLESS_BASE_ADDRESS, 4 * 1024 * 1024, false);
+    assert(parent != NULL);
+    System* psys = parent->system;
+
+    // Child program: push 5, halt. Written to a temp .bin for /sys/vm/new.
+    size_t clen = 0;
+    uint8_t* cprog = compile_source("5", HEADLESS_BASE_ADDRESS, &clen, false);
+    assert(cprog != NULL);
+    FILE* f = fopen("test_child_tmp.bin", "wb");
+    assert(f != NULL);
+    fwrite(cprog, 1, clen, f);
+    fclose(f);
+
+    int32_t vmfd = vfs_open(psys, "/sys/vm/new", 0);
+    assert(vmfd >= 100);
+    const char* path = "test_child_tmp.bin";
+    assert(vfs_write(psys, vmfd, (const uint8_t*)path, (int)strlen(path)) == (int)strlen(path));
+
+    uint8_t idbuf[4] = {0};
+    assert(vfs_read(psys, vmfd, idbuf, 4) == 4);
+    int32_t id = (int32_t)(idbuf[0] | (idbuf[1] << 8) | (idbuf[2] << 16) | (idbuf[3] << 24));
+    assert(id >= 1 && id < SYS_MAX_CHILD_VMS);
+    assert(psys->child_vms[id] != NULL);
+    Machine* child = psys->child_vms[id];
+
+    // Bind a channel peer into the child's namespace at /dev/kbd.
+    int32_t cfd = vfs_open(psys, "/sys/chan/new", 0);
+    int32_t pfd = vfs_open(psys, "/sys/chan/peer", 0);
+    assert(cfd >= 100 && pfd >= 100);
+    char bind_path[64];
+    snprintf(bind_path, sizeof(bind_path), "/sys/vm/%d/ns/dev/kbd", id);
+    assert(vfs_bind(psys, pfd, bind_path) == 0);
+    vfs_close(psys, pfd);
+
+    // Namespace isolation: the child's /dev/kbd is the bound channel;
+    // the parent's own /dev/kbd is a plain input device.
+    int32_t child_kbd = vfs_open(child->system, "/dev/kbd", 0);
+    assert(child_kbd >= 100);
+    assert(vfs_write(psys, cfd, (const uint8_t*)"ping", 4) == 4);
+    char buf[16] = {0};
+    assert(vfs_read(child->system, child_kbd, (uint8_t*)buf, sizeof(buf)) == 4);
+    assert(memcmp(buf, "ping", 4) == 0);
+
+    int32_t parent_kbd = vfs_open(psys, "/dev/kbd", 0);
+    assert(parent_kbd >= 100);
+    assert(vfs_write(psys, cfd, (const uint8_t*)"pong", 4) == 4);
+    assert(vfs_read(psys, parent_kbd, (uint8_t*)buf, sizeof(buf)) == 0); // real kbd queue: empty
+
+    // Parent tick must tick the child to completion (push 5, halt).
+    assert(machine_tick(parent) == true); // parent still yielding
+    assert(child->cpu->halted);
+    assert(child->cpu->stack_ptr == 1);
+    assert(child->cpu->stack[0] == 5);
+
+    vfs_close(psys, parent_kbd);
+    vfs_close(child->system, child_kbd);
+    vfs_close(psys, cfd);
+    vfs_close(psys, vmfd);
+    machine_free(parent);
+    free(pprog);
+    free(cprog);
+    remove("test_child_tmp.bin");
+    printf("  child VM + ns: OK\n");
+}
+
 int main() {
-    vfs_init();
     test_host_file();
     test_dummy_file();
     test_kbd_vfs();
@@ -403,6 +549,9 @@ int main() {
     test_draw_string_vfs_scale18();
     test_draw_default_scale_from_font_size();
     test_draw_small_scale_multiplier();
+    test_bind_mount_aliasing();
+    test_chan_lifecycle();
+    test_child_vm_ns();
     printf("All VFS tests passed!\n");
     return 0;
 }

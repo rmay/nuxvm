@@ -42,7 +42,7 @@ See `Makefile` for the full target list (`make help`).
 luxc [-trace] [-o out.bin] <file.lux>
 ```
 
-Source: `cmd/luxc/main.go`.
+Source: `src/luxc.c`.
 
 ### Flags
 
@@ -81,7 +81,7 @@ Capture a trace for a compile failure:
 ./bin/nux examples/hello.bin
 ```
 
-Or skip the intermediate file — `nux` and `cloister` call `lux.LoadProgram` (`pkg/lux/load.go`), which detects a `.lux` suffix and compiles in-process:
+Or skip the intermediate file — `nux` and `cloister` detect a `.lux` suffix and compiles in-process:
 
 ```bash
 ./bin/nux examples/hello.lux
@@ -114,7 +114,7 @@ CLOISTER is the graphical environment: a windowed framebuffer, keyboard/mouse in
 ./bin/cloister program.bin           # run precompiled bytecode
 ```
 
-With no argument, CLOISTER tries to load `lib/boot.lux` relative to the current working directory. If that file isn't there, it falls back to a single `HALT` so the REPL still comes up. That's why `cloister` is usually invoked from the repo root — the path is resolved against cwd, not the binary's location (`cmd/cloister/main.go:403-415`).
+With no argument, CLOISTER tries to load `lib/boot.lux` relative to the current working directory. If that file isn't there, it falls back to a single `HALT` so the REPL still comes up. That's why `cloister` is usually invoked from the repo root — the path is resolved against cwd, not the binary's location (`src/cloister.c`).
 
 ### CLI flags
 
@@ -133,7 +133,7 @@ Example:
 
 ### File sandbox
 
-The File device is pinned to the directory CLOISTER was launched from (`cmd/cloister/main.go:427-438`). Reads, writes, stats, and deletes that escape that root — via `..`, an absolute path, or a symlink — return `-1`. See [`file-device.md`](file-device.md) for the full protocol.
+The File device is pinned to the directory CLOISTER was launched from (`src/vfs.c`). Reads, writes, stats, and deletes that escape that root — via `..`, an absolute path, or a symlink — return `-1`. See [`file-device.md`](file-device.md) for the full protocol.
 
 ### The REPL
 
@@ -152,7 +152,7 @@ Built-in commands:
 | Up / Down arrows           | Scroll line history.                         |
 | F1                         | Toggle the debug overlay (PC, stack, MMIO). |
 
-Anything else is compiled with `lux.Compile` and executed by injecting the bytecode at the start of user memory and triggering vector 0 (`cmd/cloister/main.go:174-194`).
+Anything else is compiled with `compile_source` and executed by injecting the bytecode at the start of user memory and triggering vector 0 (`src/cloister.c`).
 
 ### Defining words in the REPL
 
@@ -211,7 +211,7 @@ IMPORT CTRL
 main
 ```
 
-The first tick after launch runs until `YIELD` or `HALT`. CLOISTER then reads `SCR_W`, `SCR_H`, and the `TEXT` font size back from MMIO to size the window (`cmd/cloister/main.go:443-473`), so boot code that writes those registers controls the initial window geometry.
+The first tick after launch runs until `YIELD` or `HALT`. CLOISTER then reads `SCR_W`, `SCR_H`, and the `TEXT` font size back from MMIO to size the window (`src/cloister.c`), so boot code that writes those registers controls the initial window geometry.
 
 ### Using the system library
 
