@@ -25,7 +25,18 @@ CLOISTER_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(CLOISTER_SRCS))
 
 TARGETS = $(BIN_DIR)/nux $(BIN_DIR)/luxc $(BIN_DIR)/luxrepl $(BIN_DIR)/cloister $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler
 
+APP_LUX = $(wildcard apps/*.lux)
+APP_BINS = $(APP_LUX:.lux=.bin)
+
 all: dir $(TARGETS)
+
+# Rebuild apps/*.bin for the graphical base address (0x600000).
+# Needed after compiler or base-address changes; *.bin is gitignored.
+apps: $(BIN_DIR)/luxc $(APP_BINS)
+
+apps/%.bin: apps/%.lux $(BIN_DIR)/luxc
+	@echo "Compiling $< -> $@"
+	@$(BIN_DIR)/luxc -target graphical -o $@ $<
 
 dir:
 	@mkdir -p $(OBJ_DIR)
@@ -81,4 +92,4 @@ test: $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler
 clean:
 	rm -rf $(OBJ_DIR) $(BIN_DIR)
 
-.PHONY: all clean dir test
+.PHONY: all clean dir test apps

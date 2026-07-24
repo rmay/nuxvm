@@ -455,23 +455,27 @@ bool vm_tick(VM* vm) {
             else vm_push(vm, vm->loop_stack[vm->loop_stack_ptr - 2]);
             break;
         case OP_FRAME:
+            // [v_{n-1} ... v_0, n] → []  (v_0 is top of stack → local 0)
             if (vm_pop(vm, &a)) {
-                if (a < 0 || vm->fp + 1 + a >= MAX_LOCALS_SIZE) vm->running = false;
-                else {
-                    vm->locals[++vm->fp] = (int32_t)vm->fp - 1; // Store old fp roughly
-                    // Actually, let's keep it simple: push old FP, then locals
-                    int32_t old_fp = vm->fp - 1;
-                    int32_t base = vm->fp;
+                if (a < 0 || vm->fp + 1 + a >= MAX_LOCALS_SIZE) {
+                    vm->running = false;
+                } else if (vm->stack_ptr < a) {
+                    fprintf(stderr, "Stack underflow at PC 0x%08X (FRAME needs %d)\n",
+                            vm->pc, a);
+                    vm->running = false;
+                } else {
+                    int32_t old_fp = vm->fp;
+                    int32_t base = old_fp + 1;
                     vm->locals[base] = old_fp;
                     for (int32_t i = 0; i < a; i++) {
                         int32_t val;
-                        if (vm_pop(vm, &val)) vm->locals[base + a - i] = val;
+                        vm_pop(vm, &val); // guarded by stack_ptr check above
+                        // First pop (top) → local 0 at base+a
+                        vm->locals[base + a - i] = val;
                     }
                     vm->fp = base + a;
                 }
             }
-            // Wait, Go frame logic might be different. Let's do a simple frame for now.
-            // OpFrame: [n, v_n...v1]
             break;
         case OP_UNFRAME:
             if (vm_pop(vm, &a)) {

@@ -232,6 +232,89 @@ static void cloister_open_dialog(void* ctx) {
     dialog_open(d, d->sys);
 }
 
+// Load a .bin (raw bytecode) or .lux (compile in-process) at the graphical base
+// address. On success, frees any previous *program_out / *machine_out and replaces
+// them. Returns true if a machine was created.
+static bool load_app(const char* path, uint8_t** program_out, Machine** machine_out,
+                     SDL_Window* win) {
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "Could not open %s\n", path);
+        return false;
+    }
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (fsize <= 0) {
+        fclose(f);
+        fprintf(stderr, "Empty or unreadable file: %s\n", path);
+        return false;
+    }
+
+    char* file_content = malloc((size_t)fsize + 1);
+    if (!file_content) {
+        fclose(f);
+        return false;
+    }
+    if (fread(file_content, 1, (size_t)fsize, f) != (size_t)fsize) {
+        free(file_content);
+        fclose(f);
+        fprintf(stderr, "Failed to read %s\n", path);
+        return false;
+    }
+    file_content[fsize] = '\0';
+    fclose(f);
+
+    uint8_t* program = NULL;
+    size_t code_len = 0;
+    size_t path_len = strlen(path);
+    bool is_lux = path_len >= 4 && strcmp(path + path_len - 4, ".lux") == 0;
+
+    if (is_lux) {
+        program = compile_source(file_content, GRAPHICAL_BASE_ADDRESS, &code_len, false);
+        free(file_content);
+        if (!program) {
+            fprintf(stderr, "Failed to compile %s\n", path);
+            return false;
+        }
+    } else {
+        program = (uint8_t*)file_content;
+        code_len = (size_t)fsize;
+    }
+
+    Machine* machine = machine_create(program, (uint32_t)code_len, GRAPHICAL_BASE_ADDRESS,
+                                      32 * 1024 * 1024, false);
+    if (!machine) {
+        free(program);
+        fprintf(stderr, "Failed to create machine for %s\n", path);
+        return false;
+    }
+
+    if (machine->system) {
+        system_set_resolution(machine->system, WIN_WIDTH, WIN_HEIGHT);
+        machine->system->play_sound = cloister_play_sound;
+        machine->system->set_window_title = cloister_set_title;
+        machine->system->title_ctx = win;
+        machine->system->open_file_dialog = cloister_open_dialog;
+        machine->system->dialog_ctx = &g_dialog;
+        g_dialog.sys = machine->system;
+    }
+
+    if (*machine_out) machine_free(*machine_out);
+    if (*program_out) free(*program_out);
+    *machine_out = machine;
+    *program_out = program;
+    return true;
+}
+
+static bool is_launchable(const char* name) {
+    size_t n = strlen(name);
+    if (n < 5) return false;
+    if (strcmp(name + n - 4, ".bin") == 0) return true;
+    if (strcmp(name + n - 4, ".lux") == 0) return true;
+    return false;
+}
+
 int main(int argc, char** argv) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
         fprintf(stderr, "SDL_Init Error: %s\n", SDL_GetError());
@@ -267,9 +350,11 @@ int main(int argc, char** argv) {
     DIR* d = opendir("apps");
     if (d) {
         struct dirent* dir;
-        while ((dir = readdir(d)) != NULL) {
-            if (strstr(dir->d_name, ".bin")) {
-                strncpy(apps[num_apps++], dir->d_name, 255);
+        while ((dir = readdir(d)) != NULL && num_apps < 100) {
+            if (is_launchable(dir->d_name)) {
+                strncpy(apps[num_apps], dir->d_name, 255);
+                apps[num_apps][255] = '\0';
+                num_apps++;
             }
         }
         closedir(d);
@@ -284,43 +369,10 @@ int main(int argc, char** argv) {
     uint8_t* program = NULL;
 
     if (argc > 1) {
-        FILE* f = fopen(argv[1], "rb");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long fsize = ftell(f);
-            fseek(f, 0, SEEK_SET);
-            char* file_content = malloc(fsize + 1);
-            fread(file_content, 1, fsize, f);
-            file_content[fsize] = '\0';
-            fclose(f);
-            
-            if (strstr(argv[1], ".lux")) {
-                size_t code_len = 0;
-                program = compile_source(file_content, GRAPHICAL_BASE_ADDRESS, &code_len, false);
-                free(file_content);
-                if (program) {
-                    machine = machine_create(program, code_len, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
-                    if (machine && machine->system) system_set_resolution(machine->system, WIN_WIDTH, WIN_HEIGHT);
-                } else {
-                    fprintf(stderr, "Failed to compile %s\n", argv[1]);
-                    return 1;
-                }
-            } else {
-                program = (uint8_t*)file_content;
-                machine = machine_create(program, fsize, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
-                if (machine && machine->system) system_set_resolution(machine->system, WIN_WIDTH, WIN_HEIGHT);
-            }
-            if (machine && machine->system) {
-                machine->system->play_sound = cloister_play_sound;
-                machine->system->set_window_title = cloister_set_title;
-                machine->system->title_ctx = win;
-                machine->system->open_file_dialog = cloister_open_dialog;
-                machine->system->dialog_ctx = &g_dialog;
-                g_dialog.sys = machine->system;
-            }
+        if (load_app(argv[1], &program, &machine, win)) {
             launcher_mode = false;
         } else {
-            fprintf(stderr, "Could not open %s\n", argv[1]);
+            return 1;
         }
     }
 
@@ -376,29 +428,7 @@ int main(int argc, char** argv) {
                             if (num_apps > 0) {
                                 char path[512];
                                 snprintf(path, sizeof(path), "apps/%s", apps[selected_index]);
-                                
-                                FILE* f = fopen(path, "rb");
-                                if (f) {
-                                    fseek(f, 0, SEEK_END);
-                                    long fsize = ftell(f);
-                                    fseek(f, 0, SEEK_SET);
-                                    
-                                    if (program) free(program);
-                                    program = malloc(fsize);
-                                    fread(program, 1, fsize, f);
-                                    fclose(f);
-                                    
-                                    if (machine) machine_free(machine);
-                                    machine = machine_create(program, fsize, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
-                                    if (machine && machine->system) {
-                                        system_set_resolution(machine->system, WIN_WIDTH, WIN_HEIGHT);
-                                        machine->system->play_sound = cloister_play_sound;
-                                        machine->system->set_window_title = cloister_set_title;
-                                        machine->system->title_ctx = win;
-                                        machine->system->open_file_dialog = cloister_open_dialog;
-                                        machine->system->dialog_ctx = &g_dialog;
-                                        g_dialog.sys = machine->system;
-                                    }
+                                if (load_app(path, &program, &machine, win)) {
                                     launcher_mode = false;
                                 }
                             }

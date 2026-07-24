@@ -589,7 +589,9 @@ static int vm_write(VFSFile* file, const uint8_t* buf, int len) {
         fread(src, 1, (size_t)fs, f);
         src[fs] = '\0';
         fclose(f);
-        program = compile_source(src, HEADLESS_BASE_ADDRESS, &prog_len, false);
+        // Children launched by Shell (and similar) are graphical apps; match
+        // cloister's GRAPHICAL_BASE_ADDRESS so absolute CALL/JMP targets work.
+        program = compile_source(src, GRAPHICAL_BASE_ADDRESS, &prog_len, false);
         free(src);
         prog_owned = true;
     } else {
@@ -610,7 +612,7 @@ static int vm_write(VFSFile* file, const uint8_t* buf, int len) {
 
     int32_t id = d->sys->next_vm_id++;
     if (id >= 0 && id < SYS_MAX_CHILD_VMS) {
-        Machine* child = machine_create(program, (uint32_t)prog_len, HEADLESS_BASE_ADDRESS, 32 * 1024 * 1024, false);
+        Machine* child = machine_create(program, (uint32_t)prog_len, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
         if (child) {
             if (child->system) {
                 // Children inherit the parent's sandbox and sound output.

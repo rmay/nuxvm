@@ -476,8 +476,9 @@ static void test_child_vm_ns(void) {
     System* psys = parent->system;
 
     // Child program: push 5, halt. Written to a temp .bin for /sys/vm/new.
+    // Must match GRAPHICAL_BASE_ADDRESS used by vfs child spawn.
     size_t clen = 0;
-    uint8_t* cprog = compile_source("5", HEADLESS_BASE_ADDRESS, &clen, false);
+    uint8_t* cprog = compile_source("5", GRAPHICAL_BASE_ADDRESS, &clen, false);
     assert(cprog != NULL);
     FILE* f = fopen("test_child_tmp.bin", "wb");
     assert(f != NULL);

@@ -53,10 +53,10 @@ IMPORT UI
     ( Read directory into dlg_buf )
     T"/sys/dir" DRAW::BUF STR::strcpy
     dlg_path load-byte 47 = [ ( path starts with / )
-        dlg_path DRAW::BUF STR::strlen + STR::strcpy
+        dlg_path DRAW::BUF DRAW::BUF STR::strlen + STR::strcpy
     ] [
-        T"/" DRAW::BUF STR::strlen + STR::strcpy
-        dlg_path DRAW::BUF STR::strlen + STR::strcpy
+        T"/" DRAW::BUF DRAW::BUF STR::strlen + STR::strcpy
+        dlg_path DRAW::BUF DRAW::BUF STR::strlen + STR::strcpy
     ] ?:
     
     DRAW::BUF VFS::open ( dfd )
@@ -95,20 +95,20 @@ IMPORT UI
         dlg_path STR::strlen ( len )
         dup 0 > [
             dlg_path swap 1 - + load-byte 47 <> [
-                T"/" DRAW::BUF STR::strlen + STR::strcpy
+                T"/" DRAW::BUF DRAW::BUF STR::strlen + STR::strcpy
             ] ?
-        ] ?
+        ] [ drop ] ?:
 
         ( Copy filename until newline or null )
         1 local@ ( ptr )
         [ dup load-byte dup 10 <> swap 0 <> AND ] [
-            dup load-byte DRAW::BUF STR::strlen + store-byte
+            dup load-byte DRAW::BUF DRAW::BUF STR::strlen + store-byte
             1 +
         ] |:
         drop
 
         ( Null-terminate DRAW::BUF )
-        0 DRAW::BUF STR::strlen + store-byte
+        0 DRAW::BUF DRAW::BUF STR::strlen + store-byte
 
         ( Write DRAW::BUF to child )
         vfd@ DRAW::BUF DRAW::BUF STR::strlen VFS::write drop
@@ -143,18 +143,19 @@ IMPORT UI
             dlg_path STR::strlen ( current len )
             dup 0 > [
                 dlg_path over 1 - + load-byte 47 <> [
-                    T"/" dlg_path STR::strlen + STR::strcpy
+                    T"/" dlg_path dlg_path STR::strlen + STR::strcpy
                 ] ?
             ] ?
+            drop ( len )
             
             ( Copy name )
             1 local@ ( ptr )
             [ dup load-byte dup 10 <> swap 0 <> AND ] [
-                dup load-byte dlg_path STR::strlen + store-byte
+                dup load-byte dlg_path dlg_path STR::strlen + store-byte
                 1 +
             ] |:
             drop
-            0 dlg_path STR::strlen + store-byte ( Terminate )
+            0 dlg_path dlg_path STR::strlen + store-byte ( Terminate )
 
             refresh-dir
             dlg_lb dlg_buf dlg_cnt LOADI UI::listbox-update-data
@@ -372,7 +373,7 @@ IMPORT UI
 ;
 
 @offset-draw ( buf len -- )
-    3 frame! ( 0:tlen, 1:len, 2:buf )
+    0 3 frame! ( 0:tlen, 1:len, 2:buf )
     [ 1 local@ 0 > ] [
         2 local@ load-byte ( type )
         dup 0 = OVER 3 = OR [ ( FillRect (0), DrawRect (3) )
@@ -455,7 +456,8 @@ IMPORT UI
 ;
 
 @launch-app ( path -- )
-    6 frame! ( 0:cid, 1:dfd, 2:kfd, 3:mfd, 4:drfd, 5:path )
+    ( path is on the stack; zero-fill scratch locals 0..4 so FRAME! has 6 values. )
+    0 0 0 0 0 6 frame! ( 0:cid, 1:dfd, 2:kfd, 3:mfd, 4:drfd, 5:path )
     
     ( 1. Create Channels )
     VFS::PATH_CHAN_NEW VFS::open cfd!
@@ -479,24 +481,25 @@ IMPORT UI
     id_buf LOADI 0 local! ( child_id )
 
     ( 4. Bind into Child Namespace )
+    ( Append pattern: src dest dest STR::strlen +  — dest must be on stack twice )
     T"/sys/vm/" DRAW::BUF STR::strcpy
-    0 local@ DRAW::BUF STR::strlen + STR::int-to-str
-    T"/ns/dev/draw" DRAW::BUF STR::strlen + STR::strcpy
+    0 local@ DRAW::BUF DRAW::BUF STR::strlen + STR::int-to-str
+    T"/ns/dev/draw" DRAW::BUF DRAW::BUF STR::strlen + STR::strcpy
     4 local@ DRAW::BUF VFS::bind drop
     
     T"/sys/vm/" DRAW::BUF STR::strcpy
-    0 local@ DRAW::BUF STR::strlen + STR::int-to-str
-    T"/ns/dev/mouse" DRAW::BUF STR::strlen + STR::strcpy
+    0 local@ DRAW::BUF DRAW::BUF STR::strlen + STR::int-to-str
+    T"/ns/dev/mouse" DRAW::BUF DRAW::BUF STR::strlen + STR::strcpy
     3 local@ DRAW::BUF VFS::bind drop
     
     T"/sys/vm/" DRAW::BUF STR::strcpy
-    0 local@ DRAW::BUF STR::strlen + STR::int-to-str
-    T"/ns/dev/kbd" DRAW::BUF STR::strlen + STR::strcpy
+    0 local@ DRAW::BUF DRAW::BUF STR::strlen + STR::int-to-str
+    T"/ns/dev/kbd" DRAW::BUF DRAW::BUF STR::strlen + STR::strcpy
     2 local@ DRAW::BUF VFS::bind drop
     
     T"/sys/vm/" DRAW::BUF STR::strcpy
-    0 local@ DRAW::BUF STR::strlen + STR::int-to-str
-    T"/ns/dev/dialog" DRAW::BUF STR::strlen + STR::strcpy
+    0 local@ DRAW::BUF DRAW::BUF STR::strlen + STR::int-to-str
+    T"/ns/dev/dialog" DRAW::BUF DRAW::BUF STR::strlen + STR::strcpy
     1 local@ DRAW::BUF VFS::bind drop
 
     ( 5. Cleanup )
