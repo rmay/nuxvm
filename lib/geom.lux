@@ -1,0 +1,53 @@
+( Plan 9 geometry — Point is x y on the stack; Rectangle is min/max, max exclusive. )
+
+INCLUDE "lib/core.lux"
+
+MODULE GEOM
+
+@pt-in-rect? { x y minx miny maxx maxy -- bool }
+    x minx >=
+    x maxx < AND
+    y miny >= AND
+    y maxy < AND
+;
+
+@rect-dx { minx miny maxx maxy -- dx }
+    maxx minx -
+;
+
+@rect-dy { minx miny maxx maxy -- dy }
+    maxy miny -
+;
+
+@xywh>rect { x y w h -- minx miny maxx maxy }
+    x y
+    x w +
+    y h +
+;
+
+@rect>xywh { minx miny maxx maxy -- x y w h }
+    minx miny
+    maxx minx -
+    maxy miny -
+;
+
+@rect-canon { minx miny maxx maxy -- minx miny maxx maxy }
+    minx maxx MIN
+    miny maxy MIN
+    minx maxx MAX
+    miny maxy MAX
+;
+
+@rect-inset { minx miny maxx maxy n -- minx miny maxx maxy }
+    minx n +
+    miny n +
+    maxx n -
+    maxy n -
+;
+
+@rect-intersect { a0 a1 a2 a3 b0 b1 b2 b3 -- minx miny maxx maxy }
+    a0 b0 MAX
+    a1 b1 MAX
+    a2 b2 MIN
+    a3 b3 MIN
+;

@@ -1,0 +1,37 @@
+( Bump allocator. Heap sits at 0xA00000..0xC00000, clear of DRAW/APP/Shell/Quill. )
+
+INCLUDE "lib/core.lux"
+
+MODULE MEM
+
+@HEAP_START 0xA00000 ;
+@HEAP_END   0xC00000 ;
+@HERE_ADDR  0x8E0000 ;
+
+@here ( -- addr ) HERE_ADDR LOADI ;
+
+@reset ( -- )
+    HEAP_START HERE_ADDR STOREI
+;
+
+@ensure ( -- )
+    here 0 = [ reset ] ?
+    here HEAP_START < [ reset ] ?
+    here HEAP_END >= [ reset ] ?
+;
+
+@align ( -- )
+    ensure
+    here 3 + 0xFFFFFFFC AND HERE_ADDR STOREI
+;
+
+@allot { n -- addr }
+    ensure
+    align
+    here
+    dup n + dup HEAP_END >= [
+        drop drop 0
+    ] [
+        HERE_ADDR STOREI
+    ] ?:
+;

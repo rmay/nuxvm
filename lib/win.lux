@@ -1,0 +1,5 @@
+( Window chrome lives on the controlset — see UI::window, UI::win-chrome,
+  UI::win-client, UI::win-hit. This file exists so apps can INCLUDE it
+  as the Plan 9 "window primitive" entry point. )
+
+INCLUDE "lib/ui.lux"
