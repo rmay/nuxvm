@@ -265,6 +265,79 @@ Nice! No need to type all those numbers and emits.
 
 You can also use symbols like `!` or `@` in your word names (as long as they don't start with `@` which is the definition sigil). This is idiomatic for words that perform I/O or read state, like `pixel!` or `key@`.
 
+### Named locals
+
+Numbered frames work (`4 frame!` / `0 local@`) but they are easy to get backwards. `{ names }` binds the top of the stack to names. Last name is local 0 — the same pop order as `frame!`.
+
+```forth
+lux> 100 200 { a b } a b + }
+  Stack: [300]
+```
+
+`a` is 100, `b` is 200. The first `}` ends the name list (and opens the frame). The second `}` unframes.
+
+Inside a word, `;` unframes for you. Everything after `--` is a stack comment and is ignored:
+
+```forth
+@add { a b -- sum } a b + ;
+3 4 add
+```
+
+Write a local with `name!`:
+
+```forth
+5 { n } n 1 + n! n }
+```
+
+Frames nest. Inner names shadow outer ones; outer names stay visible:
+
+```forth
+10 20 { a b } 3 { c } a c + } }
+```
+
+Existing `N frame!` / `N local@` / `N local!` / `N unframe!` still work and are what `{ }` compiles to. No new opcodes.
+
+### FIELDS
+
+`FIELDS` generates a record layout and accessors at compile time:
+
+```forth
+FIELDS BTN x y w h ;
+```
+
+That defines:
+
+| Word | Stack | Meaning |
+|---|---|---|
+| `BTN.SIZE` | `-- n` | size in bytes (`nfields * 4`) |
+| `BTN.x` | `-- off` | byte offset of the field |
+| `BTN.x@` | `addr -- v` | load field |
+| `BTN.x!` | `v addr --` | store field |
+
+Same for `y`, `w`, `h`. Inside a `MODULE`, the names are qualified (`UI::BTN.x@`).
+
+```forth
+FIELDS PT x y ;
+0x9000 3 OVER PT.x!
+7 OVER PT.y!
+dup PT.x@ swap PT.y@ +
+```
+
+End the field list with `;`. Without it, the next word is treated as another field.
+
+### A tiny window
+
+Graphics live in `lib/ui.lux`. After `APP::init` and `UI::ctlnew`:
+
+```forth
+T"ok" UI::button  20 20 140 56 UI::rect!  T"OK" UI::text!
+[ UI::mouse ] APP::on-mouse!
+[ UI::draw  ] APP::on-frame!
+APP::loop
+```
+
+Rects are min/max (`20 20 140 56` is 120×36). See [`ui.md`](ui.md) for the full controlset.
+
 ### File Inclusion
 
 If your project grows, you can split it into multiple files and use `INCLUDE` to bring them together:

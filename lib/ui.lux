@@ -2,6 +2,10 @@
 
 INCLUDE "lib/draw.lux"
 INCLUDE "lib/time.lux"
+INCLUDE "lib/geom.lux"
+INCLUDE "lib/mem.lux"
+INCLUDE "lib/event.lux"
+INCLUDE "lib/str.lux"
 
 MODULE UI
 
@@ -14,11 +18,17 @@ MODULE UI
 @CLR_HOVER   0xEEEEEE ;
 @CLR_PRESS   0x000000 ;
 @CLR_CHECK   0x000000 ;
-@CLR_TRACK   0xAAAAAA ;
+@CLR_TRACK   0x000000 ;
 @CLR_THUMB   0x000000 ;
+@CLR_DESK    0xFFFFFF ;
 
-@FONT_CHAR_W  7 ;    ( char width at scale 1 )
-@FONT_CHAR_H  16 ;   ( char height at scale 1: tileSize 16 × scale 1 )
+@FONT_CHAR_W  7 ;    ( fallback; prefer DRAW::char-w )
+@FONT_CHAR_H  12 ;   ( Chicago 12 )
+@BOX         12 ;    ( System 6 checkbox / radio — HIG )
+@SL_THUMB_W  17 ;
+@SL_THUMB_H  11 ;
+@SL_TRACK_W  11 ;
+@MENU_H      20 ;
 
 ( --- Hit Testing --- )
 
@@ -31,7 +41,141 @@ MODULE UI
     6 unframe!
 ;
 
-( --- Drawing Helpers --- )
+( --- Drawing Helpers (1-bit System 6) --- )
+
+( 3px QuickDraw rounded rect: fill, then nibble corners with erase. )
+@rrect ( fd x y w h fill erase -- )
+    7 frame! ( 0:erase 1:fill 2:h 3:w 4:y 5:x 6:fd )
+    6 local@ 5 local@ 4 local@ 3 local@ 2 local@ 1 local@ DRAW::fill-rect
+    6 local@ 5 local@          4 local@          3 1 0 local@ DRAW::fill-rect
+    6 local@ 5 local@ 3 local@ + 3 - 4 local@          3 1 0 local@ DRAW::fill-rect
+    6 local@ 5 local@          4 local@ 1 +            2 1 0 local@ DRAW::fill-rect
+    6 local@ 5 local@ 3 local@ + 2 - 4 local@ 1 +      2 1 0 local@ DRAW::fill-rect
+    6 local@ 5 local@          4 local@ 2 +            1 1 0 local@ DRAW::fill-rect
+    6 local@ 5 local@ 3 local@ + 1 - 4 local@ 2 +      1 1 0 local@ DRAW::fill-rect
+    6 local@ 5 local@          4 local@ 2 local@ + 1 - 3 1 0 local@ DRAW::fill-rect
+    6 local@ 5 local@ 3 local@ + 3 - 4 local@ 2 local@ + 1 - 3 1 0 local@ DRAW::fill-rect
+    6 local@ 5 local@          4 local@ 2 local@ + 2 - 2 1 0 local@ DRAW::fill-rect
+    6 local@ 5 local@ 3 local@ + 2 - 4 local@ 2 local@ + 2 - 2 1 0 local@ DRAW::fill-rect
+    6 local@ 5 local@          4 local@ 2 local@ + 3 - 1 1 0 local@ DRAW::fill-rect
+    6 local@ 5 local@ 3 local@ + 1 - 4 local@ 2 local@ + 3 - 1 1 0 local@ DRAW::fill-rect
+    7 unframe!
+;
+
+@rrect-cut ( fd x y w h erase -- )
+    6 frame! ( 0:erase 1:h 2:w 3:y 4:x 5:fd )
+    5 local@ 4 local@ 3 local@ 1 1 0 local@ DRAW::fill-rect
+    5 local@ 4 local@ 2 local@ + 1 - 3 local@ 1 1 0 local@ DRAW::fill-rect
+    5 local@ 4 local@ 3 local@ 1 local@ + 1 - 1 1 0 local@ DRAW::fill-rect
+    5 local@ 4 local@ 2 local@ + 1 - 3 local@ 1 local@ + 1 - 1 1 0 local@ DRAW::fill-rect
+    6 unframe!
+;
+
+( 1px plot. )
+@rr-pix ( fd x y color -- )
+    1 1 ROT DRAW::fill-rect
+;
+
+@rr-hspan ( fd x y w color -- )
+    1 SWAP DRAW::fill-rect
+;
+
+( r=3 corner: (2,1)(1,2). Same stair as rrect. sx/sy = ±1. )
+@rr-arc ( fd cx cy sx sy color -- )
+    6 frame! ( 0:color 1:sy 2:sx 3:cy 4:cx 5:fd )
+    5 local@ 4 local@ 2 local@ 2 * + 3 local@ 1 local@ 1 * + 0 local@ rr-pix
+    5 local@ 4 local@ 2 local@ 1 * + 3 local@ 1 local@ 2 * + 0 local@ rr-pix
+    6 unframe!
+;
+
+( 1px rounded-rect frame, r=3. Same corners on face and default ring. )
+@rr-frame ( fd x y w h color -- )
+    6 frame! ( 0:color 1:h 2:w 3:y 4:x 5:fd )
+    5 local@ 4 local@ 3 + 3 local@ 2 local@ 6 - 0 local@ rr-hspan
+    5 local@ 4 local@ 3 + 3 local@ 1 local@ + 1 - 2 local@ 6 - 0 local@ rr-hspan
+    5 local@ 4 local@ 3 local@ 3 + 1 1 local@ 6 - 0 local@ DRAW::fill-rect
+    5 local@ 4 local@ 2 local@ + 1 - 3 local@ 3 + 1 1 local@ 6 - 0 local@ DRAW::fill-rect
+    5 local@ 4 local@ 3 local@ 1 1 0 local@ rr-arc
+    5 local@ 4 local@ 2 local@ + 1 - 3 local@ -1 1 0 local@ rr-arc
+    5 local@ 4 local@ 3 local@ 1 local@ + 1 - 1 -1 0 local@ rr-arc
+    5 local@ 4 local@ 2 local@ + 1 - 3 local@ 1 local@ + 1 - -1 -1 0 local@ rr-arc
+    6 unframe!
+;
+
+( Solid r=3 roundrect — same nibble as rrect. )
+@rr-fill ( fd x y w h color -- )
+    CLR_BG rrect
+;
+
+( Interior of an r=3 rect: 1px inside rr-fill. )
+@rr-inside ( fd x y w h color -- )
+    6 frame! ( 0:color 1:h 2:w 3:y 4:x 5:fd )
+    5 local@ 4 local@ 3 + 3 local@ 1 +          2 local@ 6 - 0 local@ rr-hspan
+    5 local@ 4 local@ 2 + 3 local@ 2 +          2 local@ 4 - 0 local@ rr-hspan
+    5 local@ 4 local@ 3 + 3 local@ 1 local@ + 2 - 2 local@ 6 - 0 local@ rr-hspan
+    5 local@ 4 local@ 2 + 3 local@ 1 local@ + 3 - 2 local@ 4 - 0 local@ rr-hspan
+    5 local@ 4 local@ 1 + 3 local@ 3 + 2 local@ 2 - 1 local@ 6 - 0 local@ DRAW::fill-rect
+    6 unframe!
+;
+
+@cut-1 ( fd x y w h -- )
+    5 frame! ( 0:h 1:w 2:y 3:x 4:fd )
+    4 local@ 3 local@ 2 local@ 1 local@ 0 local@ CLR_BG rrect-cut
+    5 unframe!
+;
+
+@frame-rect ( fd x y w h -- )
+    5 frame! ( 0:h 1:w 2:y 3:x 4:fd )
+    4 local@ 3 local@ 2 local@ 1 local@ 0 local@ CLR_BORDER DRAW::fill-rect
+    4 local@ 3 local@ 1 + 2 local@ 1 + 1 local@ 2 - 0 local@ 2 - CLR_BG DRAW::fill-rect
+    5 unframe!
+;
+
+@dither-rect ( fd x y w h -- )
+    5 frame! ( 0:h 1:w 2:y 3:x 4:fd )
+    4 local@ 3 local@ 2 local@ 1 local@ 0 local@ CLR_BORDER 0 DRAW::fill-pat
+    5 unframe!
+;
+
+@hline-rect ( fd x y w h -- )
+    5 frame! ( 0:h 1:w 2:y 3:x 4:fd )
+    4 local@ 3 local@ 2 local@ 1 local@ 0 local@ CLR_BORDER 1 DRAW::fill-pat
+    5 unframe!
+;
+
+( System 6 check: 2px diagonals from just inside the 1px border to the opposite corner. )
+@draw-x ( fd x y s -- )
+    0 5 frame! ( 0:i 1:s 2:y 3:x 4:fd )
+    1 0 local!
+    [ 0 local@ 1 local@ 3 - < ] [
+        4 local@
+        3 local@ 0 local@ +
+        2 local@ 0 local@ +
+        2 2 CLR_BORDER DRAW::fill-rect
+        4 local@
+        3 local@ 1 local@ + 2 - 0 local@ -
+        2 local@ 0 local@ +
+        2 2 CLR_BORDER DRAW::fill-rect
+        0 local@ 1 + 0 local!
+    ] |:
+    5 unframe!
+;
+
+@desk ( fd x y w h -- )
+    5 frame! ( 0:h 1:w 2:y 3:x 4:fd )
+    4 local@ 3 local@ 2 local@ 1 local@ 0 local@ CLR_BG DRAW::fill-rect
+    4 local@ 3 local@ 2 local@ 1 local@ 0 local@ CLR_BORDER 0 DRAW::fill-pat
+    5 unframe!
+;
+
+@menubar ( fd w -- )
+    2 frame! ( 0:w 1:fd )
+    1 local@ 0 0 0 local@ MENU_H CLR_BG DRAW::fill-rect
+    1 local@ 0 MENU_H 1 - 0 local@ 1 CLR_BORDER DRAW::fill-rect
+    1 local@ 8 4 T"File" CLR_TEXT 1 DRAW::draw-str
+    1 local@ 48 4 T"Edit" CLR_TEXT 1 DRAW::draw-str
+    2 unframe!
+;
 
 @draw-border-rect ( fd x y w h fill -- )
     6 frame! ( 0:fill 1:h 2:w 3:y 4:x 5:fd )
@@ -82,89 +226,66 @@ MODULE UI
     7 unframe!
 ;
 
+( Generic System 6 push-button face. Same r=3 rect for every button. )
+@button-face ( fd x y w h pressed -- )
+    6 frame! ( 0:pressed 1:h 2:w 3:y 4:x 5:fd )
+    5 local@ 4 local@ 3 local@ 2 local@ 1 local@ CLR_BORDER rr-fill
+    0 local@ 0 = [
+        5 local@ 4 local@ 3 local@ 2 local@ 1 local@ CLR_BG rr-inside
+    ] ?
+    6 unframe!
+;
+
+@button-ring ( fd x y w h -- )
+    5 frame! ( 0:h 1:w 2:y 3:x 4:fd )
+    4 local@ 3 local@ 4 - 2 local@ 4 - 1 local@ 8 + 0 local@ 8 + CLR_BORDER rr-frame
+    4 local@ 3 local@ 3 - 2 local@ 3 - 1 local@ 6 + 0 local@ 6 + CLR_BORDER rr-frame
+    4 local@ 3 local@ 2 - 2 local@ 2 - 1 local@ 4 + 0 local@ 4 + CLR_BORDER rr-frame
+    5 unframe!
+;
+
+@button-label ( fd x y w h label color -- )
+    7 frame! ( 0:color 1:label 2:h 3:w 4:y 5:x 6:fd )
+    6 local@
+    1 local@ DRAW::str-w
+    3 local@ SWAP - 2 /
+    5 local@ +
+    2 local@ 2 / 7 -
+    4 local@ +
+    1 local@
+    0 local@ 1 DRAW::draw-str
+    7 unframe!
+;
+
 @button-draw ( fd addr -- )
     2 frame! ( 0:addr 1:fd )
-
-    ( default-button outer ring )
     0 local@ BTN_DEFAULT + LOADI [
-        ( outer ring: fill black rect, then white spacer rect, both corner-cut )
         1 local@
-        0 local@ BTN_X + LOADI 7 -
-        0 local@ BTN_Y + LOADI 7 -
-        0 local@ BTN_W + LOADI 14 +
-        0 local@ BTN_H + LOADI 14 +
-        CLR_BORDER DRAW::fill-rect
-        1 local@
-        0 local@ BTN_X + LOADI 4 -
-        0 local@ BTN_Y + LOADI 4 -
-        0 local@ BTN_W + LOADI 8 +
-        0 local@ BTN_H + LOADI 8 +
-        CLR_BG DRAW::fill-rect
-        ( corner cuts on outer ring )
-        1 local@ 0 local@ BTN_X + LOADI 7 -                                    0 local@ BTN_Y + LOADI 7 -                                    2 2 CLR_BG DRAW::fill-rect
-        1 local@ 0 local@ BTN_X + LOADI 0 local@ BTN_W + LOADI + 7 + 2 -       0 local@ BTN_Y + LOADI 7 -                                    2 2 CLR_BG DRAW::fill-rect
-        1 local@ 0 local@ BTN_X + LOADI 7 -                                    0 local@ BTN_Y + LOADI 0 local@ BTN_H + LOADI + 7 + 2 -       2 2 CLR_BG DRAW::fill-rect
-        1 local@ 0 local@ BTN_X + LOADI 0 local@ BTN_W + LOADI + 7 + 2 -       0 local@ BTN_Y + LOADI 0 local@ BTN_H + LOADI + 7 + 2 -       2 2 CLR_BG DRAW::fill-rect
+        0 local@ BTN_X + LOADI
+        0 local@ BTN_Y + LOADI
+        0 local@ BTN_W + LOADI
+        0 local@ BTN_H + LOADI
+        button-ring
     ] ?
-
+    1 local@
+    0 local@ BTN_X + LOADI
+    0 local@ BTN_Y + LOADI
+    0 local@ BTN_W + LOADI
+    0 local@ BTN_H + LOADI
+    0 local@ BTN_STATE + LOADI 2 =
+    button-face
+    1 local@
+    0 local@ BTN_X + LOADI
+    0 local@ BTN_Y + LOADI
+    0 local@ BTN_W + LOADI
+    0 local@ BTN_H + LOADI
+    0 local@ BTN_LABEL + LOADI
     0 local@ BTN_STATE + LOADI 2 = [
-        ( ====== Pressed: black fill, white text ====== )
-        1 local@
-        0 local@ BTN_X + LOADI
-        0 local@ BTN_Y + LOADI
-        0 local@ BTN_W + LOADI
-        0 local@ BTN_H + LOADI
-        CLR_PRESS DRAW::fill-rect
-        ( corner cuts )
-        1 local@ 0 local@ BTN_X + LOADI                              0 local@ BTN_Y + LOADI                              2 2 CLR_BG DRAW::fill-rect
-        1 local@ 0 local@ BTN_X + LOADI 0 local@ BTN_W + LOADI + 2 - 0 local@ BTN_Y + LOADI                              2 2 CLR_BG DRAW::fill-rect
-        1 local@ 0 local@ BTN_X + LOADI                              0 local@ BTN_Y + LOADI 0 local@ BTN_H + LOADI + 2 -  2 2 CLR_BG DRAW::fill-rect
-        1 local@ 0 local@ BTN_X + LOADI 0 local@ BTN_W + LOADI + 2 - 0 local@ BTN_Y + LOADI 0 local@ BTN_H + LOADI + 2 -  2 2 CLR_BG DRAW::fill-rect
-        ( white label centered )
-        1 local@
-        0 local@ BTN_LABEL + LOADI strlen FONT_CHAR_W *
-        0 local@ BTN_W + LOADI SWAP - 2 /
-        0 local@ BTN_X + LOADI +
-        FONT_CHAR_H
-        0 local@ BTN_H + LOADI SWAP - 2 /
-        0 local@ BTN_Y + LOADI +
-        0 local@ BTN_LABEL + LOADI
-        CLR_BG 1
-        DRAW::draw-str
+        CLR_BG
     ] [
-        ( ====== Normal / Hover: white fill, 1px black border ====== )
-        ( outer border )
-        1 local@
-        0 local@ BTN_X + LOADI
-        0 local@ BTN_Y + LOADI
-        0 local@ BTN_W + LOADI
-        0 local@ BTN_H + LOADI
-        CLR_BORDER DRAW::fill-rect
-        ( inner fill, inset 1px )
-        1 local@
-        0 local@ BTN_X + LOADI 1 +
-        0 local@ BTN_Y + LOADI 1 +
-        0 local@ BTN_W + LOADI 2 -
-        0 local@ BTN_H + LOADI 2 -
-        CLR_BG DRAW::fill-rect
-        ( corner cuts )
-        1 local@ 0 local@ BTN_X + LOADI                              0 local@ BTN_Y + LOADI                              2 2 CLR_BG DRAW::fill-rect
-        1 local@ 0 local@ BTN_X + LOADI 0 local@ BTN_W + LOADI + 2 - 0 local@ BTN_Y + LOADI                              2 2 CLR_BG DRAW::fill-rect
-        1 local@ 0 local@ BTN_X + LOADI                              0 local@ BTN_Y + LOADI 0 local@ BTN_H + LOADI + 2 -  2 2 CLR_BG DRAW::fill-rect
-        1 local@ 0 local@ BTN_X + LOADI 0 local@ BTN_W + LOADI + 2 - 0 local@ BTN_Y + LOADI 0 local@ BTN_H + LOADI + 2 -  2 2 CLR_BG DRAW::fill-rect
-        ( black label centered )
-        1 local@
-        0 local@ BTN_LABEL + LOADI strlen FONT_CHAR_W *
-        0 local@ BTN_W + LOADI SWAP - 2 /
-        0 local@ BTN_X + LOADI +
-        FONT_CHAR_H
-        0 local@ BTN_H + LOADI SWAP - 2 /
-        0 local@ BTN_Y + LOADI +
-        0 local@ BTN_LABEL + LOADI
-        CLR_TEXT 1
-        DRAW::draw-str
+        CLR_TEXT
     ] ?:
-
+    button-label
     2 unframe!
 ;
 
@@ -237,6 +358,38 @@ MODULE UI
     4 unframe!
 ;
 
+@button-hit? ( addr mx my -- bool )
+    3 frame! ( 0:my 1:mx 2:addr )
+    1 local@ 0 local@
+    2 local@ BTN_X + LOADI
+    2 local@ BTN_Y + LOADI
+    2 local@ BTN_W + LOADI
+    2 local@ BTN_H + LOADI
+    in-rect?
+    3 unframe!
+;
+
+@button-press ( addr -- )
+    2 SWAP BTN_STATE + STOREI
+;
+
+@button-track ( addr mx my -- )
+    3 frame! ( 0:my 1:mx 2:addr )
+    2 local@ 1 local@ 0 local@ button-hit? [
+        2 2 local@ BTN_STATE + STOREI
+    ] [
+        0 2 local@ BTN_STATE + STOREI
+    ] ?:
+    3 unframe!
+;
+
+@button-release ( addr mx my -- clicked? )
+    3 frame! ( 0:my 1:mx 2:addr )
+    0 2 local@ BTN_STATE + STOREI
+    2 local@ 1 local@ 0 local@ button-hit?
+    3 unframe!
+;
+
 ( ===== Checkbox ===== )
 ( Struct (24 bytes): x(4) y(4) size(4) checked(4) label-ptr(4) was-down(4) )
 @CB_SIZE     24 ;
@@ -260,64 +413,43 @@ MODULE UI
 
 @checkbox-draw ( fd addr -- )
     2 frame! ( 0:addr 1:fd )
-    ( outer border box )
+    BOX 0 local@ CB_SZ + STOREI
     1 local@
     0 local@ CB_X + LOADI
     0 local@ CB_Y + LOADI
-    0 local@ CB_SZ + LOADI dup
-    CLR_BORDER DRAW::fill-rect
-    ( inner bg box: inset 1px )
-    1 local@
-    0 local@ CB_X + LOADI 1 +
-    0 local@ CB_Y + LOADI 1 +
-    0 local@ CB_SZ + LOADI 2 - dup
-    CLR_BG DRAW::fill-rect
-    ( if checked: fill inner with check color, leaving 1px bg border )
+    BOX dup
+    frame-rect
     0 local@ CB_CHK + LOADI [
         1 local@
-        0 local@ CB_X + LOADI 3 +
-        0 local@ CB_Y + LOADI 3 +
-        0 local@ CB_SZ + LOADI 6 - dup
-        CLR_CHECK DRAW::fill-rect
+        0 local@ CB_X + LOADI
+        0 local@ CB_Y + LOADI
+        BOX draw-x
     ] ?
-    ( label to the right, vertically centered on box )
+    ( label: box bottom is 2px below Chicago 12 baseline )
     1 local@
-    0 local@ CB_X + LOADI 0 local@ CB_SZ + LOADI + 6 +
-    0 local@ CB_Y + LOADI 0 local@ CB_SZ + LOADI 2 / + FONT_CHAR_H 2 / -
+    0 local@ CB_X + LOADI BOX + 8 +
+    0 local@ CB_Y + LOADI 2 -
     0 local@ CB_LABEL + LOADI
-    CLR_TEXT 2
+    CLR_TEXT 1
     DRAW::draw-str
     2 unframe!
 ;
 
 @checkbox-update ( addr mx my btn -- toggled? )
     4 frame! ( 0:btn 1:my 2:mx 3:addr )
-    2 local@ 1 local@
-    3 local@ CB_X + LOADI
-    3 local@ CB_Y + LOADI
-    3 local@ CB_SZ + LOADI dup
-    in-rect? ( hit )
-    dup [
-        0 local@ 0 = [
-            3 local@ CB_WAS_DOWN + LOADI [
-                ( toggle checked )
-                3 local@ CB_CHK + LOADI 0 = [
-                    1 3 local@ CB_CHK + STOREI
-                ] [
-                    0 3 local@ CB_CHK + STOREI
-                ] ?:
-                1
-            ] [
-                0
-            ] ?:
-        ] [
-            0
-        ] ?:
-    ] [
-        0
-    ] ?:
-    0 local@ 3 local@ CB_WAS_DOWN + STOREI
-    swap drop
+    0 ( toggled )
+    0 local@ 1 = [
+        2 local@ 1 local@
+        3 local@ CB_X + LOADI
+        3 local@ CB_Y + LOADI
+        3 local@ CB_SZ + LOADI 160 +
+        3 local@ CB_SZ + LOADI
+        in-rect? [
+            3 local@ CB_CHK + LOADI 0 = [ 1 ] [ 0 ] ?:
+            3 local@ CB_CHK + STOREI
+            drop 1
+        ] ?
+    ] ?
     4 unframe!
 ;
 
@@ -326,46 +458,92 @@ MODULE UI
 ( Use checkbox-init and checkbox-update for radio buttons.                    )
 ( Apps manage mutual exclusion by clearing CB_CHK on siblings when one fires. )
 
+@oval12 ( fd x y fill -- )
+    4 frame! ( 0:fill 1:y 2:x 3:fd )
+    3 local@ 2 local@ 4 + 1 local@      4 1 0 local@ DRAW::fill-rect
+    3 local@ 2 local@ 2 + 1 local@ 1 +  8 1 0 local@ DRAW::fill-rect
+    3 local@ 2 local@ 1 + 1 local@ 2 + 10 1 0 local@ DRAW::fill-rect
+    3 local@ 2 local@ 1 + 1 local@ 3 + 10 1 0 local@ DRAW::fill-rect
+    3 local@ 2 local@      1 local@ 4 + 12 1 0 local@ DRAW::fill-rect
+    3 local@ 2 local@      1 local@ 5 + 12 1 0 local@ DRAW::fill-rect
+    3 local@ 2 local@      1 local@ 6 + 12 1 0 local@ DRAW::fill-rect
+    3 local@ 2 local@      1 local@ 7 + 12 1 0 local@ DRAW::fill-rect
+    3 local@ 2 local@ 1 + 1 local@ 8 + 10 1 0 local@ DRAW::fill-rect
+    3 local@ 2 local@ 1 + 1 local@ 9 + 10 1 0 local@ DRAW::fill-rect
+    3 local@ 2 local@ 2 + 1 local@ 10 +  8 1 0 local@ DRAW::fill-rect
+    3 local@ 2 local@ 4 + 1 local@ 11 +  4 1 0 local@ DRAW::fill-rect
+    4 unframe!
+;
+
+( 1px circular outline. Origin is the 12x12 radio box. )
+@ring12 ( fd x y -- )
+    3 frame! ( 0:y 1:x 2:fd )
+    2 local@ 1 local@ 4 + 0 local@      4 1 CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 2 + 0 local@ 1 +  2 1 CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 8 + 0 local@ 1 +  2 1 CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 1 + 0 local@ 2 +  1 1 CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 10 + 0 local@ 2 + 1 1 CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 1 + 0 local@ 3 +  1 1 CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 10 + 0 local@ 3 + 1 1 CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@      0 local@ 4 + 1 4 CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 11 + 0 local@ 4 + 1 4 CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 1 + 0 local@ 8 +  1 1 CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 10 + 0 local@ 8 + 1 1 CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 1 + 0 local@ 9 +  1 1 CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 10 + 0 local@ 9 + 1 1 CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 2 + 0 local@ 10 + 2 1 CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 8 + 0 local@ 10 + 2 1 CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 4 + 0 local@ 11 + 4 1 CLR_BORDER DRAW::fill-rect
+    3 unframe!
+;
+
+( 6x6 circular bullet, centered in the 12x12 box. )
+@dot6 ( fd x y -- )
+    3 frame! ( 0:y 1:x 2:fd )
+    2 local@ 1 local@ 4 + 0 local@ 3 + 4 1 CLR_CHECK DRAW::fill-rect
+    2 local@ 1 local@ 3 + 0 local@ 4 + 6 4 CLR_CHECK DRAW::fill-rect
+    2 local@ 1 local@ 4 + 0 local@ 8 + 4 1 CLR_CHECK DRAW::fill-rect
+    3 unframe!
+;
+
 @radio-draw ( fd addr -- )
     2 frame! ( 0:addr 1:fd )
-    ( border square )
-    1 local@ 0 local@ CB_X + LOADI 0 local@ CB_Y + LOADI
-    0 local@ CB_SZ + LOADI dup CLR_BORDER DRAW::fill-rect
-    ( inner bg: inset 1px )
-    1 local@ 0 local@ CB_X + LOADI 1 + 0 local@ CB_Y + LOADI 1 +
-    0 local@ CB_SZ + LOADI 2 - dup CLR_BG DRAW::fill-rect
-    ( tier 1: 6×2 CLR_BG at each corner — rows 0-1 and sz-2 to sz-1 )
-    1 local@ 0 local@ CB_X + LOADI                               0 local@ CB_Y + LOADI                               6 2 CLR_BG DRAW::fill-rect
-    1 local@ 0 local@ CB_X + LOADI 0 local@ CB_SZ + LOADI + 6 -  0 local@ CB_Y + LOADI                               6 2 CLR_BG DRAW::fill-rect
-    1 local@ 0 local@ CB_X + LOADI                               0 local@ CB_Y + LOADI 0 local@ CB_SZ + LOADI + 2 -  6 2 CLR_BG DRAW::fill-rect
-    1 local@ 0 local@ CB_X + LOADI 0 local@ CB_SZ + LOADI + 6 -  0 local@ CB_Y + LOADI 0 local@ CB_SZ + LOADI + 2 -  6 2 CLR_BG DRAW::fill-rect
-    ( tier 2: 4×2 CLR_BG — rows 2-3 and sz-4 to sz-3 )
-    1 local@ 0 local@ CB_X + LOADI                               0 local@ CB_Y + LOADI 2 +                            4 2 CLR_BG DRAW::fill-rect
-    1 local@ 0 local@ CB_X + LOADI 0 local@ CB_SZ + LOADI + 4 -  0 local@ CB_Y + LOADI 2 +                            4 2 CLR_BG DRAW::fill-rect
-    1 local@ 0 local@ CB_X + LOADI                               0 local@ CB_Y + LOADI 0 local@ CB_SZ + LOADI + 4 -   4 2 CLR_BG DRAW::fill-rect
-    1 local@ 0 local@ CB_X + LOADI 0 local@ CB_SZ + LOADI + 4 -  0 local@ CB_Y + LOADI 0 local@ CB_SZ + LOADI + 4 -  4 2 CLR_BG DRAW::fill-rect
-    ( tier 3: 2×2 CLR_BG — rows 4-5 and sz-6 to sz-5 )
-    1 local@ 0 local@ CB_X + LOADI                               0 local@ CB_Y + LOADI 4 +                            2 2 CLR_BG DRAW::fill-rect
-    1 local@ 0 local@ CB_X + LOADI 0 local@ CB_SZ + LOADI + 2 -  0 local@ CB_Y + LOADI 4 +                            2 2 CLR_BG DRAW::fill-rect
-    1 local@ 0 local@ CB_X + LOADI                               0 local@ CB_Y + LOADI 0 local@ CB_SZ + LOADI + 6 -   2 2 CLR_BG DRAW::fill-rect
-    1 local@ 0 local@ CB_X + LOADI 0 local@ CB_SZ + LOADI + 2 -  0 local@ CB_Y + LOADI 0 local@ CB_SZ + LOADI + 6 -  2 2 CLR_BG DRAW::fill-rect
-    ( selection dot: inset 4px )
+    BOX 0 local@ CB_SZ + STOREI
+    1 local@ 0 local@ CB_X + LOADI 0 local@ CB_Y + LOADI ring12
     0 local@ CB_CHK + LOADI [
-        1 local@ 0 local@ CB_X + LOADI 4 + 0 local@ CB_Y + LOADI 4 +
-        0 local@ CB_SZ + LOADI 8 - dup CLR_CHECK DRAW::fill-rect
+        1 local@ 0 local@ CB_X + LOADI 0 local@ CB_Y + LOADI dot6
     ] ?
-    ( label: vertically centered on box )
     1 local@
-    0 local@ CB_X + LOADI 0 local@ CB_SZ + LOADI + 6 +
-    0 local@ CB_Y + LOADI 0 local@ CB_SZ + LOADI 2 / + FONT_CHAR_H 2 / -
+    0 local@ CB_X + LOADI BOX + 8 +
+    0 local@ CB_Y + LOADI 2 -
     0 local@ CB_LABEL + LOADI
-    CLR_TEXT 2 DRAW::draw-str
+    CLR_TEXT 1 DRAW::draw-str
     2 unframe!
 ;
 
+( Down in circle+label and currently off: turn on, return 1. Else 0. No toggle. )
+@radio-update ( addr mx my btn -- selected? )
+    4 frame! ( 0:btn 1:my 2:mx 3:addr )
+    0
+    0 local@ 1 = [
+        2 local@ 1 local@
+        3 local@ CB_X + LOADI
+        3 local@ CB_Y + LOADI
+        3 local@ CB_SZ + LOADI 160 +
+        3 local@ CB_SZ + LOADI
+        in-rect? [
+            3 local@ CB_CHK + LOADI 0 = [
+                1 3 local@ CB_CHK + STOREI
+                drop 1
+            ] ?
+        ] ?
+    ] ?
+    4 unframe!
+;
+
 ( ===== Slider ===== )
-( Struct (36 bytes): x(4) y(4) w(4) h(4) min(4) max(4) val(4) dragging(4) was-down(4) )
-@SL_SIZE     36 ;
+( Struct (40 bytes): x y w h min max val dragging pos off )
+@SL_SIZE     40 ;
 @SL_X         0 ;
 @SL_Y         4 ;
 @SL_W         8 ;
@@ -374,8 +552,8 @@ MODULE UI
 @SL_MAX      20 ;
 @SL_VAL      24 ;
 @SL_DRG      28 ;
-@SL_WAS_DOWN 32 ;
-@SL_THUMB_W  16 ;
+@SL_POS      32 ;
+@SL_OFF      36 ;
 
 ( ===== Text Widget ===== )
 ( Struct (48 bytes): x(4) y(4) w(4) h(4) buf(4) len(4) max(4) cursor(4) anchor(4) target-x(4) drag(4) line-h(4) )
@@ -456,6 +634,8 @@ MODULE UI
 
 @text-insert-char ( addr ch -- )
     2 frame! ( 0:ch 1:addr )
+    1 local@ TX_BUF + LOADI 0 = [
+    ] [
     1 local@ TX_LEN + LOADI 1 local@ TX_MAX + LOADI < [
         ( shift right )
         1 local@ TX_BUF + LOADI 1 local@ TX_CURSOR + LOADI +                 ( src )
@@ -468,6 +648,7 @@ MODULE UI
         1 local@ TX_LEN + LOADI 1 + 1 local@ TX_LEN + STOREI
         1 local@ TX_CURSOR + LOADI 1 + 1 local@ TX_CURSOR + STOREI
     ] ?
+    ] ?:
     2 unframe!
 ;
 
@@ -486,68 +667,10 @@ MODULE UI
 
 @text-find-index ( addr mx my -- idx )
     3 frame! ( 0:my 1:mx 2:addr )
-    ( simple fixed-width walker )
-    2 local@ TX_Y + LOADI 2 local@ TX_X + LOADI 0 3 frame!
-    ( 0:i 1:x 2:y )
-
-    [ 0 local@ 2 local@ TX_LEN + LOADI < ] [
-        ( Check if this char is at mx, my )
-        1 local@ 0 local@ @FONT_CHAR_W * + 2 local@ @FONT_CHAR_H + ( char-rect bot-right )
-        1 local@ 0 local@ @FONT_CHAR_W * + ( char-rect bot-left )
-
-        ( actually easier: calculate line and char )
-        0 local@ 1 + 0 local!
-    ] |:
-    
-    ( Refined fixed-width calculation )
-    1 local@ 2 local@ TX_X + LOADI - @FONT_CHAR_W / ( col )
-    0 MAX 2 local@ TX_W + LOADI @FONT_CHAR_W / 1 - MIN ( clamp col )
-    0 local! ( save col )
-    
-    0 local@ TX_Y + LOADI - @FONT_CHAR_H / ( row )
-    0 MAX 2 local@ TX_H + LOADI @FONT_CHAR_H / 1 - MIN ( clamp row )
-    
-    ( For now, simple single-line hit testing if it is a single-line widget, 
-      but let's support wrapping )
-    
-    ( Visual layout walk to find exact byte index )
-    2 local@ TX_X + LOADI 2 local@ TX_Y + LOADI 0 3 frame!
-    ( 0:i 1:x 2:y )
-    -1 ( best-i )
-    1000000 ( best-dist )
-    2 frame! ( 0:dist 1:idx )
-
-    [ 0 local@ 4 local@ TX_LEN + LOADI <= ] [
-        ( distance from mx,my to this point x,y )
-        2 local@ 6 local@ - dup *
-        3 local@ 5 local@ - dup * + ( dist^2 )
-        dup 1 local@ < [
-            1 local!
-            0 local@ 0 local!
-        ] [ drop ] ?:
-
-        ( Advance )
-        0 local@ 4 local@ TX_LEN + LOADI < [
-            4 local@ TX_BUF + LOADI 0 local@ + load-byte
-            dup 10 = [
-                drop 
-                4 local@ TX_X + LOADI 3 local!
-                2 local@ @FONT_CHAR_H + 2 local!
-            ] [
-                drop
-                3 local@ @FONT_CHAR_W + 3 local!
-                3 local@ 4 local@ TX_X + LOADI 4 local@ TX_W + LOADI + >= [
-                    4 local@ TX_X + LOADI 3 local!
-                    2 local@ @FONT_CHAR_H + 2 local!
-                ] ?
-            ] ?:
-        ] ?
-        0 local@ 1 + 0 local!
-    ] |:
-    1 local@
-    2 unframe! ( dist, idx )
-    3 unframe! ( i, x, y )
-    3 unframe! ( my, mx, addr )
+    1 local@ 2 local@ TX_X + LOADI - 0 MAX
+    DRAW::char-w / 
+    2 local@ TX_LEN + LOADI MIN
+    3 unframe!
 ;
 
 @text-draw ( fd addr -- )
@@ -678,6 +801,29 @@ MODULE UI
     3 unframe!
 ;
 
+( Thumb top-y for a value. Max is at the top. )
+@slider-pos-y ( addr val -- y )
+    2 frame! ( 0:val 1:addr )
+    1 local@ SL_H + LOADI SL_THUMB_H -
+    dup 0 > [
+        1 local@ SL_MAX + LOADI 0 local@ -
+        OVER *
+        1 local@ SL_MAX + LOADI 1 local@ SL_MIN + LOADI -
+        dup 0 = [
+            drop drop drop
+            1 local@ SL_Y + LOADI
+        ] [
+            /
+            1 local@ SL_Y + LOADI +
+            SWAP drop
+        ] ?:
+    ] [
+        drop
+        1 local@ SL_Y + LOADI
+    ] ?:
+    2 unframe!
+;
+
 @slider-init ( addr x y w h min max val -- )
     8 frame! ( 0:val 1:max 2:min 3:h 4:w 5:y 6:x 7:addr )
     6 local@ 7 local@ SL_X + STOREI
@@ -688,83 +834,204 @@ MODULE UI
     1 local@ 7 local@ SL_MAX + STOREI
     0 local@ 7 local@ SL_VAL + STOREI
     0 7 local@ SL_DRG + STOREI
-    0 7 local@ SL_WAS_DOWN + STOREI
+    0 7 local@ SL_OFF + STOREI
+    7 local@ 0 local@ slider-pos-y 7 local@ SL_POS + STOREI
     8 unframe!
 ;
 
-@slider-thumb-x ( addr -- thumb_x )
-    dup SL_MAX + LOADI
-    over SL_MIN + LOADI - ( range )
-    dup 0 = [
-        drop SL_X + LOADI
+@slider-thumb-y ( addr -- y )
+    SL_POS + LOADI
+;
+
+@slider-hit? ( addr mx my -- bool )
+    3 frame! ( 0:my 1:mx 2:addr )
+    1 local@ 0 local@
+    2 local@ SL_X + LOADI
+    2 local@ SL_Y + LOADI
+    2 local@ SL_W + LOADI
+    2 local@ SL_H + LOADI
+    in-rect?
+    3 unframe!
+;
+
+@slider-lo ( addr -- y )
+    SL_Y + LOADI
+;
+
+@slider-hi ( addr -- y )
+    dup SL_Y + LOADI SWAP SL_H + LOADI + SL_THUMB_H -
+;
+
+( Update SL_VAL from SL_POS. 1 if the integer changed. )
+@slider-sync ( addr -- changed? )
+    1 frame! ( 0:addr )
+    0 local@ SL_H + LOADI SL_THUMB_H -
+    dup 0 > [
+        0 local@ SL_POS + LOADI 0 local@ SL_Y + LOADI -
+        0 MAX
+        OVER MIN
+        0 local@ SL_MAX + LOADI 0 local@ SL_MIN + LOADI -
+        *
+        OVER 2 / +
+        SWAP /
+        0 local@ SL_MAX + LOADI SWAP -
+        0 local@ SL_MIN + LOADI MAX
+        0 local@ SL_MAX + LOADI MIN
+        0 local@ SL_VAL + LOADI OVER = [
+            drop 0
+        ] [
+            0 local@ SL_VAL + STOREI
+            1
+        ] ?:
     ] [
-        1 frame! ( 0:range )
-        dup SL_VAL + LOADI
-        over SL_MIN + LOADI - ( val-min )
-        over SL_W + LOADI SL_THUMB_W - ( track_w )
-        * 0 local@ /
-        swap SL_X + LOADI +
-        1 unframe!
+        drop 0
     ] ?:
+    1 unframe!
+;
+
+( Grab: thumb keeps click offset; track click centers the thumb. )
+@slider-grab ( addr my -- changed? )
+    2 frame! ( 0:my 1:addr )
+    1 1 local@ SL_DRG + STOREI
+    1 local@ 1 local@ SL_VAL + LOADI slider-pos-y
+    0 local@ OVER >=
+    0 local@ 2 PICK SL_THUMB_H + <
+    AND [
+        0 local@ SWAP -
+        1 local@ SL_OFF + STOREI
+        1 local@ 1 local@ SL_VAL + LOADI slider-pos-y
+        1 local@ SL_POS + STOREI
+        0
+    ] [
+        drop
+        SL_THUMB_H 2 / 1 local@ SL_OFF + STOREI
+        0 local@ SL_THUMB_H 2 / -
+        1 local@ slider-lo MAX
+        1 local@ slider-hi MIN
+        1 local@ SL_POS + STOREI
+        1 local@ slider-sync
+    ] ?:
+    2 unframe!
+;
+
+@slider-drag ( addr my -- changed? )
+    2 frame! ( 0:my 1:addr )
+    0 local@ 1 local@ SL_OFF + LOADI -
+    1 local@ slider-lo MAX
+    1 local@ slider-hi MIN
+    1 local@ SL_POS + STOREI
+    1 local@ slider-sync
+    2 unframe!
+;
+
+@slider-release ( addr -- )
+    1 frame! ( 0:addr )
+    0 0 local@ SL_DRG + STOREI
+    0 local@ 0 local@ SL_VAL + LOADI slider-pos-y
+    0 local@ SL_POS + STOREI
+    1 unframe!
+;
+
+( Pointed 3D column, System 6 volume track. )
+@sl-track ( fd x y h -- )
+    4 frame! ( 0:h 1:y 2:x 3:fd )
+    3 local@ 2 local@ 4 + 1 local@          3 1 CLR_BORDER DRAW::fill-rect
+    3 local@ 2 local@ 2 + 1 local@ 1 +      7 1 CLR_BORDER DRAW::fill-rect
+    3 local@ 2 local@     1 local@ 2 +     11 0 local@ 4 - 1 MAX CLR_BORDER DRAW::fill-rect
+    3 local@ 2 local@ 2 + 1 local@ 0 local@ + 2 -  7 1 CLR_BORDER DRAW::fill-rect
+    3 local@ 2 local@ 4 + 1 local@ 0 local@ + 1 -  3 1 CLR_BORDER DRAW::fill-rect
+    3 local@ 2 local@ 4 + 1 local@ 1 +      3 1 CLR_BG DRAW::fill-rect
+    3 local@ 2 local@ 2 + 1 local@ 2 +      7 1 CLR_BG DRAW::fill-rect
+    3 local@ 2 local@ 1 + 1 local@ 3 +      9 0 local@ 6 - 1 MAX CLR_BG DRAW::fill-rect
+    3 local@ 2 local@ 2 + 1 local@ 0 local@ + 3 -  7 1 CLR_BG DRAW::fill-rect
+    3 local@ 2 local@ 4 + 1 local@ 0 local@ + 2 -  3 1 CLR_BG DRAW::fill-rect
+    3 local@ 2 local@ 9 + 1 local@ 3 +      1 0 local@ 6 - 1 MAX CLR_BORDER DRAW::fill-rect
+    4 unframe!
+;
+
+@sl-thumb ( fd x y -- )
+    3 frame! ( 0:y 1:x 2:fd )
+    2 local@ 1 local@ 0 local@ SL_THUMB_W SL_THUMB_H CLR_BORDER CLR_BG rrect
+    2 local@ 1 local@ 1 + 0 local@ 1 + SL_THUMB_W 2 - SL_THUMB_H 2 - CLR_BG CLR_BG rrect
+    2 local@ 1 local@ SL_THUMB_W 2 / + 1 - 0 local@ 3 + 1 5 CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ SL_THUMB_W 2 / + 1 + 0 local@ 3 + 1 5 CLR_BORDER DRAW::fill-rect
+    3 unframe!
+;
+
+@SL_NBUF 0x8E0F20 ;
+
+@slider-ticks ( fd addr -- )
+    2 frame! ( 0:addr 1:fd )
+    0 local@ SL_MAX + LOADI 0 local@ SL_MIN + LOADI -
+    dup 0 > OVER 10 <= AND [
+        drop
+        0 local@ SL_MIN + LOADI
+        [ dup 0 local@ SL_MAX + LOADI <= ] [
+            dup SL_NBUF STR::int-to-str
+            1 local@
+            0 local@ SL_X + LOADI 4 -
+            SL_NBUF STR::strlen DRAW::char-w * -
+            0 local@ 2 PICK slider-pos-y
+            1 +
+            SL_NBUF
+            CLR_TEXT 1 DRAW::draw-str
+            1 +
+        ] |:
+        drop
+    ] [
+        drop
+    ] ?:
+    2 unframe!
 ;
 
 @slider-draw ( fd addr -- )
     2 frame! ( 0:addr 1:fd )
-    ( clear slider area )
-    1 local@ 0 local@ SL_X + LOADI 0 local@ SL_Y + LOADI
-    0 local@ SL_W + LOADI 0 local@ SL_H + LOADI CLR_BG DRAW::fill-rect
-    ( track: 6px tall, centered vertically, recessed-groove look )
-    1 local@ 0 local@ SL_X + LOADI
-    0 local@ SL_Y + LOADI 0 local@ SL_H + LOADI 2 / 3 - +
-    0 local@ SL_W + LOADI 6
-    CLR_TRACK draw-border-rect
-    ( thumb: 3D raised button )
-    0 local@ slider-thumb-x ( thumb_x )
-    1 local@ OVER               ( thumb_x fd thumb_x )
+    1 local@
+    0 local@ SL_X + LOADI 0 local@ SL_W + LOADI SL_TRACK_W - 2 / +
     0 local@ SL_Y + LOADI
-    SL_THUMB_W
     0 local@ SL_H + LOADI
-    CLR_BG draw-3d-rect
-    drop ( thumb_x )
+    sl-track
+    1 local@
+    0 local@ SL_X + LOADI 0 local@ SL_W + LOADI SL_THUMB_W - 2 / +
+    0 local@ slider-thumb-y
+    sl-thumb
+    1 local@ 0 local@ slider-ticks
     2 unframe!
 ;
 
 @slider-update ( addr mx my btn -- value )
     4 frame! ( 0:btn 1:my 2:mx 3:addr )
-    ( start dragging if mouse down on slider )
     0 local@ 1 = [
-        2 local@ 1 local@
-        3 local@ SL_X + LOADI
-        3 local@ SL_Y + LOADI
-        3 local@ SL_W + LOADI
-        3 local@ SL_H + LOADI
-        in-rect? [
-            1 3 local@ SL_DRG + STOREI
-        ] ?
+        3 local@ SL_DRG + LOADI [
+            3 local@ 1 local@ slider-drag drop
+        ] [
+            3 local@ 2 local@ 1 local@ slider-hit? [
+                3 local@ 1 local@ slider-grab drop
+            ] ?
+        ] ?:
     ] [
-        0 3 local@ SL_DRG + STOREI
+        3 local@ SL_DRG + LOADI [
+            3 local@ slider-release
+        ] ?
     ] ?:
-    ( if dragging, compute new value from mouse x )
-    3 local@ SL_DRG + LOADI [
-        3 local@ SL_MAX + LOADI 3 local@ SL_MIN + LOADI = 0 = [
-            ( track_w = w - thumb_w; avoid div by zero )
-            3 local@ SL_W + LOADI SL_THUMB_W - dup 0 > [
-                ( clamp mx to [x, x+track_w] )
-                2 local@ 3 local@ SL_X + LOADI -  ( mx - x )
-                0 MAX ( clamp low )
-                OVER MIN ( clamp high: track_w )
-                ( new_val = min + offset * range / track_w )
-                3 local@ SL_MAX + LOADI 3 local@ SL_MIN + LOADI - *
-                OVER /  ( track_w still on stack below )
-                3 local@ SL_MIN + LOADI +
-                3 local@ SL_VAL + STOREI
-                drop ( discard track_w )
-            ] [
-                drop
-            ] ?:
+    3 local@ SL_VAL + LOADI
+    4 unframe!
+;
+
+( Event-typed slider for the controlset. MOVE keeps an existing drag. )
+@slider-ev ( addr mx my typ -- value )
+    4 frame! ( 0:typ 1:my 2:mx 3:addr )
+    0 local@ EVENT::MOUSE_DOWN = [
+        3 local@ 2 local@ 1 local@ slider-hit? [
+            3 local@ 1 local@ slider-grab drop
         ] ?
     ] ?
-    0 local@ 3 local@ SL_WAS_DOWN + STOREI
+    3 local@ SL_DRG + LOADI [
+        3 local@ 1 local@ slider-drag drop
+    ] ?
+    0 local@ EVENT::MOUSE_UP = [
+        3 local@ slider-release
+    ] ?
     3 local@ SL_VAL + LOADI
     4 unframe!
 ;
@@ -817,19 +1084,14 @@ MODULE UI
 
 @scrollbar-draw ( fd addr -- )
     2 frame! ( 0:addr 1:fd )
-    ( background/track )
     1 local@ 0 local@ SB_X + LOADI 0 local@ SB_Y + LOADI
-    0 local@ SB_W + LOADI 0 local@ SB_H + LOADI CLR_TRACK DRAW::fill-rect
-    ( border )
+    0 local@ SB_W + LOADI 0 local@ SB_H + LOADI dither-rect
     1 local@ 0 local@ SB_X + LOADI 0 local@ SB_Y + LOADI
     0 local@ SB_W + LOADI 0 local@ SB_H + LOADI CLR_BORDER DRAW::draw-rect
-    
-    ( thumb )
-    0 local@ scrollbar-thumb-y ( thumb_y )
-    1 local@ 0 local@ SB_X + LOADI 1 + OVER 1 +
-    0 local@ SB_W + LOADI 2 -
-    0 local@ SB_THUMB_H + LOADI 2 -
-    CLR_BG draw-3d-rect
+    0 local@ scrollbar-thumb-y
+    1 local@ 0 local@ SB_X + LOADI OVER
+    0 local@ SB_W + LOADI 0 local@ SB_THUMB_H + LOADI
+    frame-rect
     drop
     2 unframe!
 ;
@@ -1019,3 +1281,870 @@ MODULE UI
     scrollbar-init
     3 unframe!
 ;
+
+( ===== Controlset — named Inferno-style controls, stack-word API ===== )
+
+FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label on-press on-change payload next ;
+
+@K_BUTTON    1 ;
+@K_CHECKBOX  2 ;
+@K_RADIO     3 ;
+@K_SLIDER    4 ;
+@K_SCROLLBAR 5 ;
+@K_FIELD     6 ;
+@K_LABEL     7 ;
+@K_LIST      8 ;
+@K_WINDOW    9 ;
+
+@F_VISIBLE 1 ;
+@F_FOCUS   2 ;
+@F_TITLE   4 ;
+@F_DEFAULT 8 ;
+@F_HIDDEN  16 ;
+
+@EV_PRESS   1 ;
+@EV_CHECK   2 ;
+@EV_UNCHECK 3 ;
+@EV_VALUE   4 ;
+@EV_SELECT  5 ;
+@EV_CLOSE   6 ;
+@EV_DRAG    7 ;
+
+@CS_HEAD  0x8E0010 ;
+@CS_FOCUS 0x8E0014 ;
+@CS_ENAME 0x8E0018 ;
+@CS_EKIND 0x8E001C ;
+@CS_DRAG  0x8E0020 ;
+
+@TITLE_H 18 ;
+@WIN_BORDER 1 ;
+@CLOSE_SZ 11 ;
+@CLOSE_INSET 8 ;
+@CLOSE_Y 3 ;
+
+@reset ( -- )
+    0 CS_HEAD STOREI
+    0 CS_FOCUS STOREI
+    0 CS_ENAME STOREI
+    0 CS_EKIND STOREI
+    0 CS_DRAG STOREI
+;
+
+@ctlnew ( -- )
+    MEM::reset
+    reset
+;
+
+( ===== UI message ring (name ev val) ===== )
+@Q_BASE  0x8E1000 ;
+@Q_MAX   8 ;
+@Q_HEAD  0x8E0F00 ;
+@Q_TAIL  0x8E0F04 ;
+@Q_CNT   0x8E0F08 ;
+
+@CB_TAB  0x8E1400 ;
+@CB_SLAB 0x8E1600 ;
+@CB_N    0x8E0F0C ;
+@CB_MAX  8 ;
+
+@RD_TAB  0x8E1700 ;
+@RD_SLAB 0x8E1800 ;
+@RD_N    0x8E0F10 ;
+@RD_MAX  8 ;
+
+@SL_TAB   0x8E1900 ;
+@SL_SLAB  0x8E1A00 ;
+@SL_N     0x8E0F14 ;
+@SL_DRAG  0x8E0F18 ;
+@SL_MAXN  8 ;
+
+@BN_TAB   0x8E1C00 ;
+@BN_SLAB  0x8E1D00 ;
+@BN_N     0x8E0F24 ;
+@BN_DRAG  0x8E0F28 ;
+@BN_MAX   8 ;
+
+@uinnew ( -- )
+    0 Q_HEAD STOREI
+    0 Q_TAIL STOREI
+    0 Q_CNT STOREI
+    0 CB_N STOREI
+    0 RD_N STOREI
+    0 SL_N STOREI
+    0 SL_DRAG STOREI
+    0 BN_N STOREI
+    0 BN_DRAG STOREI
+;
+
+@post ( name ev val -- )
+    3 frame! ( 0:val 1:ev 2:name )
+    Q_CNT LOADI Q_MAX = [
+        Q_TAIL LOADI 1 + Q_MAX MOD Q_TAIL STOREI
+        Q_CNT LOADI 1 - Q_CNT STOREI
+    ] ?
+    Q_BASE Q_HEAD LOADI 12 * +
+    2 local@ OVER STOREI
+    1 local@ OVER 4 + STOREI
+    0 local@ SWAP 8 + STOREI
+    Q_HEAD LOADI 1 + Q_MAX MOD Q_HEAD STOREI
+    Q_CNT LOADI 1 + Q_CNT STOREI
+    3 unframe!
+;
+
+( empty: 0.  message: name ev val 1 )
+@poll ( -- 0 | name ev val 1 )
+    Q_CNT LOADI 0 = [
+        0
+    ] [
+        Q_BASE Q_TAIL LOADI 12 * +
+        dup LOADI SWAP
+        dup 4 + LOADI SWAP
+        8 + LOADI
+        Q_TAIL LOADI 1 + Q_MAX MOD Q_TAIL STOREI
+        Q_CNT LOADI 1 - Q_CNT STOREI
+        1
+    ] ?:
+;
+
+@cb-add ( name x y size label -- )
+    5 frame! ( 0:label 1:size 2:y 3:x 4:name )
+    CB_N LOADI CB_MAX < [
+        CB_SLAB CB_N LOADI CB_SIZE * +
+        dup 3 local@ 2 local@ 1 local@ 0 local@ checkbox-init
+        CB_TAB CB_N LOADI 8 * +
+        4 local@ OVER STOREI
+        4 + STOREI
+        CB_N LOADI 1 + CB_N STOREI
+    ] ?
+    5 unframe!
+;
+
+@cb-draw ( -- )
+    0
+    [ dup CB_N LOADI < ] [
+        CB_TAB OVER 8 * + 4 + LOADI
+        DRAW::fd SWAP checkbox-draw
+        1 +
+    ] |:
+    drop
+;
+
+( RD_TAB row: name(0) group(4) payload(8) )
+@rd-add ( name group x y size label -- )
+    6 frame! ( 0:label 1:size 2:y 3:x 4:group 5:name )
+    RD_N LOADI RD_MAX < [
+        RD_SLAB RD_N LOADI CB_SIZE * +
+        dup 3 local@ 2 local@ 1 local@ 0 local@ checkbox-init
+        RD_TAB RD_N LOADI 12 * +
+        5 local@ OVER STOREI
+        4 local@ OVER 4 + STOREI
+        8 + STOREI
+        RD_N LOADI 1 + RD_N STOREI
+    ] ?
+    6 unframe!
+;
+
+@rd-clear-group ( group except -- )
+    2 frame! ( 0:except 1:group )
+    0
+    [ dup RD_N LOADI < ] [
+        RD_TAB OVER 12 * +
+        dup 4 + LOADI 1 local@ STR::streq [
+            dup 8 + LOADI 0 local@ = 0 = [
+                8 + LOADI 0 SWAP CB_CHK + STOREI
+            ] [
+                drop
+            ] ?:
+        ] [
+            drop
+        ] ?:
+        1 +
+    ] |:
+    drop
+    2 unframe!
+;
+
+@rd-pick ( name -- )
+    1 frame! ( 0:name )
+    0
+    [ dup RD_N LOADI < ] [
+        RD_TAB OVER 12 * +
+        dup LOADI 0 local@ STR::streq [
+            dup 4 + LOADI
+            OVER 8 + LOADI
+            rd-clear-group
+            8 + LOADI
+            1 SWAP CB_CHK + STOREI
+            drop
+            RD_N LOADI
+        ] [
+            drop
+            1 +
+        ] ?:
+    ] |:
+    drop
+    1 unframe!
+;
+
+@rd-draw ( -- )
+    0
+    [ dup RD_N LOADI < ] [
+        RD_TAB OVER 12 * + 8 + LOADI
+        DRAW::fd SWAP radio-draw
+        1 +
+    ] |:
+    drop
+;
+
+@sl-add ( name x y w h min max val -- )
+    8 frame! ( 0:val 1:max 2:min 3:h 4:w 5:y 6:x 7:name )
+    SL_N LOADI SL_MAXN < [
+        SL_SLAB SL_N LOADI SL_SIZE * +
+        dup 6 local@ 5 local@ 4 local@ 3 local@ 2 local@ 1 local@ 0 local@ slider-init
+        SL_TAB SL_N LOADI 8 * +
+        7 local@ OVER STOREI
+        4 + STOREI
+        SL_N LOADI 1 + SL_N STOREI
+    ] ?
+    8 unframe!
+;
+
+@sl-draw ( -- )
+    0
+    [ dup SL_N LOADI < ] [
+        SL_TAB OVER 8 * + 4 + LOADI
+        DRAW::fd SWAP slider-draw
+        1 +
+    ] |:
+    drop
+;
+
+@sl-post ( tab -- )
+    dup LOADI
+    EV_VALUE
+    ROT 4 + LOADI SL_VAL + LOADI
+    post
+;
+
+@bn-add ( name x y w h label -- )
+    6 frame! ( 0:label 1:h 2:w 3:y 4:x 5:name )
+    BN_N LOADI BN_MAX < [
+        BN_SLAB BN_N LOADI BTN_SIZE * +
+        dup 4 local@ 3 local@ 2 local@ 1 local@ 0 local@ 0 button-init
+        BN_TAB BN_N LOADI 8 * +
+        5 local@ OVER STOREI
+        4 + STOREI
+        BN_N LOADI 1 + BN_N STOREI
+    ] ?
+    6 unframe!
+;
+
+@bn-default ( name -- )
+    1 frame! ( 0:name )
+    0
+    [ dup BN_N LOADI < ] [
+        BN_TAB OVER 8 * +
+        dup 4 + LOADI
+        SWAP LOADI 0 local@ STR::streq [
+            1 SWAP BTN_DEFAULT + STOREI
+        ] [
+            0 SWAP BTN_DEFAULT + STOREI
+        ] ?:
+        1 +
+    ] |:
+    drop
+    1 unframe!
+;
+
+@bn-draw ( -- )
+    0
+    [ dup BN_N LOADI < ] [
+        BN_TAB OVER 8 * + 4 + LOADI
+        DRAW::fd SWAP button-draw
+        1 +
+    ] |:
+    drop
+;
+
+@bn-post ( tab -- )
+    dup LOADI EV_PRESS 1 post
+    drop
+;
+
+@bn-return ( -- posted? )
+    0 1 frame! ( 0:posted )
+    0
+    [ dup BN_N LOADI < ] [
+        BN_TAB OVER 8 * +
+        dup 4 + LOADI BTN_DEFAULT + LOADI [
+            bn-post
+            1 0 local!
+            BN_N LOADI
+        ] [
+            drop
+            1 +
+        ] ?:
+    ] |:
+    drop
+    0 local@
+    1 unframe!
+;
+
+@feed ( mpkt -- )
+    0 SWAP 2 frame! ( 0:mpkt 1:hit )
+    0 1 local!
+    SL_DRAG LOADI [
+        SL_DRAG LOADI 1 -
+        SL_TAB SWAP 8 * +
+        dup 4 + LOADI
+        0 local@ EVENT::mouse-y
+        slider-drag [
+            sl-post
+        ] [
+            drop
+        ] ?:
+        0 local@ EVENT::mouse-type EVENT::MOUSE_UP = [
+            SL_DRAG LOADI 1 -
+            SL_TAB SWAP 8 * + 4 + LOADI
+            slider-release
+            0 SL_DRAG STOREI
+        ] ?
+    ] [
+        BN_DRAG LOADI [
+            BN_DRAG LOADI 1 -
+            BN_TAB SWAP 8 * +
+            dup 4 + LOADI
+            0 local@ EVENT::mouse-x
+            0 local@ EVENT::mouse-y
+            0 local@ EVENT::mouse-type EVENT::MOUSE_UP = [
+                button-release [
+                    bn-post
+                ] [
+                    drop
+                ] ?:
+                0 BN_DRAG STOREI
+            ] [
+                button-track
+                drop
+            ] ?:
+        ] [
+        0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+            0
+            [ dup CB_N LOADI < ] [
+                CB_TAB OVER 8 * +
+                dup LOADI
+                SWAP 4 + LOADI
+                0 local@ EVENT::mouse-x
+                0 local@ EVENT::mouse-y
+                1
+                checkbox-update [
+                    1 1 local!
+                    OVER CB_TAB SWAP 8 * + 4 + LOADI CB_CHK + LOADI
+                    dup 0 = [ EV_UNCHECK ] [ EV_CHECK ] ?:
+                    SWAP
+                    post
+                ] [
+                    drop
+                ] ?:
+                1 +
+            ] |:
+            drop
+            1 local@ 0 = [
+                0
+                [ dup RD_N LOADI < ] [
+                    RD_TAB OVER 12 * +
+                    dup 8 + LOADI
+                    0 local@ EVENT::mouse-x
+                    0 local@ EVENT::mouse-y
+                    1
+                    radio-update [
+                        dup 4 + LOADI
+                        OVER 8 + LOADI
+                        rd-clear-group
+                        dup LOADI EV_SELECT 1 post
+                        drop
+                        RD_N LOADI
+                    ] [
+                        drop
+                        1 +
+                    ] ?:
+                ] |:
+                drop
+            ] ?
+            1 local@ 0 = [
+                0
+                [ dup SL_N LOADI < ] [
+                    SL_TAB OVER 8 * +
+                    dup 4 + LOADI
+                    0 local@ EVENT::mouse-x
+                    0 local@ EVENT::mouse-y
+                    slider-hit? [
+                        dup 4 + LOADI
+                        0 local@ EVENT::mouse-y
+                        slider-grab [
+                            sl-post
+                        ] [
+                            drop
+                        ] ?:
+                        1 + SL_DRAG STOREI
+                        SL_N LOADI
+                    ] [
+                        drop
+                        1 +
+                    ] ?:
+                ] |:
+                drop
+            ] ?
+            1 local@ 0 = [
+                0
+                [ dup BN_N LOADI < ] [
+                    BN_TAB OVER 8 * +
+                    dup 4 + LOADI
+                    0 local@ EVENT::mouse-x
+                    0 local@ EVENT::mouse-y
+                    button-hit? [
+                        dup 4 + LOADI
+                        button-press
+                        drop
+                        1 + BN_DRAG STOREI
+                        1 1 local!
+                        BN_N LOADI
+                    ] [
+                        drop
+                        1 +
+                    ] ?:
+                ] |:
+                drop
+            ] ?
+        ] ?
+        ] ?:
+    ] ?:
+    2 unframe!
+;
+
+@payload-init { ctl -- }
+    ctl CTL.kind@
+    dup K_BUTTON = [
+        drop
+        BTN_SIZE MEM::allot dup ctl CTL.payload!
+        0 0 80 24 0 0 button-init
+    ] [
+    dup K_CHECKBOX = [
+        drop
+        CB_SIZE MEM::allot dup ctl CTL.payload!
+        0 0 16 0 checkbox-init
+    ] [
+    dup K_RADIO = [
+        drop
+        CB_SIZE MEM::allot dup ctl CTL.payload!
+        0 0 16 0 checkbox-init
+    ] [
+    dup K_SLIDER = [
+        drop
+        SL_SIZE MEM::allot dup ctl CTL.payload!
+        0 0 100 16 0 100 0 slider-init
+    ] [
+    dup K_SCROLLBAR = [
+        drop
+        SB_SIZE MEM::allot dup ctl CTL.payload!
+        0 0 16 100 0 100 0 16 scrollbar-init
+    ] [
+    dup K_FIELD = [
+        drop
+        TX_SIZE MEM::allot
+        256 MEM::allot { p buf }
+            p ctl CTL.payload!
+            p 0 0 100 20 buf 255 text-init
+        }
+    ] [
+        drop
+        0 ctl CTL.payload!
+    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+;
+
+@create { name kind -- ctl }
+    CTL.SIZE MEM::allot
+    { ctl }
+        name ctl CTL.name!
+        kind ctl CTL.kind!
+        F_VISIBLE ctl CTL.flags!
+        0 ctl CTL.minx!
+        0 ctl CTL.miny!
+        0 ctl CTL.maxx!
+        0 ctl CTL.maxy!
+        0 ctl CTL.state!
+        0 ctl CTL.value!
+        0 ctl CTL.vmin!
+        0 ctl CTL.vmax!
+        0 ctl CTL.group!
+        0 ctl CTL.label!
+        0 ctl CTL.on-press!
+        0 ctl CTL.on-change!
+        0 ctl CTL.payload!
+        CS_HEAD LOADI ctl CTL.next!
+        ctl CS_HEAD STOREI
+        ctl payload-init
+        ctl
+    }
+;
+
+@button   { name -- ctl } name K_BUTTON   create ;
+@checkbox { name -- ctl } name K_CHECKBOX create ;
+@radio    { name -- ctl } name K_RADIO    create ;
+@slider   { name -- ctl } name K_SLIDER   create ;
+@scrollbar { name -- ctl } name K_SCROLLBAR create ;
+@field    { name -- ctl } name K_FIELD    create ;
+@label    { name -- ctl } name K_LABEL    create ;
+@window   { name -- ctl } name K_WINDOW   create ;
+
+@sync-payload ( ctl -- )
+    1 frame! ( 0:ctl )
+    0 local@ CTL.payload@ dup 0 = [ drop ] [
+        0 local@ CTL.minx@ OVER STOREI
+        0 local@ CTL.miny@ OVER 4 + STOREI
+        0 local@ CTL.kind@ K_CHECKBOX = 0 local@ CTL.kind@ K_RADIO = OR [
+            BOX OVER 8 + STOREI
+            0 local@ CTL.value@ OVER CB_CHK + STOREI
+            0 local@ CTL.label@ SWAP CB_LABEL + STOREI
+        ] [
+            0 local@ CTL.maxx@ 0 local@ CTL.minx@ - OVER 8 + STOREI
+            0 local@ CTL.maxy@ 0 local@ CTL.miny@ - OVER 12 + STOREI
+            0 local@ CTL.kind@ K_BUTTON = [
+                0 local@ CTL.label@ OVER BTN_LABEL + STOREI
+                0 local@ CTL.on-press@ OVER BTN_CALLBACK + STOREI
+                0 local@ CTL.flags@ F_DEFAULT AND [ 1 ] [ 0 ] ?: SWAP BTN_DEFAULT + STOREI
+            ] [
+                0 local@ CTL.kind@ K_SLIDER = [
+                    0 local@ CTL.vmin@ OVER SL_MIN + STOREI
+                    0 local@ CTL.vmax@ OVER SL_MAX + STOREI
+                    0 local@ CTL.value@ SWAP SL_VAL + STOREI
+                ] [
+                    0 local@ CTL.kind@ K_SCROLLBAR = [
+                        0 local@ CTL.vmin@ OVER SB_MIN + STOREI
+                        0 local@ CTL.vmax@ OVER SB_MAX + STOREI
+                        0 local@ CTL.value@ SWAP SB_VAL + STOREI
+                    ] [ drop ] ?:
+                ] ?:
+            ] ?:
+        ] ?:
+    ] ?:
+    1 unframe!
+;
+
+@rect! { ctl minx miny maxx maxy -- ctl }
+    minx ctl CTL.minx!
+    miny ctl CTL.miny!
+    maxx ctl CTL.maxx!
+    maxy ctl CTL.maxy!
+    ctl sync-payload
+    ctl
+;
+
+@text! { ctl ptr -- ctl }
+    ptr ctl CTL.label!
+    ctl sync-payload
+    ctl
+;
+
+@value! { c v -- c }
+    v c CTL.value!
+    c sync-payload
+    c
+;
+
+@value@ { ctl -- n } ctl CTL.value@ ;
+
+@range! { ctl lo hi val -- ctl }
+    lo ctl CTL.vmin!
+    hi ctl CTL.vmax!
+    val ctl CTL.value!
+    ctl sync-payload
+    ctl
+;
+
+@group! { ctl name -- ctl } name ctl CTL.group! ctl ;
+
+@on-press!  { ctl quot -- ctl } quot ctl CTL.on-press!  ctl sync-payload ctl ;
+@on-change! { ctl quot -- ctl } quot ctl CTL.on-change! ctl ;
+
+@show! { ctl -- ctl }
+    ctl CTL.flags@ F_HIDDEN -1 XOR AND F_VISIBLE OR ctl CTL.flags!
+    ctl
+;
+@hide! { ctl -- ctl }
+    ctl CTL.flags@ F_VISIBLE -1 XOR AND F_HIDDEN OR ctl CTL.flags!
+    ctl
+;
+@focus! { ctl -- ctl }
+    ctl CS_FOCUS STOREI
+    ctl CTL.flags@ F_FOCUS OR ctl CTL.flags!
+    ctl
+;
+@title! { ctl n -- ctl }
+    n [
+        ctl CTL.flags@ F_TITLE OR ctl CTL.flags!
+    ] [
+        ctl CTL.flags@ F_TITLE -1 XOR AND ctl CTL.flags!
+    ] ?:
+    ctl
+;
+@default! { ctl -- ctl }
+    ctl CTL.flags@ F_DEFAULT OR ctl CTL.flags!
+    ctl sync-payload
+    ctl
+;
+
+@is-visible? { ctl -- bool }
+    ctl CTL.flags@ F_VISIBLE AND 0 = 0 =
+    ctl CTL.flags@ F_HIDDEN AND 0 = AND
+;
+
+@win-client { ctl -- minx miny maxx maxy }
+    ctl CTL.minx@ WIN_BORDER +
+    ctl CTL.miny@ TITLE_H +
+    ctl CTL.maxx@ WIN_BORDER -
+    ctl CTL.maxy@ WIN_BORDER -
+;
+
+@win-hit { ctl x y -- where }
+    x y ctl CTL.minx@ ctl CTL.miny@ ctl CTL.maxx@ ctl CTL.maxy@ GEOM::pt-in-rect? 0 = [
+        0
+    ] [
+        x ctl CTL.minx@ CLOSE_INSET + >=
+        x ctl CTL.minx@ CLOSE_INSET + CLOSE_SZ + < AND
+        y ctl CTL.miny@ CLOSE_Y + >= AND
+        y ctl CTL.miny@ CLOSE_Y + CLOSE_SZ + < AND [
+            3
+        ] [
+            y ctl CTL.miny@ >=
+            y ctl CTL.miny@ TITLE_H + < AND [
+                2
+            ] [
+                1
+            ] ?:
+        ] ?:
+    ] ?:
+;
+
+@win-chrome { ctl -- }
+    ( drop shadow )
+    DRAW::fd ctl CTL.minx@ 2 + ctl CTL.miny@ 2 +
+    ctl CTL.maxx@ ctl CTL.minx@ -
+    ctl CTL.maxy@ ctl CTL.miny@ -
+    CLR_BORDER DRAW::fill-rect
+    ( black 1px frame, white body )
+    DRAW::fd ctl CTL.minx@ ctl CTL.miny@
+    ctl CTL.maxx@ ctl CTL.minx@ -
+    ctl CTL.maxy@ ctl CTL.miny@ -
+    CLR_BORDER DRAW::fill-rect
+    DRAW::fd ctl CTL.minx@ 1 + ctl CTL.miny@ 1 +
+    ctl CTL.maxx@ ctl CTL.minx@ - 2 -
+    ctl CTL.maxy@ ctl CTL.miny@ - 2 -
+    CLR_BG DRAW::fill-rect
+    ( title bar: white, then even horizontal black lines )
+    DRAW::fd ctl CTL.minx@ 1 + ctl CTL.miny@ 1 +
+    ctl CTL.maxx@ ctl CTL.minx@ - 2 - TITLE_H 2 -
+    CLR_BG DRAW::fill-rect
+    DRAW::fd ctl CTL.minx@ 1 + ctl CTL.miny@ 1 +
+    ctl CTL.maxx@ ctl CTL.minx@ - 2 - TITLE_H 2 -
+    hline-rect
+    DRAW::fd ctl CTL.minx@ ctl CTL.miny@ TITLE_H + 1 -
+    ctl CTL.maxx@ ctl CTL.minx@ - 1 CLR_BORDER DRAW::fill-rect
+    ( go-away box, left )
+    DRAW::fd ctl CTL.minx@ CLOSE_INSET + ctl CTL.miny@ CLOSE_Y +
+    CLOSE_SZ CLOSE_SZ CLR_BG DRAW::fill-rect
+    DRAW::fd ctl CTL.minx@ CLOSE_INSET + ctl CTL.miny@ CLOSE_Y +
+    CLOSE_SZ CLOSE_SZ CLR_BORDER DRAW::draw-rect
+    DRAW::fd ctl CTL.minx@ CLOSE_INSET + 2 + ctl CTL.miny@ CLOSE_Y + 2 +
+    7 7 CLR_BORDER DRAW::draw-rect
+    ctl CTL.label@ 0 > [
+        ctl CTL.label@ strlen DRAW::char-w * 16 +
+        { tw }
+            DRAW::fd
+            ctl CTL.minx@ ctl CTL.maxx@ + tw - 2 /
+            ctl CTL.miny@ 3 +
+            tw 12 CLR_BG DRAW::fill-rect
+            DRAW::fd
+            ctl CTL.minx@ ctl CTL.maxx@ + tw - 2 / 8 +
+            ctl CTL.miny@ 3 +
+            ctl CTL.label@ CLR_TEXT 1 DRAW::draw-str
+        }
+    ] ?
+;
+
+@draw-one { ctl -- }
+    ctl is-visible? [
+        ctl CTL.kind@ K_WINDOW = [
+            ctl win-chrome
+        ] [
+            ctl sync-payload
+            ctl CTL.kind@ K_FIELD = [
+                DRAW::fd ctl CTL.minx@ ctl CTL.miny@
+                ctl CTL.maxx@ ctl CTL.minx@ -
+                ctl CTL.maxy@ ctl CTL.miny@ -
+                frame-rect
+            ] ?
+            DRAW::fd ctl CTL.payload@
+            ctl CTL.kind@ K_BUTTON = [ button-draw ] [
+            ctl CTL.kind@ K_CHECKBOX = [ checkbox-draw ] [
+            ctl CTL.kind@ K_RADIO = [ radio-draw ] [
+            ctl CTL.kind@ K_SLIDER = [ slider-draw ] [
+            ctl CTL.kind@ K_SCROLLBAR = [ scrollbar-draw ] [
+            ctl CTL.kind@ K_FIELD = [ text-draw ] [
+            ctl CTL.kind@ K_LABEL = [
+                drop drop
+                ctl CTL.label@ 0 > [
+                    DRAW::fd ctl CTL.minx@ ctl CTL.miny@ ctl CTL.label@ CLR_TEXT 1 DRAW::draw-str
+                ] ?
+            ] [ drop drop ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+        ] ?:
+    ] ?
+;
+
+@draw ( -- )
+    ( windows first so their client fill does not cover widgets )
+    CS_HEAD LOADI
+    [ dup 0 > ] [
+        dup CTL.kind@ K_WINDOW = [ dup draw-one ] ?
+        CTL.next@
+    ] |:
+    drop
+    CS_HEAD LOADI
+    [ dup 0 > ] [
+        dup CTL.kind@ K_WINDOW = 0 = [ dup draw-one ] ?
+        CTL.next@
+    ] |:
+    drop
+;
+
+@clear-radio-group ( group except -- )
+    2 frame! ( 0:except 1:group )
+    CS_HEAD LOADI
+    [ dup 0 > ] [
+        dup CTL.kind@ K_RADIO =
+        OVER 0 local@ = 0 = AND
+        OVER CTL.group@ 0 > AND [
+            dup CTL.group@ 1 local@ STR::streq [
+                0 OVER value! drop
+            ] ?
+        ] ?
+        CTL.next@
+    ] |:
+    drop
+    2 unframe!
+;
+
+@hit-mouse ( ctl mx my typ -- )
+    4 frame! ( 0:typ 1:my 2:mx 3:ctl )
+    3 local@ CTL.payload@ 0 = [
+        4 unframe!
+    ] [
+        3 local@ sync-payload
+        3 local@ CTL.kind@ K_BUTTON = [
+            3 local@ CTL.payload@ 2 local@ 1 local@
+            0 local@ EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?:
+            button-update [
+                3 local@ CTL.on-press@ dup 0 > [ CALL ] [ drop ] ?:
+            ] ?
+        ] ?
+        3 local@ CTL.kind@ K_CHECKBOX = [
+            0 local@ EVENT::MOUSE_DOWN = [
+                3 local@ CTL.value@ 0 = [ 1 ] [ 0 ] ?:
+                3 local@ CTL.value!
+                3 local@ sync-payload
+            ] ?
+        ] ?
+        3 local@ CTL.kind@ K_RADIO = [
+            0 local@ EVENT::MOUSE_DOWN = [
+                3 local@ CTL.group@ 0 > [
+                    3 local@ CTL.group@ 3 local@ clear-radio-group
+                ] ?
+                1 3 local@ CTL.value!
+                3 local@ sync-payload
+            ] ?
+        ] ?
+        3 local@ CTL.kind@ K_SLIDER = [
+            3 local@ CTL.payload@ 2 local@ 1 local@ 0 local@ slider-ev
+            3 local@ CTL.value!
+            3 local@ CTL.payload@ SL_DRG + LOADI [
+                3 local@ CS_DRAG STOREI
+            ] [
+                CS_DRAG LOADI 3 local@ = [ 0 CS_DRAG STOREI ] ?
+            ] ?:
+        ] ?
+        3 local@ CTL.kind@ K_FIELD = [
+            3 local@ CS_FOCUS STOREI
+            3 local@ CTL.payload@ 2 local@ 1 local@ 0 local@ text-update-mouse
+        ] ?
+        4 unframe!
+    ] ?:
+;
+
+@in-ctl? ( ctl mx my -- bool )
+    3 frame! ( 0:my 1:mx 2:ctl )
+    1 local@ 0 local@
+    2 local@ CTL.minx@ 2 local@ CTL.miny@
+    2 local@ CTL.maxx@ 2 local@ CTL.maxy@
+    GEOM::pt-in-rect?
+    3 unframe!
+;
+
+@hit-walk ( mx my typ -- )
+    3 frame! ( 0:typ 1:my 2:mx )
+    CS_HEAD LOADI
+    [ dup 0 > ] [
+        dup CTL.kind@ K_WINDOW = [
+            CTL.next@
+        ] [
+            dup is-visible? [
+                dup 2 local@ 1 local@ in-ctl? [
+                    dup 2 local@ 1 local@ 0 local@ hit-mouse
+                    drop 0
+                ] [
+                    CTL.next@
+                ] ?:
+            ] [
+                CTL.next@
+            ] ?:
+        ] ?:
+    ] |:
+    drop
+    3 unframe!
+;
+
+@mouse ( mpkt -- )
+    1 frame! ( 0:mpkt )
+    CS_DRAG LOADI dup 0 > [
+        0 local@ EVENT::mouse-x
+        0 local@ EVENT::mouse-y
+        0 local@ EVENT::mouse-type
+        hit-mouse
+        0 local@ EVENT::mouse-type EVENT::MOUSE_UP = [ 0 CS_DRAG STOREI ] ?
+    ] [
+        drop
+        0 local@ EVENT::mouse-x
+        0 local@ EVENT::mouse-y
+        0 local@ EVENT::mouse-type
+        hit-walk
+    ] ?:
+    0 drop
+    1 unframe!
+;
+
+@kbd ( kpkt -- )
+    1 frame! ( 0:kpkt )
+    CS_FOCUS LOADI dup 0 > [
+        dup CTL.payload@ 0 = [
+            drop
+        ] [
+            dup CTL.kind@ K_FIELD = [
+                CTL.payload@
+                0 local@ EVENT::kbd-key
+                0 local@ EVENT::kbd-mods
+                text-update-kbd
+            ] [ drop ] ?:
+        ] ?:
+    ] [ drop ] ?:
+    1 unframe!
+;
+

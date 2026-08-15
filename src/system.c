@@ -467,6 +467,37 @@ void system_fill_rect(System* sys, int32_t x, int32_t y, int32_t w, int32_t h, u
     }
 }
 
+void system_fill_pat(System* sys, int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color, int pat) {
+    if (!sys || w <= 0 || h <= 0) return;
+    uint8_t r = (color >> 16) & 0xFF;
+    uint8_t g = (color >>  8) & 0xFF;
+    uint8_t b = (color       ) & 0xFF;
+    int32_t sw = sys->screen_width  ? sys->screen_width  : 960;
+    int32_t sh = sys->screen_height ? sys->screen_height : 720;
+    int32_t x0 = x, y0 = y, x1 = x + w, y1 = y + h;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > sw) x1 = sw;
+    if (y1 > sh) y1 = sh;
+    if (x0 >= x1 || y0 >= y1) return;
+    uint8_t* fb = sys->back_pixels ? sys->back_pixels : sys->screen_pixels;
+    if (!fb) return;
+    int stride = sw * 4;
+    for (int32_t py = y0; py < y1; py++) {
+        uint8_t* row = fb + (size_t)py * stride + (size_t)x0 * 4;
+        for (int32_t px = x0; px < x1; px++) {
+            int on = (pat == 1) ? ((py & 1) == 0) : (((px + py) & 1) == 0);
+            if (on) {
+                row[0] = 0xFF;
+                row[1] = r;
+                row[2] = g;
+                row[3] = b;
+            }
+            row += 4;
+        }
+    }
+}
+
 void system_draw_rect(System* sys, int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color) {
     if (w <= 0 || h <= 0) return;
     // Outline using four 1-pixel thick fills (top, bottom, left, right)

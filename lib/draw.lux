@@ -30,6 +30,20 @@ MODULE DRAW
     OR
 ;
 
+@fill-pat ( fd x y w h color pat -- )
+    ( Cmd 8: patterned fill. pat 0 = 50% checker, pat 1 = even horizontal lines. )
+    7 frame! ( 0:pat 1:color 2:h 3:w 4:y 5:x 6:fd )
+    8 BUF store-byte
+    5 local@ BUF 1 + store-word-le
+    4 local@ BUF 3 + store-word-le
+    3 local@ BUF 5 + store-word-le
+    2 local@ BUF 7 + store-word-le
+    1 local@ BUF 9 + store-int-le
+    0 local@ BUF 13 + store-byte
+    6 local@ BUF 14 VFS::write drop
+    7 unframe!
+;
+
 @fill-rect ( fd x y w h color -- )
     6 frame! ( 0:color, 1:h, 2:w, 3:y, 4:x, 5:fd )
     
@@ -162,4 +176,58 @@ MODULE DRAW
     2 local@ 0x530900 STR::int-to-str
     5 local@ 4 local@ 3 local@ 0x530900 1 local@ 0 local@ draw-str
     6 unframe!
+;
+
+( --- Current draw fd + cached font metrics --- )
+( State lives at 0x8F8000, above BUF at 0x8F0000. )
+
+@ST_FD     0x8F8000 ;
+@ST_CW     0x8F8004 ;
+@ST_CH     0x8F8008 ;
+@ST_READY  0x8F800C ;
+@WIDTHS    0x8F8100 ;
+
+@use { d -- } d ST_FD STOREI ;
+
+@fd ( -- fd ) ST_FD LOADI ;
+
+@fill-r { minx miny maxx maxy color -- }
+    fd minx miny maxx minx - maxy miny - color fill-rect
+;
+
+@stroke-r { minx miny maxx maxy color -- }
+    fd minx miny maxx minx - maxy miny - color draw-rect
+;
+
+@ensure-metrics ( -- )
+    ST_READY LOADI 0 = [
+        7 ST_CW STOREI
+        16 ST_CH STOREI
+        T"/sys/font/widths" VFS::open dup 0 >= [
+            { wfd }
+                wfd WIDTHS 256 VFS::read drop
+                wfd VFS::close drop
+                WIDTHS 77 + load-byte dup 0 > [ ST_CW STOREI ] [ drop ] ?:
+            }
+        ] [ drop ] ?:
+        1 ST_READY STOREI
+    ] ?
+;
+
+@char-w ( -- w ) ensure-metrics ST_CW LOADI ;
+@char-h ( -- h ) ensure-metrics ST_CH LOADI ;
+
+( Proportional Chicago advance of a C string. )
+@str-w ( ptr -- n )
+    ensure-metrics
+    0 SWAP 2 frame! ( 0:ptr 1:sum )
+    [ 0 local@ load-byte 0 > ]
+    [
+        0 local@ load-byte
+        WIDTHS + load-byte
+        1 local@ + 1 local!
+        0 local@ 1 + 0 local!
+    ] |:
+    1 local@
+    2 unframe!
 ;

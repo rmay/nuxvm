@@ -178,6 +178,14 @@ TokenList* tokenize(const char* input) {
             token_list_append(list, t);
             continue;
         }
+
+        if (ch == '{' || ch == '}') {
+            advance(&l);
+            char buf[2] = { ch, '\0' };
+            Token t = { TOKEN_WORD, strdup(buf), start_line, start_col };
+            token_list_append(list, t);
+            continue;
+        }
         
         if (is_number_start(&l, ch)) {
             char buffer[64];

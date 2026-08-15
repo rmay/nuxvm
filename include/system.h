@@ -113,6 +113,7 @@ void system_push_mouse_event(System* sys, uint8_t type, int32_t x, int32_t y, ui
 void system_set_dialog_result(System* sys, const char* path);
 
 void system_fill_rect(System* sys, int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color);
+void system_fill_pat(System* sys, int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color, int pat);
 void system_draw_rect(System* sys, int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color);
 int system_draw_char(System* sys, int32_t x, int32_t y, char c, uint32_t color, int scale);
 void system_draw_text(System* sys, int32_t x, int32_t y, const char* str, uint32_t color, int scale);

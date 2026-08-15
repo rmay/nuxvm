@@ -1,136 +1,131 @@
-( UI Widget Library Demo — run with: ./bin/cloister apps/UIDemo.bin )
+( Checkbox, radios, volume slider, and System 6 buttons on the UI message ring.
+  ./bin/cloister apps/UIDemo.bin )
 
-INCLUDE "lib/vfs.lux"
+INCLUDE "lib/app.lux"
 INCLUDE "lib/ui.lux"
-INCLUDE "lib/event.lux"
 
 MODULE DEMO
 
-IMPORT VFS
+IMPORT APP
 IMPORT UI
-IMPORT EVENT
 IMPORT DRAW
+IMPORT EVENT
+IMPORT STR
 
-( File descriptors and input state )
-@dfd_addr    0x8A0000 ; @dfd@ dfd_addr LOADI ; @dfd! dfd_addr STOREI ;
-@mfd_addr    0x8A0004 ; @mfd@ mfd_addr LOADI ; @mfd! mfd_addr STOREI ;
-@mx_addr     0x8A0008 ; @mx@  mx_addr LOADI  ; @mx!  mx_addr STOREI  ;
-@my_addr     0x8A000C ; @my@  my_addr LOADI  ; @my!  my_addr STOREI  ;
-@mbtn_addr   0x8A0010 ; @mbtn@ mbtn_addr LOADI ; @mbtn! mbtn_addr STOREI ;
-@clicks_addr 0x8A0014 ; @clicks@ clicks_addr LOADI ; @clicks! clicks_addr STOREI ;
-@dirty_addr  0x8A0018 ; @dirty@ dirty_addr LOADI ; @dirty! dirty_addr STOREI ;
-@sl_val_addr 0x8A001C ; @sl-val@ sl_val_addr LOADI ; @sl-val! sl_val_addr STOREI ;
+@last      0x8A0014 ;
+@last-ev   0x8A0018 ;
+@last-name 0x8A001C ;
+@grp       0x8A0020 ;
+@nbuf      0x8A0030 ;
 
-@mbuf 0x8A0100 ; ( 8 bytes: mouse event packet )
-@tbuf 0x8A0200 ; ( 1024 bytes: text widget buffer )
-
-( Widget state blocks )
-@BTN1 0x8A1000 ; ( button:   36 bytes )
-@CB1  0x8A1030 ; ( checkbox: 24 bytes )
-@RD1  0x8A1050 ; ( radio:    24 bytes )
-@RD2  0x8A1070 ; ( radio:    24 bytes )
-@SL1  0x8A1090 ; ( slider:   36 bytes )
-@TX1  0x8A10C0 ; ( text:     48 bytes )
-
-( String constants )
-@STR_CLICK   T"Click Me!"  ;
-@STR_OPT_A   T"Option A"   ;
-@STR_OPT_B   T"Option B"   ;
-@STR_OPT_C   T"Option C"   ;
-@STR_TITLE   T"lux ui demo" ;
-@STR_CLICKS  T"clicks: "   ;
-@STR_VALUE   T"value: "    ;
-@STR_TEXT    T"type here:" ;
-
-( char width at scale 2: 14px )
-@CHAR_W 14 ;
-
-@init
-    VFS::PATH_DRAW  VFS::open dfd!
-    VFS::PATH_MOUSE VFS::open mfd!
-    VFS::PATH_KBD   VFS::open 0x8A0020 STOREI ( kfd )
-    0 mx!  0 my!  0 mbtn!
-    0 clicks!  50 sl-val!
-    1 dirty!
-
-    BTN1 290 174 220 44 STR_CLICK [ clicks@ 1 + clicks! ] UI::button-init
-    CB1  329 270 24 STR_OPT_A    UI::checkbox-init
-    RD1  329 310 24 STR_OPT_B    UI::checkbox-init
-    RD2  329 350 24 STR_OPT_C    UI::checkbox-init
-    SL1  290 426 220 20 0 100 50 UI::slider-init
-    TX1  290 480 220 100 tbuf 1024 UI::text-init
+@on-ui ( name ev val -- )
+    SWAP
+    dup last-ev STOREI
+    dup UI::EV_SELECT = SWAP UI::EV_PRESS = OR [
+        drop
+        last-name STOREI
+    ] [
+        last STOREI
+        drop
+    ] ?:
 ;
 
-@draw-all
-    ( background )
-    dfd@ 0 0 960 720 UI::CLR_BG DRAW::fill-rect
-    ( title bar stripe )
-    dfd@ 0 0 960 30 UI::CLR_BORDER DRAW::fill-rect
-    dfd@ 960 STR_TITLE strlen CHAR_W * - 2 / 7 STR_TITLE UI::CLR_BG 2 DRAW::draw-str
-    ( button )
-    dfd@ BTN1 UI::button-draw
-    ( click counter )
-    dfd@ 290 226 STR_CLICKS UI::CLR_TEXT 2 DRAW::draw-str
-    dfd@ 290 STR_CLICKS strlen CHAR_W * + 226 clicks@ UI::CLR_TEXT 2 DRAW::draw-int
-    ( checkbox )
-    dfd@ CB1 UI::checkbox-draw
-    ( radio buttons )
-    dfd@ RD1 UI::radio-draw
-    dfd@ RD2 UI::radio-draw
-    ( slider )
-    dfd@ 290 386 STR_VALUE UI::CLR_TEXT 2 DRAW::draw-str
-    dfd@ 290 STR_VALUE strlen CHAR_W * + 386 sl-val@ UI::CLR_TEXT 2 DRAW::draw-int
-    dfd@ SL1 UI::slider-draw
-    ( text )
-    dfd@ 290 460 STR_TEXT UI::CLR_TEXT 1 DRAW::draw-str
-    dfd@ TX1 UI::text-draw
-    0 dirty!
+@msg-radio ( -- )
+    last-name LOADI T"align-left" STR::streq [
+        DRAW::fd 56 258 T"message: Left" UI::CLR_TEXT 1 DRAW::draw-str
+    ] [
+        last-name LOADI T"align-center" STR::streq [
+            DRAW::fd 56 258 T"message: Center" UI::CLR_TEXT 1 DRAW::draw-str
+        ] [
+            DRAW::fd 56 258 T"message: Right" UI::CLR_TEXT 1 DRAW::draw-str
+        ] ?:
+    ] ?:
 ;
 
-@handle-mouse
-    mfd@ mbuf 8 VFS::read
-    8 = [
-        mbuf EVENT::mouse-x mx!
-        mbuf EVENT::mouse-y my!
-        mbuf EVENT::mouse-type dup mbtn! ( use mbtn to store type for updates )
-        
-        TX1 mx@ my@ mbtn@ UI::text-update-mouse
-    ] ?
+@msg-press ( -- )
+    last-name LOADI T"ok" STR::streq [
+        DRAW::fd 56 258 T"message: OK" UI::CLR_TEXT 1 DRAW::draw-str
+    ] [
+        DRAW::fd 56 258 T"message: Cancel" UI::CLR_TEXT 1 DRAW::draw-str
+    ] ?:
 ;
 
-@handle-kbd
-    0x8A0020 LOADI ( kfd ) mbuf 8 VFS::read
-    8 = [
-        mbuf EVENT::kbd-type EVENT::KEY_DOWN = [
-            TX1 mbuf EVENT::kbd-key mbuf EVENT::kbd-mods UI::text-update-kbd
+@msg-check ( -- )
+    last LOADI [
+        DRAW::fd 56 258 T"message: checked" UI::CLR_TEXT 1 DRAW::draw-str
+    ] [
+        DRAW::fd 56 258 T"message: off" UI::CLR_TEXT 1 DRAW::draw-str
+    ] ?:
+;
+
+@msg-value ( -- )
+    last LOADI nbuf STR::int-to-str
+    DRAW::fd 56 258 T"message: " UI::CLR_TEXT 1 DRAW::draw-str
+    DRAW::fd 119 258 nbuf UI::CLR_TEXT 1 DRAW::draw-str
+;
+
+@on-kbd ( kpkt -- )
+    dup EVENT::kbd-type EVENT::KEY_DOWN = [
+        EVENT::kbd-key EVENT::KEY_ENTER = [
+            UI::bn-return drop
         ] ?
-    ] ?
+    ] [
+        drop
+    ] ?:
 ;
 
-@update-widgets
-    BTN1 mx@ my@ mbtn@ EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: UI::button-tick
-    CB1 mx@ my@ mbtn@ EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: UI::checkbox-update drop
-    RD1 mx@ my@ mbtn@ EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: UI::checkbox-update [
-        1 RD1 UI::CB_CHK + STOREI
-        0 RD2 UI::CB_CHK + STOREI
-    ] ?
-    RD2 mx@ my@ mbtn@ EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: UI::checkbox-update [
-        0 RD1 UI::CB_CHK + STOREI
-        1 RD2 UI::CB_CHK + STOREI
-    ] ?
-    SL1 mx@ my@ mbtn@ EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: UI::slider-update sl-val!
-    1 dirty!
+@on-frame ( -- )
+    [ UI::poll ]
+    [ on-ui ]
+    |:
+
+    DRAW::fd 0 0 APP::width APP::height UI::CLR_BG DRAW::fill-rect
+    DRAW::fd 40 40 400 236 UI::CLR_BORDER DRAW::fill-rect
+    DRAW::fd 41 41 398 234 UI::CLR_BG DRAW::fill-rect
+    DRAW::fd 56 56 T"Click a control" UI::CLR_TEXT 1 DRAW::draw-str
+    DRAW::fd 56 124 T"Alignment" UI::CLR_TEXT 1 DRAW::draw-str
+    DRAW::fd 268 56 T"Speaker Volume" UI::CLR_TEXT 1 DRAW::draw-str
+    last-ev LOADI UI::EV_PRESS = [
+        msg-press
+    ] [
+        last-ev LOADI UI::EV_SELECT = [
+            msg-radio
+        ] [
+            last-ev LOADI UI::EV_VALUE = [
+                msg-value
+            ] [
+                msg-check
+            ] ?:
+        ] ?:
+    ] ?:
+    UI::cb-draw
+    UI::rd-draw
+    UI::sl-draw
+    UI::bn-draw
 ;
 
 @start
-    init
-    [ 1 ] [
-        handle-mouse
-        handle-kbd
-        update-widgets
-        dirty@ [ draw-all ] ?
-        VFS::yield drop
-    ] |:
+    T"UI Demo" APP::init
+    UI::uinnew
+    0 last STOREI
+    0 last-ev STOREI
+    0 last-name STOREI
+    T"show-hidden" 56 88 12 T"Show hidden files" UI::cb-add
+    T"align" grp STOREI
+    T"align-left"   grp LOADI 56 140 12 T"Left"   UI::rd-add
+    T"align-center" grp LOADI 56 164 12 T"Center" UI::rd-add
+    T"align-right"  grp LOADI 56 188 12 T"Right"  UI::rd-add
+    T"align-left" UI::rd-pick
+    T"align-left" last-name STOREI
+    UI::EV_SELECT last-ev STOREI
+    T"volume" 320 80 17 112 0 7 4 UI::sl-add
+    T"cancel" 248 228 59 20 T"Cancel" UI::bn-add
+    T"ok"     319 228 59 20 T"OK"     UI::bn-add
+    T"ok" UI::bn-default
+    [ UI::feed ] APP::on-mouse!
+    [ on-kbd ] APP::on-kbd!
+    [ on-frame ] APP::on-frame!
+    APP::loop
 ;
 
 DEMO::start

@@ -23,6 +23,7 @@ IMPORT EVENT
 @kpkt     0x8C0030 ; ( 8 bytes: Type, pad, KeyCode(2), Modifiers(4) )
 @win-w    0x8C0040 ;
 @win-h    0x8C0044 ;
+@dirty-f  0x8C0048 ;
 
 ( --- ESC Popup State --- )
 @esc-open     0x8C0050 ;
@@ -34,6 +35,9 @@ IMPORT EVENT
 @kbd-fd   ( -- fd ) kfd LOADI ;
 @width    ( -- w )  win-w LOADI ;
 @height   ( -- h )  win-h LOADI ;
+@dirty!   ( -- )    1 dirty-f STOREI ;
+@dirty?   ( -- f )  dirty-f LOADI ;
+@dirty-off ( -- )   0 dirty-f STOREI ;
 
 ( --- Vector Setters --- )
 @on-frame! ( addr -- ) v-frame STOREI ;
@@ -194,14 +198,18 @@ IMPORT EVENT
 @init ( title-ptr -- )
     VFS::set-window-title
     open-devices
+    dfd LOADI DRAW::use
+    dfd LOADI 0 DRAW::set-font
+    dirty!
 ;
 
 @loop ( -- )
     [ 1 ] [
         dfd LOADI DRAW::begin-frame
 
-        ( 1. Handle Mouse )
-        mfd LOADI mpkt 8 VFS::read 8 = [
+        ( 1. Handle Mouse — drain the queue so a drag sees every move )
+        [ mfd LOADI mpkt 8 VFS::read 8 = ]
+        [
             esc-open LOADI [
                 mpkt handle-esc-mouse
             ] [
@@ -209,7 +217,7 @@ IMPORT EVENT
                     mpkt swap CALLSTACK
                 ] [ drop ] ?:
             ] ?:
-        ] ?
+        ] |:
 
         ( 2. Handle Keyboard )
         kfd LOADI kpkt 8 VFS::read 8 = [

@@ -143,6 +143,204 @@ static void add_dict(Compiler* c, const char* name, int32_t address) {
     c->dict_count++;
 }
 
+static void qualify_name(Compiler* c, const char* name, char* out, size_t outsz) {
+    if (c->current_module && c->current_module[0] != '\0' && !strstr(name, "::")) {
+        snprintf(out, outsz, "%s::%s", c->current_module, name);
+    } else {
+        snprintf(out, outsz, "%s", name);
+    }
+}
+
+static bool lookup_local(Compiler* c, const char* name, int32_t* out_offset) {
+    int extra = 0;
+    for (int d = c->local_depth - 1; d >= 0; d--) {
+        int n = c->local_frames[d].count;
+        for (int i = 0; i < n; i++) {
+            if (strcasecmp(c->local_frames[d].names[i], name) == 0) {
+                /* last declared name is local 0 (same as FRAME! pop order) */
+                *out_offset = extra + (n - 1 - i);
+                return true;
+            }
+        }
+        extra += n + 1; /* saved fp sits between frames */
+    }
+    return false;
+}
+
+static bool compile_local_frame_start(Compiler* c) {
+    if (c->local_depth >= COMPILER_MAX_LOCAL_FRAMES) {
+        fprintf(stderr, "Too many nested local frames\n");
+        return false;
+    }
+    int count = 0;
+    char names[COMPILER_MAX_LOCAL_NAMES][COMPILER_MAX_LOCAL_NAME];
+    bool skipping_doc = false;
+    int start_line = peek(c).line;
+
+    while (c->pos < (int)c->token_list->count) {
+        Token t = peek(c);
+        if (t.type == TOKEN_WORD && t.value && strcmp(t.value, "}") == 0) {
+            advance(c);
+            break;
+        }
+        if (t.type == TOKEN_WORD && t.value && strcmp(t.value, "--") == 0) {
+            skipping_doc = true;
+            advance(c);
+            continue;
+        }
+        if (t.type == TOKEN_SEMICOLON || t.type == TOKEN_EOF || t.type == TOKEN_RBRACKET) {
+            fprintf(stderr, "Unclosed { local frame at line %d\n", start_line);
+            return false;
+        }
+        if (!skipping_doc) {
+            if (t.type != TOKEN_WORD || !t.value) {
+                fprintf(stderr, "Expected local name inside { } at line %d\n", t.line);
+                return false;
+            }
+            if (count >= COMPILER_MAX_LOCAL_NAMES) {
+                fprintf(stderr, "Too many locals in frame at line %d\n", t.line);
+                return false;
+            }
+            strncpy(names[count], t.value, COMPILER_MAX_LOCAL_NAME - 1);
+            names[count][COMPILER_MAX_LOCAL_NAME - 1] = '\0';
+            count++;
+        }
+        advance(c);
+    }
+
+    if (count == 0) {
+        fprintf(stderr, "Empty local frame { } at line %d\n", start_line);
+        return false;
+    }
+
+    memcpy(c->local_frames[c->local_depth].names, names, sizeof(names));
+    c->local_frames[c->local_depth].count = count;
+    emit_byte(c, OP_PUSH);
+    emit_int32(c, count);
+    emit_byte(c, OP_FRAME);
+    c->local_depth++;
+    return true;
+}
+
+static bool compile_local_frame_end(Compiler* c, int line) {
+    if (c->local_depth <= 0) {
+        fprintf(stderr, "Unexpected } at line %d\n", line);
+        return false;
+    }
+    c->local_depth--;
+    emit_byte(c, OP_PUSH);
+    emit_int32(c, c->local_frames[c->local_depth].count);
+    emit_byte(c, OP_UNFRAME);
+    return true;
+}
+
+static void emit_unframe_all(Compiler* c) {
+    while (c->local_depth > 0) {
+        compile_local_frame_end(c, 0);
+    }
+}
+
+/* JMPSTACK/JMP would skip UNFRAME for any still-open { } frame. */
+static bool at_tail_position(Compiler* c) {
+    if (c->local_depth > 0) return false;
+    Token next = peek(c);
+    return next.type == TOKEN_SEMICOLON || next.type == TOKEN_RBRACKET;
+}
+
+static bool is_fields_terminator(Token t) {
+    if (t.type == TOKEN_AT_SIGN || t.type == TOKEN_EOF ||
+        t.type == TOKEN_SEMICOLON || t.type == TOKEN_LBRACKET) {
+        return true;
+    }
+    if (t.type == TOKEN_WORD && t.value) {
+        if (strcmp(t.value, "MODULE") == 0 || strcmp(t.value, "IMPORT") == 0 ||
+            strcmp(t.value, "INCLUDE") == 0 || strcasecmp(t.value, "FIELDS") == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void skip_fields(Compiler* c) {
+    if (c->pos < (int)c->token_list->count) advance(c); /* prefix */
+    while (c->pos < (int)c->token_list->count && !is_fields_terminator(peek(c))) {
+        advance(c);
+    }
+    if (peek(c).type == TOKEN_SEMICOLON) advance(c);
+}
+
+static bool compile_fields(Compiler* c) {
+    Token prefix = advance(c);
+    if (prefix.type != TOKEN_WORD || !prefix.value) {
+        fprintf(stderr, "FIELDS expects a prefix name\n");
+        return false;
+    }
+
+    char fields[32][64];
+    int n = 0;
+    while (c->pos < (int)c->token_list->count && !is_fields_terminator(peek(c))) {
+        Token f = advance(c);
+        if (f.type != TOKEN_WORD || !f.value) {
+            fprintf(stderr, "FIELDS expected field name\n");
+            return false;
+        }
+        if (n >= 32) {
+            fprintf(stderr, "Too many FIELDS on %s\n", prefix.value);
+            return false;
+        }
+        strncpy(fields[n], f.value, 63);
+        fields[n][63] = '\0';
+        n++;
+    }
+    if (n == 0) {
+        fprintf(stderr, "FIELDS %s has no fields\n", prefix.value);
+        return false;
+    }
+    if (peek(c).type == TOKEN_SEMICOLON) {
+        advance(c);
+    }
+
+    char raw[256];
+    char qname[256];
+
+    snprintf(raw, sizeof(raw), "%s.SIZE", prefix.value);
+    qualify_name(c, raw, qname, sizeof(qname));
+    add_dict(c, qname, current_address(c));
+    emit_byte(c, OP_PUSH);
+    emit_int32(c, n * 4);
+    emit_byte(c, OP_RET);
+
+    for (int i = 0; i < n; i++) {
+        int32_t off = i * 4;
+
+        snprintf(raw, sizeof(raw), "%s.%s", prefix.value, fields[i]);
+        qualify_name(c, raw, qname, sizeof(qname));
+        add_dict(c, qname, current_address(c));
+        emit_byte(c, OP_PUSH);
+        emit_int32(c, off);
+        emit_byte(c, OP_RET);
+
+        snprintf(raw, sizeof(raw), "%s.%s@", prefix.value, fields[i]);
+        qualify_name(c, raw, qname, sizeof(qname));
+        add_dict(c, qname, current_address(c));
+        emit_byte(c, OP_PUSH);
+        emit_int32(c, off);
+        emit_byte(c, OP_ADD);
+        emit_byte(c, OP_LOADI);
+        emit_byte(c, OP_RET);
+
+        snprintf(raw, sizeof(raw), "%s.%s!", prefix.value, fields[i]);
+        qualify_name(c, raw, qname, sizeof(qname));
+        add_dict(c, qname, current_address(c));
+        emit_byte(c, OP_PUSH);
+        emit_int32(c, off);
+        emit_byte(c, OP_ADD);
+        emit_byte(c, OP_STOREI);
+        emit_byte(c, OP_RET);
+    }
+    return true;
+}
+
 
 static void push_quot_stack(Compiler* c, int idx) {
     if (c->quot_stack_count >= c->quot_stack_cap) {
@@ -188,14 +386,20 @@ static void compile_quotation_start(Compiler* c) {
     
     q->temp_addr = c->temp_alloc;
     c->temp_alloc += 4;
+    q->saved_local_depth = c->local_depth;
     
     push_quot_stack_frame(c);
     c->active_quot_idx = idx;
 }
 
 static void compile_quotation_end(Compiler* c) {
-    emit_byte(c, OP_RET);
     int idx = c->active_quot_idx;
+    if (idx >= 0 && idx < (int)c->quot_count) {
+        while (c->local_depth > c->quotations[idx].saved_local_depth) {
+            compile_local_frame_end(c, 0);
+        }
+    }
+    emit_byte(c, OP_RET);
     pop_quot_stack_frame(c);
     
     push_quot_stack(c, idx);
@@ -238,9 +442,7 @@ static bool compile_combinator(Compiler* c, const char* name) {
         if (c->quot_stack_count < 2) return false;
         c->quot_stack_count -= 2;
         
-        bool is_tail = false;
-        Token next = peek(c);
-        if (next.type == TOKEN_SEMICOLON || next.type == TOKEN_RBRACKET) is_tail = true;
+        bool is_tail = at_tail_position(c);
         
         emit_byte(c, OP_ROT);
         emit_byte(c, OP_JZ);
@@ -276,9 +478,7 @@ static bool compile_combinator(Compiler* c, const char* name) {
     if (strcmp(name, "?") == 0) {
         if (c->quot_stack_count < 1) return false;
         c->quot_stack_count -= 1;
-        bool is_tail = false;
-        Token next = peek(c);
-        if (next.type == TOKEN_SEMICOLON || next.type == TOKEN_RBRACKET) is_tail = true;
+        bool is_tail = at_tail_position(c);
         
         emit_byte(c, OP_SWAP);
         emit_byte(c, OP_JZ);
@@ -305,9 +505,7 @@ static bool compile_combinator(Compiler* c, const char* name) {
     if (strcmp(name, "!:") == 0) {
         if (c->quot_stack_count < 1) return false;
         c->quot_stack_count -= 1;
-        bool is_tail = false;
-        Token next = peek(c);
-        if (next.type == TOKEN_SEMICOLON || next.type == TOKEN_RBRACKET) is_tail = true;
+        bool is_tail = at_tail_position(c);
         
         emit_byte(c, OP_SWAP);
         emit_byte(c, OP_JNZ);
@@ -471,6 +669,35 @@ static bool compile_token(Compiler* c, Token t) {
     }
     
     if (t.type == TOKEN_WORD) {
+        if (strcmp(t.value, "{") == 0) {
+            return compile_local_frame_start(c);
+        }
+        if (strcmp(t.value, "}") == 0) {
+            return compile_local_frame_end(c, t.line);
+        }
+
+        int32_t local_off;
+        if (lookup_local(c, t.value, &local_off)) {
+            emit_byte(c, OP_PUSH);
+            emit_int32(c, local_off);
+            emit_byte(c, OP_LOCALGET);
+            return true;
+        }
+        size_t nlen = strlen(t.value);
+        if (nlen > 1 && t.value[nlen - 1] == '!') {
+            char lname[COMPILER_MAX_LOCAL_NAME];
+            if (nlen - 1 < sizeof(lname)) {
+                memcpy(lname, t.value, nlen - 1);
+                lname[nlen - 1] = '\0';
+                if (lookup_local(c, lname, &local_off)) {
+                    emit_byte(c, OP_PUSH);
+                    emit_int32(c, local_off);
+                    emit_byte(c, OP_LOCALSET);
+                    return true;
+                }
+            }
+        }
+
         if (strcmp(t.value, ".") == 0) {
             emit_byte(c, OP_PUSH); emit_int32(c, 0); emit_byte(c, OP_OUT);
             return true;
@@ -523,8 +750,7 @@ static bool compile_token(Compiler* c, Token t) {
             return true;
         }
         
-        Token next = peek(c);
-        bool is_tail = (next.type == TOKEN_SEMICOLON || next.type == TOKEN_RBRACKET);
+        bool is_tail = at_tail_position(c);
         WordDef w;
         if (resolve_word(c, t.value, &w)) {
             if (is_tail) emit_byte(c, OP_JMP);
@@ -572,6 +798,7 @@ static bool compile_word_def(Compiler* c) {
     if (name_tok.type != TOKEN_WORD) return false;
 
     c->quot_stack_count = 0;
+    c->local_depth = 0;
     
     char* final_name = name_tok.value;
     char buf[256];
@@ -590,6 +817,7 @@ static bool compile_word_def(Compiler* c) {
     }
     
     advance(c); // Skip ;
+    emit_unframe_all(c);
     emit_byte(c, OP_RET);
     return true;
 }
@@ -749,6 +977,8 @@ uint8_t* compiler_compile(Compiler* c, size_t* out_len) {
             c->current_module = strdup(name.value);
         } else if (t.type == TOKEN_AT_SIGN) {
             if (!compile_word_def(c)) return NULL;
+        } else if (t.type == TOKEN_WORD && t.value && strcasecmp(t.value, "FIELDS") == 0) {
+            if (!compile_fields(c)) return NULL;
         }
     }
     
@@ -756,6 +986,7 @@ uint8_t* compiler_compile(Compiler* c, size_t* out_len) {
     if (c->current_module) free(c->current_module);
     c->current_module = NULL;
     c->quot_stack_count = 0;
+    c->local_depth = 0;
     
     int32_t main_start = current_address(c);
     c->bytecode[1] = (main_start >> 24) & 0xFF;
@@ -773,11 +1004,19 @@ uint8_t* compiler_compile(Compiler* c, size_t* out_len) {
             advance(c); // ;
             continue;
         }
+        if (t.type == TOKEN_WORD && t.value && strcasecmp(t.value, "FIELDS") == 0) {
+            skip_fields(c);
+            continue;
+        }
         if (!compile_token(c, t)) return NULL;
     }
     
     if (c->active_quot_idx >= 0 || c->quot_stack_count > 0) {
         fprintf(stderr, "Unclosed quotation\n");
+        return NULL;
+    }
+    if (c->local_depth > 0) {
+        fprintf(stderr, "Unclosed local frame\n");
         return NULL;
     }
 

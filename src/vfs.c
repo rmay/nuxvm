@@ -725,6 +725,19 @@ static int draw_write(VFSFile* file, const uint8_t* buf, int len) {
             case 6:
                 system_begin_frame(sys);
                 break;
+            case 8: {
+                if (i + 13 > len) return i - 1;
+                int16_t x  = (int16_t)(buf[i]   | (buf[i+1]<<8));
+                int16_t y  = (int16_t)(buf[i+2] | (buf[i+3]<<8));
+                int16_t w  = (int16_t)(buf[i+4] | (buf[i+5]<<8));
+                int16_t h  = (int16_t)(buf[i+6] | (buf[i+7]<<8));
+                uint32_t color = (uint32_t)buf[i+8] | ((uint32_t)buf[i+9]<<8) |
+                                 ((uint32_t)buf[i+10]<<16) | ((uint32_t)buf[i+11]<<24);
+                uint8_t pat = buf[i+12];
+                system_fill_pat(sys, x, y, w, h, color, pat);
+                i += 13;
+                break;
+            }
             case 7:
                 system_end_frame(sys);
                 break;

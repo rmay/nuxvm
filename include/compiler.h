@@ -6,6 +6,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#define COMPILER_MAX_LOCAL_FRAMES 8
+#define COMPILER_MAX_LOCAL_NAMES  16
+#define COMPILER_MAX_LOCAL_NAME   32
+
 typedef struct {
     char* name;
     int32_t address;
@@ -27,6 +31,7 @@ typedef struct {
     InternalJump* jumps;
     size_t jumps_count;
     size_t jumps_cap;
+    int saved_local_depth;
 } Quotation;
 
 typedef struct {
@@ -114,6 +119,13 @@ typedef struct {
     }* imports;
     size_t import_count;
     size_t import_cap;
+
+    /* Named locals: { a b -- } ... }  compiles to FRAME!/LOCAL@/UNFRAME! */
+    struct {
+        char names[COMPILER_MAX_LOCAL_NAMES][COMPILER_MAX_LOCAL_NAME];
+        int count;
+    } local_frames[COMPILER_MAX_LOCAL_FRAMES];
+    int local_depth;
 
     bool trace;
 } Compiler;

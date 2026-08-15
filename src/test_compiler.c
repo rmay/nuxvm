@@ -977,6 +977,116 @@ static void test_empty_definition(void) {
     printf("  empty definition: OK\n");
 }
 
+static void test_named_locals(void) {
+    printf("Testing named locals { }...\n");
+    size_t len;
+    uint8_t* bc;
+    VM* vm;
+    int32_t v;
+
+    bc = must_compile("100 200 { a b } a b + }", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 300);
+    check_stack_count(vm, 0);
+    vm_free(vm);
+    free(bc);
+
+    bc = must_compile("@add { a b -- sum } a b + ; 3 4 add", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 7);
+    vm_free(vm);
+    free(bc);
+
+    bc = must_compile("5 { n } n 1 + n! n }", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 6);
+    vm_free(vm);
+    free(bc);
+
+    bc = must_compile("10 20 { a b } 3 { c } a c + } }", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 13);
+    vm_free(vm);
+    free(bc);
+
+    bc = compile_source("100 200 { a b } a b +", HEADLESS_BASE_ADDRESS, &len, false);
+    assert(bc == NULL);
+
+    bc = compile_source("}", HEADLESS_BASE_ADDRESS, &len, false);
+    assert(bc == NULL);
+
+    printf("  named locals: OK\n");
+}
+
+static void test_named_locals_no_tail_skip_unframe(void) {
+    printf("Testing named locals do not tail-call past UNFRAME...\n");
+    size_t len;
+    uint8_t* bc;
+    VM* vm;
+    int32_t v;
+
+    /* ?: immediately before ; used to JMPSTACK and skip UNFRAME */
+    bc = must_compile(
+        "@maybe { n -- x } n 0 > [ n ] [ 0 ] ?: ;\n"
+        "5 maybe 0 maybe +", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 5);
+    vm_free(vm);
+    free(bc);
+
+    /* allot-style: framed word ending in ?: , then caller opens another frame.
+       If give leaves its frame on the stack, `kind` would read 68 instead of 1. */
+    bc = must_compile(
+        "@give { n -- a } n 0 > [ n ] [ 0 ] ?: ;\n"
+        "@wrap { kind -- } 68 give { ctl } kind ;\n"
+        "1 wrap", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 1);
+    vm_free(vm);
+    free(bc);
+
+    printf("  named locals tail-unframe: OK\n");
+}
+
+static void test_fields_directive(void) {
+    printf("Testing FIELDS directive...\n");
+    size_t len;
+    uint8_t* bc;
+    VM* vm;
+    int32_t v;
+
+    bc = must_compile("FIELDS PT x y ; PT.SIZE", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 8);
+    vm_free(vm);
+    free(bc);
+
+    const char* src =
+        "FIELDS PT x y ;\n"
+        "0x9000 3 OVER PT.x!\n"
+        "7 OVER PT.y!\n"
+        "dup PT.x@ swap PT.y@ +\n";
+    bc = must_compile(src, &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 10);
+    vm_free(vm);
+    free(bc);
+
+    src =
+        "MODULE UI\n"
+        "FIELDS BTN x y ;\n"
+        "MODULE MAIN\n"
+        "IMPORT UI\n"
+        "UI::BTN.SIZE\n";
+    bc = must_compile(src, &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 8);
+    vm_free(vm);
+    free(bc);
+
+    printf("  FIELDS: OK\n");
+}
+
 static void test_yield_and_explicit_halt(void) {
     printf("Testing YIELD and explicit HALT...\n");
     size_t len;
@@ -1041,6 +1151,9 @@ int main(void) {
     test_regression_menu_includes();
     test_deep_stack();
     test_empty_definition();
+    test_named_locals();
+    test_named_locals_no_tail_skip_unframe();
+    test_fields_directive();
     test_yield_and_explicit_halt();
 
     printf("\n=== ALL COMPILER TESTS PASSED ===\n\n");
