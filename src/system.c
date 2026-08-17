@@ -252,7 +252,7 @@ static void handle_sci(System* sys) {
             char ch = (char)((uint32_t)arg2 >> 24);
             int32_t x = (int32_t)(((uint32_t)arg2 >> 12) & 0xFFF);
             int32_t y = (int32_t)((uint32_t)arg2 & 0xFFF);
-            const uint8_t* font = pkg_system_chicago12x12_cff;
+            const uint8_t* font = chicago12x12_cff;
             if (arg1 != 0 && (uint32_t)arg1 < sys->memory_size) {
                 font = &sys->memory[arg1];
             }
@@ -486,7 +486,11 @@ void system_fill_pat(System* sys, int32_t x, int32_t y, int32_t w, int32_t h, ui
     for (int32_t py = y0; py < y1; py++) {
         uint8_t* row = fb + (size_t)py * stride + (size_t)x0 * 4;
         for (int32_t px = x0; px < x1; px++) {
-            int on = (pat == 1) ? ((py & 1) == 0) : (((px + py) & 1) == 0);
+            int on;
+            if (pat == 1) on = ((py & 1) == 0);
+            else if (pat == 2) on = ((px & 1) == 0) && ((py & 1) == 0);
+            else if (pat == 3) on = !((px & 1) && (py & 1));
+            else on = (((px + py) & 1) == 0);
             if (on) {
                 row[0] = 0xFF;
                 row[1] = r;
@@ -526,7 +530,7 @@ double system_normalize_draw_scale(System* sys, int scale) {
 }
 
 int system_measure_char(System* sys, char c, int scale) {
-    unsigned char* data = pkg_system_chicago12x12_cff;
+    unsigned char* data = chicago12x12_cff;
     int width = data[(uint8_t)c];
     if (width == 0) {
         if (c == ' ') width = 6;
@@ -541,7 +545,7 @@ int system_draw_char(System* sys, int32_t x, int32_t y, char c, uint32_t color, 
     int32_t sw = sys->screen_width;
     int32_t sh = sys->screen_height;
 
-    unsigned char* data = pkg_system_chicago12x12_cff;
+    unsigned char* data = chicago12x12_cff;
     int width = data[(uint8_t)c];
     if (width == 0 && c != ' ') return 0;
 
@@ -687,7 +691,7 @@ void system_set_pixel(System* sys, int32_t x, int32_t y, uint32_t color) {
 
 void system_draw_cff(System* sys, const uint8_t* font_data, char c, int32_t x, int32_t y, uint32_t color, int scale) {
     if (!sys || !font_data) return;
-    if (font_data == pkg_system_chicago12x12_cff) {
+    if (font_data == chicago12x12_cff) {
         system_draw_char(sys, x, y, c, color, scale);
         return;
     }

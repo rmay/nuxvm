@@ -327,7 +327,7 @@ static void test_draw_small_scale_multiplier(void) {
     sys->font_id = 2;
 
     int advance = system_measure_char(sys, 'x', 1);
-    unsigned char* data = pkg_system_chicago12x12_cff;
+    unsigned char* data = chicago12x12_cff;
     int raw_width = data[(uint8_t)'x'];
     if (raw_width == 0) raw_width = 6;
     assert(advance == raw_width);
@@ -537,6 +537,41 @@ static void test_child_vm_ns(void) {
     printf("  child VM + ns: OK\n");
 }
 
+static void test_dir_listing(void) {
+    printf("Testing /sys/dir listing...\n");
+    System* sys = system_create();
+    assert(sys != NULL);
+
+    int32_t fd = vfs_open(sys, "/sys/dir/apps", 0);
+    assert(fd >= 100);
+    char buf[4096];
+    memset(buf, 0, sizeof(buf));
+    int n = vfs_read(sys, fd, (uint8_t*)buf, (int)sizeof(buf) - 1);
+    assert(n > 0);
+    assert(strstr(buf, "UIDemo.lux") != NULL);
+    assert(strstr(buf, ".\n") == NULL);
+    vfs_close(sys, fd);
+
+    fd = vfs_open(sys, "/sys/dir/", 0);
+    assert(fd >= 100);
+    memset(buf, 0, sizeof(buf));
+    n = vfs_read(sys, fd, (uint8_t*)buf, (int)sizeof(buf) - 1);
+    assert(n > 0);
+    assert(strstr(buf, "apps/") != NULL);
+    vfs_close(sys, fd);
+
+    fd = vfs_open(sys, "/sys/dir", 0);
+    assert(fd >= 100);
+    memset(buf, 0, sizeof(buf));
+    n = vfs_read(sys, fd, (uint8_t*)buf, (int)sizeof(buf) - 1);
+    assert(n > 0);
+    assert(strstr(buf, "apps/") != NULL);
+    vfs_close(sys, fd);
+
+    system_free(sys);
+    printf("  dir listing: OK\n");
+}
+
 int main() {
     test_host_file();
     test_dummy_file();
@@ -553,6 +588,7 @@ int main() {
     test_bind_mount_aliasing();
     test_chan_lifecycle();
     test_child_vm_ns();
+    test_dir_listing();
     printf("All VFS tests passed!\n");
     return 0;
 }

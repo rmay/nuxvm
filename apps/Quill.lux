@@ -5,6 +5,7 @@ INCLUDE "lib/core.lux"
 
 INCLUDE "lib/str.lux"
 INCLUDE "lib/ui.lux"
+INCLUDE "lib/sf.lux"
 INCLUDE "lib/menu.lux"
 
 MODULE MAIN
@@ -15,6 +16,7 @@ IMPORT DRAW
 IMPORT EVENT
 IMPORT STR
 IMPORT UI
+IMPORT SF
 IMPORT MENU
 
 ( --- Window geometry --- )
@@ -26,11 +28,13 @@ IMPORT MENU
 @PANE_X     16 ;
 @PANE_Y     40 ;
 @PANE_H     644 ;
-@VISIBLE_LINES 24 ;
-@LINE_H     26 ;
+@LINE_H     20 ;
+@CARET_H    14 ;
 @FONT_SIZE  18 ;
 @COLUMNS-VAL 0x91007C ;
 @COLUMNS ( -- n ) COLUMNS-VAL LOADI ;
+@VISIBLE_LINES-VAL 0x910080 ;
+@VISIBLE_LINES ( -- n ) VISIBLE_LINES-VAL LOADI ;
 @STATUS_H   20 ;
 @STATUS_BUF 0x910300 ;
 
@@ -64,7 +68,7 @@ IMPORT MENU
 @hex-mode         0x910058 ;
 @scroll-y         0x91005C ;
 @HEX_LINE_BUF     0x910100 ;
-@SB_DATA          0x910200 ;
+@sb-bar           0x910200 ;
 @PATH_BUF         0x930000 ;
 @VFS_PATH_BUF     0x940000 ;
 @current-path-buf 0x950000 ;
@@ -87,28 +91,43 @@ IMPORT MENU
 
 ( --- Line cache --- )
 @rebuild-lines ( -- )
-    0 0 0 0 4 frame! ( 0:idx 1:row 2:col 3:line-start )
+    0 0 0 0 0 5 frame! ( 0:idx 1:row 2:col 3:line-start 4:last-space )
     0 LINE_STARTS STOREI
-    1 1 local! ( row = 1 )
+    1 1 local!
+    -1 4 local!
     [ 0 local@ file-len LOADI < ] [
-        FILE_BUF 0 local@ + load-byte 10 = [
-            0 2 local! ( col = 0 )
-            0 local@ 1 + 3 local! ( line-start = idx + 1 )
+        FILE_BUF 0 local@ + load-byte
+        dup 10 = [
+            drop
+            0 2 local!
+            0 local@ 1 + 3 local!
+            -1 4 local!
             3 local@ 1 local@ 4 * LINE_STARTS + STOREI
-            1 local@ 1 + 1 local! ( row++ )
+            1 local@ 1 + 1 local!
         ] [
-            2 local@ 1 + 2 local! ( col++ )
+            dup 32 = [ 0 local@ 4 local! ] ?
+            drop
+            2 local@ 1 + 2 local!
             2 local@ COLUMNS >= [
-                0 2 local! ( col = 0 )
-                0 local@ 1 + 3 local! ( line-start = idx + 1 )
-                3 local@ 1 local@ 4 * LINE_STARTS + STOREI
-                1 local@ 1 + 1 local! ( row++ )
+                4 local@ 3 local@ > [
+                    4 local@ 1 + 3 local!
+                    3 local@ 1 local@ 4 * LINE_STARTS + STOREI
+                    1 local@ 1 + 1 local!
+                    0 local@ 4 local@ - 2 local!
+                    -1 4 local!
+                ] [
+                    0 2 local!
+                    0 local@ 1 + 3 local!
+                    -1 4 local!
+                    3 local@ 1 local@ 4 * LINE_STARTS + STOREI
+                    1 local@ 1 + 1 local!
+                ] ?:
             ] ?
         ] ?:
-        0 local@ 1 + 0 local! ( idx++ )
+        0 local@ 1 + 0 local!
     ] |:
     1 local@ line-count STOREI
-    4 unframe!
+    5 unframe!
 ;
 
 ( --- Lazy Loading Helpers --- )
@@ -232,34 +251,65 @@ IMPORT MENU
     ] ?
 ;
 
+@sb-x ( -- x ) PANE_X PANE_W + ;
+@sb-max ( -- n ) get-total-lines VISIBLE_LINES - 0 MAX ;
+
+@sync-bar ( -- )
+    UI::SBAR_DRAG LOADI 0 = [
+        sb-bar LOADI
+        sb-x PANE_Y SB_W PANE_H
+        0 sb-max get-abs-scroll-y 0
+        UI::sbar-init
+        VISIBLE_LINES sb-bar LOADI UI::BAR_PAGE + STOREI
+    ] ?
+;
+
+@on-scroll ( val -- )
+    dup
+    get-total-lines dup 0 = [ drop 0 ] [
+        swap total-size LOADI swap mul-div
+    ] ?:
+    load-chunk-at
+    file-len LOADI 0 = [ 0 ] [
+        file-offset LOADI file-len LOADI rc-from-idx drop file-len LOADI mul-div
+    ] ?:
+    - scroll-y STOREI
+    1 needs-redraw STOREI
+;
+
 ( --- Buffer Helpers --- )
 
 @insert-char ( ch -- )
-    cursor LOADI FILE_BUF +
-    cursor LOADI FILE_BUF + 1 +
-    file-len LOADI cursor LOADI -
-    MEMORY::move-mem
-    FILE_BUF cursor LOADI + store-byte
-    file-len LOADI 1 + file-len STOREI
-    cursor LOADI 1 + cursor STOREI
-    1 dirty STOREI
-    rebuild-lines
+    file-len LOADI FILE_BUF_MAX >= [ drop ] [
+        cursor LOADI FILE_BUF +
+        cursor LOADI FILE_BUF + 1 +
+        file-len LOADI cursor LOADI -
+        MEMORY::move-mem
+        FILE_BUF cursor LOADI + store-byte
+        file-len LOADI 1 + file-len STOREI
+        cursor LOADI 1 + cursor STOREI
+        1 dirty STOREI
+        rebuild-lines
+    ] ?:
 ;
 
 @insert-bytes ( src n -- )
     2 frame! ( 0:n 1:src )
-    FILE_BUF cursor LOADI +                 ( src )
-    FILE_BUF cursor LOADI + 0 local@ +      ( dst )
-    file-len LOADI cursor LOADI -           ( count )
-    MEMORY::move-mem
-    1 local@                                 ( src )
-    FILE_BUF cursor LOADI +                  ( dst )
-    0 local@                                 ( count )
-    MEMORY::move-mem
-    file-len LOADI 0 local@ + file-len STOREI
-    cursor LOADI 0 local@ + cursor STOREI
-    1 dirty STOREI
-    rebuild-lines
+    file-len LOADI 0 local@ + FILE_BUF_MAX > [
+    ] [
+        FILE_BUF cursor LOADI +                 ( src )
+        FILE_BUF cursor LOADI + 0 local@ +      ( dst )
+        file-len LOADI cursor LOADI -           ( count )
+        MEMORY::move-mem
+        1 local@                                 ( src )
+        FILE_BUF cursor LOADI +                  ( dst )
+        0 local@                                 ( count )
+        MEMORY::move-mem
+        file-len LOADI 0 local@ + file-len STOREI
+        cursor LOADI 0 local@ + cursor STOREI
+        1 dirty STOREI
+        rebuild-lines
+    ] ?:
     2 unframe!
 ;
 
@@ -323,10 +373,95 @@ IMPORT MENU
     ] ?:
 ;
 
+@line-at ( r -- idx ) 4 * LINE_STARTS + LOADI ;
+
+@line-end-at ( r -- idx )
+    dup 1 + line-count LOADI < [
+        1 + line-at
+    ] [
+        drop file-len LOADI
+    ] ?:
+;
+
 @find-index-by-xy ( tx ty -- idx )
-    PANE_Y - LINE_H 2 / + LINE_H / scroll-y LOADI +
-    swap PANE_X - char-w 2 / + char-w /
-    idx-from-rc
+    PANE_Y - 0 MAX LINE_H / scroll-y LOADI +
+    dup line-count LOADI >= [
+        drop drop file-len LOADI
+    ] [
+        swap PANE_X - 0 MAX char-w 2 / + char-w /
+        idx-from-rc
+    ] ?:
+;
+
+@move-sel ( new-idx mods -- )
+    EVENT::MOD_SHIFT AND [
+        anchor LOADI -1 = [ cursor LOADI anchor STOREI ] ?
+    ] [
+        sel-clear
+    ] ?:
+    cursor STOREI
+;
+
+@go-left ( mods -- )
+    dup EVENT::MOD_SHIFT AND 0 = sel-active? AND [
+        drop
+        sel-lo cursor STOREI
+        sel-clear
+    ] [
+        cursor LOADI 0 > [ cursor LOADI 1 - ] [ cursor LOADI ] ?:
+        swap move-sel
+    ] ?:
+;
+
+@go-right ( mods -- )
+    dup EVENT::MOD_SHIFT AND 0 = sel-active? AND [
+        drop
+        sel-hi cursor STOREI
+        sel-clear
+    ] [
+        cursor LOADI file-len LOADI < [ cursor LOADI 1 + ] [ cursor LOADI ] ?:
+        swap move-sel
+    ] ?:
+;
+
+@go-up ( mods -- )
+    cursor LOADI rc-from-idx drop 1 - 0 MAX target-col LOADI idx-from-rc
+    swap move-sel
+;
+
+@go-down ( mods -- )
+    cursor LOADI rc-from-idx drop 1 + target-col LOADI idx-from-rc
+    swap move-sel
+;
+
+@go-page-up ( mods -- )
+    scroll-y LOADI VISIBLE_LINES - 0 MAX scroll-y STOREI
+    cursor LOADI rc-from-idx drop VISIBLE_LINES - 0 MAX target-col LOADI idx-from-rc
+    swap move-sel
+;
+
+@go-page-down ( mods -- )
+    scroll-y LOADI VISIBLE_LINES + get-total-lines VISIBLE_LINES - 0 MAX MIN scroll-y STOREI
+    cursor LOADI rc-from-idx drop VISIBLE_LINES + target-col LOADI idx-from-rc
+    swap move-sel
+;
+
+@go-home ( mods -- )
+    dup EVENT::MOD_CMD AND [
+        0 swap move-sel
+    ] [
+        cursor LOADI rc-from-idx drop 0 idx-from-rc
+        swap move-sel
+    ] ?:
+;
+
+@go-end ( mods -- )
+    dup EVENT::MOD_CMD AND [
+        file-len LOADI swap move-sel
+    ] [
+        cursor LOADI rc-from-idx drop COLUMNS idx-from-rc
+        swap move-sel
+    ] ?:
 ;
 
 ( --- Selection --- )
@@ -350,6 +485,41 @@ IMPORT MENU
     ] ?
 ;
 
+@sel-clear ( -- ) -1 anchor STOREI ;
+
+@sel-or-delete ( -- )
+    hex-mode LOADI [
+        sel-active? [ delete-selection ] ?
+    ] [
+        sel-active? [ delete-selection ] [ delete-char ] ?:
+    ] ?:
+;
+
+@type-bytes ( src n -- )
+    hex-mode LOADI [ drop drop ] [
+        sel-active? [ delete-selection ] ?
+        dup file-len LOADI + FILE_BUF_MAX > [ drop drop ] [
+            insert-bytes
+        ] ?:
+    ] ?:
+;
+
+@type-char ( ch -- )
+    hex-mode LOADI [ drop ] [
+        sel-active? [ delete-selection ] ?
+        file-len LOADI FILE_BUF_MAX >= [ drop ] [
+            insert-char
+        ] ?:
+    ] ?:
+;
+
+@select-all ( -- )
+    file-len LOADI 0 > [
+        0 anchor STOREI
+        file-len LOADI cursor STOREI
+    ] ?
+;
+
 ( --- Hex Helpers --- )
 @nibble-to-hex ( n -- ch ) dup 10 < [ 48 + ] [ 10 - 65 + ] ?: ;
 @byte-to-hex ( b ptr -- ) 2 frame! 1 local@ 4 SHR 15 AND nibble-to-hex 0 local@ store-byte 1 local@ 15 AND nibble-to-hex 0 local@ 1 + store-byte 2 unframe! ;
@@ -358,7 +528,8 @@ IMPORT MENU
 ( --- Rendering --- )
 
 @draw-caret ( x y -- )
-    APP::draw-fd rot rot 2 LINE_H CLR_CARET DRAW::fill-rect
+    LINE_H CARET_H - 2 / +
+    APP::draw-fd rot rot 2 CARET_H CLR_CARET DRAW::fill-rect
 ;
 
 @flush-seg ( start end x y -- )
@@ -374,16 +545,21 @@ IMPORT MENU
     sel-active? [
         sel-lo dup rc-from-idx 3 frame! ( 0:c 1:r 2:i )
         [ 2 local@ sel-hi < ] [
-            FILE_BUF 2 local@ + load-byte
             1 local@ scroll-y LOADI - ( rel_r )
             dup 0 >= OVER VISIBLE_LINES < AND [
                 APP::draw-fd 0 local@ char-w * PANE_X + swap LINE_H * PANE_Y + char-w LINE_H CLR_SEL DRAW::fill-rect
             ] [ drop ] ?:
-            dup 10 = [ drop 1 local@ 1 + 1 local! 0 0 local! ] [
-                drop 0 local@ 1 + 0 local!
-                0 local@ COLUMNS >= [ 1 local@ 1 + 1 local! 0 0 local! ] ?
-            ] ?:
             2 local@ 1 + 2 local!
+            1 local@ 1 + line-count LOADI < [
+                2 local@ 1 local@ 1 + line-at = [
+                    1 local@ 1 + 1 local!
+                    0 0 local!
+                ] [
+                    0 local@ 1 + 0 local!
+                ] ?:
+            ] [
+                0 local@ 1 + 0 local!
+            ] ?:
         ] |: 3 unframe!
     ] ?
 ;
@@ -417,86 +593,78 @@ IMPORT MENU
             LINE_H * PANE_Y + swap char-w * PANE_X + swap draw-caret
         ] [ drop drop ] ?:
     ] [
-        0 0 0 0 4 frame! ( 0:idx 1:r 2:c 3:seg-start )
-        scroll-y LOADI line-count LOADI 1 - MIN 0 MAX
-        dup 1 local!
-        4 * LINE_STARTS + LOADI
-        dup 0 local!
-        3 local!
-        0 2 local!
-        [ 0 local@ file-len LOADI <= ] [
-            0 local@ cursor LOADI = [ 2 local@ char-w * PANE_X + caret-x STOREI 1 local@ scroll-y LOADI - LINE_H * PANE_Y + caret-y STOREI ] ?
-            0 local@ file-len LOADI < [
-                FILE_BUF 0 local@ + load-byte dup 10 = [
-                    drop 1 local@ scroll-y LOADI - ( rel_r ) dup 0 >= OVER VISIBLE_LINES < AND [
-                        drop 3 local@ 0 local@ PANE_X 1 local@ scroll-y LOADI - LINE_H * PANE_Y + flush-seg
-                    ] [ drop ] ?:
-                    1 local@ 1 + 1 local! 0 2 local! 0 local@ 1 + 3 local!
-                ] [
-                    drop 2 local@ 1 + 2 local! 2 local@ COLUMNS >= [
-                        1 local@ scroll-y LOADI - ( rel_r ) dup 0 >= OVER VISIBLE_LINES < AND [
-                            drop 3 local@ 0 local@ 1 + PANE_X 1 local@ scroll-y LOADI - LINE_H * PANE_Y + flush-seg
-                        ] [ drop ] ?:
-                        1 local@ 1 + 1 local! 0 2 local! 0 local@ 1 + 3 local!
-                    ] ?
-                ] ?:
+        0 0 0 0 4 frame! ( 0:r 1:start 2:end 3:draw-end )
+        scroll-y LOADI 0 MAX 0 local!
+        [ 0 local@ line-count LOADI <
+          0 local@ scroll-y LOADI - VISIBLE_LINES < AND ]
+        [
+            0 local@ line-at 1 local!
+            0 local@ line-end-at 2 local!
+            2 local@ 3 local!
+            3 local@ 1 local@ > [
+                FILE_BUF 3 local@ 1 - + load-byte 10 = [
+                    3 local@ 1 - 3 local!
+                ] ?
             ] ?
-            1 local@ scroll-y LOADI - VISIBLE_LINES >= [ file-len LOADI 0 local! ] ?
+            1 local@ 3 local@ PANE_X
+            0 local@ scroll-y LOADI - LINE_H * PANE_Y +
+            flush-seg
+            cursor LOADI 1 local@ >= [
+                cursor LOADI 2 local@ <
+                cursor LOADI file-len LOADI = 2 local@ file-len LOADI = AND
+                OR [
+                    cursor LOADI 1 local@ - char-w * PANE_X + caret-x STOREI
+                    0 local@ scroll-y LOADI - LINE_H * PANE_Y + caret-y STOREI
+                ] ?
+            ] ?
             0 local@ 1 + 0 local!
         ] |:
-        1 local@ scroll-y LOADI - ( rel_r ) dup 0 >= OVER VISIBLE_LINES < AND [
-            drop 3 local@ file-len LOADI PANE_X 1 local@ scroll-y LOADI - LINE_H * PANE_Y + flush-seg
-        ] [ drop ] ?:
-        cursor LOADI rc-from-idx swap drop scroll-y LOADI - dup 0 >= OVER VISIBLE_LINES < AND [
+        4 unframe!
+        cursor LOADI rc-from-idx drop scroll-y LOADI -
+        dup 0 >= OVER VISIBLE_LINES < AND [
             drop caret-x LOADI caret-y LOADI draw-caret
         ] [ drop ] ?:
-        4 unframe!
     ] ?:
 ;
 
-@update-scrollbar ( -- )
-    SB_DATA PANE_X PANE_W + PANE_Y SB_W PANE_H 0
-    get-total-lines VISIBLE_LINES - 0 MAX
-    get-abs-scroll-y 32 UI::scrollbar-init
-;
-
 @draw-status-line ( -- )
-    ( Background status bar )
     APP::draw-fd PANE_X PANE_Y PANE_H + PANE_W STATUS_H 0xEEEEEE DRAW::fill-rect
-    ( Top border of status bar )
     APP::draw-fd PANE_X PANE_Y PANE_H + PANE_W 1 CLR_FRAME DRAW::draw-rect
-    
-    ( Format status text as X:Y )
+
+    current-path-buf STATUS_BUF STR::strcpy
+    dirty LOADI [
+        T" *" STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
+    ] ?
+    T"  " STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
     cursor LOADI rc-from-idx 1 + swap 1 + swap 2 frame! ( 0:c 1:r )
-    1 local@ STATUS_BUF STR::int-to-str
+    1 local@ STATUS_BUF STATUS_BUF STR::strlen + STR::int-to-str
     T":" STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
     0 local@ STATUS_BUF STATUS_BUF STR::strlen + STR::int-to-str
     2 unframe!
 
-    ( Draw status text )
-    APP::draw-fd PANE_X 4 + PANE_Y PANE_H + 2 + STATUS_BUF STATUS_BUF STR::strlen CLR_TEXT FONT_SIZE 2 - DRAW::draw-string
+    STATUS_BUF STR::strlen char-w * PANE_W 8 - > [
+        STATUS_BUF STR::strlen PANE_W 8 - char-w / -
+        STATUS_BUF +
+        dup STR::strlen
+    ] [
+        STATUS_BUF STATUS_BUF STR::strlen
+    ] ?:
+    APP::draw-fd PANE_X 4 + PANE_Y PANE_H + 2 + rot rot CLR_TEXT FONT_SIZE 2 - DRAW::draw-string
 ;
 
 @refresh-text-pane ( -- )
-    needs-redraw LOADI 1 = [
-        APP::draw-fd PANE_X PANE_Y PANE_W PANE_H CLR_BG DRAW::fill-rect
-        update-scrollbar APP::draw-fd SB_DATA UI::scrollbar-draw
-        draw-selection layout-and-render
-        draw-status-line
-        0 needs-redraw STOREI
-    ] ?
+    1 needs-redraw STOREI
 ;
 
 @refresh ( -- )
-    needs-redraw LOADI 1 = [
-        APP::draw-fd 0 0 WIN_W WIN_H CLR_BG DRAW::fill-rect
-        APP::draw-fd MARGIN 1 - PANE_Y 1 - PANE_W 2 + PANE_H 2 + CLR_FRAME DRAW::draw-rect
-        update-scrollbar APP::draw-fd SB_DATA UI::scrollbar-draw
-        draw-selection layout-and-render
-        draw-status-line
-        APP::draw-fd MB_ADDR WIN_W [ MENUS ] 3 MENU::menu-bar-draw
-        0 needs-redraw STOREI
-    ] ?
+    APP::draw-fd 0 0 WIN_W WIN_H CLR_BG DRAW::fill-rect
+    APP::draw-fd MARGIN 1 - PANE_Y 1 - PANE_W 2 + PANE_H 2 + CLR_FRAME DRAW::draw-rect
+    sync-bar
+    draw-selection layout-and-render
+    draw-status-line
+    APP::draw-fd MB_ADDR WIN_W [ MENUS ] 3 MENU::menu-bar-draw
+    UI::draw
+    0 needs-redraw STOREI
 ;
 
 @ensure-visible ( -- )
@@ -509,110 +677,135 @@ IMPORT MENU
 ( --- Interaction --- )
 
 @on-mouse ( mpkt -- )
-    ( Track button-held state )
-    dup EVENT::mouse-type EVENT::MOUSE_DOWN = [
-        1 mouse-held STOREI
-    ] ?
-    dup EVENT::mouse-type EVENT::MOUSE_UP = [
-        0 mouse-held STOREI
-    ] ?
-
-    MB_ADDR MENU::MB_ACTIVE + LOADI ( old-active )
-    MB_ADDR MENU::MB_HOVER + LOADI  ( old-hover )
-    get-abs-scroll-y                ( old-abs-sy )
-    cursor LOADI                    ( old-c )
-    4 frame! ( 0:old-c 1:old-abs-sy 2:old-hover 3:old-active )
-
-    ( Pass to menu bar )
-    MB_ADDR OVER EVENT::mouse-x 2 PICK EVENT::mouse-y 3 PICK EVENT::mouse-type EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: [ MENUS ] 3 MENU::menu-bar-update
-    
-    ( Pass to scrollbar if menu not active )
-    MB_ADDR MENU::MB_ACTIVE + LOADI -1 = [
-        SB_DATA OVER EVENT::mouse-x 2 PICK EVENT::mouse-y mouse-held LOADI UI::scrollbar-update ( new-abs-scroll-y )
-        dup 1 local@ = 0 = [
-            ( Jump to new absolute scroll position )
-            dup ( DUP new-abs-scroll-y for later subtraction )
-            get-total-lines dup 0 = [ drop 0 ] [
-                swap total-size LOADI swap mul-div
-            ] ?:
-            load-chunk-at
-            
-            file-len LOADI 0 = [ 0 ] [
-                file-offset LOADI file-len LOADI rc-from-idx drop file-len LOADI mul-div
-            ] ?:
-            - scroll-y STOREI
-        ] [ drop ] ?:
-    ] ?
-
-    ( Text interaction )
-    MB_ADDR MENU::MB_ACTIVE + LOADI -1 = [
-        dup EVENT::mouse-y PANE_Y >= [
-            dup EVENT::mouse-type EVENT::MOUSE_DOWN = [
-                dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy
-                dup cursor STOREI
-                anchor STOREI
-                check-lazy-load
-            ] ?
-            dup EVENT::mouse-type EVENT::MOUSE_MOVE = mouse-held LOADI 1 = AND [
-                dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy cursor STOREI
-                check-lazy-load
-            ] ?
-        ] ?
-    ] ?
-    
-    ensure-visible
-
-    ( Conditional Refresh )
-    cursor LOADI 0 local@ = 0 = ( cursor changed? )
-    get-abs-scroll-y 1 local@ = 0 = ( scroll changed? )
-    OR ( either changed? )
-    MB_ADDR MENU::MB_ACTIVE + LOADI 3 local@ = 0 = ( active menu changed? )
-    OR ( any of above changed? )
-    [
-        1 needs-redraw STOREI
-        refresh
+    SF::open? [
+        SF::mouse
     ] [
-        ( Otherwise, if only hover changed -> draw menu only )
-        MB_ADDR MENU::MB_HOVER + LOADI 2 local@ = 0 = [
-            APP::draw-fd MB_ADDR WIN_W [ MENUS ] 3 MENU::menu-bar-draw
+        dup EVENT::mouse-type EVENT::MOUSE_DOWN = [
+            1 mouse-held STOREI
         ] ?
+        dup EVENT::mouse-type EVENT::MOUSE_UP = [
+            0 mouse-held STOREI
+        ] ?
+
+        MB_ADDR MENU::MB_ACTIVE + LOADI
+        MB_ADDR MENU::MB_HOVER + LOADI
+        get-abs-scroll-y
+        cursor LOADI
+        4 frame! ( 0:old-c 1:old-abs-sy 2:old-hover 3:old-active )
+
+        MB_ADDR OVER EVENT::mouse-x 2 PICK EVENT::mouse-y 3 PICK EVENT::mouse-type EVENT::MOUSE_DOWN = [ 1 ] [ 0 ] ?: [ MENUS ] 3 MENU::menu-bar-update
+
+        MB_ADDR MENU::MB_ACTIVE + LOADI -1 = [
+            dup UI::feed
+        ] ?
+
+        MB_ADDR MENU::MB_ACTIVE + LOADI -1 =
+        UI::SBAR_DRAG LOADI 0 = AND [
+            dup EVENT::mouse-x sb-x < [
+                dup EVENT::mouse-y PANE_Y >=
+                OVER EVENT::mouse-y PANE_Y PANE_H + < AND [
+                    dup EVENT::mouse-type EVENT::MOUSE_DOWN = [
+                        dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy
+                        dup cursor STOREI
+                        anchor STOREI
+                        check-lazy-load
+                    ] ?
+                    dup EVENT::mouse-type EVENT::MOUSE_MOVE = mouse-held LOADI 1 = AND [
+                        dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy cursor STOREI
+                        check-lazy-load
+                    ] ?
+                ] ?
+            ] ?
+        ] ?
+
+        ensure-visible
+
+        cursor LOADI 0 local@ = 0 =
+        get-abs-scroll-y 1 local@ = 0 = OR
+        MB_ADDR MENU::MB_ACTIVE + LOADI 3 local@ = 0 = OR
+        MB_ADDR MENU::MB_HOVER + LOADI 2 local@ = 0 = OR
+        [ 1 needs-redraw STOREI ] ?
+
+        4 unframe!
+        drop
     ] ?:
-    4 unframe!
+;
+
+@handle-cmd ( key -- )
+    32 OR
+    dup 99 = [ drop snarf-selection ] [
+    dup 120 = [ drop menu-cut ] [
+    dup 118 = [ drop paste-snarf ] [
+    dup 115 = [ drop save-file ] [
+    dup 97 = [ drop select-all ] [
     drop
+    ] ?: ] ?: ] ?: ] ?: ] ?:
 ;
 
 @on-kbd ( kpkt -- )
-    dup EVENT::kbd-type EVENT::KEY_DOWN = [
-        1 needs-redraw STOREI
-        dup EVENT::kbd-key
-        dup EVENT::KEY_BACKSPACE = [ drop delete-char ] [
-            dup STR::printable? [ insert-char ] [
-                dup EVENT::KEY_UP_ARROW = [ drop cursor LOADI rc-from-idx drop 1 - 0 MAX target-col LOADI idx-from-rc cursor STOREI ] [
-                    dup EVENT::KEY_DOWN_ARROW = [ drop cursor LOADI rc-from-idx drop 1 + target-col LOADI idx-from-rc cursor STOREI ] [
-                        dup EVENT::KEY_LEFT_ARROW = [ drop cursor-left ] [
-                            dup EVENT::KEY_RIGHT_ARROW = [ drop cursor-right ] [
-                                dup EVENT::KEY_PAGE_UP = [ drop
-                                    scroll-y LOADI VISIBLE_LINES - 0 MAX scroll-y STOREI
-                                    cursor LOADI rc-from-idx drop VISIBLE_LINES - 0 MAX target-col LOADI idx-from-rc cursor STOREI
-                                ] [
-                                    dup EVENT::KEY_PAGE_DOWN = [ drop
-                                        scroll-y LOADI VISIBLE_LINES + get-total-lines VISIBLE_LINES - 0 MAX MIN scroll-y STOREI
-                                        cursor LOADI rc-from-idx drop VISIBLE_LINES + target-col LOADI idx-from-rc cursor STOREI
-                                    ] [
-                                        drop
-                                    ] ?:
-                                ] ?:
-                            ] ?:
-                        ] ?:
-                    ] ?:
-                ] ?:
+    SF::open? [
+        SF::kbd
+    ] [
+        dup EVENT::kbd-type EVENT::KEY_DOWN = [
+            1 needs-redraw STOREI
+            dup EVENT::kbd-mods
+            over EVENT::kbd-key
+            2 frame! ( 0:key 1:mods )
+            1 local@ EVENT::MOD_CMD EVENT::MOD_CTRL OR AND
+            0 local@ 32 OR dup 97 >= SWAP 122 <= AND AND [
+                0 local@ handle-cmd
+            ] [
+                0 local@ EVENT::KEY_BACKSPACE = [
+                    sel-or-delete
+                ] [
+                0 local@ EVENT::KEY_ENTER = [
+                    10 type-char
+                ] [
+                0 local@ EVENT::KEY_TAB = [
+                    T"    " 4 type-bytes
+                ] [
+                0 local@ EVENT::KEY_LEFT_ARROW = [
+                    1 local@ go-left
+                ] [
+                0 local@ EVENT::KEY_RIGHT_ARROW = [
+                    1 local@ go-right
+                ] [
+                0 local@ EVENT::KEY_UP_ARROW = [
+                    1 local@ go-up
+                ] [
+                0 local@ EVENT::KEY_DOWN_ARROW = [
+                    1 local@ go-down
+                ] [
+                0 local@ EVENT::KEY_PAGE_UP = [
+                    1 local@ go-page-up
+                ] [
+                0 local@ EVENT::KEY_PAGE_DOWN = [
+                    1 local@ go-page-down
+                ] [
+                0 local@ EVENT::KEY_HOME = [
+                    1 local@ go-home
+                ] [
+                0 local@ EVENT::KEY_END = [
+                    1 local@ go-end
+                ] [
+                0 local@ STR::printable? [
+                    0 local@ type-char
+                ] ?
+                ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
             ] ?:
-        ] ?:
-        check-lazy-load
-        1 needs-redraw STOREI
-        ensure-visible refresh-text-pane
-        cursor LOADI rc-from-idx swap drop target-col STOREI
-    ] ? drop
+            0 local@ EVENT::KEY_UP_ARROW =
+            0 local@ EVENT::KEY_DOWN_ARROW = OR
+            0 local@ EVENT::KEY_PAGE_UP = OR
+            0 local@ EVENT::KEY_PAGE_DOWN = OR
+            0 = [
+                cursor LOADI rc-from-idx swap drop target-col STOREI
+            ] ?
+            2 unframe!
+            check-lazy-load
+            ensure-visible
+            sync-bar
+        ] ? drop
+    ] ?:
 ;
 
 ( --- Snarf & File I/O --- )
@@ -628,18 +821,18 @@ IMPORT MENU
 ;
 
 @paste-snarf ( -- )
-    delete-selection
-    T"/sys/snarf" VFS::open dup 0 >= [
-        ( fd )
-        dup PASTE_BUF PASTE_MAX VFS::read     ( fd n )
-        swap VFS::close drop                  ( n )
-        dup 0 > [
-            PASTE_BUF swap insert-bytes
+    hex-mode LOADI [ ] [
+        T"/sys/snarf" VFS::open dup 0 >= [
+            dup PASTE_BUF PASTE_MAX VFS::read
+            swap VFS::close drop
+            dup 0 > [
+                PASTE_BUF swap type-bytes
+            ] [ drop ] ?:
+            1 needs-redraw STOREI
+            ensure-visible
+            cursor LOADI rc-from-idx swap drop target-col STOREI
         ] [ drop ] ?:
-        1 needs-redraw STOREI
-        ensure-visible refresh-text-pane
-        cursor LOADI rc-from-idx swap drop target-col STOREI
-    ] [ drop ] ?:
+    ] ?:
 ;
 
 @save-file ( -- )
@@ -653,56 +846,35 @@ IMPORT MENU
     ] ?
     save-current-chunk
     0 dirty STOREI
+    1 needs-redraw STOREI
 ;
 
-@load-file ( -- )
-    refresh
-    T"/sys/dialog" VFS::open ( fd )
-    dup 0 < [ drop refresh ] [
-        dup T"open" 4 VFS::write drop
-
-        ( Poll for result, storing length )
-        0 ( len )
-        [ dup 0 <= ] [
-            drop (the 0 len)
-            dup PATH_BUF 1024 VFS::read ( fd len )
-            dup 0 <= [ VFS::yield drop ] ?
-        ] |:
-        ( fd len )
-        
-        ( Null terminate )
-        over over PATH_BUF + 0 swap store-byte drop ( fd len )
-        
-        ( Close dialog )
-        swap VFS::close drop ( len )
-
-        PATH_BUF T"cancel" STR::streq [
-            drop refresh
-        ] [
-            ( Load file )
-            drop ( len )
-            file-fd LOADI 0 >= [ file-fd LOADI VFS::close drop ] ?
-            
-            PATH_BUF @current-path-buf STR::strcpy
-            
-            @current-path-buf make-vfs-path 0 VFS::open-mode file-fd STOREI
-            file-fd LOADI 0 >= [
-                file-fd LOADI VFS::stat total-size STOREI
-                0 file-offset STOREI
-                file-fd LOADI FILE_BUF CHUNK_SIZE VFS::read
-                dup file-len STOREI
-                dup orig-chunk-len STOREI
-                
-                0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI
-                rebuild-lines
-            ] [
-                0 total-size STOREI 0 file-len STOREI 0 orig-chunk-len STOREI -1 file-fd STOREI
-                rebuild-lines
-            ] ?:
-            refresh
-        ] ?:
+@on-pick ( path -- )
+    1 frame! ( 0:path )
+    file-fd LOADI 0 >= [ file-fd LOADI VFS::close drop ] ?
+    0 local@
+    dup load-byte 47 = [ 1 + ] ?
+    @current-path-buf STR::strcpy
+    @current-path-buf make-vfs-path 0 VFS::open-mode file-fd STOREI
+    file-fd LOADI 0 >= [
+        file-fd LOADI VFS::stat total-size STOREI
+        0 file-offset STOREI
+        file-fd LOADI FILE_BUF CHUNK_SIZE VFS::read
+        dup file-len STOREI
+        dup orig-chunk-len STOREI
+        0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI
+        rebuild-lines
+    ] [
+        0 total-size STOREI 0 file-len STOREI 0 orig-chunk-len STOREI -1 file-fd STOREI
+        rebuild-lines
     ] ?:
+    1 needs-redraw STOREI
+    1 unframe!
 ;
+
+@on-cancel ( -- ) 1 needs-redraw STOREI ;
+
+@menu-load ( -- ) SF::show ;
 
 ( --- Menus --- )
 @menu-new ( -- )
@@ -710,32 +882,38 @@ IMPORT MENU
     0 file-len STOREI 0 cursor STOREI -1 anchor STOREI 0 file-offset STOREI 0 total-size STOREI 0 orig-chunk-len STOREI
     T"new.quill" @current-path-buf STR::strcpy
     rebuild-lines
-    refresh
+    1 needs-redraw STOREI
 ;
 @menu-quit ( -- ) HALT ;
-@menu-cut ( -- ) sel-active? [ snarf-selection delete-selection refresh ] ? ;
+@menu-cut ( -- )
+    hex-mode LOADI [ ] [
+        sel-active? [ snarf-selection delete-selection 1 needs-redraw STOREI ] ?
+    ] ?:
+;
+@menu-select-all ( -- ) select-all 1 needs-redraw STOREI ;
 
 @MI_FILE ( i -- l s c )
     dup 0 = [ drop T"New"  0 [ menu-new ]  ] [
     dup 1 = [ drop T"Save" 0 [ save-file ] ] [
-    dup 2 = [ drop T"Load" 0 [ load-file ] ] [
+    dup 2 = [ drop T"Load" 0 [ menu-load ] ] [
     dup 3 = [ drop T"Quit" 0 [ menu-quit ] ] [
     drop 0 0 0 ] ?: ] ?: ] ?: ] ?:
 ;
 @MN_FILE ( -- l q c ) T"File" [ MI_FILE ] 4 ;
 
 @MI_EDIT ( i -- l s c )
-    dup 0 = [ drop T"Cut"   0 [ menu-cut ]        ] [
-    dup 1 = [ drop T"Snarf" 0 [ snarf-selection ] ] [
-    dup 2 = [ drop T"Paste" 0 [ paste-snarf ]     ] [
-    drop 0 0 0 ] ?: ] ?: ] ?:
+    dup 0 = [ drop T"Cut"        0 [ menu-cut ]        ] [
+    dup 1 = [ drop T"Snarf"      0 [ snarf-selection ] ] [
+    dup 2 = [ drop T"Paste"      0 [ paste-snarf ]     ] [
+    dup 3 = [ drop T"Select All" 0 [ menu-select-all ] ] [
+    drop 0 0 0 ] ?: ] ?: ] ?: ] ?:
 ;
-@MN_EDIT ( -- l q c ) T"Edit" [ MI_EDIT ] 3 ;
+@MN_EDIT ( -- l q c ) T"Edit" [ MI_EDIT ] 4 ;
 
 @toggle-hex ( -- )
     hex-mode LOADI 0 = [ 1 ] [ 0 ] ?: hex-mode STOREI
     -1 anchor STOREI
-    refresh
+    1 needs-redraw STOREI
     cursor LOADI rc-from-idx swap drop target-col STOREI
 ;
 @MI_VIEW ( i -- l s c ) dup 0 = [ drop T"Toggle Hex" 0 [ toggle-hex ] ] [ drop 0 0 0 ] ?: ;
@@ -746,6 +924,16 @@ IMPORT MENU
     dup 1 = [ drop [ MN_EDIT ] ] [
     dup 2 = [ drop [ MN_VIEW ] ] [
     drop 0 ] ?: ] ?: ] ?:
+;
+
+@on-frame ( -- )
+    UI::handle
+    needs-redraw LOADI [
+        refresh
+    ] [
+        UI::draw
+    ] ?:
+    SF::open? [ SF::draw ] ?
 ;
 
 ( --- Main --- )
@@ -760,9 +948,17 @@ IMPORT MENU
     ( Fit columns + PANE_W so scrollbar at WIN right abuts the bordered text pane with zero gap.
       This fixes the "UI is off" detached sb + overflowing long lines. )
     WIN_W PANE_X - SB_W - char-w-val LOADI / COLUMNS-VAL STOREI
+    PANE_H LINE_H / VISIBLE_LINES-VAL STOREI
     
     -1 MB_ADDR MENU::MB_ACTIVE + STOREI
     -1 MB_ADDR MENU::MB_HOVER + STOREI
+
+    UI::new
+    T"V" sb-x PANE_Y SB_W PANE_H 0 0 0 [ on-scroll ] UI::vscroll
+    T"V" UI::comp-find UI::C_PAY + LOADI sb-bar STOREI
+    VISIBLE_LINES sb-bar LOADI UI::BAR_PAGE + STOREI
+    [ on-pick ] SF::on-ok!
+    [ on-cancel ] SF::on-cancel!
     
     T"manuscript.quill" @current-path-buf STR::strcpy
     @current-path-buf make-vfs-path 0 VFS::open-mode file-fd STOREI
@@ -780,7 +976,11 @@ IMPORT MENU
     0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI 0 drag STOREI 0 mouse-held STOREI
     1 needs-redraw STOREI
     
-    refresh [ on-mouse ] APP::on-mouse! [ on-kbd ] APP::on-kbd! [ refresh ] APP::on-resume! APP::loop
+    [ on-mouse ] APP::on-mouse!
+    [ on-kbd ] APP::on-kbd!
+    [ on-frame ] APP::on-frame!
+    [ refresh ] APP::on-resume!
+    APP::loop
 ;
 MAIN::start
 HALT

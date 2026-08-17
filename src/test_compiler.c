@@ -945,6 +945,7 @@ static void test_regression_menu_includes(void) {
         "MODULE MAIN\n"
         "INCLUDE \"lib/app.lux\"\n"
         "INCLUDE \"lib/ui.lux\"\n"
+        "INCLUDE \"lib/sf.lux\"\n"
         "INCLUDE \"lib/menu.lux\"\n";
     size_t len;
     uint8_t* bc = must_compile(src, &len);

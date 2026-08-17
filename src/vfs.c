@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <errno.h>
@@ -488,6 +489,28 @@ static int dir_close(VFSFile* file) {
     return 0;
 }
 
+typedef struct {
+    char name[256];
+    int is_dir;
+} DirListEnt;
+
+static int dir_list_cmp(const void* a, const void* b) {
+    const DirListEnt* ea = (const DirListEnt*)a;
+    const DirListEnt* eb = (const DirListEnt*)b;
+    int c = strcasecmp(ea->name, eb->name);
+    if (c) return c;
+    return strcmp(ea->name, eb->name);
+}
+
+static int dir_is_directory(const char* host, const struct dirent* ent) {
+    if (ent->d_type == DT_DIR) return 1;
+    if (ent->d_type == DT_REG) return 0;
+    char full[1400];
+    snprintf(full, sizeof(full), "%s/%s", host, ent->d_name);
+    struct stat st;
+    return stat(full, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
 static VFSFile* create_dir_file(System* sys, const char* subpath) {
     char full[512];
     if (!resolve_host_path(sys, subpath, full, sizeof(full))) return NULL;
@@ -495,34 +518,58 @@ static VFSFile* create_dir_file(System* sys, const char* subpath) {
     DIR* dir = opendir(full);
     if (!dir) return NULL;
 
+    DirListEnt* ents = NULL;
+    int nent = 0, ecap = 0;
+    struct dirent* ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        if (nent == ecap) {
+            int ncap = ecap ? ecap * 2 : 32;
+            DirListEnt* grown = (DirListEnt*)realloc(ents, (size_t)ncap * sizeof(DirListEnt));
+            if (!grown) break;
+            ents = grown;
+            ecap = ncap;
+        }
+        strncpy(ents[nent].name, ent->d_name, sizeof(ents[nent].name) - 1);
+        ents[nent].name[sizeof(ents[nent].name) - 1] = '\0';
+        ents[nent].is_dir = dir_is_directory(full, ent);
+        nent++;
+    }
+    closedir(dir);
+
+    if (ents && nent > 1) {
+        qsort(ents, (size_t)nent, sizeof(DirListEnt), dir_list_cmp);
+    }
+
     size_t cap = 4096;
     size_t used = 0;
     char* listing = (char*)malloc(cap);
     if (!listing) {
-        closedir(dir);
+        free(ents);
         return NULL;
     }
     listing[0] = '\0';
 
-    struct dirent* ent;
-    while ((ent = readdir(dir)) != NULL) {
-        size_t need = used + strlen(ent->d_name) + 2;
+    for (int i = 0; i < nent; i++) {
+        size_t n = strlen(ents[i].name);
+        size_t extra = ents[i].is_dir ? 1 : 0;
+        size_t need = used + n + extra + 2;
         if (need > cap) {
             cap *= 2;
+            if (cap < need) cap = need;
             char* nb = (char*)realloc(listing, cap);
             if (!nb) break;
             listing = nb;
         }
         if (used > 0) {
             listing[used++] = '\n';
-            listing[used] = '\0';
         }
-        size_t n = strlen(ent->d_name);
-        memcpy(listing + used, ent->d_name, n);
+        memcpy(listing + used, ents[i].name, n);
         used += n;
+        if (ents[i].is_dir) listing[used++] = '/';
         listing[used] = '\0';
     }
-    closedir(dir);
+    free(ents);
 
     DirFileData* d = (DirFileData*)calloc(1, sizeof(DirFileData));
     VFSFile* file = (VFSFile*)calloc(1, sizeof(VFSFile));
@@ -794,7 +841,7 @@ static int font_widths_read(VFSFile* file, uint8_t* buf, int len) {
     if (offset >= 256) return 0;
     long to_copy = 256 - offset;
     if (to_copy > len) to_copy = len;
-    memcpy(buf, pkg_system_chicago12x12_cff + offset, (size_t)to_copy);
+    memcpy(buf, chicago12x12_cff + offset, (size_t)to_copy);
     file->private_data = (void*)(intptr_t)(offset + to_copy);
     return (int)to_copy;
 }
@@ -898,6 +945,9 @@ static VFSFile* open_path(System* sys, const char* path, int32_t flags) {
         const char* kind = "ctl";
         if (slash && slash[1]) kind = slash + 1;
         return create_vm_file(sys, kind, vid);
+    }
+    if (strcmp(path, "/sys/dir") == 0) {
+        return create_dir_file(sys, "");
     }
     if (strncmp(path, "/sys/dir/", 9) == 0) {
         return create_dir_file(sys, path + 9);

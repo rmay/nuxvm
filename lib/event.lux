@@ -26,6 +26,8 @@ MODULE EVENT
 @KEY_RIGHT_ARROW 20 ;
 @KEY_PAGE_UP     21 ;
 @KEY_PAGE_DOWN   22 ;
+@KEY_HOME        23 ;
+@KEY_END         24 ;
 
 ( --- Modifier Flag Bits (mirror src/cloister.c current_modifiers) --- )
 @MOD_SHIFT 1 ;

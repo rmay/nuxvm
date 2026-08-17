@@ -10,7 +10,7 @@
 
 #include <SDL.h>
 
-// Geometry constants match pkg/system/dialog.go exactly.
+// Dialog geometry: 400x300, list 330x210, item height 20, scrollbar 20.
 #define DLG_W 400
 #define DLG_H 300
 #define DLG_LIST_W 330
@@ -126,7 +126,7 @@ static int dlg_draw_char(System* sys, int32_t x, int32_t y, char c, uint32_t col
     uint8_t* fb = sys->screen_pixels;
     if (!fb) return 0;
     int32_t sw = sys->screen_width, sh = sys->screen_height;
-    unsigned char* data = pkg_system_chicago12x12_cff;
+    unsigned char* data = chicago12x12_cff;
     int width = data[(uint8_t)c];
     if (width == 0) {
         if (c == ' ') return 7;
