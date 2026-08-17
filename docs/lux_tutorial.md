@@ -327,16 +327,16 @@ End the field list with `;`. Without it, the next word is treated as another fie
 
 ### A tiny window
 
-Graphics live in `lib/ui.lux`. After `APP::init` and `UI::ctlnew`:
+Graphics live in `lib/ui.lux`. After `APP::init` and `UI::new`:
 
 ```forth
-T"ok" UI::button  20 20 140 56 UI::rect!  T"OK" UI::text!
-[ UI::mouse ] APP::on-mouse!
-[ UI::draw  ] APP::on-frame!
+T"OK" 20 20 59 20 [ on-ok ] UI::button
+[ UI::feed ] APP::on-mouse!
+[ on-frame ] APP::on-frame!
 APP::loop
 ```
 
-Rects are min/max (`20 20 140 56` is 120×36). See [`ui.md`](ui.md) for the full controlset.
+`on-frame` should call `UI::handle` then `UI::draw`. See [`ui.md`](ui.md).
 
 ### File Inclusion
 
@@ -569,7 +569,7 @@ This block transforms [acc i] → [acc*i (i-1)] each iteration.
 
 #### Times Combinator #::
 Expects: ... data quot count → executes quot count times on data.
-In compiler.go's compileTimes(): Uses temp memory (allocTemp) for quot and count, DUP/JZ to check count>0, STORE/LOAD to dip (execute quot on data below control vars), DEC count, JMP loop.
+In compiler.c's compile_combinator() for `#:`: PUSHR the quot and count, PEEKR/JZ to check count>0, CALLSTACK the quot, DEC count, JMP loop.
 Each iteration (dipping under i quot count):
 - `dup`: [acc i i]
 - `rot`: Cycles left [i i acc] // [a b c] → [b c a]

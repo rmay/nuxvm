@@ -6,9 +6,8 @@
 #include "system.h"
 
 // In-process software file-open dialog, drawn over the app framebuffer.
-// Port of the Go fileDialogModal (pkg/system/dialog.go): same geometry,
-// same keyboard/mouse behavior, result delivered via
-// system_set_dialog_result ("cancel" or a sandbox-relative path).
+// Geometry and keyboard/mouse behavior are fixed; the result is delivered
+// via system_set_dialog_result ("cancel" or a sandbox-relative path).
 
 typedef struct {
     char name[256];

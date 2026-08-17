@@ -1,8 +1,10 @@
-( Checkbox, radios, volume slider, and System 6 buttons on the UI message ring.
+( Checkbox, radios, volume slider, scrollbars, System 6 buttons,
+  and a Standard File picker (SF::).
   ./bin/cloister apps/UIDemo.bin )
 
 INCLUDE "lib/app.lux"
 INCLUDE "lib/ui.lux"
+INCLUDE "lib/sf.lux"
 
 MODULE DEMO
 
@@ -11,118 +13,133 @@ IMPORT UI
 IMPORT DRAW
 IMPORT EVENT
 IMPORT STR
+IMPORT SF
 
-@last      0x8A0014 ;
-@last-ev   0x8A0018 ;
-@last-name 0x8A001C ;
-@grp       0x8A0020 ;
-@nbuf      0x8A0030 ;
+@last 0x8A0014 ;
+@kind 0x8A0018 ;
+@msg  0x8A001C ;
+@grp  0x8A0020 ;
+@nbuf 0x8A0030 ;
 
-@on-ui ( name ev val -- )
-    SWAP
-    dup last-ev STOREI
-    dup UI::EV_SELECT = SWAP UI::EV_PRESS = OR [
-        drop
-        last-name STOREI
+@on-hidden ( val -- )
+    dup last STOREI
+    dup SF::hidden!
+    0 kind STOREI
+    [
+        T"message: checked"
     ] [
-        last STOREI
-        drop
+        T"message: off"
     ] ?:
+    msg STOREI
 ;
 
-@msg-radio ( -- )
-    last-name LOADI T"align-left" STR::streq [
-        DRAW::fd 56 258 T"message: Left" UI::CLR_TEXT 1 DRAW::draw-str
-    ] [
-        last-name LOADI T"align-center" STR::streq [
-            DRAW::fd 56 258 T"message: Center" UI::CLR_TEXT 1 DRAW::draw-str
-        ] [
-            DRAW::fd 56 258 T"message: Right" UI::CLR_TEXT 1 DRAW::draw-str
-        ] ?:
-    ] ?:
+@on-pick ( path -- )
+    6 kind STOREI
+    msg STOREI
 ;
 
-@msg-press ( -- )
-    last-name LOADI T"ok" STR::streq [
-        DRAW::fd 56 258 T"message: OK" UI::CLR_TEXT 1 DRAW::draw-str
-    ] [
-        DRAW::fd 56 258 T"message: Cancel" UI::CLR_TEXT 1 DRAW::draw-str
-    ] ?:
+@on-left   ( val -- ) drop 1 kind STOREI T"message: Left"   msg STOREI ;
+@on-center ( val -- ) drop 1 kind STOREI T"message: Center" msg STOREI ;
+@on-right  ( val -- ) drop 1 kind STOREI T"message: Right"  msg STOREI ;
+@on-ok     ( val -- ) drop 3 kind STOREI T"message: OK"     msg STOREI ;
+@on-cancel ( val -- ) drop 3 kind STOREI T"message: Cancel" msg STOREI ;
+@on-open   ( val -- ) drop SF::show ;
+
+@on-vol ( val -- )
+    last STOREI
+    2 kind STOREI
 ;
 
-@msg-check ( -- )
-    last LOADI [
-        DRAW::fd 56 258 T"message: checked" UI::CLR_TEXT 1 DRAW::draw-str
-    ] [
-        DRAW::fd 56 258 T"message: off" UI::CLR_TEXT 1 DRAW::draw-str
-    ] ?:
+@on-vbar ( val -- )
+    last STOREI
+    4 kind STOREI
 ;
 
-@msg-value ( -- )
-    last LOADI nbuf STR::int-to-str
-    DRAW::fd 56 258 T"message: " UI::CLR_TEXT 1 DRAW::draw-str
-    DRAW::fd 119 258 nbuf UI::CLR_TEXT 1 DRAW::draw-str
+@on-hbar ( val -- )
+    last STOREI
+    5 kind STOREI
+;
+
+@on-mouse ( mpkt -- )
+    SF::open? [
+        SF::mouse
+    ] [
+        UI::feed
+    ] ?:
 ;
 
 @on-kbd ( kpkt -- )
-    dup EVENT::kbd-type EVENT::KEY_DOWN = [
-        EVENT::kbd-key EVENT::KEY_ENTER = [
-            UI::bn-return drop
-        ] ?
+    SF::open? [
+        SF::kbd
     ] [
-        drop
+        dup EVENT::kbd-type EVENT::KEY_DOWN = [
+            EVENT::kbd-key EVENT::KEY_ENTER = [
+                UI::enter drop
+            ] ?
+        ] [
+            drop
+        ] ?:
     ] ?:
 ;
 
 @on-frame ( -- )
-    [ UI::poll ]
-    [ on-ui ]
-    |:
-
+    UI::handle
     DRAW::fd 0 0 APP::width APP::height UI::CLR_BG DRAW::fill-rect
-    DRAW::fd 40 40 400 236 UI::CLR_BORDER DRAW::fill-rect
-    DRAW::fd 41 41 398 234 UI::CLR_BG DRAW::fill-rect
+    DRAW::fd 40 40 500 236 UI::CLR_BORDER DRAW::fill-rect
+    DRAW::fd 41 41 498 234 UI::CLR_BG DRAW::fill-rect
     DRAW::fd 56 56 T"Click a control" UI::CLR_TEXT 1 DRAW::draw-str
     DRAW::fd 56 124 T"Alignment" UI::CLR_TEXT 1 DRAW::draw-str
     DRAW::fd 268 56 T"Speaker Volume" UI::CLR_TEXT 1 DRAW::draw-str
-    last-ev LOADI UI::EV_PRESS = [
-        msg-press
-    ] [
-        last-ev LOADI UI::EV_SELECT = [
-            msg-radio
+    DRAW::fd 400 56 T"Scroll" UI::CLR_TEXT 1 DRAW::draw-str
+    kind LOADI 2 =
+    kind LOADI 4 = OR
+    kind LOADI 5 = OR [
+        last LOADI nbuf STR::int-to-str
+        kind LOADI 4 = [
+            DRAW::fd 56 258 T"vscroll: " UI::CLR_TEXT 1 DRAW::draw-str
+            DRAW::fd 119 258 nbuf UI::CLR_TEXT 1 DRAW::draw-str
         ] [
-            last-ev LOADI UI::EV_VALUE = [
-                msg-value
-            ] [
-                msg-check
-            ] ?:
-        ] ?:
+        kind LOADI 5 = [
+            DRAW::fd 56 258 T"hscroll: " UI::CLR_TEXT 1 DRAW::draw-str
+            DRAW::fd 119 258 nbuf UI::CLR_TEXT 1 DRAW::draw-str
+        ] [
+            DRAW::fd 56 258 T"message: " UI::CLR_TEXT 1 DRAW::draw-str
+            DRAW::fd 119 258 nbuf UI::CLR_TEXT 1 DRAW::draw-str
+        ] ?: ] ?:
+    ] [
+        msg LOADI 0 > [
+            DRAW::fd 56 258 msg LOADI UI::CLR_TEXT 1 DRAW::draw-str
+        ] ?
     ] ?:
-    UI::cb-draw
-    UI::rd-draw
-    UI::sl-draw
-    UI::bn-draw
+    UI::draw
+    SF::open? [
+        SF::draw
+    ] ?
 ;
 
 @start
     T"UI Demo" APP::init
-    UI::uinnew
+    UI::new
     0 last STOREI
-    0 last-ev STOREI
-    0 last-name STOREI
-    T"show-hidden" 56 88 12 T"Show hidden files" UI::cb-add
+    0 kind STOREI
+    0 msg STOREI
+    0 SF::hidden!
+    [ on-pick ] SF::on-ok!
+    T"Show hidden files" 56 88 200 12 [ on-hidden ] UI::checkbox
     T"align" grp STOREI
-    T"align-left"   grp LOADI 56 140 12 T"Left"   UI::rd-add
-    T"align-center" grp LOADI 56 164 12 T"Center" UI::rd-add
-    T"align-right"  grp LOADI 56 188 12 T"Right"  UI::rd-add
-    T"align-left" UI::rd-pick
-    T"align-left" last-name STOREI
-    UI::EV_SELECT last-ev STOREI
-    T"volume" 320 80 17 112 0 7 4 UI::sl-add
-    T"cancel" 248 228 59 20 T"Cancel" UI::bn-add
-    T"ok"     319 228 59 20 T"OK"     UI::bn-add
-    T"ok" UI::bn-default
-    [ UI::feed ] APP::on-mouse!
+    T"Left"   56 140 80 12 grp LOADI [ on-left ]   UI::radio
+    T"Center" 56 164 80 12 grp LOADI [ on-center ] UI::radio
+    T"Right"  56 188 80 12 grp LOADI [ on-right ]  UI::radio
+    T"Left" UI::rd-pick
+    1 on-left
+    T"Volume" 320 80 17 112 0 7 4 [ on-vol ] UI::slider
+    T"V" 412 80 16 112 0 20 6 [ on-vbar ] UI::vscroll
+    T"H" 360 200 120 16 0 20 8 [ on-hbar ] UI::hscroll
+    T"Open..." 173 228 67 20 [ on-open ]   UI::button
+    T"Cancel"  248 228 59 20 [ on-cancel ] UI::button
+    T"OK"      319 228 59 20 [ on-ok ]     UI::button
+    T"OK" UI::default
+    [ on-mouse ] APP::on-mouse!
     [ on-kbd ] APP::on-kbd!
     [ on-frame ] APP::on-frame!
     APP::loop

@@ -1,4 +1,4 @@
-# Understanding lexer.go
+# Understanding the Lexer (`src/lexer.c`)
 
 ## What is a Lexer?
 
@@ -12,24 +12,22 @@ Output: [Number(5), Number(10), Word(+), Word(.), EOF]
 
 ## How to Use It
 
-```go
-package main
-
+```c
+#include <stdio.h>
 #include "lexer.h"
 
-func main() {
-    source := "5 10 + ."
-    
-    lexer := lux.NewLexer(source)
-    tokens, err := lexer.Tokenize()
-    
-    if err != nil {
-        panic(err)
+int main(void) {
+    TokenList* list = tokenize("5 10 + .");
+    if (!list) {
+        return 1;
     }
-    
-    for _, token := range tokens {
-        fmt.Printf("%v: %s\n", token.Type, token.Value)
+
+    for (size_t i = 0; i < list->count; i++) {
+        printf("%d: %s\n", list->tokens[i].type, list->tokens[i].value);
     }
+
+    token_list_free(list);
+    return 0;
 }
 ```
 
@@ -37,26 +35,27 @@ func main() {
 
 The lexer recognizes several types of tokens:
 
-1. **TokenNumber** - Numbers: `42`, `-17`, `0xFF`
-2. **TokenWord** - Identifiers and Combinators: `+`, `DUP`, `?:`, `|:`, `#:`
-3. **TokenAtSign** - Start of definition: `@`
-4. **TokenSemicolon** - End of definition: `;`
-5. **TokenComment** - Comments: `( ... )` or `// ...` (filtered out)
-6. **TokenString** - Quoted strings: `"Hello"`
-7. **TokenLBracket / TokenRBracket** - Quotations: `[` and `]`
-8. **TokenEOF** - End of file
+1. **TOKEN_NUMBER** - Numbers: `42`, `-17`, `0xFF`
+2. **TOKEN_WORD** - Identifiers and Combinators: `+`, `DUP`, `?:`, `|:`, `#:`
+3. **TOKEN_AT_SIGN** - Start of definition: `@`
+4. **TOKEN_SEMICOLON** - End of definition: `;`
+5. **TOKEN_COMMENT** - Comments: `( ... )` or `// ...` (filtered out)
+6. **TOKEN_STRING** - Quoted strings: `"Hello"`
+7. **TOKEN_LBRACKET / TOKEN_RBRACKET** - Quotations: `[` and `]`
+8. **TOKEN_EOF** - End of file
 
 ## Key Functions
 
 ### Main API
-```go
-lexer := NewLexer(source)        // Create lexer
-tokens, err := lexer.Tokenize()  // Get all tokens
+```c
+TokenList* list = tokenize(source);  // Tokenize a C string
+token_list_free(list);               // Free tokens and the list
 ```
 
 ### Helper Function
-```go
-value, err := ParseNumber(token)  // Convert number token to int32
+```c
+int32_t value;
+parse_number(&token, &value);        // Convert a number token to int32
 ```
 
 ## How It Works
@@ -78,7 +77,7 @@ Step 10: End of input → emit TokenEOF
 
 ## Testing It
 
-Save as `lexer_test.go` in the same package and run:
+The lexer is covered by `src/test_compiler.c`. From the repo root:
 
 ```bash
 make test
@@ -98,24 +97,24 @@ The lexer's job is done once it produces clean tokens!
 ## Common Patterns
 
 ### Reading a Number
-```go
-if l.isNumberStart(ch) {
-    return l.readNumber()
+```c
+if (is_number_start(ch)) {
+    return read_number(l);
 }
 ```
 
 ### Reading a Word
-```go
-// Read until whitespace or special char
-for !unicode.IsSpace(ch) && ch != '(' && ch != ')' {
-    word.WriteByte(l.advance())
+```c
+/* Read until whitespace or a special character */
+while (!isspace(ch) && ch != '(' && ch != ')') {
+    word[n++] = advance(l);
 }
 ```
 
 ### Skipping Whitespace
-```go
-for unicode.IsSpace(l.peek()) {
-    l.advance()
+```c
+while (isspace(peek(l))) {
+    advance(l);
 }
 ```
 

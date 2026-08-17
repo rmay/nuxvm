@@ -1,4 +1,4 @@
-( UI Widget Library — Buttons, Checkboxes, Sliders )
+( UI Widget Library — Buttons, Checkboxes, Sliders, Scrollbars )
 
 INCLUDE "lib/draw.lux"
 INCLUDE "lib/time.lux"
@@ -1126,6 +1126,433 @@ MODULE UI
     4 unframe!
 ;
 
+( ===== Component scrollbar (System 6, vertical and horizontal) ===== )
+( Struct (56 bytes): x y w h min max val dragging off pos horiz part page )
+@BAR_SIZE     56 ;
+@BAR_X         0 ;
+@BAR_Y         4 ;
+@BAR_W         8 ;
+@BAR_H        12 ;
+@BAR_MIN      16 ;
+@BAR_MAX      20 ;
+@BAR_VAL      24 ;
+@BAR_DRG      28 ;
+@BAR_OFF      32 ;
+@BAR_POS      36 ;
+@BAR_HORIZ    40 ;
+@BAR_PART     44 ;
+@BAR_PAGE     48 ;
+
+@sbar-arrow ( addr -- n )
+    dup BAR_HORIZ + LOADI [
+        BAR_H + LOADI
+    ] [
+        BAR_W + LOADI
+    ] ?:
+;
+
+@sbar-track ( addr -- n )
+    dup sbar-arrow
+    SWAP
+    dup BAR_HORIZ + LOADI [
+        BAR_W + LOADI
+    ] [
+        BAR_H + LOADI
+    ] ?:
+    SWAP 2 * -
+;
+
+@sbar-thumb-n ( addr -- n )
+    sbar-track
+    dup 16 > [
+        drop 16
+    ] [
+        1 MAX
+    ] ?:
+;
+
+@sbar-travel ( addr -- n )
+    dup sbar-track SWAP sbar-thumb-n - 0 MAX
+;
+
+@sbar-origin ( addr -- px )
+    dup BAR_HORIZ + LOADI [
+        dup BAR_X + LOADI SWAP sbar-arrow +
+    ] [
+        dup BAR_Y + LOADI SWAP sbar-arrow +
+    ] ?:
+;
+
+@sbar-pos-from-val ( addr val -- pos )
+    2 frame! ( 0:val 1:addr )
+    1 local@ sbar-travel
+    dup 0 = [
+        drop
+        1 local@ sbar-origin
+    ] [
+        0 local@ 1 local@ BAR_MIN + LOADI -
+        0 MAX
+        1 local@ BAR_MAX + LOADI 1 local@ BAR_MIN + LOADI - MIN
+        OVER *
+        1 local@ BAR_MAX + LOADI 1 local@ BAR_MIN + LOADI -
+        dup 0 = [
+            drop drop drop
+            1 local@ sbar-origin
+        ] [
+            /
+            1 local@ sbar-origin +
+            SWAP drop
+        ] ?:
+    ] ?:
+    2 unframe!
+;
+
+@sbar-init ( addr x y w h min max val horiz -- )
+    9 frame! ( 0:horiz 1:val 2:max 3:min 4:h 5:w 6:y 7:x 8:addr )
+    7 local@ 8 local@ BAR_X + STOREI
+    6 local@ 8 local@ BAR_Y + STOREI
+    5 local@ 8 local@ BAR_W + STOREI
+    4 local@ 8 local@ BAR_H + STOREI
+    3 local@ 8 local@ BAR_MIN + STOREI
+    2 local@ 8 local@ BAR_MAX + STOREI
+    1 local@ 3 local@ MAX 2 local@ MIN 8 local@ BAR_VAL + STOREI
+    0 8 local@ BAR_DRG + STOREI
+    0 8 local@ BAR_OFF + STOREI
+    0 local@ 8 local@ BAR_HORIZ + STOREI
+    0 8 local@ BAR_PART + STOREI
+    2 local@ 3 local@ - 8 / 1 MAX 8 local@ BAR_PAGE + STOREI
+    8 local@ 8 local@ BAR_VAL + LOADI sbar-pos-from-val
+    8 local@ BAR_POS + STOREI
+    9 unframe!
+;
+
+@sbar-sync ( addr -- changed? )
+    1 frame! ( 0:addr )
+    0 local@ sbar-travel
+    dup 0 > [
+        0 local@ BAR_POS + LOADI 0 local@ sbar-origin -
+        0 MAX OVER MIN
+        0 local@ BAR_MAX + LOADI 0 local@ BAR_MIN + LOADI -
+        *
+        OVER 2 / +
+        SWAP /
+        0 local@ BAR_MIN + LOADI +
+        0 local@ BAR_MIN + LOADI MAX
+        0 local@ BAR_MAX + LOADI MIN
+        0 local@ BAR_VAL + LOADI OVER = [
+            drop 0
+        ] [
+            0 local@ BAR_VAL + STOREI
+            1
+        ] ?:
+    ] [
+        drop 0
+    ] ?:
+    1 unframe!
+;
+
+@sbar-set-val ( addr new -- changed? )
+    2 frame! ( 0:new 1:addr )
+    0 local@ 1 local@ BAR_MIN + LOADI MAX
+    1 local@ BAR_MAX + LOADI MIN
+    1 local@ BAR_VAL + LOADI OVER = [
+        drop 0
+    ] [
+        1 local@ BAR_VAL + STOREI
+        1 local@ 1 local@ BAR_VAL + LOADI sbar-pos-from-val
+        1 local@ BAR_POS + STOREI
+        1
+    ] ?:
+    2 unframe!
+;
+
+@sbar-hit? ( addr mx my -- bool )
+    3 frame! ( 0:my 1:mx 2:addr )
+    1 local@ 0 local@
+    2 local@ BAR_X + LOADI
+    2 local@ BAR_Y + LOADI
+    2 local@ BAR_W + LOADI
+    2 local@ BAR_H + LOADI
+    in-rect?
+    3 unframe!
+;
+
+@sbar-which-v ( addr mx my -- part )
+    3 frame! ( 0:my 1:mx 2:addr )
+    1 local@ 0 local@
+    2 local@ BAR_X + LOADI
+    2 local@ BAR_Y + LOADI
+    2 local@ BAR_W + LOADI
+    2 local@ sbar-arrow
+    in-rect? [
+        1
+    ] [
+        1 local@ 0 local@
+        2 local@ BAR_X + LOADI
+        2 local@ BAR_Y + LOADI 2 local@ BAR_H + LOADI + 2 local@ sbar-arrow -
+        2 local@ BAR_W + LOADI
+        2 local@ sbar-arrow
+        in-rect? [
+            2
+        ] [
+            1 local@ 0 local@
+            2 local@ BAR_X + LOADI
+            2 local@ BAR_POS + LOADI
+            2 local@ BAR_W + LOADI
+            2 local@ sbar-thumb-n
+            in-rect? [
+                5
+            ] [
+                0 local@ 2 local@ BAR_POS + LOADI < [ 3 ] [ 4 ] ?:
+            ] ?:
+        ] ?:
+    ] ?:
+    3 unframe!
+;
+
+@sbar-which-h ( addr mx my -- part )
+    3 frame! ( 0:my 1:mx 2:addr )
+    1 local@ 0 local@
+    2 local@ BAR_X + LOADI
+    2 local@ BAR_Y + LOADI
+    2 local@ sbar-arrow
+    2 local@ BAR_H + LOADI
+    in-rect? [
+        1
+    ] [
+        1 local@ 0 local@
+        2 local@ BAR_X + LOADI 2 local@ BAR_W + LOADI + 2 local@ sbar-arrow -
+        2 local@ BAR_Y + LOADI
+        2 local@ sbar-arrow
+        2 local@ BAR_H + LOADI
+        in-rect? [
+            2
+        ] [
+            1 local@ 0 local@
+            2 local@ BAR_POS + LOADI
+            2 local@ BAR_Y + LOADI
+            2 local@ sbar-thumb-n
+            2 local@ BAR_H + LOADI
+            in-rect? [
+                5
+            ] [
+                1 local@ 2 local@ BAR_POS + LOADI < [ 3 ] [ 4 ] ?:
+            ] ?:
+        ] ?:
+    ] ?:
+    3 unframe!
+;
+
+@sbar-which ( addr mx my -- part )
+    3 frame! ( 0:my 1:mx 2:addr )
+    2 local@ BAR_MAX + LOADI 2 local@ BAR_MIN + LOADI <= [
+        0
+    ] [
+        2 local@ 1 local@ 0 local@ sbar-hit? [
+            2 local@ BAR_HORIZ + LOADI [
+                2 local@ 1 local@ 0 local@ sbar-which-h
+            ] [
+                2 local@ 1 local@ 0 local@ sbar-which-v
+            ] ?:
+        ] [
+            0
+        ] ?:
+    ] ?:
+    3 unframe!
+;
+
+@sbar-press ( addr mx my -- changed? )
+    3 frame! ( 0:my 1:mx 2:addr )
+    2 local@ 1 local@ 0 local@ sbar-which
+    dup 2 local@ BAR_PART + STOREI
+    dup 0 = [
+        drop 0
+    ] [
+        1 2 local@ BAR_DRG + STOREI
+        dup 5 = [
+            drop
+            2 local@ BAR_HORIZ + LOADI [ 1 local@ ] [ 0 local@ ] ?:
+            2 local@ BAR_POS + LOADI -
+            2 local@ BAR_OFF + STOREI
+            0
+        ] [
+            dup 1 = [
+                drop
+                2 local@ 2 local@ BAR_VAL + LOADI 1 - sbar-set-val
+            ] [
+                dup 2 = [
+                    drop
+                    2 local@ 2 local@ BAR_VAL + LOADI 1 + sbar-set-val
+                ] [
+                    dup 3 = [
+                        drop
+                        2 local@ 2 local@ BAR_VAL + LOADI 2 local@ BAR_PAGE + LOADI - sbar-set-val
+                    ] [
+                        drop
+                        2 local@ 2 local@ BAR_VAL + LOADI 2 local@ BAR_PAGE + LOADI + sbar-set-val
+                    ] ?:
+                ] ?:
+            ] ?:
+        ] ?:
+    ] ?:
+    3 unframe!
+;
+
+@sbar-drag ( addr mx my -- changed? )
+    3 frame! ( 0:my 1:mx 2:addr )
+    2 local@ BAR_PART + LOADI 5 = [
+        2 local@ BAR_HORIZ + LOADI [ 1 local@ ] [ 0 local@ ] ?:
+        2 local@ BAR_OFF + LOADI -
+        2 local@ sbar-origin MAX
+        2 local@ sbar-origin 2 local@ sbar-travel + MIN
+        2 local@ BAR_POS + STOREI
+        2 local@ sbar-sync
+    ] [
+        0
+    ] ?:
+    3 unframe!
+;
+
+@sbar-release ( addr -- )
+    1 frame! ( 0:addr )
+    0 0 local@ BAR_DRG + STOREI
+    0 0 local@ BAR_PART + STOREI
+    0 local@ 0 local@ BAR_VAL + LOADI sbar-pos-from-val
+    0 local@ BAR_POS + STOREI
+    1 unframe!
+;
+
+@sbar-tri-up ( fd x y s color -- )
+    5 frame! ( 0:color 1:s 2:y 3:x 4:fd )
+    4 local@ 3 local@ 1 local@ 7 - 2 / + 3 + 2 local@ 1 local@ 4 - 2 / +     1 1 0 local@ DRAW::fill-rect
+    4 local@ 3 local@ 1 local@ 7 - 2 / + 2 + 2 local@ 1 local@ 4 - 2 / + 1 + 3 1 0 local@ DRAW::fill-rect
+    4 local@ 3 local@ 1 local@ 7 - 2 / + 1 + 2 local@ 1 local@ 4 - 2 / + 2 + 5 1 0 local@ DRAW::fill-rect
+    4 local@ 3 local@ 1 local@ 7 - 2 / +     2 local@ 1 local@ 4 - 2 / + 3 + 7 1 0 local@ DRAW::fill-rect
+    5 unframe!
+;
+
+@sbar-tri-dn ( fd x y s color -- )
+    5 frame! ( 0:color 1:s 2:y 3:x 4:fd )
+    4 local@ 3 local@ 1 local@ 7 - 2 / +     2 local@ 1 local@ 4 - 2 / +     7 1 0 local@ DRAW::fill-rect
+    4 local@ 3 local@ 1 local@ 7 - 2 / + 1 + 2 local@ 1 local@ 4 - 2 / + 1 + 5 1 0 local@ DRAW::fill-rect
+    4 local@ 3 local@ 1 local@ 7 - 2 / + 2 + 2 local@ 1 local@ 4 - 2 / + 2 + 3 1 0 local@ DRAW::fill-rect
+    4 local@ 3 local@ 1 local@ 7 - 2 / + 3 + 2 local@ 1 local@ 4 - 2 / + 3 + 1 1 0 local@ DRAW::fill-rect
+    5 unframe!
+;
+
+@sbar-tri-lt ( fd x y s color -- )
+    5 frame! ( 0:color 1:s 2:y 3:x 4:fd )
+    4 local@ 3 local@ 1 local@ 4 - 2 / +     2 local@ 1 local@ 7 - 2 / + 3 + 1 1 0 local@ DRAW::fill-rect
+    4 local@ 3 local@ 1 local@ 4 - 2 / + 1 + 2 local@ 1 local@ 7 - 2 / + 2 + 1 3 0 local@ DRAW::fill-rect
+    4 local@ 3 local@ 1 local@ 4 - 2 / + 2 + 2 local@ 1 local@ 7 - 2 / + 1 + 1 5 0 local@ DRAW::fill-rect
+    4 local@ 3 local@ 1 local@ 4 - 2 / + 3 + 2 local@ 1 local@ 7 - 2 / +     1 7 0 local@ DRAW::fill-rect
+    5 unframe!
+;
+
+@sbar-tri-rt ( fd x y s color -- )
+    5 frame! ( 0:color 1:s 2:y 3:x 4:fd )
+    4 local@ 3 local@ 1 local@ 4 - 2 / +     2 local@ 1 local@ 7 - 2 / +     1 7 0 local@ DRAW::fill-rect
+    4 local@ 3 local@ 1 local@ 4 - 2 / + 1 + 2 local@ 1 local@ 7 - 2 / + 1 + 1 5 0 local@ DRAW::fill-rect
+    4 local@ 3 local@ 1 local@ 4 - 2 / + 2 + 2 local@ 1 local@ 7 - 2 / + 2 + 1 3 0 local@ DRAW::fill-rect
+    4 local@ 3 local@ 1 local@ 4 - 2 / + 3 + 2 local@ 1 local@ 7 - 2 / + 3 + 1 1 0 local@ DRAW::fill-rect
+    5 unframe!
+;
+
+@sbar-end ( fd x y w h pressed dir -- )
+    7 frame! ( 0:dir 1:pressed 2:h 3:w 4:y 5:x 6:fd )
+    1 local@ [
+        6 local@ 5 local@ 4 local@ 3 local@ 2 local@ CLR_BORDER DRAW::fill-rect
+    ] [
+        6 local@ 5 local@ 4 local@ 3 local@ 2 local@ frame-rect
+    ] ?:
+    6 local@ 5 local@ 4 local@
+    3 local@ 2 local@ MIN
+    1 local@ [ CLR_BG ] [ CLR_BORDER ] ?:
+    0 local@
+    dup 0 = [
+        drop sbar-tri-up
+    ] [
+        dup 1 = [
+            drop sbar-tri-dn
+        ] [
+            dup 2 = [
+                drop sbar-tri-lt
+            ] [
+                drop sbar-tri-rt
+            ] ?:
+        ] ?:
+    ] ?:
+    7 unframe!
+;
+
+@sbar-thumb ( fd addr -- )
+    2 frame! ( 0:addr 1:fd )
+    0 local@ BAR_HORIZ + LOADI [
+        1 local@
+        0 local@ BAR_POS + LOADI
+        0 local@ BAR_Y + LOADI
+        0 local@ sbar-thumb-n
+        0 local@ BAR_H + LOADI
+        frame-rect
+    ] [
+        1 local@
+        0 local@ BAR_X + LOADI
+        0 local@ BAR_POS + LOADI
+        0 local@ BAR_W + LOADI
+        0 local@ sbar-thumb-n
+        frame-rect
+    ] ?:
+    2 unframe!
+;
+
+@sbar-draw ( fd addr -- )
+    2 frame! ( 0:addr 1:fd )
+    1 local@ 0 local@ BAR_X + LOADI 0 local@ BAR_Y + LOADI
+    0 local@ BAR_W + LOADI 0 local@ BAR_H + LOADI dither-rect
+    1 local@ 0 local@ BAR_X + LOADI 0 local@ BAR_Y + LOADI
+    0 local@ BAR_W + LOADI 0 local@ BAR_H + LOADI CLR_BORDER DRAW::draw-rect
+    0 local@ BAR_HORIZ + LOADI [
+        1 local@
+        0 local@ BAR_X + LOADI
+        0 local@ BAR_Y + LOADI
+        0 local@ sbar-arrow
+        0 local@ BAR_H + LOADI
+        0 local@ BAR_PART + LOADI 1 =
+        2
+        sbar-end
+        1 local@
+        0 local@ BAR_X + LOADI 0 local@ BAR_W + LOADI + 0 local@ sbar-arrow -
+        0 local@ BAR_Y + LOADI
+        0 local@ sbar-arrow
+        0 local@ BAR_H + LOADI
+        0 local@ BAR_PART + LOADI 2 =
+        3
+        sbar-end
+    ] [
+        1 local@
+        0 local@ BAR_X + LOADI
+        0 local@ BAR_Y + LOADI
+        0 local@ BAR_W + LOADI
+        0 local@ sbar-arrow
+        0 local@ BAR_PART + LOADI 1 =
+        0
+        sbar-end
+        1 local@
+        0 local@ BAR_X + LOADI
+        0 local@ BAR_Y + LOADI 0 local@ BAR_H + LOADI + 0 local@ sbar-arrow -
+        0 local@ BAR_W + LOADI
+        0 local@ sbar-arrow
+        0 local@ BAR_PART + LOADI 2 =
+        1
+        sbar-end
+    ] ?:
+    0 local@ BAR_MAX + LOADI 0 local@ BAR_MIN + LOADI >
+    0 local@ sbar-track 0 > AND [
+        1 local@ 0 local@ sbar-thumb
+    ] ?
+    2 unframe!
+;
+
 ( ===== Listbox ===== )
 ( Struct (56 bytes): x(4) y(4) w(4) h(4) buf-ptr(4) count(4) selected(4) sb-addr(4) item-h(4) callback(4) was-down(4) dbl-callback(4) last-time(4) last-idx(4) )
 @LB_SIZE      56 ;
@@ -1335,36 +1762,50 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     reset
 ;
 
-( ===== UI message ring (name ev val) ===== )
+( ===== Components ===== )
+( One table. Every kind has text, x y w h, and a handler quotation. )
+( feed posts to the ring; handle runs handlers after feed returns. )
 @Q_BASE  0x8E1000 ;
 @Q_MAX   8 ;
 @Q_HEAD  0x8E0F00 ;
 @Q_TAIL  0x8E0F04 ;
 @Q_CNT   0x8E0F08 ;
 
-@CB_TAB  0x8E1400 ;
 @CB_SLAB 0x8E1600 ;
 @CB_N    0x8E0F0C ;
 @CB_MAX  8 ;
 
-@RD_TAB  0x8E1700 ;
 @RD_SLAB 0x8E1800 ;
 @RD_N    0x8E0F10 ;
 @RD_MAX  8 ;
 
-@SL_TAB   0x8E1900 ;
 @SL_SLAB  0x8E1A00 ;
 @SL_N     0x8E0F14 ;
 @SL_DRAG  0x8E0F18 ;
 @SL_MAXN  8 ;
 
-@BN_TAB   0x8E1C00 ;
 @BN_SLAB  0x8E1D00 ;
 @BN_N     0x8E0F24 ;
 @BN_DRAG  0x8E0F28 ;
-@BN_MAX   8 ;
+@BN_MAX   16 ;
 
-@uinnew ( -- )
+@SBAR_SLAB 0x8E2800 ;
+@SBAR_N    0x8E0F48 ;
+@SBAR_DRAG 0x8E0F4C ;
+@SBAR_MAXN 8 ;
+
+@COMP_TAB 0x8E2000 ;
+@COMP_N   0x8E0F2C ;
+@COMP_MAX 32 ;
+@C_SIZE   24 ;
+@C_TEXT    0 ;
+@C_KIND    4 ;
+@C_HAND    8 ;
+@C_PAY    12 ;
+@C_GRP    16 ;
+@C_FLG    20 ;
+
+@new ( -- )
     0 Q_HEAD STOREI
     0 Q_TAIL STOREI
     0 Q_CNT STOREI
@@ -1374,7 +1815,12 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     0 SL_DRAG STOREI
     0 BN_N STOREI
     0 BN_DRAG STOREI
+    0 SBAR_N STOREI
+    0 SBAR_DRAG STOREI
+    0 COMP_N STOREI
 ;
+
+@uinnew ( -- ) new ;
 
 @post ( name ev val -- )
     3 frame! ( 0:val 1:ev 2:name )
@@ -1406,52 +1852,54 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     ] ?:
 ;
 
-@cb-add ( name x y size label -- )
-    5 frame! ( 0:label 1:size 2:y 3:x 4:name )
-    CB_N LOADI CB_MAX < [
-        CB_SLAB CB_N LOADI CB_SIZE * +
-        dup 3 local@ 2 local@ 1 local@ 0 local@ checkbox-init
-        CB_TAB CB_N LOADI 8 * +
-        4 local@ OVER STOREI
-        4 + STOREI
-        CB_N LOADI 1 + CB_N STOREI
-    ] ?
-    5 unframe!
-;
+@comp-at ( i -- row ) C_SIZE * COMP_TAB + ;
 
-@cb-draw ( -- )
-    0
-    [ dup CB_N LOADI < ] [
-        CB_TAB OVER 8 * + 4 + LOADI
-        DRAW::fd SWAP checkbox-draw
-        1 +
-    ] |:
-    drop
-;
-
-( RD_TAB row: name(0) group(4) payload(8) )
-@rd-add ( name group x y size label -- )
-    6 frame! ( 0:label 1:size 2:y 3:x 4:group 5:name )
-    RD_N LOADI RD_MAX < [
-        RD_SLAB RD_N LOADI CB_SIZE * +
-        dup 3 local@ 2 local@ 1 local@ 0 local@ checkbox-init
-        RD_TAB RD_N LOADI 12 * +
-        5 local@ OVER STOREI
-        4 local@ OVER 4 + STOREI
-        8 + STOREI
-        RD_N LOADI 1 + RD_N STOREI
+@comp-put ( text kind handler payload group flags -- )
+    6 frame! ( 0:flags 1:group 2:payload 3:handler 4:kind 5:text )
+    COMP_N LOADI COMP_MAX < [
+        COMP_N LOADI comp-at
+        5 local@ OVER C_TEXT + STOREI
+        4 local@ OVER C_KIND + STOREI
+        3 local@ OVER C_HAND + STOREI
+        2 local@ OVER C_PAY  + STOREI
+        1 local@ OVER C_GRP  + STOREI
+        0 local@ SWAP C_FLG  + STOREI
+        COMP_N LOADI 1 + COMP_N STOREI
     ] ?
     6 unframe!
+;
+
+@comp-find ( name -- row | 0 )
+    0 SWAP 2 frame! ( 0:name 1:row )
+    0 1 local!
+    0
+    [ dup COMP_N LOADI < ] [
+        dup comp-at
+        dup C_TEXT + LOADI 0 local@ STR::streq [
+            1 local!
+            COMP_N LOADI
+        ] [
+            drop
+            1 +
+        ] ?:
+    ] |:
+    drop
+    1 local@
+    2 unframe!
 ;
 
 @rd-clear-group ( group except -- )
     2 frame! ( 0:except 1:group )
     0
-    [ dup RD_N LOADI < ] [
-        RD_TAB OVER 12 * +
-        dup 4 + LOADI 1 local@ STR::streq [
-            dup 8 + LOADI 0 local@ = 0 = [
-                8 + LOADI 0 SWAP CB_CHK + STOREI
+    [ dup COMP_N LOADI < ] [
+        dup comp-at
+        dup C_KIND + LOADI K_RADIO = [
+            dup C_GRP + LOADI 1 local@ STR::streq [
+                dup C_PAY + LOADI 0 local@ = 0 = [
+                    C_PAY + LOADI 0 SWAP CB_CHK + STOREI
+                ] [
+                    drop
+                ] ?:
             ] [
                 drop
             ] ?:
@@ -1466,89 +1914,51 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 
 @rd-pick ( name -- )
     1 frame! ( 0:name )
-    0
-    [ dup RD_N LOADI < ] [
-        RD_TAB OVER 12 * +
-        dup LOADI 0 local@ STR::streq [
-            dup 4 + LOADI
-            OVER 8 + LOADI
-            rd-clear-group
-            8 + LOADI
-            1 SWAP CB_CHK + STOREI
-            drop
-            RD_N LOADI
-        ] [
-            drop
-            1 +
-        ] ?:
-    ] |:
-    drop
+    0 local@ comp-find dup 0 = [
+        drop
+    ] [
+        dup C_GRP + LOADI
+        OVER C_PAY + LOADI
+        rd-clear-group
+        C_PAY + LOADI
+        1 SWAP CB_CHK + STOREI
+    ] ?:
     1 unframe!
 ;
 
-@rd-draw ( -- )
-    0
-    [ dup RD_N LOADI < ] [
-        RD_TAB OVER 12 * + 8 + LOADI
-        DRAW::fd SWAP radio-draw
-        1 +
-    ] |:
-    drop
-;
-
-@sl-add ( name x y w h min max val -- )
-    8 frame! ( 0:val 1:max 2:min 3:h 4:w 5:y 6:x 7:name )
-    SL_N LOADI SL_MAXN < [
-        SL_SLAB SL_N LOADI SL_SIZE * +
-        dup 6 local@ 5 local@ 4 local@ 3 local@ 2 local@ 1 local@ 0 local@ slider-init
-        SL_TAB SL_N LOADI 8 * +
-        7 local@ OVER STOREI
-        4 + STOREI
-        SL_N LOADI 1 + SL_N STOREI
-    ] ?
-    8 unframe!
-;
-
-@sl-draw ( -- )
-    0
-    [ dup SL_N LOADI < ] [
-        SL_TAB OVER 8 * + 4 + LOADI
-        DRAW::fd SWAP slider-draw
-        1 +
-    ] |:
-    drop
-;
-
-@sl-post ( tab -- )
-    dup LOADI
+@sl-post ( row -- )
+    dup C_TEXT + LOADI
     EV_VALUE
-    ROT 4 + LOADI SL_VAL + LOADI
+    ROT C_PAY + LOADI SL_VAL + LOADI
     post
 ;
 
-@bn-add ( name x y w h label -- )
-    6 frame! ( 0:label 1:h 2:w 3:y 4:x 5:name )
-    BN_N LOADI BN_MAX < [
-        BN_SLAB BN_N LOADI BTN_SIZE * +
-        dup 4 local@ 3 local@ 2 local@ 1 local@ 0 local@ 0 button-init
-        BN_TAB BN_N LOADI 8 * +
-        5 local@ OVER STOREI
-        4 + STOREI
-        BN_N LOADI 1 + BN_N STOREI
-    ] ?
-    6 unframe!
+@sbar-post ( row -- )
+    dup C_TEXT + LOADI
+    EV_VALUE
+    ROT C_PAY + LOADI BAR_VAL + LOADI
+    post
 ;
 
-@bn-default ( name -- )
-    1 frame! ( 0:name )
+@bn-post ( row -- )
+    C_TEXT + LOADI EV_PRESS 1 post
+;
+
+@default ( text -- )
+    1 frame! ( 0:text )
     0
-    [ dup BN_N LOADI < ] [
-        BN_TAB OVER 8 * +
-        dup 4 + LOADI
-        SWAP LOADI 0 local@ STR::streq [
-            1 SWAP BTN_DEFAULT + STOREI
+    [ dup COMP_N LOADI < ] [
+        dup comp-at
+        dup C_KIND + LOADI K_BUTTON = [
+            dup C_TEXT + LOADI 0 local@ STR::streq [
+                1 OVER C_FLG + STOREI
+                C_PAY + LOADI 1 SWAP BTN_DEFAULT + STOREI
+            ] [
+                0 OVER C_FLG + STOREI
+                C_PAY + LOADI 0 SWAP BTN_DEFAULT + STOREI
+            ] ?:
         ] [
-            0 SWAP BTN_DEFAULT + STOREI
+            drop
         ] ?:
         1 +
     ] |:
@@ -1556,30 +1966,22 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     1 unframe!
 ;
 
-@bn-draw ( -- )
-    0
-    [ dup BN_N LOADI < ] [
-        BN_TAB OVER 8 * + 4 + LOADI
-        DRAW::fd SWAP button-draw
-        1 +
-    ] |:
-    drop
-;
+@bn-default ( name -- ) default ;
 
-@bn-post ( tab -- )
-    dup LOADI EV_PRESS 1 post
-    drop
-;
-
-@bn-return ( -- posted? )
+@enter ( -- posted? )
     0 1 frame! ( 0:posted )
     0
-    [ dup BN_N LOADI < ] [
-        BN_TAB OVER 8 * +
-        dup 4 + LOADI BTN_DEFAULT + LOADI [
-            bn-post
-            1 0 local!
-            BN_N LOADI
+    [ dup COMP_N LOADI < ] [
+        dup comp-at
+        dup C_KIND + LOADI K_BUTTON = [
+            dup C_FLG + LOADI [
+                bn-post
+                1 0 local!
+                COMP_N LOADI
+            ] [
+                drop
+                1 +
+            ] ?:
         ] [
             drop
             1 +
@@ -1590,13 +1992,405 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     1 unframe!
 ;
 
+@bn-return ( -- posted? ) enter ;
+
+@button ( text x y w h handler -- )
+    6 frame! ( 0:handler 1:h 2:w 3:y 4:x 5:text )
+    BN_N LOADI BN_MAX < COMP_N LOADI COMP_MAX < AND [
+        BN_SLAB BN_N LOADI BTN_SIZE * +
+        dup 4 local@ 3 local@ 2 local@ 1 local@ 5 local@ 0 button-init
+        5 local@ SWAP K_BUTTON SWAP 0 local@ SWAP 0 0 comp-put
+        BN_N LOADI 1 + BN_N STOREI
+    ] ?
+    6 unframe!
+;
+
+@checkbox ( text x y w h handler -- )
+    6 frame! ( 0:handler 1:h 2:w 3:y 4:x 5:text )
+    CB_N LOADI CB_MAX < COMP_N LOADI COMP_MAX < AND [
+        CB_SLAB CB_N LOADI CB_SIZE * +
+        dup 4 local@ 3 local@ 1 local@ 5 local@ checkbox-init
+        5 local@ SWAP K_CHECKBOX SWAP 0 local@ SWAP 0 0 comp-put
+        CB_N LOADI 1 + CB_N STOREI
+    ] ?
+    6 unframe!
+;
+
+@radio ( text x y w h group handler -- )
+    7 frame! ( 0:handler 1:group 2:h 3:w 4:y 5:x 6:text )
+    RD_N LOADI RD_MAX < COMP_N LOADI COMP_MAX < AND [
+        RD_SLAB RD_N LOADI CB_SIZE * +
+        dup 5 local@ 4 local@ 2 local@ 6 local@ checkbox-init
+        6 local@ SWAP K_RADIO SWAP 0 local@ SWAP 1 local@ 0 comp-put
+        RD_N LOADI 1 + RD_N STOREI
+    ] ?
+    7 unframe!
+;
+
+@slider ( text x y w h min max val handler -- )
+    9 frame! ( 0:handler 1:val 2:max 3:min 4:h 5:w 6:y 7:x 8:text )
+    SL_N LOADI SL_MAXN < COMP_N LOADI COMP_MAX < AND [
+        SL_SLAB SL_N LOADI SL_SIZE * +
+        dup 7 local@ 6 local@ 5 local@ 4 local@ 3 local@ 2 local@ 1 local@ slider-init
+        8 local@ SWAP K_SLIDER SWAP 0 local@ SWAP 0 0 comp-put
+        SL_N LOADI 1 + SL_N STOREI
+    ] ?
+    9 unframe!
+;
+
+@vscroll ( text x y w h min max val handler -- )
+    9 frame! ( 0:handler 1:val 2:max 3:min 4:h 5:w 6:y 7:x 8:text )
+    SBAR_N LOADI SBAR_MAXN < COMP_N LOADI COMP_MAX < AND [
+        SBAR_SLAB SBAR_N LOADI BAR_SIZE * +
+        dup 7 local@ 6 local@ 5 local@ 4 local@ 3 local@ 2 local@ 1 local@ 0 sbar-init
+        8 local@ SWAP K_SCROLLBAR SWAP 0 local@ SWAP 0 0 comp-put
+        SBAR_N LOADI 1 + SBAR_N STOREI
+    ] ?
+    9 unframe!
+;
+
+@hscroll ( text x y w h min max val handler -- )
+    9 frame! ( 0:handler 1:val 2:max 3:min 4:h 5:w 6:y 7:x 8:text )
+    SBAR_N LOADI SBAR_MAXN < COMP_N LOADI COMP_MAX < AND [
+        SBAR_SLAB SBAR_N LOADI BAR_SIZE * +
+        dup 7 local@ 6 local@ 5 local@ 4 local@ 3 local@ 2 local@ 1 local@ 1 sbar-init
+        8 local@ SWAP K_SCROLLBAR SWAP 0 local@ SWAP 0 0 comp-put
+        SBAR_N LOADI 1 + SBAR_N STOREI
+    ] ?
+    9 unframe!
+;
+
+@cb-add ( name x y size label -- )
+    5 frame! ( 0:label 1:size 2:y 3:x 4:name )
+    0 local@ 3 local@ 2 local@ 1 local@ 1 local@ 0 checkbox
+    4 local@ 0 local@ STR::streq 0 = [
+        COMP_N LOADI 0 > [
+            COMP_N LOADI 1 - comp-at
+            4 local@ SWAP C_TEXT + STOREI
+        ] ?
+    ] ?
+    5 unframe!
+;
+
+@rd-add ( name group x y size label -- )
+    6 frame! ( 0:label 1:size 2:y 3:x 4:group 5:name )
+    0 local@ 3 local@ 2 local@ 1 local@ 1 local@ 4 local@ 0 radio
+    5 local@ 0 local@ STR::streq 0 = [
+        COMP_N LOADI 0 > [
+            COMP_N LOADI 1 - comp-at
+            5 local@ SWAP C_TEXT + STOREI
+        ] ?
+    ] ?
+    6 unframe!
+;
+
+@sl-add ( name x y w h min max val -- )
+    8 frame! ( 0:val 1:max 2:min 3:h 4:w 5:y 6:x 7:name )
+    7 local@ 6 local@ 5 local@ 4 local@ 3 local@ 2 local@ 1 local@ 0 local@ 0 slider
+    8 unframe!
+;
+
+@bn-add ( name x y w h label -- )
+    6 frame! ( 0:label 1:h 2:w 3:y 4:x 5:name )
+    0 local@ 4 local@ 3 local@ 2 local@ 1 local@ 0 button
+    5 local@ 0 local@ STR::streq 0 = [
+        COMP_N LOADI 0 > [
+            COMP_N LOADI 1 - comp-at
+            5 local@ SWAP C_TEXT + STOREI
+        ] ?
+    ] ?
+    6 unframe!
+;
+
+@draw ( -- )
+    0
+    [ dup COMP_N LOADI < ] [
+        dup comp-at
+        DRAW::fd
+        OVER C_PAY + LOADI
+        ROT C_KIND + LOADI
+        dup K_BUTTON = [
+            drop button-draw
+        ] [
+        dup K_CHECKBOX = [
+            drop checkbox-draw
+        ] [
+        dup K_RADIO = [
+            drop radio-draw
+        ] [
+        dup K_SLIDER = [
+            drop slider-draw
+        ] [
+        dup K_SCROLLBAR = [
+            drop sbar-draw
+        ] [
+            drop drop drop
+        ] ?: ] ?: ] ?: ] ?: ] ?:
+        1 +
+    ] |:
+    drop
+;
+
+@cb-draw ( -- ) draw ;
+@rd-draw ( -- ) draw ;
+@sl-draw ( -- ) draw ;
+@bn-draw ( -- ) draw ;
+
+@handle ( -- )
+    [ poll ]
+    [
+        3 frame! ( 0:val 1:ev 2:name )
+        2 local@ comp-find
+        dup 0 = [
+            drop
+        ] [
+            C_HAND + LOADI
+            dup 0 > [
+                0 local@ SWAP CALL
+            ] [
+                drop
+            ] ?:
+        ] ?:
+        3 unframe!
+    ] |:
+;
+
+( Overlay component table — modal menus. Does not touch the app table. )
+@OV_TAB   0x8E2400 ;
+@OV_SLAB  0x8E2600 ;
+@OV_Q     0x8E2500 ;
+@OV_N     0x8E0F30 ;
+@OV_BNN   0x8E0F34 ;
+@OV_DRAG  0x8E0F38 ;
+@OV_QH    0x8E0F3C ;
+@OV_QT    0x8E0F40 ;
+@OV_QC    0x8E0F44 ;
+@OV_MAX   8 ;
+
+@ov-at ( i -- row ) C_SIZE * OV_TAB + ;
+
+@ov-put ( text kind handler payload group flags -- )
+    6 frame! ( 0:flags 1:group 2:payload 3:handler 4:kind 5:text )
+    OV_N LOADI OV_MAX < [
+        OV_N LOADI ov-at
+        5 local@ OVER C_TEXT + STOREI
+        4 local@ OVER C_KIND + STOREI
+        3 local@ OVER C_HAND + STOREI
+        2 local@ OVER C_PAY  + STOREI
+        1 local@ OVER C_GRP  + STOREI
+        0 local@ SWAP C_FLG  + STOREI
+        OV_N LOADI 1 + OV_N STOREI
+    ] ?
+    6 unframe!
+;
+
+@ov-find ( name -- row | 0 )
+    0 SWAP 2 frame! ( 0:name 1:row )
+    0 1 local!
+    0
+    [ dup OV_N LOADI < ] [
+        dup ov-at
+        dup C_TEXT + LOADI 0 local@ STR::streq [
+            1 local!
+            OV_N LOADI
+        ] [
+            drop
+            1 +
+        ] ?:
+    ] |:
+    drop
+    1 local@
+    2 unframe!
+;
+
+@ov-post ( name ev val -- )
+    3 frame! ( 0:val 1:ev 2:name )
+    OV_QC LOADI Q_MAX = [
+        OV_QT LOADI 1 + Q_MAX MOD OV_QT STOREI
+        OV_QC LOADI 1 - OV_QC STOREI
+    ] ?
+    OV_Q OV_QH LOADI 12 * +
+    2 local@ OVER STOREI
+    1 local@ OVER 4 + STOREI
+    0 local@ SWAP 8 + STOREI
+    OV_QH LOADI 1 + Q_MAX MOD OV_QH STOREI
+    OV_QC LOADI 1 + OV_QC STOREI
+    3 unframe!
+;
+
+@ov-poll ( -- 0 | name ev val 1 )
+    OV_QC LOADI 0 = [
+        0
+    ] [
+        OV_Q OV_QT LOADI 12 * +
+        dup LOADI SWAP
+        dup 4 + LOADI SWAP
+        8 + LOADI
+        OV_QT LOADI 1 + Q_MAX MOD OV_QT STOREI
+        OV_QC LOADI 1 - OV_QC STOREI
+        1
+    ] ?:
+;
+
+@ov-bn-post ( row -- )
+    C_TEXT + LOADI EV_PRESS 1 ov-post
+;
+
+@overlay-clear ( -- )
+    0 OV_N STOREI
+    0 OV_BNN STOREI
+    0 OV_DRAG STOREI
+    0 OV_QH STOREI
+    0 OV_QT STOREI
+    0 OV_QC STOREI
+;
+
+@overlay-button ( text x y w h handler -- )
+    6 frame! ( 0:handler 1:h 2:w 3:y 4:x 5:text )
+    OV_BNN LOADI OV_MAX < OV_N LOADI OV_MAX < AND [
+        OV_SLAB OV_BNN LOADI BTN_SIZE * +
+        dup 4 local@ 3 local@ 2 local@ 1 local@ 5 local@ 0 button-init
+        5 local@ SWAP K_BUTTON SWAP 0 local@ SWAP 0 0 ov-put
+        OV_BNN LOADI 1 + OV_BNN STOREI
+    ] ?
+    6 unframe!
+;
+
+@overlay-default ( text -- )
+    1 frame! ( 0:text )
+    0
+    [ dup OV_N LOADI < ] [
+        dup ov-at
+        dup C_TEXT + LOADI 0 local@ STR::streq [
+            1 OVER C_FLG + STOREI
+            C_PAY + LOADI 1 SWAP BTN_DEFAULT + STOREI
+        ] [
+            0 OVER C_FLG + STOREI
+            C_PAY + LOADI 0 SWAP BTN_DEFAULT + STOREI
+        ] ?:
+        1 +
+    ] |:
+    drop
+    1 unframe!
+;
+
+@overlay-enter ( -- posted? )
+    0 1 frame! ( 0:posted )
+    0
+    [ dup OV_N LOADI < ] [
+        dup ov-at
+        dup C_FLG + LOADI [
+            ov-bn-post
+            1 0 local!
+            OV_N LOADI
+        ] [
+            drop
+            1 +
+        ] ?:
+    ] |:
+    drop
+    0 local@
+    1 unframe!
+;
+
+@overlay-held? ( -- f ) OV_DRAG LOADI ;
+
+@overlay-draw ( -- )
+    0
+    [ dup OV_N LOADI < ] [
+        dup ov-at C_PAY + LOADI
+        DRAW::fd SWAP button-draw
+        1 +
+    ] |:
+    drop
+;
+
+@overlay-handle ( -- )
+    [ ov-poll ]
+    [
+        3 frame! ( 0:val 1:ev 2:name )
+        2 local@ ov-find
+        dup 0 = [
+            drop
+        ] [
+            C_HAND + LOADI
+            dup 0 > [
+                0 local@ SWAP CALL
+            ] [
+                drop
+            ] ?:
+        ] ?:
+        3 unframe!
+    ] |:
+;
+
+@overlay-pick ( mx my -- )
+    2 frame! ( 0:my 1:mx )
+    0
+    [ dup OV_N LOADI < ] [
+        dup ov-at
+        dup C_PAY + LOADI
+        1 local@ 0 local@ button-hit? [
+            C_TEXT + LOADI overlay-default
+            OV_N LOADI
+        ] [
+            drop
+            1 +
+        ] ?:
+    ] |:
+    drop
+    2 unframe!
+;
+
+@overlay-feed ( mpkt -- )
+    1 frame! ( 0:mpkt )
+    OV_DRAG LOADI [
+        OV_DRAG LOADI 1 - ov-at
+        dup C_PAY + LOADI
+        0 local@ EVENT::mouse-x
+        0 local@ EVENT::mouse-y
+        0 local@ EVENT::mouse-type EVENT::MOUSE_UP = [
+            button-release [
+                ov-bn-post
+            ] [
+                drop
+            ] ?:
+            0 OV_DRAG STOREI
+        ] [
+            button-track
+            drop
+        ] ?:
+    ] [
+        0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+            0
+            [ dup OV_N LOADI < ] [
+                dup ov-at
+                dup C_PAY + LOADI
+                0 local@ EVENT::mouse-x
+                0 local@ EVENT::mouse-y
+                button-hit? [
+                    dup C_PAY + LOADI
+                    button-press
+                    drop
+                    1 + OV_DRAG STOREI
+                    OV_N LOADI
+                ] [
+                    drop
+                    1 +
+                ] ?:
+            ] |:
+            drop
+        ] ?
+    ] ?:
+    1 unframe!
+;
+
 @feed ( mpkt -- )
     0 SWAP 2 frame! ( 0:mpkt 1:hit )
     0 1 local!
     SL_DRAG LOADI [
-        SL_DRAG LOADI 1 -
-        SL_TAB SWAP 8 * +
-        dup 4 + LOADI
+        SL_DRAG LOADI 1 - comp-at
+        dup C_PAY + LOADI
         0 local@ EVENT::mouse-y
         slider-drag [
             sl-post
@@ -1604,16 +2398,30 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
             drop
         ] ?:
         0 local@ EVENT::mouse-type EVENT::MOUSE_UP = [
-            SL_DRAG LOADI 1 -
-            SL_TAB SWAP 8 * + 4 + LOADI
+            SL_DRAG LOADI 1 - comp-at C_PAY + LOADI
             slider-release
             0 SL_DRAG STOREI
         ] ?
     ] [
+        SBAR_DRAG LOADI [
+            SBAR_DRAG LOADI 1 - comp-at
+            dup C_PAY + LOADI
+            0 local@ EVENT::mouse-x
+            0 local@ EVENT::mouse-y
+            sbar-drag [
+                sbar-post
+            ] [
+                drop
+            ] ?:
+            0 local@ EVENT::mouse-type EVENT::MOUSE_UP = [
+                SBAR_DRAG LOADI 1 - comp-at C_PAY + LOADI
+                sbar-release
+                0 SBAR_DRAG STOREI
+            ] ?
+        ] [
         BN_DRAG LOADI [
-            BN_DRAG LOADI 1 -
-            BN_TAB SWAP 8 * +
-            dup 4 + LOADI
+            BN_DRAG LOADI 1 - comp-at
+            dup C_PAY + LOADI
             0 local@ EVENT::mouse-x
             0 local@ EVENT::mouse-y
             0 local@ EVENT::mouse-type EVENT::MOUSE_UP = [
@@ -1630,64 +2438,52 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
         ] [
         0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
             0
-            [ dup CB_N LOADI < ] [
-                CB_TAB OVER 8 * +
-                dup LOADI
-                SWAP 4 + LOADI
-                0 local@ EVENT::mouse-x
-                0 local@ EVENT::mouse-y
-                1
-                checkbox-update [
-                    1 1 local!
-                    OVER CB_TAB SWAP 8 * + 4 + LOADI CB_CHK + LOADI
-                    dup 0 = [ EV_UNCHECK ] [ EV_CHECK ] ?:
-                    SWAP
-                    post
+            [ dup COMP_N LOADI < ] [
+                dup comp-at
+                dup C_KIND + LOADI K_CHECKBOX = [
+                    dup C_PAY + LOADI
+                    0 local@ EVENT::mouse-x
+                    0 local@ EVENT::mouse-y
+                    1
+                    checkbox-update [
+                        1 1 local!
+                        dup C_TEXT + LOADI
+                        SWAP C_PAY + LOADI CB_CHK + LOADI
+                        dup 0 = [ EV_UNCHECK ] [ EV_CHECK ] ?:
+                        SWAP
+                        post
+                        drop
+                        COMP_N LOADI
+                    ] [
+                        drop
+                        1 +
+                    ] ?:
                 ] [
                     drop
+                    1 +
                 ] ?:
-                1 +
             ] |:
             drop
             1 local@ 0 = [
                 0
-                [ dup RD_N LOADI < ] [
-                    RD_TAB OVER 12 * +
-                    dup 8 + LOADI
-                    0 local@ EVENT::mouse-x
-                    0 local@ EVENT::mouse-y
-                    1
-                    radio-update [
-                        dup 4 + LOADI
-                        OVER 8 + LOADI
-                        rd-clear-group
-                        dup LOADI EV_SELECT 1 post
-                        drop
-                        RD_N LOADI
-                    ] [
-                        drop
-                        1 +
-                    ] ?:
-                ] |:
-                drop
-            ] ?
-            1 local@ 0 = [
-                0
-                [ dup SL_N LOADI < ] [
-                    SL_TAB OVER 8 * +
-                    dup 4 + LOADI
-                    0 local@ EVENT::mouse-x
-                    0 local@ EVENT::mouse-y
-                    slider-hit? [
-                        dup 4 + LOADI
+                [ dup COMP_N LOADI < ] [
+                    dup comp-at
+                    dup C_KIND + LOADI K_RADIO = [
+                        dup C_PAY + LOADI
+                        0 local@ EVENT::mouse-x
                         0 local@ EVENT::mouse-y
-                        slider-grab [
-                            sl-post
+                        1
+                        radio-update [
+                            dup C_GRP + LOADI
+                            OVER C_PAY + LOADI
+                            rd-clear-group
+                            dup C_TEXT + LOADI EV_SELECT 1 post
+                            drop drop
+                            COMP_N LOADI
                         ] [
                             drop
+                            1 +
                         ] ?:
-                        1 + SL_DRAG STOREI
-                        SL_N LOADI
                     ] [
                         drop
                         1 +
@@ -1697,18 +2493,83 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
             ] ?
             1 local@ 0 = [
                 0
-                [ dup BN_N LOADI < ] [
-                    BN_TAB OVER 8 * +
-                    dup 4 + LOADI
-                    0 local@ EVENT::mouse-x
-                    0 local@ EVENT::mouse-y
-                    button-hit? [
-                        dup 4 + LOADI
-                        button-press
+                [ dup COMP_N LOADI < ] [
+                    dup comp-at
+                    dup C_KIND + LOADI K_SLIDER = [
+                        dup C_PAY + LOADI
+                        0 local@ EVENT::mouse-x
+                        0 local@ EVENT::mouse-y
+                        slider-hit? [
+                            dup C_PAY + LOADI
+                            0 local@ EVENT::mouse-y
+                            slider-grab [
+                                sl-post
+                            ] [
+                                drop
+                            ] ?:
+                            1 + SL_DRAG STOREI
+                            COMP_N LOADI
+                        ] [
+                            drop
+                            1 +
+                        ] ?:
+                    ] [
                         drop
-                        1 + BN_DRAG STOREI
-                        1 1 local!
-                        BN_N LOADI
+                        1 +
+                    ] ?:
+                ] |:
+                drop
+            ] ?
+            1 local@ 0 = [
+                0
+                [ dup COMP_N LOADI < ] [
+                    dup comp-at
+                    dup C_KIND + LOADI K_SCROLLBAR = [
+                        dup C_PAY + LOADI
+                        0 local@ EVENT::mouse-x
+                        0 local@ EVENT::mouse-y
+                        sbar-hit? [
+                            dup C_PAY + LOADI
+                            0 local@ EVENT::mouse-x
+                            0 local@ EVENT::mouse-y
+                            sbar-press [
+                                sbar-post
+                            ] [
+                                drop
+                            ] ?:
+                            1 + SBAR_DRAG STOREI
+                            1 1 local!
+                            COMP_N LOADI
+                        ] [
+                            drop
+                            1 +
+                        ] ?:
+                    ] [
+                        drop
+                        1 +
+                    ] ?:
+                ] |:
+                drop
+            ] ?
+            1 local@ 0 = [
+                0
+                [ dup COMP_N LOADI < ] [
+                    dup comp-at
+                    dup C_KIND + LOADI K_BUTTON = [
+                        dup C_PAY + LOADI
+                        0 local@ EVENT::mouse-x
+                        0 local@ EVENT::mouse-y
+                        button-hit? [
+                            dup C_PAY + LOADI
+                            button-press
+                            drop
+                            1 + BN_DRAG STOREI
+                            1 1 local!
+                            COMP_N LOADI
+                        ] [
+                            drop
+                            1 +
+                        ] ?:
                     ] [
                         drop
                         1 +
@@ -1717,6 +2578,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
                 drop
             ] ?
         ] ?
+        ] ?:
         ] ?:
     ] ?:
     2 unframe!
@@ -1788,10 +2650,10 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     }
 ;
 
-@button   { name -- ctl } name K_BUTTON   create ;
-@checkbox { name -- ctl } name K_CHECKBOX create ;
-@radio    { name -- ctl } name K_RADIO    create ;
-@slider   { name -- ctl } name K_SLIDER   create ;
+@ctl-button   { name -- ctl } name K_BUTTON   create ;
+@ctl-checkbox { name -- ctl } name K_CHECKBOX create ;
+@ctl-radio    { name -- ctl } name K_RADIO    create ;
+@ctl-slider   { name -- ctl } name K_SLIDER   create ;
 @scrollbar { name -- ctl } name K_SCROLLBAR create ;
 @field    { name -- ctl } name K_FIELD    create ;
 @label    { name -- ctl } name K_LABEL    create ;
@@ -2001,7 +2863,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     ] ?
 ;
 
-@draw ( -- )
+@ctl-draw ( -- )
     ( windows first so their client fill does not cover widgets )
     CS_HEAD LOADI
     [ dup 0 > ] [

@@ -22,38 +22,51 @@ IMPORT EVENT
 @DIRTY    0x8D002C ; ( 1 if needs redraw )
 @NEW_NUM  0x8D0030 ; ( 1 if next digit should clear CUR_VAL )
 
-@k7 55 process-key ; @k8 56 process-key ; @k9 57 process-key ; @kdiv 47 process-key ;
-@k4 52 process-key ; @k5 53 process-key ; @k6 54 process-key ; @kmul 42 process-key ;
-@k1 49 process-key ; @k2 50 process-key ; @k3 51 process-key ; @ksub 45 process-key ;
-@kc 67 process-key ; @k0 48 process-key ; @keq 61 process-key ; @kadd 43 process-key ;
+@k7 ( val -- ) drop 55 process-key ;
+@k8 ( val -- ) drop 56 process-key ;
+@k9 ( val -- ) drop 57 process-key ;
+@kdiv ( val -- ) drop 47 process-key ;
+@k4 ( val -- ) drop 52 process-key ;
+@k5 ( val -- ) drop 53 process-key ;
+@k6 ( val -- ) drop 54 process-key ;
+@kmul ( val -- ) drop 42 process-key ;
+@k1 ( val -- ) drop 49 process-key ;
+@k2 ( val -- ) drop 50 process-key ;
+@k3 ( val -- ) drop 51 process-key ;
+@ksub ( val -- ) drop 45 process-key ;
+@kc ( val -- ) drop 67 process-key ;
+@k0 ( val -- ) drop 48 process-key ;
+@keq ( val -- ) drop 61 process-key ;
+@kadd ( val -- ) drop 43 process-key ;
 
-@place-key { name label cb x y -- }
-    name UI::button
-    CALC_X LOADI x +  CALC_Y LOADI y +
-    CALC_X LOADI x + 48 +  CALC_Y LOADI y + 48 +
-    UI::rect!
-    label UI::text!
-    cb UI::on-press!
-    drop
+@place-key ( label dx dy handler -- )
+    4 frame! ( 0:handler 1:dy 2:dx 3:label )
+    3 local@
+    CALC_X LOADI 2 local@ +
+    CALC_Y LOADI 1 local@ +
+    48 48
+    0 local@
+    UI::button
+    4 unframe!
 ;
 
 @build-keys ( -- )
-    T"7" T"7" $k7 10 65 place-key
-    T"8" T"8" $k8 62 65 place-key
-    T"9" T"9" $k9 114 65 place-key
-    T"/" T"/" $kdiv 166 65 place-key
-    T"4" T"4" $k4 10 117 place-key
-    T"5" T"5" $k5 62 117 place-key
-    T"6" T"6" $k6 114 117 place-key
-    T"*" T"*" $kmul 166 117 place-key
-    T"1" T"1" $k1 10 169 place-key
-    T"2" T"2" $k2 62 169 place-key
-    T"3" T"3" $k3 114 169 place-key
-    T"-" T"-" $ksub 166 169 place-key
-    T"C" T"C" $kc 10 221 place-key
-    T"0" T"0" $k0 62 221 place-key
-    T"=" T"=" $keq 114 221 place-key
-    T"+" T"+" $kadd 166 221 place-key
+    T"7" 10 65 [ k7 ] place-key
+    T"8" 62 65 [ k8 ] place-key
+    T"9" 114 65 [ k9 ] place-key
+    T"/" 166 65 [ kdiv ] place-key
+    T"4" 10 117 [ k4 ] place-key
+    T"5" 62 117 [ k5 ] place-key
+    T"6" 114 117 [ k6 ] place-key
+    T"*" 166 117 [ kmul ] place-key
+    T"1" 10 169 [ k1 ] place-key
+    T"2" 62 169 [ k2 ] place-key
+    T"3" 114 169 [ k3 ] place-key
+    T"-" 166 169 [ ksub ] place-key
+    T"C" 10 221 [ kc ] place-key
+    T"0" 62 221 [ k0 ] place-key
+    T"=" 114 221 [ keq ] place-key
+    T"+" 166 221 [ kadd ] place-key
 ;
 
 @draw-ui
@@ -129,9 +142,7 @@ IMPORT EVENT
     ] ?:
 ;
 
-@on-mouse { mpkt -- }
-    mpkt UI::mouse
-;
+@on-mouse ( mpkt -- ) UI::feed ;
 
 @on-kbd ( kpkt -- )
     dup EVENT::kbd-type EVENT::KEY_DOWN = [
@@ -141,15 +152,18 @@ IMPORT EVENT
 ;
 
 @on-frame ( -- )
+    UI::handle
     DIRTY LOADI [
         draw-ui
         0 DIRTY STOREI
-    ] ?
+    ] [
+        UI::draw
+    ] ?:
 ;
 
 @start
     T"Calculator" APP::init
-    UI::ctlnew
+    UI::new
     
     APP::width 220 - 2 / CALC_X STOREI
     APP::height 280 - 2 / CALC_Y STOREI

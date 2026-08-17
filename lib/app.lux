@@ -3,12 +3,14 @@
 INCLUDE "lib/vfs.lux"
 INCLUDE "lib/draw.lux"
 INCLUDE "lib/event.lux"
+INCLUDE "lib/ui.lux"
 
 MODULE APP
 
 IMPORT VFS
 IMPORT DRAW
 IMPORT EVENT
+IMPORT UI
 
 ( --- State --- )
 ( Using 0x8C0000 range to avoid collision with DRAW::BUF at 0x8F0000 )
@@ -24,6 +26,7 @@ IMPORT EVENT
 @win-w    0x8C0040 ;
 @win-h    0x8C0044 ;
 @dirty-f  0x8C0048 ;
+@modal-f  0x8C004C ;
 
 ( --- ESC Popup State --- )
 @esc-open     0x8C0050 ;
@@ -38,6 +41,9 @@ IMPORT EVENT
 @dirty!   ( -- )    1 dirty-f STOREI ;
 @dirty?   ( -- f )  dirty-f LOADI ;
 @dirty-off ( -- )   0 dirty-f STOREI ;
+@esc-open? ( -- f ) esc-open LOADI ;
+@modal!   ( f -- )  modal-f STOREI ;
+@modal?   ( -- f )  modal-f LOADI ;
 
 ( --- Vector Setters --- )
 @on-frame! ( addr -- ) v-frame STOREI ;
@@ -51,112 +57,94 @@ IMPORT EVENT
 
 ( --- ESC Popup Routines --- )
 
+@esc-continue ( val -- )
+    drop
+    0 esc-open STOREI
+    resume-app
+;
+
+@esc-restart ( val -- )
+    drop
+    0 esc-open STOREI
+    resume-app
+    0 JMPSTACK
+;
+
+@esc-quit ( val -- )
+    drop
+    HALT
+;
+
+@esc-label ( i -- ptr )
+    dup 1 = [
+        drop T"Continue"
+    ] [
+        dup 2 = [
+            drop T"Restart App"
+        ] [
+            drop T"Quit"
+        ] ?:
+    ] ?:
+;
+
+@esc-sync ( -- )
+    esc-btn-hov LOADI esc-label UI::overlay-default
+;
+
+@esc-build ( -- )
+    win-w LOADI 200 - 2 /
+    win-h LOADI 160 - 2 /
+    2 frame! ( 0:y 1:x )
+    UI::overlay-clear
+    T"Continue"    1 local@ 40 + 0 local@ 50 +  120 20 [ esc-continue ] UI::overlay-button
+    T"Restart App" 1 local@ 40 + 0 local@ 78 +  120 20 [ esc-restart ]  UI::overlay-button
+    T"Quit"        1 local@ 40 + 0 local@ 106 + 120 20 [ esc-quit ]    UI::overlay-button
+    2 unframe!
+    1 esc-btn-hov STOREI
+    esc-sync
+;
 
 @draw-esc-popup ( -- )
-    win-w LOADI 200 - 2 / ( x )
-    win-h LOADI 160 - 2 / ( y )
-    2 frame! ( 0:y, 1:x )
-
-    ( 1. Outer Box )
+    win-w LOADI 200 - 2 /
+    win-h LOADI 160 - 2 /
+    2 frame! ( 0:y 1:x )
     dfd LOADI 1 local@ 2 - 0 local@ 2 - 204 164 0x000000 DRAW::fill-rect
     dfd LOADI 1 local@ 0 local@ 200 160 0xFFFFFF DRAW::fill-rect
-    
-    ( 2. Title )
     dfd LOADI 1 local@ 35 + 0 local@ 15 + T"System Menu" 0x000000 16 DRAW::draw-str
-
-    ( 3. Continue Button )
-    dfd LOADI 1 local@ 20 + 0 local@ 50 + 160 30 0x000000 DRAW::fill-rect
-    dfd LOADI 1 local@ 21 + 0 local@ 51 + 158 28 
-    esc-btn-hov LOADI 1 = [ 0xAAAAAA ] [ 0xFFFFFF ] ?: DRAW::fill-rect
-    dfd LOADI 1 local@ 60 + 0 local@ 56 + T"Continue" 0x000000 12 DRAW::draw-str
-
-    ( 4. Restart Button )
-    dfd LOADI 1 local@ 20 + 0 local@ 85 + 160 30 0x000000 DRAW::fill-rect
-    dfd LOADI 1 local@ 21 + 0 local@ 86 + 158 28 
-    esc-btn-hov LOADI 2 = [ 0xAAAAAA ] [ 0xFFFFFF ] ?: DRAW::fill-rect
-    dfd LOADI 1 local@ 50 + 0 local@ 91 + T"Restart App" 0x000000 12 DRAW::draw-str
-
-    ( 5. Quit Button )
-    dfd LOADI 1 local@ 20 + 0 local@ 120 + 160 30 0x000000 DRAW::fill-rect
-    dfd LOADI 1 local@ 21 + 0 local@ 121 + 158 28
-    esc-btn-hov LOADI 3 = [ 0xAAAAAA ] [ 0xFFFFFF ] ?: DRAW::fill-rect
-    dfd LOADI 1 local@ 80 + 0 local@ 126 + T"Quit" 0x000000 12 DRAW::draw-str
-
     2 unframe!
+    UI::overlay-draw
 ;
 
 @handle-esc-mouse ( mpkt -- )
     1 frame! ( 0:mpkt )
-
-    ( Hit testing: rx = mx - px, ry = my - py )
-    0 local@ EVENT::mouse-x  win-w LOADI 200 - 2 /  - ( rx )
-    0 local@ EVENT::mouse-y  win-h LOADI 160 - 2 /  - ( ry )
-    0 local@ ( mpkt )
-    3 frame! ( 0:mpkt, 1:ry, 2:rx )
-
-    ( Check buttons )
-    2 local@ 20 >= [ 2 local@ 180 <= ] [ 0 ] ?: [
-        1 local@ 50 >= [ 1 local@ 80 <= ] [ 0 ] ?: [
-            ( Continue )
-            1 esc-btn-hov STOREI
-            0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
-                0 esc-open STOREI
-                resume-app
-            ] ?
-        ] [
-            1 local@ 85 >= [ 1 local@ 115 <= ] [ 0 ] ?: [
-                ( Restart )
-                2 esc-btn-hov STOREI
-                0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
-                    0 esc-open STOREI
-                    resume-app
-                    0 JMPSTACK
-                ] ?
-            ] [
-                1 local@ 120 >= [ 1 local@ 150 <= ] [ 0 ] ?: [
-                    ( Quit )
-                    3 esc-btn-hov STOREI
-                    0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
-                        HALT
-                    ] ?
-                ] [
-                    0 esc-btn-hov STOREI
-                    0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
-                        0 esc-open STOREI
-                        resume-app
-                    ] ?
-                ] ?:
-            ] ?:
-        ] ?:
-    ] [
-        0 esc-btn-hov STOREI
-        0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+    0 local@ UI::overlay-feed
+    UI::overlay-handle
+    0 local@ EVENT::mouse-x
+    0 local@ EVENT::mouse-y
+    UI::overlay-pick
+    0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+        UI::overlay-held? 0 = [
             0 esc-open STOREI
             resume-app
         ] ?
-    ] ?:
-
-    3 unframe! ( rx ry mpkt )
-    1 unframe! ( mpkt )
+    ] ?
+    1 unframe!
 ;
 
 @handle-esc-kbd ( kpkt -- )
     dup EVENT::kbd-type EVENT::KEY_DOWN = [
-        dup EVENT::kbd-key ( key )
+        dup EVENT::kbd-key
         dup EVENT::KEY_UP_ARROW = [
             esc-btn-hov LOADI 1 - dup 1 < [ drop 3 ] ? esc-btn-hov STOREI
+            esc-sync
         ] ?
         dup EVENT::KEY_DOWN_ARROW = [
             esc-btn-hov LOADI 1 + dup 3 > [ drop 1 ] ? esc-btn-hov STOREI
+            esc-sync
         ] ?
         dup EVENT::KEY_ENTER = [
-            esc-btn-hov LOADI dup 1 = [
-                0 esc-open STOREI
-                resume-app
-            ] [
-                dup 2 = [ 0 JMPSTACK ] [
-                dup 3 = [ HALT ] ? ] ?:
-            ] ?:
+            UI::overlay-enter drop
+            UI::overlay-handle
         ] ?
         dup EVENT::KEY_ESC = [
             0 esc-open STOREI
@@ -200,6 +188,7 @@ IMPORT EVENT
     open-devices
     dfd LOADI DRAW::use
     dfd LOADI 0 DRAW::set-font
+    0 modal-f STOREI
     dirty!
 ;
 
@@ -225,9 +214,10 @@ IMPORT EVENT
                 kpkt handle-esc-kbd
             ] [
                 kpkt EVENT::kbd-type EVENT::KEY_DOWN = 
-                kpkt EVENT::kbd-key EVENT::KEY_ESC = AND [
+                kpkt EVENT::kbd-key EVENT::KEY_ESC = AND
+                modal-f LOADI 0 = AND [
                     1 esc-open STOREI
-                    1 esc-btn-hov STOREI
+                    esc-build
                 ] [
                     v-kbd LOADI dup 0 > [
                         kpkt swap CALLSTACK

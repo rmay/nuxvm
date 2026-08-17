@@ -31,7 +31,7 @@ MODULE DRAW
 ;
 
 @fill-pat ( fd x y w h color pat -- )
-    ( Cmd 8: patterned fill. pat 0 = 50% checker, pat 1 = even horizontal lines. )
+    ( Cmd 8: patterned fill. 0=50% checker, 1=h-lines, 2=25%, 3=75%. )
     7 frame! ( 0:pat 1:color 2:h 3:w 4:y 5:x 6:fd )
     8 BUF store-byte
     5 local@ BUF 1 + store-word-le

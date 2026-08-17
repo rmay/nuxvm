@@ -1,0 +1,725 @@
+( Standard File picker — System 6 SFGetFile.
+  INCLUDE "lib/sf.lux"  then  IMPORT SF
+
+  SF::on-ok!     ( quot -- )     handler ( path -- ) after Open
+  SF::on-cancel! ( quot -- )     handler ( -- ) after Cancel / Esc
+  SF::hidden!    ( f -- )        1 = list names that start with '.'
+  SF::show       ( -- )          open at /
+  SF::hide       ( -- )          dismiss without a handler
+  SF::open?      ( -- f )
+  SF::path       ( -- ptr )      last chosen path
+  SF::mouse      ( mpkt -- )
+  SF::kbd        ( kpkt -- )
+  SF::draw       ( -- ) )
+
+INCLUDE "lib/app.lux"
+INCLUDE "lib/ui.lux"
+INCLUDE "lib/vfs.lux"
+INCLUDE "lib/str.lux"
+INCLUDE "lib/time.lux"
+
+MODULE SF
+
+IMPORT APP
+IMPORT UI
+IMPORT DRAW
+IMPORT EVENT
+IMPORT STR
+IMPORT VFS
+IMPORT TIME
+
+@DLG_W   464 ;
+@DLG_H   268 ;
+@LIST_W  268 ;
+@LIST_H  184 ;
+@SB_W    16 ;
+@ITEM_H  16 ;
+@ROWS    11 ;
+@BTN_W   80 ;
+@BTN_H   20 ;
+
+@open-f  0x8B0000 ;
+@cur     0x8B0040 ;
+@raw     0x8B0140 ;
+@buf     0x8B1140 ;
+@tok     0x8B2140 ;
+@vpath   0x8B2240 ;
+@result  0x8B2340 ;
+@cnt     0x8B2440 ;
+@sel     0x8B2444 ;
+@vol     0x8B2448 ;
+@hidden  0x8B244C ;
+@last-t  0x8B2450 ;
+@last-i  0x8B2454 ;
+@bdrag   0x8B2458 ;
+@sdrag   0x8B245C ;
+@dd      0x8B2460 ;
+@dd-n    0x8B2464 ;
+@tx      0x8B2468 ;
+@ty      0x8B246C ;
+@tw      0x8B2470 ;
+@th      0x8B2474 ;
+@dlg-x   0x8B2478 ;
+@dlg-y   0x8B247C ;
+@ok-h    0x8B2480 ;
+@can-h   0x8B2484 ;
+@dd-off  0x8B2500 ;
+@dx      0x8B2540 ;
+@dy      0x8B2544 ;
+@dw      0x8B2548 ;
+@dh      0x8B254C ;
+@sb      0x8B2580 ;
+@bn-open 0x8B2600 ;
+@bn-can  0x8B2640 ;
+
+@open?   open-f LOADI ;
+@path    result ;
+@hidden@ hidden LOADI ;
+
+@on-ok!     ( quot -- ) ok-h STOREI ;
+@on-cancel! ( quot -- ) can-h STOREI ;
+
+@lx ( -- x ) dlg-x LOADI 16 + ;
+@ly ( -- y ) dlg-y LOADI 56 + ;
+@bx ( -- x ) dlg-x LOADI 300 + ;
+@opy ( -- y ) dlg-y LOADI 56 + ;
+@cay ( -- y ) dlg-y LOADI 84 + ;
+
+@cat ( src dest -- )
+    dup STR::strlen + STR::strcpy
+;
+
+@copy-tok ( src dest -- )
+    2 frame! ( 0:dest 1:src )
+    [ 1 local@ load-byte dup 10 <> SWAP 0 <> AND ] [
+        1 local@ load-byte 0 local@ store-byte
+        1 local@ 1 + 1 local!
+        0 local@ 1 + 0 local!
+    ] |:
+    0 0 local@ store-byte
+    2 unframe!
+;
+
+@nth ( buf n -- ptr )
+    2 frame! ( 0:n 1:buf )
+    1 local@
+    [ 0 local@ 0 > OVER load-byte 0 > AND ] [
+        dup load-byte 10 = [
+            0 local@ 1 - 0 local!
+        ] ?
+        1 +
+    ] |:
+    2 unframe!
+;
+
+@tok-len ( ptr -- n )
+    0 SWAP
+    [ dup load-byte dup 10 <> SWAP 0 <> AND ] [
+        SWAP 1 + SWAP
+        1 +
+    ] |:
+    drop
+;
+
+@dir? ( ptr -- bool )
+    dup tok-len
+    dup 0 = [
+        drop drop 0
+    ] [
+        + 1 - load-byte 47 =
+    ] ?:
+;
+
+@disp-len ( ptr -- n )
+    dup tok-len
+    SWAP dir? [
+        1 - 0 MAX
+    ] ?
+;
+
+@vol-name ( -- ptr )
+    vol LOADI
+    dup 0 = [ drop T"NUX HD" ] [
+    dup 1 = [ drop T"Apps" ] [
+    dup 2 = [ drop T"Lib" ] [
+    dup 3 = [ drop T"Docs" ] [
+    dup 4 = [ drop T"Src" ] [
+        drop T"Resources"
+    ] ?: ] ?: ] ?: ] ?: ] ?:
+;
+
+@prefix? ( str pre -- bool )
+    2 frame! ( 0:pre 1:str )
+    1
+    1 local@ 0 local@
+    3 frame! ( 0:p 1:s 2:ok )
+    [ 0 local@ load-byte 0 > 2 local@ AND ] [
+        1 local@ load-byte 0 local@ load-byte = 0 = [
+            0 2 local!
+        ] [
+            0 local@ 1 + 0 local!
+            1 local@ 1 + 1 local!
+        ] ?:
+    ] |:
+    2 local@
+    0 local@ load-byte 0 = AND
+    3 unframe!
+    2 unframe!
+;
+
+@guess-vol ( -- )
+    cur T"/resources" prefix? [
+        5
+    ] [
+    cur T"/apps" prefix? [
+        1
+    ] [
+    cur T"/lib" prefix? [
+        2
+    ] [
+    cur T"/docs" prefix? [
+        3
+    ] [
+    cur T"/src" prefix? [
+        4
+    ] [
+        0
+    ] ?: ] ?: ] ?: ] ?: ] ?:
+    vol STOREI
+;
+
+@title ( -- ptr )
+    cur STR::strlen 1 <= [
+        T"NUX HD"
+    ] [
+        cur cur STR::strlen + 1 -
+        [ dup cur > OVER load-byte 47 <> AND ] [ 1 - ] |:
+        dup load-byte 47 = [ 1 + ] ?
+    ] ?:
+;
+
+@place-title ( -- )
+    lx tx STOREI
+    ly 20 - ty STOREI
+    LIST_W SB_W - tw STOREI
+    16 th STOREI
+;
+
+@dd-build ( -- )
+    1 dd-off STOREI
+    1 dd-n STOREI
+    cur STR::strlen
+    dup 1 <= [
+        drop
+    ] [
+        1 SWAP
+        2 frame! ( 0:len 1:i )
+        [ 1 local@ 0 local@ < dd-n LOADI 16 < AND ] [
+            1 local@
+            [ dup 0 local@ < cur over + load-byte 47 <> AND ] [ 1 + ] |:
+            dup dd-n LOADI 4 * dd-off + STOREI
+            dd-n LOADI 1 + dd-n STOREI
+            dup 0 local@ < [
+                1 +
+            ] ?
+            1 local!
+        ] |:
+        2 unframe!
+    ] ?:
+;
+
+@place-dd ( -- )
+    place-title
+    dd-n LOADI 16 * 2 +
+    dup dh STOREI
+    tw LOADI dw STOREI
+    tx LOADI dx STOREI
+    ty LOADI SWAP -
+    dup dlg-y LOADI 2 + < [ drop dlg-y LOADI 2 + ] ?
+    dy STOREI
+;
+
+@seg ( len -- ptr n )
+    1 frame! ( 0:len )
+    0 local@ 1 <= [
+        T"NUX HD" dup STR::strlen
+    ] [
+        cur 0 local@ + 1 -
+        [ dup cur > OVER load-byte 47 <> AND ] [ 1 - ] |:
+        dup load-byte 47 = [ 1 + ] ?
+        dup cur 0 local@ + OVER -
+    ] ?:
+    1 unframe!
+;
+
+@sync-bar ( -- )
+    cnt LOADI ROWS - 0 MAX
+    1 frame! ( 0:max )
+    sb
+    lx LIST_W + SB_W -
+    ly
+    SB_W
+    LIST_H
+    0
+    0 local@
+    0
+    0
+    UI::sbar-init
+    ROWS sb UI::BAR_PAGE + STOREI
+    1 unframe!
+;
+
+@filter ( -- )
+    0 cnt STOREI
+    0 buf store-byte
+    raw buf
+    2 frame! ( 0:dst 1:src )
+    [ 1 local@ load-byte 0 > ] [
+        1 local@ tok copy-tok
+        tok load-byte 46 =
+        hidden LOADI 0 = AND [
+        ] [
+            0 local@ buf = 0 = [
+                10 0 local@ store-byte
+                0 local@ 1 + 0 local!
+            ] ?
+            tok 0 local@ STR::strcpy
+            0 local@ STR::strlen 0 local@ + 0 local!
+            cnt LOADI 1 + cnt STOREI
+        ] ?:
+        [ 1 local@ load-byte dup 10 <> SWAP 0 <> AND ] [
+            1 local@ 1 + 1 local!
+        ] |:
+        1 local@ load-byte 10 = [
+            1 local@ 1 + 1 local!
+        ] ?
+    ] |:
+    0 0 local@ store-byte
+    2 unframe!
+;
+
+@refresh ( -- )
+    T"/sys/dir/" vpath STR::strcpy
+    cur load-byte 47 = [
+        cur 1 + vpath cat
+    ] [
+        cur vpath cat
+    ] ?:
+    vpath VFS::open
+    dup 0 > [
+        dup raw 4095 VFS::read
+        0 raw 2 PICK + store-byte
+        drop
+        VFS::close drop
+    ] [
+        drop
+        0 raw store-byte
+    ] ?:
+    filter
+    0 sel STOREI
+    cnt LOADI 0 = [
+        -1 sel STOREI
+    ] ?
+    -1 last-i STOREI
+    0 last-t STOREI
+    dd-build
+    sync-bar
+;
+
+@hidden! ( f -- )
+    hidden STOREI
+    open-f LOADI [ refresh ] ?
+;
+
+@dd-go ( i -- )
+    4 * dd-off + LOADI
+    dup 1 <= [
+        drop T"/" cur STR::strcpy
+    ] [
+        0 SWAP cur + store-byte
+    ] ?:
+    0 dd STOREI
+    guess-vol
+    refresh
+;
+
+@dd-hit ( mx my -- i|-1 )
+    2 frame! ( 0:my 1:mx )
+    place-dd
+    1 local@ 0 local@
+    dx LOADI dy LOADI dw LOADI dh LOADI
+    UI::in-rect? [
+        0 local@ dy LOADI - 16 /
+        dup 0 >= OVER dd-n LOADI < AND [
+        ] [
+            drop -1
+        ] ?:
+    ] [
+        -1
+    ] ?:
+    2 unframe!
+;
+
+@hide ( -- )
+    0 open-f STOREI
+    0 APP::modal!
+    0 bdrag STOREI
+    0 sdrag STOREI
+    0 dd STOREI
+;
+
+@join ( item -- )
+    1 frame! ( 0:item )
+    0 local@ tok copy-tok
+    tok dir? [
+        0 tok tok STR::strlen + 1 - store-byte
+    ] ?
+    cur STR::strlen 1 <= [
+        T"/" cur STR::strcpy
+        tok cur cat
+    ] [
+        T"/" cur cat
+        tok cur cat
+    ] ?:
+    1 unframe!
+;
+
+@choose-file ( item -- )
+    1 frame! ( 0:item )
+    cur STR::strlen 1 <= [
+        T"/" result STR::strcpy
+    ] [
+        cur result STR::strcpy
+        T"/" result cat
+    ] ?:
+    0 local@ tok copy-tok
+    tok result cat
+    hide
+    ok-h LOADI dup 0 > [
+        result SWAP CALL
+    ] [
+        drop
+    ] ?:
+    1 unframe!
+;
+
+@open-sel ( -- )
+    sel LOADI dup 0 < [
+        drop
+    ] [
+        buf SWAP nth
+        dup dir? [
+            join
+            0 dd STOREI
+            refresh
+        ] [
+            choose-file
+        ] ?:
+    ] ?:
+;
+
+@cancel ( -- )
+    hide
+    can-h LOADI dup 0 > [ CALL ] [ drop ] ?:
+;
+
+@reveal ( -- )
+    sel LOADI 0 < [
+    ] [
+        sel LOADI sb UI::BAR_VAL + LOADI < [
+            sb sel LOADI UI::sbar-set-val drop
+        ] [
+            sel LOADI sb UI::BAR_VAL + LOADI ROWS + 1 - > [
+                sb sel LOADI ROWS - 1 + 0 MAX UI::sbar-set-val drop
+            ] ?
+        ] ?:
+    ] ?:
+;
+
+@draw-platter ( fd x y -- )
+    3 frame! ( 0:y 1:x 2:fd )
+    2 local@ 1 local@ 2 + 0 local@      8 1 UI::CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 1 + 0 local@ 1 + 10 1 UI::CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@      0 local@ 2 + 12 2 UI::CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 1 + 0 local@ 4 + 10 1 UI::CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 2 + 0 local@ 5 +  8 1 UI::CLR_BORDER DRAW::fill-rect
+    2 local@ 1 local@ 2 + 0 local@ 1 +  8 1 UI::CLR_BG DRAW::fill-rect
+    2 local@ 1 local@ 1 + 0 local@ 2 + 10 2 UI::CLR_BG DRAW::fill-rect
+    2 local@ 1 local@ 2 + 0 local@ 4 +  8 1 UI::CLR_BG DRAW::fill-rect
+    3 unframe!
+;
+
+@draw-folder ( fd x y color -- )
+    4 frame! ( 0:color 1:y 2:x 3:fd )
+    3 local@ 2 local@ 1 + 1 local@ 5 2 0 local@ DRAW::fill-rect
+    3 local@ 2 local@ 1 local@ 2 + 12 8 0 local@ DRAW::fill-rect
+    0 local@ UI::CLR_BORDER = [
+        3 local@ 2 local@ 1 + 1 local@ 3 + 10 6 UI::CLR_BG DRAW::fill-rect
+    ] [
+        3 local@ 2 local@ 1 + 1 local@ 3 + 10 6 UI::CLR_BORDER DRAW::fill-rect
+    ] ?:
+    4 unframe!
+;
+
+@draw-doc ( fd x y color -- )
+    4 frame! ( 0:color 1:y 2:x 3:fd )
+    3 local@ 2 local@ 1 local@ 12 10 0 local@ DRAW::fill-rect
+    0 local@ UI::CLR_BORDER = [
+        3 local@ 2 local@ 1 + 1 local@ 1 + 10 8 UI::CLR_BG DRAW::fill-rect
+        3 local@ 2 local@ 7 + 1 local@ 5 4 0 local@ DRAW::fill-rect
+        3 local@ 2 local@ 8 + 1 local@ 1 + 3 2 UI::CLR_BG DRAW::fill-rect
+    ] [
+        3 local@ 2 local@ 1 + 1 local@ 1 + 10 8 UI::CLR_BORDER DRAW::fill-rect
+        3 local@ 2 local@ 7 + 1 local@ 5 4 0 local@ DRAW::fill-rect
+        3 local@ 2 local@ 8 + 1 local@ 1 + 3 2 UI::CLR_BORDER DRAW::fill-rect
+    ] ?:
+    4 unframe!
+;
+
+@draw-list-title ( -- )
+    place-title
+    DRAW::fd tx LOADI ty LOADI tw LOADI th LOADI UI::frame-rect
+    DRAW::fd tx LOADI 4 + ty LOADI 3 + UI::CLR_BORDER draw-folder
+    DRAW::fd tx LOADI 20 + ty LOADI 2 + title UI::CLR_TEXT 1 DRAW::draw-str
+;
+
+@draw-dropdown ( -- )
+    dd LOADI [
+        place-dd
+        DRAW::fd dx LOADI dy LOADI dw LOADI dh LOADI UI::CLR_BG DRAW::fill-rect
+        DRAW::fd dx LOADI dy LOADI dw LOADI dh LOADI UI::CLR_BORDER DRAW::draw-rect
+        0
+        [ dup dd-n LOADI < ] [
+            dup
+            4 * dd-off + LOADI seg
+            2 PICK 16 * dy LOADI + 1 +
+            3 frame! ( 0:iy 1:n 2:ptr 3:i )
+            3 local@ dd-n LOADI 1 - = [
+                DRAW::fd dx LOADI 1 + 0 local@ dw LOADI 2 - 16 UI::CLR_PRESS DRAW::fill-rect
+                DRAW::fd dx LOADI 4 + 0 local@ 3 + UI::CLR_BG draw-folder
+                DRAW::fd dx LOADI 20 + 0 local@ 2 + 2 local@ 1 local@ UI::CLR_BG 1 DRAW::draw-str-n
+            ] [
+                DRAW::fd dx LOADI 4 + 0 local@ 3 + UI::CLR_BORDER draw-folder
+                DRAW::fd dx LOADI 20 + 0 local@ 2 + 2 local@ 1 local@ UI::CLR_TEXT 1 DRAW::draw-str-n
+            ] ?:
+            3 unframe!
+            1 +
+        ] |:
+        drop
+    ] ?
+;
+
+@draw-row ( row -- )
+    dup sb UI::BAR_VAL + LOADI +
+    dup cnt LOADI < [
+        SWAP
+        2 frame! ( 0:row 1:idx )
+        buf 1 local@ nth
+        0 local@ ITEM_H * ly +
+        1 local@ sel LOADI = [ UI::CLR_BG ] [ UI::CLR_TEXT ] ?:
+        3 frame! ( 0:ink 1:y 2:ptr 3:row 4:idx )
+        4 local@ sel LOADI = [
+            DRAW::fd lx 1 + 1 local@ LIST_W SB_W - 1 - ITEM_H UI::CLR_PRESS DRAW::fill-rect
+        ] ?
+        2 local@ dir? [
+            DRAW::fd lx 4 + 1 local@ 3 + 0 local@ draw-folder
+        ] [
+            DRAW::fd lx 4 + 1 local@ 3 + 0 local@ draw-doc
+        ] ?:
+        DRAW::fd
+        lx 20 +
+        1 local@ 2 +
+        2 local@
+        2 local@ disp-len
+        0 local@
+        1
+        DRAW::draw-str-n
+        3 unframe!
+        2 unframe!
+    ] [
+        drop drop
+    ] ?:
+;
+
+@draw-list ( -- )
+    DRAW::fd lx ly LIST_W LIST_H UI::frame-rect
+    0
+    [ dup ROWS < ] [
+        dup draw-row
+        1 +
+    ] |:
+    drop
+    DRAW::fd sb UI::sbar-draw
+;
+
+@init-btns ( -- )
+    bn-open bx opy BTN_W BTN_H T"Open"   0 UI::button-init
+    1 bn-open UI::BTN_DEFAULT + STOREI
+    bn-can  bx cay BTN_W BTN_H T"Cancel" 0 UI::button-init
+;
+
+@show ( -- )
+    APP::width DLG_W - 2 / dlg-x STOREI
+    APP::height DLG_H - 2 / dlg-y STOREI
+    T"/" cur STR::strcpy
+    0 vol STOREI
+    0 bdrag STOREI
+    0 sdrag STOREI
+    0 dd STOREI
+    place-title
+    init-btns
+    refresh
+    1 open-f STOREI
+    1 APP::modal!
+;
+
+@draw ( -- )
+    DRAW::fd dlg-x LOADI dlg-y LOADI DLG_W DLG_H UI::CLR_BG DRAW::fill-rect
+    DRAW::fd dlg-x LOADI dlg-y LOADI DLG_W DLG_H UI::CLR_BORDER DRAW::draw-rect
+    draw-list
+    draw-list-title
+    draw-dropdown
+    DRAW::fd bx ty LOADI 2 + draw-platter
+    DRAW::fd bx 16 + ty LOADI 1 + vol-name UI::CLR_TEXT 1 DRAW::draw-str
+    DRAW::fd bn-open UI::button-draw
+    DRAW::fd bn-can UI::button-draw
+;
+
+@hit-title? ( mx my -- bool )
+    place-title
+    tx LOADI ty LOADI tw LOADI th LOADI UI::in-rect?
+;
+
+@hit-list? ( mx my -- bool )
+    lx ly LIST_W SB_W - LIST_H UI::in-rect?
+;
+
+@click-list ( my -- )
+    1 frame! ( 0:my )
+    0 local@ ly - ITEM_H /
+    sb UI::BAR_VAL + LOADI +
+    dup 0 >= OVER cnt LOADI < AND [
+        dup sel LOADI =
+        TIME::milli@ last-t LOADI - 500 < AND
+        OVER last-i LOADI = AND [
+            drop
+            open-sel
+        ] [
+            dup sel STOREI
+            dup last-i STOREI
+            drop
+            TIME::milli@ last-t STOREI
+        ] ?:
+    ] [
+        drop
+    ] ?:
+    1 unframe!
+;
+
+@fire ( which -- )
+    dup 1 = [
+        drop open-sel
+    ] [
+        drop cancel
+    ] ?:
+;
+
+@mouse ( mpkt -- )
+    1 frame! ( 0:mpkt )
+    0 local@ EVENT::mouse-x
+    0 local@ EVENT::mouse-y
+    0 local@ EVENT::mouse-type
+    3 frame! ( 0:type 1:my 2:mx 3:mpkt )
+    sdrag LOADI [
+        sb 2 local@ 1 local@
+        0 local@ EVENT::MOUSE_UP = [
+            drop drop
+            UI::sbar-release
+            0 sdrag STOREI
+        ] [
+            UI::sbar-drag drop
+        ] ?:
+    ] [
+    bdrag LOADI [
+        bdrag LOADI
+        dup 1 = [ drop bn-open ] [
+            drop bn-can
+        ] ?:
+        2 local@ 1 local@
+        0 local@ EVENT::MOUSE_UP = [
+            UI::button-release [
+                bdrag LOADI fire
+            ] ?
+            0 bdrag STOREI
+        ] [
+            UI::button-track
+        ] ?:
+    ] [
+        0 local@ EVENT::MOUSE_DOWN = [
+            dd LOADI [
+                2 local@ 1 local@ dd-hit
+                dup 0 < [
+                    drop
+                    0 dd STOREI
+                ] [
+                    dd-go
+                ] ?:
+            ] [
+            2 local@ 1 local@ hit-title? [
+                dd-build
+                1 dd STOREI
+            ] [
+            sb 2 local@ 1 local@ UI::sbar-hit? [
+                sb 2 local@ 1 local@ UI::sbar-press drop
+                1 sdrag STOREI
+            ] [
+            bn-open 2 local@ 1 local@ UI::button-hit? [
+                bn-open UI::button-press
+                1 bdrag STOREI
+            ] [
+            bn-can 2 local@ 1 local@ UI::button-hit? [
+                bn-can UI::button-press
+                2 bdrag STOREI
+            ] [
+            2 local@ 1 local@ hit-list? [
+                1 local@ click-list
+            ] ? ] ?: ] ?: ] ?: ] ?:
+            ] ?:
+        ] ?
+    ] ?: ] ?:
+    3 unframe!
+    1 unframe!
+;
+
+@kbd ( kpkt -- )
+    1 frame! ( 0:kpkt )
+    0 local@ EVENT::kbd-type EVENT::KEY_DOWN = [
+        0 local@ EVENT::kbd-key
+        dup EVENT::KEY_ESC = [
+            drop
+            dd LOADI [
+                0 dd STOREI
+            ] [
+                cancel
+            ] ?:
+        ] [
+        dup EVENT::KEY_ENTER = [
+            drop open-sel
+        ] [
+        dup EVENT::KEY_UP_ARROW = [
+            drop
+            sel LOADI 1 - 0 MAX sel STOREI
+            reveal
+        ] [
+        dup EVENT::KEY_DOWN_ARROW = [
+            drop
+            cnt LOADI 0 > [
+                sel LOADI 1 + cnt LOADI 1 - MIN sel STOREI
+                reveal
+            ] ?
+        ] [
+            drop
+        ] ?: ] ?: ] ?: ] ?:
+    ] ?
+    1 unframe!
+;
