@@ -65,7 +65,7 @@ static void audio_callback(void* userdata, Uint8* stream, int len) {
 
 // Drawing chicago font directly to a 32-bit pixel buffer
 static void draw_char(uint32_t* pixels, int pitch, int x, int y, char c, uint32_t color, int scale) {
-    unsigned char* data = pkg_system_chicago12x12_cff;
+    unsigned char* data = chicago12x12_cff;
     int width = data[(uint8_t)c];
     if (width == 0 && c != ' ') return;
     
@@ -130,6 +130,92 @@ static void fill_rect(uint32_t* pixels, int pitch, int x, int y, int w, int h, u
     }
 }
 
+#define ESC_BTN_W 120
+#define ESC_BTN_H 20
+#define ESC_BTN_X 40
+#define ESC_BTN_Y0 50
+#define ESC_BTN_GAP 28
+
+static int esc_btn_y(int i) {
+    return ESC_BTN_Y0 + (i - 1) * ESC_BTN_GAP;
+}
+
+/* r=3 nibble: punch the corner stairs out to `erase`. */
+static void rr_cut_corners(uint32_t* pixels, int pitch, int x, int y, int w, int h,
+                           uint32_t erase) {
+    fill_rect(pixels, pitch, x,         y,         3, 1, erase);
+    fill_rect(pixels, pitch, x + w - 3, y,         3, 1, erase);
+    fill_rect(pixels, pitch, x,         y + 1,     2, 1, erase);
+    fill_rect(pixels, pitch, x + w - 2, y + 1,     2, 1, erase);
+    fill_rect(pixels, pitch, x,         y + 2,     1, 1, erase);
+    fill_rect(pixels, pitch, x + w - 1, y + 2,     1, 1, erase);
+    fill_rect(pixels, pitch, x,         y + h - 1, 3, 1, erase);
+    fill_rect(pixels, pitch, x + w - 3, y + h - 1, 3, 1, erase);
+    fill_rect(pixels, pitch, x,         y + h - 2, 2, 1, erase);
+    fill_rect(pixels, pitch, x + w - 2, y + h - 2, 2, 1, erase);
+    fill_rect(pixels, pitch, x,         y + h - 3, 1, 1, erase);
+    fill_rect(pixels, pitch, x + w - 1, y + h - 3, 1, 1, erase);
+}
+
+static void rr_fill(uint32_t* pixels, int pitch, int x, int y, int w, int h,
+                    uint32_t fill, uint32_t erase) {
+    fill_rect(pixels, pitch, x, y, w, h, fill);
+    rr_cut_corners(pixels, pitch, x, y, w, h, erase);
+}
+
+static void rr_frame(uint32_t* pixels, int pitch, int x, int y, int w, int h,
+                     uint32_t color) {
+    fill_rect(pixels, pitch, x + 3, y,         w - 6, 1, color);
+    fill_rect(pixels, pitch, x + 3, y + h - 1, w - 6, 1, color);
+    fill_rect(pixels, pitch, x,         y + 3, 1, h - 6, color);
+    fill_rect(pixels, pitch, x + w - 1, y + 3, 1, h - 6, color);
+    /* r=3 stairs: (2,1) (1,2) */
+    fill_rect(pixels, pitch, x + 2,         y + 1,         1, 1, color);
+    fill_rect(pixels, pitch, x + 1,         y + 2,         1, 1, color);
+    fill_rect(pixels, pitch, x + w - 3,     y + 1,         1, 1, color);
+    fill_rect(pixels, pitch, x + w - 2,     y + 2,         1, 1, color);
+    fill_rect(pixels, pitch, x + 2,         y + h - 2,     1, 1, color);
+    fill_rect(pixels, pitch, x + 1,         y + h - 3,     1, 1, color);
+    fill_rect(pixels, pitch, x + w - 3,     y + h - 2,     1, 1, color);
+    fill_rect(pixels, pitch, x + w - 2,     y + h - 3,     1, 1, color);
+}
+
+static void rr_inside(uint32_t* pixels, int pitch, int x, int y, int w, int h,
+                      uint32_t color) {
+    fill_rect(pixels, pitch, x + 3, y + 1,     w - 6, 1, color);
+    fill_rect(pixels, pitch, x + 2, y + 2,     w - 4, 1, color);
+    fill_rect(pixels, pitch, x + 3, y + h - 2, w - 6, 1, color);
+    fill_rect(pixels, pitch, x + 2, y + h - 3, w - 4, 1, color);
+    fill_rect(pixels, pitch, x + 1, y + 3,     w - 2, h - 6, color);
+}
+
+static void draw_sys_button(uint32_t* pixels, int pitch, int x, int y, int w, int h,
+                            const char* label, bool is_default, bool pressed) {
+    const uint32_t black = 0xFF000000;
+    const uint32_t white = 0xFFFFFFFF;
+    if (is_default) {
+        rr_frame(pixels, pitch, x - 4, y - 4, w + 8, h + 8, black);
+        rr_frame(pixels, pitch, x - 3, y - 3, w + 6, h + 6, black);
+        rr_frame(pixels, pitch, x - 2, y - 2, w + 4, h + 4, black);
+    }
+    rr_fill(pixels, pitch, x, y, w, h, black, white);
+    if (!pressed) rr_inside(pixels, pitch, x, y, w, h, white);
+    int tw = (int)strlen(label) * 10;
+    int tx = x + (w - tw) / 2;
+    int ty = y + h / 2 - 6;
+    draw_text(pixels, pitch, tx, ty, label, pressed ? white : black, 1);
+}
+
+static int esc_hit(int mx, int my, int menu_x, int menu_y) {
+    int bx = menu_x + ESC_BTN_X;
+    if (mx < bx || mx >= bx + ESC_BTN_W) return 0;
+    for (int i = 1; i <= 3; i++) {
+        int by = menu_y + esc_btn_y(i);
+        if (my >= by && my < by + ESC_BTN_H) return i;
+    }
+    return 0;
+}
+
 
 static void queue_event(Machine* m, uint32_t type, uint32_t data, uint32_t mods) {
     if (!m || !m->system) return;
@@ -139,7 +225,7 @@ static void queue_event(Machine* m, uint32_t type, uint32_t data, uint32_t mods)
         m->system->event_tail = next;
     }
     if (type == 0) {
-        // Only KeyDown feeds /sys/kbd — the Go host never queued KeyUps there.
+        // Only KeyDown feeds /sys/kbd — KeyUps stay on the legacy event ring.
         system_push_kbd_event(m->system, (uint8_t)type, (int32_t)(data & 0xFFFFFF), mods);
     } else if (type >= 2 && type <= 4) {
         int32_t mx = (int32_t)(data >> 12);
@@ -171,6 +257,8 @@ static bool translate_key(SDL_Keycode k, bool shift, int32_t* out) {
         case SDLK_RIGHT:     *out = 20; return true;
         case SDLK_PAGEUP:    *out = 21; return true;
         case SDLK_PAGEDOWN:  *out = 22; return true;
+        case SDLK_HOME:      *out = 23; return true;
+        case SDLK_END:       *out = 24; return true;
         case SDLK_SPACE:     *out = 32; return true;
         case SDLK_TAB:       *out = 9;  return true;
         case SDLK_RETURN:
@@ -364,6 +452,7 @@ int main(int argc, char** argv) {
     int selected_index = 0;
     bool esc_menu_open = false;
     int esc_menu_hover = 0; // 0=none, 1=continue, 2=restart, 3=quit
+    int esc_menu_press = 0; // button held from mouse-down, 0 if none
 
     Machine* machine = NULL;
     uint8_t* program = NULL;
@@ -413,11 +502,13 @@ int main(int argc, char** argv) {
                             }
                         } else if (e.key.keysym.sym == SDLK_ESCAPE) {
                             esc_menu_open = false;
+                            esc_menu_press = 0;
                         }
                     } else {
                         if (e.key.keysym.sym == SDLK_ESCAPE) {
                             esc_menu_open = true;
                             esc_menu_hover = 1;
+                            esc_menu_press = 0;
                         } else if (e.key.keysym.sym == SDLK_UP) {
                             selected_index--;
                             if (selected_index < 0) selected_index = num_apps - 1;
@@ -451,18 +542,10 @@ int main(int argc, char** argv) {
                 }
             } else if (e.type == SDL_MOUSEMOTION) {
                 if (launcher_mode && esc_menu_open) {
-                    int mx = e.motion.x, my = e.motion.y;
                     int menu_x = (WIN_WIDTH - 200) / 2;
                     int menu_y = (WIN_HEIGHT - 160) / 2;
-                    int rel_x = mx - menu_x;
-                    int rel_y = my - menu_y;
-                    int hover = 0;
-                    if (rel_x >= 20 && rel_x <= 180) {
-                        if (rel_y >= 50 && rel_y <= 80) hover = 1;
-                        else if (rel_y >= 85 && rel_y <= 115) hover = 2;
-                        else if (rel_y >= 120 && rel_y <= 150) hover = 3;
-                    }
-                    if (hover != 0) esc_menu_hover = hover;
+                    int hit = esc_hit(e.motion.x, e.motion.y, menu_x, menu_y);
+                    if (hit != 0) esc_menu_hover = hit;
                 } else if (!launcher_mode && machine) {
                     machine->system->mouse_x = e.motion.x;
                     machine->system->mouse_y = e.motion.y;
@@ -478,15 +561,28 @@ int main(int argc, char** argv) {
                 }
             } else if (e.type == SDL_MOUSEBUTTONDOWN) {
                 if (launcher_mode && esc_menu_open) {
-                    if (esc_menu_hover == 1 || esc_menu_hover == 2) esc_menu_open = false;
-                    else if (esc_menu_hover == 3) quit = true;
+                    int menu_x = (WIN_WIDTH - 200) / 2;
+                    int menu_y = (WIN_HEIGHT - 160) / 2;
+                    esc_menu_press = esc_hit(e.button.x, e.button.y, menu_x, menu_y);
+                    if (esc_menu_press != 0) esc_menu_hover = esc_menu_press;
                     else esc_menu_open = false;
                 } else if (!launcher_mode && machine) {
                     machine->system->mouse_btn |= 1;
                     queue_event(machine, 3, (e.button.x << 12) | (e.button.y & 0xFFF), 0);
                 }
             } else if (e.type == SDL_MOUSEBUTTONUP) {
-                if (!launcher_mode && machine) {
+                if (launcher_mode && esc_menu_open && esc_menu_press != 0) {
+                    int menu_x = (WIN_WIDTH - 200) / 2;
+                    int menu_y = (WIN_HEIGHT - 160) / 2;
+                    int hit = esc_hit(e.button.x, e.button.y, menu_x, menu_y);
+                    if (hit == esc_menu_press) {
+                        if (hit == 3) quit = true;
+                        else esc_menu_open = false;
+                    } else if (hit == 0) {
+                        esc_menu_open = false;
+                    }
+                    esc_menu_press = 0;
+                } else if (!launcher_mode && machine) {
                     machine->system->mouse_btn &= ~1;
                     queue_event(machine, 4, (e.button.x << 12) | (e.button.y & 0xFFF), 0);
                 }
@@ -536,17 +632,14 @@ int main(int argc, char** argv) {
                 int menu_y = (WIN_HEIGHT - 160) / 2;
                 fill_rect(pixels, pitch, menu_x - 2, menu_y - 2, 204, 164, 0xFF000000);
                 fill_rect(pixels, pitch, menu_x, menu_y, 200, 160, 0xFFFFFFFF);
-                
-                draw_text(pixels, pitch, menu_x + 35, menu_y + 15, "System Menu", 0xFF000000, 1);
-                
-                // Buttons
+                draw_text(pixels, pitch, menu_x + 44, menu_y + 16, "System Menu", 0xFF000000, 1);
+                const char* labels[4] = { NULL, "Continue", "Restart App", "Quit" };
                 for (int i = 1; i <= 3; i++) {
-                    fill_rect(pixels, pitch, menu_x + 20, menu_y + 15 + i * 35, 160, 30, 0xFF000000);
-                    uint32_t btn_color = (esc_menu_hover == i) ? 0xFFAAAAAA : 0xFFFFFFFF;
-                    fill_rect(pixels, pitch, menu_x + 21, menu_y + 16 + i * 35, 158, 28, btn_color);
-                    
-                    const char* text = (i == 1) ? "Continue" : (i == 2) ? "Restart App" : "Quit";
-                    draw_text(pixels, pitch, menu_x + 50, menu_y + 21 + i * 35, text, 0xFF000000, 1);
+                    int bx = menu_x + ESC_BTN_X;
+                    int by = menu_y + esc_btn_y(i);
+                    bool pressed = (esc_menu_press == i);
+                    draw_sys_button(pixels, pitch, bx, by, ESC_BTN_W, ESC_BTN_H,
+                                    labels[i], esc_menu_hover == i, pressed);
                 }
             }
         } else if (machine && machine->system->screen_pixels) {

@@ -375,6 +375,23 @@ Yield to the host. Calls the VM's `YieldHandler` if one is set, allowing the hos
 | 0x35 | HALT      | 1     | stop |
 | 0x36 | YIELD     | 1     | yield to host |
 
+## Runtime faults
+
+The VM keeps the loaded program image `[image_base, image_end)` (bytecode, quotations, and `T"` strings). Illegal memory use **halts that instruction** and prints `Fault at PC … SP:…` to stderr. `HALT` and `YIELD` are not faults.
+
+| Fault | When |
+|---|---|
+| execute outside program | PC is not inside the image. Bytes after the image are zeros; opcode `0x00` is `PUSH`, so this check stops a runaway `PUSH 0` loop. |
+| jump/call outside program | `JMP` / `JZ` / `JNZ` / `CALL` / `CALLSTACK` / `JMPSTACK` / `RET` target is outside the image. |
+| truncated immediate | A 5-byte opcode does not have four immediate bytes left in the image. |
+| write into program | `STORE` / `STOREI` overlaps the image. Reads of the image (`T"` strings) are allowed. |
+| unaligned memory read/write | Word access with `addr & 3 ≠ 0`. `load-byte` / `store-byte` align before `LOADI`/`STOREI`. |
+| memory read/write out of bounds | `addr >= memory_size` or fewer than 4 bytes remain (wrap-safe). |
+| stack / return / loop underflow or overflow | Same halt as before, now always with a message. |
+| unknown opcode | Byte is not in `0x00–0x36`. |
+
+No new opcodes. Device ports and the framebuffer stay readable/writable; they are outside the program image.
+
 ## Example Programs
 
 ### Hello World (print 42)

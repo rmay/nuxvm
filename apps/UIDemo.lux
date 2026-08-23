@@ -132,13 +132,9 @@ IMPORT SF
 
 @on-frame ( -- )
     UI::handle
-    DRAW::fd 0 0 APP::width APP::height UI::CLR_BG DRAW::fill-rect
-    DRAW::fd 40 40 500 236 UI::CLR_BORDER DRAW::fill-rect
-    DRAW::fd 41 41 498 234 UI::CLR_BG DRAW::fill-rect
-    DRAW::fd 56 56 T"Click a control" UI::CLR_TEXT 1 DRAW::draw-str
-    DRAW::fd 56 124 T"Alignment" UI::CLR_TEXT 1 DRAW::draw-str
-    DRAW::fd 268 56 T"Speaker Volume" UI::CLR_TEXT 1 DRAW::draw-str
-    DRAW::fd 400 56 T"Scroll" UI::CLR_TEXT 1 DRAW::draw-str
+    DRAW::fd 0 0 APP::width APP::height UI::CLR_BG DRAW::paint-rect
+    DRAW::fd 40 40 500 236 UI::CLR_BG DRAW::paint-rect
+    DRAW::fd 40 40 500 236 UI::CLR_BORDER DRAW::frame-rect
     kind LOADI 2 =
     kind LOADI 4 = OR
     kind LOADI 5 = OR [
@@ -186,7 +182,11 @@ IMPORT SF
     T"Align Left"   grp LOADI [ on-left ]   UI::radio-item
     T"Align Center" grp LOADI [ on-center ] UI::radio-item
     T"Align Right"  grp LOADI [ on-right ]  UI::radio-item
+    T"Click a control" 56 56 UI::label
+    T"Speaker Volume" 268 56 UI::label
+    T"Scroll" 400 56 UI::label
     T"Show hidden files" 56 88 200 12 [ on-hidden ] UI::checkbox
+    T"Alignment" 48 128 220 80 UI::groupbox
     T"Left"   56 140 80 12 grp LOADI [ on-left ]   UI::radio
     T"Center" 56 164 80 12 grp LOADI [ on-center ] UI::radio
     T"Right"  56 188 80 12 grp LOADI [ on-right ]  UI::radio

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
 const char* opcode_name(uint8_t op) {
     switch (op) {
@@ -89,10 +90,40 @@ VM* vm_create(const uint8_t* program, uint32_t program_size, uint32_t base_addre
     vm->halted = false;
     vm->reserved_memory_size = RESERVED_MEMORY_SIZE;
     vm->user_memory_start = base_address;
+    vm->image_base = base_address;
+    vm->image_end = base_address + program_size;
+    vm->op_pc = base_address;
     vm->trace = trace;
     vm->fp = -1;
     
     return vm;
+}
+
+static void vm_fault(VM* vm, const char* fmt, ...) {
+    fprintf(stderr, "Fault at PC 0x%08X SP:%d: ", vm->op_pc, vm->stack_ptr);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "\n");
+    vm->running = false;
+}
+
+static bool in_image(const VM* vm, uint32_t addr) {
+    return addr >= vm->image_base && addr < vm->image_end;
+}
+
+static bool check_exec_target(VM* vm, uint32_t addr) {
+    if (!in_image(vm, addr)) {
+        vm_fault(vm, "jump/call outside program to 0x%08X (image 0x%08X-0x%08X)",
+                 addr, vm->image_base, vm->image_end);
+        return false;
+    }
+    return true;
+}
+
+static bool mem_in_range(const VM* vm, uint32_t addr) {
+    return addr < vm->memory_size && vm->memory_size - addr >= 4;
 }
 
 void vm_free(VM* vm) {
@@ -109,20 +140,22 @@ void vm_set_bus(VM* vm, DeviceBus* bus) {
 }
 
 bool vm_call_vector(VM* vm, uint32_t addr) {
+    vm->op_pc = vm->pc;
     if (vm->return_stack_ptr >= MAX_RETURN_STACK_SIZE) {
-        fprintf(stderr, "Return stack overflow\n");
-        vm->running = false;
+        vm_fault(vm, "return stack overflow");
+        return false;
+    }
+    if (!check_exec_target(vm, addr)) {
         return false;
     }
     vm->return_stack[vm->return_stack_ptr++] = vm->pc;
-    vm->pc = addr - vm->user_memory_start;
+    vm->pc = addr;
     return true;
 }
 
 bool vm_push(VM* vm, int32_t value) {
     if (vm->stack_ptr >= MAX_STACK_SIZE) {
-        fprintf(stderr, "Data stack overflow at PC 0x%08X\n", vm->pc);
-        vm->running = false;
+        vm_fault(vm, "data stack overflow");
         return false;
     }
     vm->stack[vm->stack_ptr++] = value;
@@ -131,25 +164,33 @@ bool vm_push(VM* vm, int32_t value) {
 
 bool vm_pop(VM* vm, int32_t* value) {
     if (vm->stack_ptr <= 0) {
-        fprintf(stderr, "Stack underflow at PC 0x%08X\n", vm->pc);
-        vm->running = false;
+        vm_fault(vm, "stack underflow");
         return false;
     }
     *value = vm->stack[--vm->stack_ptr];
     return true;
 }
 
-static uint32_t read_uint32(VM* vm) {
+static bool fetch_u32(VM* vm, uint32_t* out) {
+    if (vm->pc < vm->image_base || vm->pc >= vm->image_end ||
+        vm->image_end - vm->pc < 4) {
+        vm_fault(vm, "truncated immediate");
+        return false;
+    }
     uint32_t val = 0;
     val |= (uint32_t)vm->memory[vm->pc++] << 24;
     val |= (uint32_t)vm->memory[vm->pc++] << 16;
     val |= (uint32_t)vm->memory[vm->pc++] << 8;
     val |= (uint32_t)vm->memory[vm->pc++];
-    return val;
+    *out = val;
+    return true;
 }
 
-static int32_t read_int32(VM* vm) {
-    return (int32_t)read_uint32(vm);
+static bool fetch_i32(VM* vm, int32_t* out) {
+    uint32_t u;
+    if (!fetch_u32(vm, &u)) return false;
+    *out = (int32_t)u;
+    return true;
 }
 
 static bool is_device_addr(VM* vm, uint32_t addr) {
@@ -161,11 +202,19 @@ static bool is_device_addr(VM* vm, uint32_t addr) {
 }
 
 
-static void write_mem32(VM* vm, uint32_t addr, int32_t val) {
-    if (addr > vm->memory_size || addr + 4 > vm->memory_size) {
-        fprintf(stderr, "Memory write out of bounds at 0x%08X\n", addr);
-        vm->running = false;
-        return;
+static bool write_mem32(VM* vm, uint32_t addr, int32_t val) {
+    if (addr & 3) {
+        vm_fault(vm, "unaligned memory write at 0x%08X", addr);
+        return false;
+    }
+    if (!mem_in_range(vm, addr)) {
+        vm_fault(vm, "memory write out of bounds at 0x%08X", addr);
+        return false;
+    }
+    if (addr < vm->image_end && addr + 4 > vm->image_base) {
+        vm_fault(vm, "write into program at 0x%08X (image 0x%08X-0x%08X)",
+                 addr, vm->image_base, vm->image_end);
+        return false;
     }
     vm->memory[addr] = (val >> 24) & 0xFF;
     vm->memory[addr+1] = (val >> 16) & 0xFF;
@@ -177,50 +226,61 @@ static void write_mem32(VM* vm, uint32_t addr, int32_t val) {
             vm->bus->write(vm->bus, addr, val);
         }
     }
+    return true;
 }
 
-static int32_t read_mem32(VM* vm, uint32_t addr) {
+static bool read_mem32(VM* vm, uint32_t addr, int32_t* out) {
+    if (addr & 3) {
+        vm_fault(vm, "unaligned memory read at 0x%08X", addr);
+        return false;
+    }
     if (is_device_addr(vm, addr)) {
         if (vm->bus && vm->bus->read) {
             bool success = false;
             int32_t val = vm->bus->read(vm->bus, addr, &success);
             if (success) {
-                return val;
+                *out = val;
+                return true;
             }
-            fprintf(stderr, "Device read failed at 0x%08X\n", addr);
-            vm->running = false;
-            return 0;
+            vm_fault(vm, "device read failed at 0x%08X", addr);
+            return false;
         }
-        fprintf(stderr, "No bus: device read at 0x%08X\n", addr);
-        vm->running = false;
-        return 0;
+        vm_fault(vm, "no bus: device read at 0x%08X", addr);
+        return false;
     }
-    if (addr > vm->memory_size || addr + 4 > vm->memory_size) {
-        fprintf(stderr, "Memory read out of bounds at 0x%08X\n", addr);
-        vm->running = false;
-        return 0;
+    if (!mem_in_range(vm, addr)) {
+        vm_fault(vm, "memory read out of bounds at 0x%08X", addr);
+        return false;
     }
-    int32_t val = 0;
-    val |= (int32_t)vm->memory[addr] << 24;
-    val |= (int32_t)vm->memory[addr+1] << 16;
-    val |= (int32_t)vm->memory[addr+2] << 8;
-    val |= (int32_t)vm->memory[addr+3];
-    return val;
+    uint32_t val = 0;
+    val |= (uint32_t)vm->memory[addr] << 24;
+    val |= (uint32_t)vm->memory[addr+1] << 16;
+    val |= (uint32_t)vm->memory[addr+2] << 8;
+    val |= (uint32_t)vm->memory[addr+3];
+    *out = (int32_t)val;
+    return true;
 }
 
 bool vm_tick(VM* vm) {
     if (!vm->running) return false;
+    if (vm->pc < vm->image_base || vm->pc >= vm->image_end) {
+        vm->op_pc = vm->pc;
+        vm_fault(vm, "execute outside program (image 0x%08X-0x%08X)",
+                 vm->image_base, vm->image_end);
+        return false;
+    }
     if (vm->pc >= vm->memory_size) {
-        fprintf(stderr, "PC out of bounds\n");
-        vm->running = false;
+        vm->op_pc = vm->pc;
+        vm_fault(vm, "PC out of bounds");
         return false;
     }
     
+    vm->op_pc = vm->pc;
     uint8_t op = vm->memory[vm->pc++];
     vm->last_opcode = op;
     
     if (vm->trace) {
-        fprintf(stderr, "TRACE PC:0x%08X OP:%s(%02X) SP:%d\n", vm->pc-1, opcode_name(op), op, vm->stack_ptr);
+        fprintf(stderr, "TRACE PC:0x%08X OP:%s(%02X) SP:%d\n", vm->op_pc, opcode_name(op), op, vm->stack_ptr);
     }
     
     int32_t a, b, c;
@@ -228,7 +288,7 @@ bool vm_tick(VM* vm) {
     
     switch (op) {
         case OP_PUSH:
-            vm_push(vm, read_int32(vm));
+            if (fetch_i32(vm, &a)) vm_push(vm, a);
             break;
         case OP_POP:
             vm_pop(vm, &a);
@@ -249,7 +309,7 @@ bool vm_tick(VM* vm) {
             if (vm->stack_ptr >= 2) {
                 vm_push(vm, vm->stack[vm->stack_ptr - 2]);
             } else {
-                vm->running = false;
+                vm_fault(vm, "stack underflow (OVER needs 2)");
             }
             break;
         case OP_ROT:
@@ -261,7 +321,7 @@ bool vm_tick(VM* vm) {
                 vm->stack[vm->stack_ptr - 2] = c;
                 vm->stack[vm->stack_ptr - 1] = a;
             } else {
-                vm->running = false;
+                vm_fault(vm, "stack underflow (ROT needs 3)");
             }
             break;
         case OP_PICK:
@@ -269,7 +329,7 @@ bool vm_tick(VM* vm) {
                 if (a >= 0 && a < vm->stack_ptr) {
                     vm_push(vm, vm->stack[vm->stack_ptr - 1 - a]);
                 } else {
-                    vm->running = false;
+                    vm_fault(vm, "PICK index %d out of range (SP:%d)", a, vm->stack_ptr);
                 }
             }
             break;
@@ -283,7 +343,7 @@ bool vm_tick(VM* vm) {
                     }
                     vm->stack[vm->stack_ptr - 1] = val;
                 } else if (a < 0 || a >= vm->stack_ptr) {
-                    vm->running = false;
+                    vm_fault(vm, "ROLL index %d out of range (SP:%d)", a, vm->stack_ptr);
                 }
             }
             break;
@@ -298,13 +358,13 @@ bool vm_tick(VM* vm) {
             break;
         case OP_DIV:
             if (vm_pop(vm, &b) && vm_pop(vm, &a)) {
-                if (b == 0) vm->running = false;
+                if (b == 0) vm_fault(vm, "division by zero");
                 else vm_push(vm, a / b);
             }
             break;
         case OP_MOD:
             if (vm_pop(vm, &b) && vm_pop(vm, &a)) {
-                if (b == 0) vm->running = false;
+                if (b == 0) vm_fault(vm, "division by zero");
                 else vm_push(vm, a % b);
             }
             break;
@@ -322,7 +382,7 @@ bool vm_tick(VM* vm) {
             break;
         case OP_DIVMOD:
             if (vm_pop(vm, &b) && vm_pop(vm, &a)) {
-                if (b == 0) vm->running = false;
+                if (b == 0) vm_fault(vm, "division by zero");
                 else {
                     vm_push(vm, a / b);
                     vm_push(vm, a % b);
@@ -348,7 +408,9 @@ bool vm_tick(VM* vm) {
             if (vm_pop(vm, &a)) vm_push(vm, ~a);
             break;
         case OP_SHL:
-            if (vm_pop(vm, &b) && vm_pop(vm, &a)) vm_push(vm, a << (b % 32));
+            if (vm_pop(vm, &b) && vm_pop(vm, &a)) {
+                vm_push(vm, (int32_t)((uint32_t)a << (b % 32)));
+            }
             break;
         case OP_SHR:
             if (vm_pop(vm, &b) && vm_pop(vm, &a)) {
@@ -378,57 +440,65 @@ bool vm_tick(VM* vm) {
             if (vm_pop(vm, &b) && vm_pop(vm, &a)) vm_push(vm, a >= b ? 1 : 0);
             break;
         case OP_JMP:
-            vm->pc = read_uint32(vm);
+            if (fetch_u32(vm, &addr) && check_exec_target(vm, addr)) vm->pc = addr;
             break;
         case OP_JZ:
-            addr = read_uint32(vm);
-            if (vm_pop(vm, &a) && a == 0) vm->pc = addr;
+            if (fetch_u32(vm, &addr) && check_exec_target(vm, addr) && vm_pop(vm, &a) && a == 0) {
+                vm->pc = addr;
+            }
             break;
         case OP_JNZ:
-            addr = read_uint32(vm);
-            if (vm_pop(vm, &a) && a != 0) vm->pc = addr;
+            if (fetch_u32(vm, &addr) && check_exec_target(vm, addr) && vm_pop(vm, &a) && a != 0) {
+                vm->pc = addr;
+            }
             break;
         case OP_CALL:
-            addr = read_uint32(vm);
-            if (vm->return_stack_ptr >= MAX_RETURN_STACK_SIZE) {
-                fprintf(stderr, "Return stack overflow at PC 0x%08X\n", vm->pc);
-                vm->running = false;
-            } else {
-                vm->return_stack[vm->return_stack_ptr++] = vm->pc;
-                vm->pc = addr;
+            if (fetch_u32(vm, &addr)) {
+                if (vm->return_stack_ptr >= MAX_RETURN_STACK_SIZE) {
+                    vm_fault(vm, "return stack overflow");
+                } else if (check_exec_target(vm, addr)) {
+                    vm->return_stack[vm->return_stack_ptr++] = vm->pc;
+                    vm->pc = addr;
+                }
             }
             break;
         case OP_RET:
             if (vm->return_stack_ptr <= 0) {
-                vm->running = false;
+                vm_fault(vm, "return stack underflow");
             } else {
-                vm->pc = vm->return_stack[--vm->return_stack_ptr];
+                addr = vm->return_stack[--vm->return_stack_ptr];
+                if (check_exec_target(vm, addr)) vm->pc = addr;
             }
             break;
         case OP_CALLSTACK:
             if (vm_pop(vm, &a)) {
                 if (vm->return_stack_ptr >= MAX_RETURN_STACK_SIZE) {
-                    fprintf(stderr, "Return stack overflow at PC 0x%08X\n", vm->pc);
-                    vm->running = false;
-                } else {
+                    vm_fault(vm, "return stack overflow");
+                } else if (check_exec_target(vm, (uint32_t)a)) {
                     vm->return_stack[vm->return_stack_ptr++] = vm->pc;
                     vm->pc = (uint32_t)a;
                 }
             }
             break;
         case OP_JMPSTACK:
-            if (vm_pop(vm, &a)) vm->pc = (uint32_t)a;
+            if (vm_pop(vm, &a) && check_exec_target(vm, (uint32_t)a)) {
+                vm->pc = (uint32_t)a;
+            }
             break;
         case OP_LOAD:
-            addr = read_uint32(vm);
-            vm_push(vm, read_mem32(vm, addr));
+            if (fetch_u32(vm, &addr)) {
+                int32_t v;
+                if (read_mem32(vm, addr, &v)) vm_push(vm, v);
+            }
             break;
         case OP_STORE:
-            addr = read_uint32(vm);
-            if (vm_pop(vm, &a)) write_mem32(vm, addr, a);
+            if (fetch_u32(vm, &addr) && vm_pop(vm, &a)) write_mem32(vm, addr, a);
             break;
         case OP_LOADI:
-            if (vm_pop(vm, &a)) vm_push(vm, read_mem32(vm, (uint32_t)a));
+            if (vm_pop(vm, &a)) {
+                int32_t v;
+                if (read_mem32(vm, (uint32_t)a, &v)) vm_push(vm, v);
+            }
             break;
         case OP_STOREI:
             if (vm_pop(vm, &a) && vm_pop(vm, &b)) write_mem32(vm, (uint32_t)a, b); // [val, addr]
@@ -436,33 +506,30 @@ bool vm_tick(VM* vm) {
         case OP_PUSHR:
             if (vm_pop(vm, &a)) {
                 if (vm->loop_stack_ptr >= MAX_LOOP_STACK_SIZE) {
-                    fprintf(stderr, "Loop stack overflow at PC 0x%08X\n", vm->pc);
-                    vm->running = false;
+                    vm_fault(vm, "loop stack overflow");
                 }
                 else vm->loop_stack[vm->loop_stack_ptr++] = a;
             }
             break;
         case OP_POPR:
-            if (vm->loop_stack_ptr <= 0) vm->running = false;
+            if (vm->loop_stack_ptr <= 0) vm_fault(vm, "loop stack underflow");
             else vm_push(vm, vm->loop_stack[--vm->loop_stack_ptr]);
             break;
         case OP_PEEKR:
-            if (vm->loop_stack_ptr <= 0) vm->running = false;
+            if (vm->loop_stack_ptr <= 0) vm_fault(vm, "loop stack underflow");
             else vm_push(vm, vm->loop_stack[vm->loop_stack_ptr - 1]);
             break;
         case OP_PEEKR2:
-            if (vm->loop_stack_ptr <= 1) vm->running = false;
+            if (vm->loop_stack_ptr <= 1) vm_fault(vm, "loop stack underflow (PEEKR2)");
             else vm_push(vm, vm->loop_stack[vm->loop_stack_ptr - 2]);
             break;
         case OP_FRAME:
             // [v_{n-1} ... v_0, n] → []  (v_0 is top of stack → local 0)
             if (vm_pop(vm, &a)) {
                 if (a < 0 || vm->fp + 1 + a >= MAX_LOCALS_SIZE) {
-                    vm->running = false;
+                    vm_fault(vm, "frame overflow (n=%d fp=%d)", a, vm->fp);
                 } else if (vm->stack_ptr < a) {
-                    fprintf(stderr, "Stack underflow at PC 0x%08X (FRAME needs %d)\n",
-                            vm->pc, a);
-                    vm->running = false;
+                    vm_fault(vm, "stack underflow (FRAME needs %d)", a);
                 } else {
                     int32_t old_fp = vm->fp;
                     int32_t base = old_fp + 1;
@@ -479,17 +546,20 @@ bool vm_tick(VM* vm) {
             break;
         case OP_UNFRAME:
             if (vm_pop(vm, &a)) {
-                if (a < 0 || vm->fp - a < 0 || vm->fp - a >= MAX_LOCALS_SIZE) vm->running = false;
-                else {
+                if (a < 0 || vm->fp - a < 0 || vm->fp - a >= MAX_LOCALS_SIZE) {
+                    vm_fault(vm, "bad UNFRAME n=%d fp=%d", a, vm->fp);
+                } else {
                     vm->fp = vm->locals[vm->fp - a];
                 }
             }
             break;
         case OP_LOCALGET:
             if (vm_pop(vm, &a)) {
-                int32_t base = vm->fp; // We need to be careful with Go's implementation
+                int32_t base = vm->fp;
                 int32_t idx = base - a;
-                if (idx < 0 || idx >= MAX_LOCALS_SIZE) vm->running = false;
+                if (idx < 0 || idx >= MAX_LOCALS_SIZE) {
+                    vm_fault(vm, "LOCALGET offset %d out of range", a);
+                }
                 else vm_push(vm, vm->locals[idx]);
             }
             break;
@@ -497,7 +567,9 @@ bool vm_tick(VM* vm) {
             if (vm_pop(vm, &b) && vm_pop(vm, &a)) { // [val, offset] (b=offset, a=val)
                 int32_t base = vm->fp;
                 int32_t idx = base - b;
-                if (idx < 0 || idx >= MAX_LOCALS_SIZE) vm->running = false;
+                if (idx < 0 || idx >= MAX_LOCALS_SIZE) {
+                    vm_fault(vm, "LOCALSET offset %d out of range", b);
+                }
                 else vm->locals[idx] = a;
             }
             break;
@@ -520,8 +592,7 @@ bool vm_tick(VM* vm) {
             vm->running = false;
             break;
         default:
-            fprintf(stderr, "Unknown opcode 0x%02X at 0x%08X\n", op, vm->pc - 1);
-            vm->running = false;
+            vm_fault(vm, "unknown opcode 0x%02X", op);
             break;
     }
     

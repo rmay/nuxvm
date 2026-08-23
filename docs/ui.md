@@ -70,6 +70,8 @@ INCLUDE "lib/ui.lux"
 | `UI::feed` | `mpkt --` | give `/dev/mouse` to the toolkit |
 | `UI::handle` | `--` | drain the ring and CALL handlers |
 | `UI::draw` | `--` | paint every component |
+| `UI::label` | `text x y --` | Chicago static text |
+| `UI::groupbox` | `text x y w h --` | labeled FrameRect; title sits on the top edge |
 
 `text` is the label and the identity (`T"OK"`). Radio `group` is one stored string pointer (`T"align" grp STOREI` then `grp LOADI` — `T"` is not interned). Checkbox/radio `w h` is the clickable strip; the mark is the 12px System 6 box at `x,y`.
 
@@ -85,8 +87,8 @@ Windows are chrome + hit-test. rio-style child VMs still own `/dev/draw`; the Sh
 |---|---|
 | `lib/geom.lux` | Point (`x y`) and Rect (`minx miny maxx maxy`, max exclusive) |
 | `lib/mem.lux` | Bump heap at `0xA00000` |
-| `lib/draw.lux` | QuickDraw: `/dev/draw` packing plus `paint-rect` / `frame-rect`, `paint-oval` / `frame-oval`, `paint-rrect` / `frame-rrect` (ovalWidth/Height), `hline` / `vline` / `line`, `x-mark`, `fill-r` / `stroke-r`, `char-w` / `char-h` |
-| `lib/ui.lux` | Controls. Faces call DRAW primitives (button → RoundRect, radio → Oval, checkbox → Rect + `x-mark`) |
+| `lib/draw.lux` | QuickDraw: `/dev/draw` packing plus `paint-rect` / `frame-rect`, `paint-oval` / `frame-oval`, `paint-rrect` / `frame-rrect`, `paint-tri`, `hline` / `vline` / `line` / `dash-h`, `x-mark` / `check-mark`, `fill-r` / `stroke-r`, `char-w` / `char-h` |
+| `lib/ui.lux` | Controls. Faces call DRAW primitives (button → RoundRect, radio → Oval, checkbox → Rect + `x-mark`, scrollbar arrows → `paint-tri`, menu check → `check-mark`, separator → `dash-h`) |
 | `lib/sf.lux` | System 6 Standard File picker (`SF::`) |
 | `lib/app.lux` | Devices, loop, `dirty!` |
 | `lib/menu.lux` | Leftover quotation menu bar (Quill uses `UI::`) |
@@ -130,7 +132,7 @@ The slider is vertical (System 6 Speaker Volume): max at the top. `val` is poste
 
 Scrollbars are System 6 16px bars: arrow buttons at both ends, dithered track, white thumb. Min is at the top (`vscroll`) or left (`hscroll`). Arrow click steps by 1; track click pages; the thumb drags. `val` is posted only when the integer changes.
 
-A button is one generic System 6 push button: 20px high, r=3 rounded rect (DRAW::paint-rrect / frame-rrect with ovalWidth 6), Chicago label centered. `UI::default` adds the HIG ring. Press inverts; drag out un-inverts; the handler runs only on release still inside. Radios call DRAW::frame-oval / paint-oval. Checkboxes call a framed rect plus DRAW::x-mark.
+A button is one generic System 6 push button: 20px high, r=3 rounded rect (DRAW::paint-rrect / frame-rrect with ovalWidth 6), Chicago label centered. `UI::default` adds the HIG ring. Press inverts; drag out un-inverts; the handler runs only on release still inside. Radios call DRAW::frame-oval / paint-oval. Checkboxes call a framed rect plus DRAW::x-mark. Scrollbar arrows call DRAW::paint-tri. A group box is FrameRect with the title punched through the top edge.
 
 A menu bar is Chicago 12, 20px high, white with a 1px black rule. The open title and hovered item invert. Check and radio items show a checkmark in the left column, not the standalone checkbox X. Separators are a dashed line. Click-to-open, not press-and-hold.
 
@@ -157,7 +159,7 @@ Rectangle arguments are Plan 9 min/max, not x/y/w/h. `10 10 110 40` is a 100×30
 
 ### Constructors
 
-`ctl-button` `ctl-checkbox` `ctl-radio` `ctl-slider` `scrollbar` `field` `label` `window` — each is `( name -- ctl )`.
+`ctl-button` `ctl-checkbox` `ctl-radio` `ctl-slider` `scrollbar` `field` `ctl-label` `window` — each is `( name -- ctl )`.
 
 Or `name kind create` with `K_BUTTON` … `K_WINDOW`.
 

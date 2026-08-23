@@ -416,6 +416,100 @@ void test_yield() {
 }
 
 
+void test_memory_faults() {
+    printf("Testing aggressive memory faults...\n");
+    int32_t res;
+
+    // Fetch past image_end: PUSH then implicit zeros must not become PUSH 0 forever.
+    uint8_t prog_runoff[] = {
+        OP_PUSH, 0, 0, 0, 1
+    };
+    VM* vm = vm_create(prog_runoff, sizeof(prog_runoff), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->running == false);
+    assert(vm->halted == false);
+    assert(vm->pc >= vm->image_end);
+    assert(vm_get_stack_count(vm) == 1);
+    assert(vm_pop(vm, &res) == true && res == 1);
+    vm_free(vm);
+
+    // JMP past the image
+    uint8_t prog_jmp[] = {
+        OP_JMP, 0, 0, 0, 100,
+        OP_HALT
+    };
+    vm = vm_create(prog_jmp, sizeof(prog_jmp), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->running == false);
+    assert(vm->halted == false);
+    vm_free(vm);
+
+    // CALLSTACK to an address past the image
+    uint8_t prog_cs[] = {
+        OP_PUSH, 0, 0, 1, 0, // 256
+        OP_CALLSTACK,
+        OP_HALT
+    };
+    vm = vm_create(prog_cs, sizeof(prog_cs), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->running == false);
+    assert(vm->halted == false);
+    vm_free(vm);
+
+    // STOREI into the program image must not modify bytecode
+    uint8_t prog_store[] = {
+        OP_PUSH, 0xAA, 0xBB, 0xCC, 0xDD,
+        OP_PUSH, 0, 0, 0, 0,
+        OP_STOREI,
+        OP_HALT
+    };
+    uint8_t first = prog_store[0];
+    vm = vm_create(prog_store, sizeof(prog_store), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->running == false);
+    assert(vm->halted == false);
+    assert(vm->memory[0] == first);
+    vm_free(vm);
+
+    // Unaligned LOADI
+    uint8_t prog_unaligned[] = {
+        OP_PUSH, 0, 0, 0, 1,
+        OP_LOADI,
+        OP_HALT
+    };
+    vm = vm_create(prog_unaligned, sizeof(prog_unaligned), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->running == false);
+    assert(vm->halted == false);
+    vm_free(vm);
+
+    // Partial word: aligned address with fewer than 4 bytes left
+    uint8_t prog_partial[] = {
+        OP_PUSH, 0, 0, 0, 100,
+        OP_LOADI,
+        OP_HALT
+    };
+    vm = vm_create(prog_partial, sizeof(prog_partial), 0, 103, false);
+    vm_run(vm);
+    assert(vm->running == false);
+    assert(vm->halted == false);
+    vm_free(vm);
+
+    // Wrap: 0xFFFFFFFC is aligned and far past memory_size
+    uint8_t prog_wrap[] = {
+        OP_PUSH, 0xFF, 0xFF, 0xFF, 0xFC,
+        OP_LOADI,
+        OP_HALT
+    };
+    vm = vm_create(prog_wrap, sizeof(prog_wrap), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->running == false);
+    assert(vm->halted == false);
+    vm_free(vm);
+
+    printf("  memory faults: OK\n");
+}
+
 int main() {
     test_push_pop();
     test_stack_manipulation();
@@ -429,6 +523,7 @@ int main() {
     test_breaking_calls();
     test_bus_read();
     test_yield();
+    test_memory_faults();
     printf("All VM opcode tests passed!\n");
     return 0;
 }

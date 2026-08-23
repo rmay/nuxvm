@@ -28,10 +28,19 @@ MODULE MEM
 @allot { n -- addr }
     ensure
     align
-    here
-    dup n + dup HEAP_END >= [
-        drop drop 0
+    n 1 < [
+        0
     ] [
-        HERE_ADDR STOREI
+        here
+        dup n +
+        dup OVER < [
+            drop drop 0
+        ] [
+            dup HEAP_END >= [
+                drop drop 0
+            ] [
+                HERE_ADDR STOREI
+            ] ?:
+        ] ?:
     ] ?:
 ;

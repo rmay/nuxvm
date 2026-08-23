@@ -67,7 +67,7 @@ IMPORT UI
     drop
     0 esc-open STOREI
     resume-app
-    0 JMPSTACK
+    0x600000 JMPSTACK
 ;
 
 @esc-quit ( val -- )

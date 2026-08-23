@@ -441,6 +441,80 @@ MODULE DRAW
     }
 ;
 
+( X on edge (xa,ya)–(xb,yb) at scanline y. )
+@edge-x { xa ya xb yb y -- x }
+    yb ya = [
+        xa
+    ] [
+        xa xb xa - y ya - * yb ya - / +
+    ] ?:
+;
+
+( Filled triangle. Vertices in any order. Inclusive on the scanlines. )
+@paint-tri { fd x0 y0 x1 y1 x2 y2 color -- }
+    y0 y1 > [
+        x0 x1 x0! x1!
+        y0 y1 y0! y1!
+    ] ?
+    y0 y2 > [
+        x0 x2 x0! x2!
+        y0 y2 y0! y2!
+    ] ?
+    y1 y2 > [
+        x1 x2 x1! x2!
+        y1 y2 y1! y2!
+    ] ?
+    y2 y0 = [
+        x0 x1 MIN x2 MIN { xl }
+            x0 x1 MAX x2 MAX xl - 1 + { xw }
+                xw 0 > [ fd xl y0 xw color hline ] ?
+            }
+        }
+    ] [
+        y0 { y }
+            [ y y2 <= ]
+            [
+                x0 y0 x2 y2 y edge-x
+                y y1 <= y0 y1 = 0 = AND [
+                    x0 y0 x1 y1 y edge-x
+                ] [
+                    x1 y1 x2 y2 y edge-x
+                ] ?:
+                OVER OVER MIN { xl }
+                    MAX xl - ABS 1 + { xw }
+                        xw 0 > [ fd xl y xw color hline ] ?
+                    }
+                }
+                y 1 + y!
+            ] |:
+        }
+    ] ?:
+;
+
+( 2-on 2-off dashed 1px hairline. Menu separators. )
+@dash-h { fd x y w color -- }
+    0 { i }
+        [ i w < ]
+        [
+            2 w i - MIN { dw }
+                dw 0 > [ fd x i + y dw color hline ] ?
+            }
+            i 4 + i!
+        ] |:
+    }
+;
+
+( System 6 menu checkmark, origin at the item's mark box. )
+@check-mark { fd x y color -- }
+    fd x 2 + y 6 + 2 2 color fill-rect
+    fd x 3 + y 7 + 2 2 color fill-rect
+    fd x 4 + y 8 + 2 2 color fill-rect
+    fd x 5 + y 7 + 2 2 color fill-rect
+    fd x 6 + y 6 + 2 2 color fill-rect
+    fd x 7 + y 5 + 2 2 color fill-rect
+    fd x 8 + y 4 + 2 2 color fill-rect
+;
+
 ( --- Current draw fd + cached font metrics --- )
 ( State lives at 0x8F8000, above BUF at 0x8F0000. )
 

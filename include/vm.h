@@ -37,6 +37,12 @@ typedef struct {
     
     uint32_t reserved_memory_size;
     uint32_t user_memory_start;
+
+    // Guest program image [image_base, image_end). Execution and writes
+    // into this range fault; reads (T" strings) are allowed.
+    uint32_t image_base;
+    uint32_t image_end;
+    uint32_t op_pc; // address of the opcode being executed (fault reports)
     
     bool trace;
     

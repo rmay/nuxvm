@@ -84,8 +84,8 @@ MODULE UI
 
 @draw-border-rect ( fd x y w h fill -- )
     6 frame! ( 0:fill 1:h 2:w 3:y 4:x 5:fd )
-    5 local@ 4 local@ 3 local@ 2 local@ 1 local@ CLR_BORDER DRAW::fill-rect
-    5 local@ 4 local@ 1 + 3 local@ 1 + 2 local@ 2 - 1 local@ 2 - 0 local@ DRAW::fill-rect
+    5 local@ 4 local@ 3 local@ 2 local@ 1 local@ CLR_BORDER DRAW::frame-rect
+    5 local@ 4 local@ 1 + 3 local@ 1 + 2 local@ 2 - 1 local@ 2 - 0 local@ DRAW::paint-rect
     6 unframe!
 ;
 
@@ -1284,46 +1284,43 @@ MODULE UI
     1 unframe!
 ;
 
-@sbar-tri-up ( fd x y s color -- )
-    5 frame! ( 0:color 1:s 2:y 3:x 4:fd )
-    4 local@ 3 local@ 1 local@ 7 - 2 / + 3 + 2 local@ 1 local@ 4 - 2 / +     1 1 0 local@ DRAW::fill-rect
-    4 local@ 3 local@ 1 local@ 7 - 2 / + 2 + 2 local@ 1 local@ 4 - 2 / + 1 + 3 1 0 local@ DRAW::fill-rect
-    4 local@ 3 local@ 1 local@ 7 - 2 / + 1 + 2 local@ 1 local@ 4 - 2 / + 2 + 5 1 0 local@ DRAW::fill-rect
-    4 local@ 3 local@ 1 local@ 7 - 2 / +     2 local@ 1 local@ 4 - 2 / + 3 + 7 1 0 local@ DRAW::fill-rect
-    5 unframe!
+( System 6 7×4 arrow, centered in an s×s end cap. )
+@sbar-tri-up { fd x y s color -- }
+    fd
+    x s 7 - 2 / + 3 +  y s 4 - 2 / +
+    x s 7 - 2 / +      y s 4 - 2 / + 3 +
+    x s 7 - 2 / + 6 +  y s 4 - 2 / + 3 +
+    color DRAW::paint-tri
 ;
 
-@sbar-tri-dn ( fd x y s color -- )
-    5 frame! ( 0:color 1:s 2:y 3:x 4:fd )
-    4 local@ 3 local@ 1 local@ 7 - 2 / +     2 local@ 1 local@ 4 - 2 / +     7 1 0 local@ DRAW::fill-rect
-    4 local@ 3 local@ 1 local@ 7 - 2 / + 1 + 2 local@ 1 local@ 4 - 2 / + 1 + 5 1 0 local@ DRAW::fill-rect
-    4 local@ 3 local@ 1 local@ 7 - 2 / + 2 + 2 local@ 1 local@ 4 - 2 / + 2 + 3 1 0 local@ DRAW::fill-rect
-    4 local@ 3 local@ 1 local@ 7 - 2 / + 3 + 2 local@ 1 local@ 4 - 2 / + 3 + 1 1 0 local@ DRAW::fill-rect
-    5 unframe!
+@sbar-tri-dn { fd x y s color -- }
+    fd
+    x s 7 - 2 / +      y s 4 - 2 / +
+    x s 7 - 2 / + 6 +  y s 4 - 2 / +
+    x s 7 - 2 / + 3 +  y s 4 - 2 / + 3 +
+    color DRAW::paint-tri
 ;
 
-@sbar-tri-lt ( fd x y s color -- )
-    5 frame! ( 0:color 1:s 2:y 3:x 4:fd )
-    4 local@ 3 local@ 1 local@ 4 - 2 / +     2 local@ 1 local@ 7 - 2 / + 3 + 1 1 0 local@ DRAW::fill-rect
-    4 local@ 3 local@ 1 local@ 4 - 2 / + 1 + 2 local@ 1 local@ 7 - 2 / + 2 + 1 3 0 local@ DRAW::fill-rect
-    4 local@ 3 local@ 1 local@ 4 - 2 / + 2 + 2 local@ 1 local@ 7 - 2 / + 1 + 1 5 0 local@ DRAW::fill-rect
-    4 local@ 3 local@ 1 local@ 4 - 2 / + 3 + 2 local@ 1 local@ 7 - 2 / +     1 7 0 local@ DRAW::fill-rect
-    5 unframe!
+@sbar-tri-lt { fd x y s color -- }
+    fd
+    x s 4 - 2 / +      y s 7 - 2 / + 3 +
+    x s 4 - 2 / + 3 +  y s 7 - 2 / +
+    x s 4 - 2 / + 3 +  y s 7 - 2 / + 6 +
+    color DRAW::paint-tri
 ;
 
-@sbar-tri-rt ( fd x y s color -- )
-    5 frame! ( 0:color 1:s 2:y 3:x 4:fd )
-    4 local@ 3 local@ 1 local@ 4 - 2 / +     2 local@ 1 local@ 7 - 2 / +     1 7 0 local@ DRAW::fill-rect
-    4 local@ 3 local@ 1 local@ 4 - 2 / + 1 + 2 local@ 1 local@ 7 - 2 / + 1 + 1 5 0 local@ DRAW::fill-rect
-    4 local@ 3 local@ 1 local@ 4 - 2 / + 2 + 2 local@ 1 local@ 7 - 2 / + 2 + 1 3 0 local@ DRAW::fill-rect
-    4 local@ 3 local@ 1 local@ 4 - 2 / + 3 + 2 local@ 1 local@ 7 - 2 / + 3 + 1 1 0 local@ DRAW::fill-rect
-    5 unframe!
+@sbar-tri-rt { fd x y s color -- }
+    fd
+    x s 4 - 2 / + 3 +  y s 7 - 2 / + 3 +
+    x s 4 - 2 / +      y s 7 - 2 / +
+    x s 4 - 2 / +      y s 7 - 2 / + 6 +
+    color DRAW::paint-tri
 ;
 
 @sbar-end ( fd x y w h pressed dir -- )
     7 frame! ( 0:dir 1:pressed 2:h 3:w 4:y 5:x 6:fd )
     1 local@ [
-        6 local@ 5 local@ 4 local@ 3 local@ 2 local@ CLR_BORDER DRAW::fill-rect
+        6 local@ 5 local@ 4 local@ 3 local@ 2 local@ CLR_BORDER DRAW::paint-rect
     ] [
         6 local@ 5 local@ 4 local@ 3 local@ 2 local@ frame-rect
     ] ?:
@@ -1587,6 +1584,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 @K_MENUBAR  10 ;
 @K_MENU     11 ;
 @K_MENUITEM 12 ;
+@K_GROUPBOX 13 ;
 
 @F_VISIBLE 1 ;
 @F_FOCUS   2 ;
@@ -1667,6 +1665,15 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 @MB_HOVER  0x8E0F60 ;
 @MB_W      0x8E0F64 ;
 @MB_HAS    0x8E0F68 ;
+@CH_N      0x8E0F6C ;
+@CH_SLAB   0x8E1F40 ;
+@CH_MAX    8 ;
+@CH_SIZE   20 ;
+@CH_X       0 ;
+@CH_Y       4 ;
+@CH_W       8 ;
+@CH_H      12 ;
+@CH_TEXT   16 ;
 @MN_SLAB   0x8E2A00 ;
 @MI_SLAB   0x8E2C00 ;
 @MN_MAX    8 ;
@@ -1714,6 +1721,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     -1 MB_HOVER STOREI
     0 MB_W STOREI
     0 MB_HAS STOREI
+    0 CH_N STOREI
 ;
 
 @uinnew ( -- ) new ;
@@ -1915,18 +1923,6 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     ] [
         0
     ] ?:
-;
-
-@draw-check ( fd x y color -- )
-    4 frame! ( 0:color 1:y 2:x 3:fd )
-    3 local@ 2 local@ 2 + 1 local@ 6 + 2 2 0 local@ DRAW::fill-rect
-    3 local@ 2 local@ 3 + 1 local@ 7 + 2 2 0 local@ DRAW::fill-rect
-    3 local@ 2 local@ 4 + 1 local@ 8 + 2 2 0 local@ DRAW::fill-rect
-    3 local@ 2 local@ 5 + 1 local@ 7 + 2 2 0 local@ DRAW::fill-rect
-    3 local@ 2 local@ 6 + 1 local@ 6 + 2 2 0 local@ DRAW::fill-rect
-    3 local@ 2 local@ 7 + 1 local@ 5 + 2 2 0 local@ DRAW::fill-rect
-    3 local@ 2 local@ 8 + 1 local@ 4 + 2 2 0 local@ DRAW::fill-rect
-    4 unframe!
 ;
 
 @mb-drop-w ( tidx -- w )
@@ -2186,7 +2182,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
             mi-at
             dup MI_KIND + LOADI MI_SEP = [
                 drop
-                DRAW::fd 0 local@ 2 + 4 local@ ITEM_H 2 / + 2 local@ 4 - 1 hline-rect
+                DRAW::fd 0 local@ 2 + 4 local@ ITEM_H 2 / + 2 local@ 4 - CLR_BORDER DRAW::dash-h
             ] [
                 3 local@ MB_HOVER LOADI = [
                     DRAW::fd 0 local@ 4 local@ 2 local@ ITEM_H CLR_BORDER DRAW::fill-rect
@@ -2199,7 +2195,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
                     DRAW::fd
                     0 local@ 8 +
                     4 local@ ITEM_H 12 - 2 / +
-                    5 local@ draw-check
+                    5 local@ DRAW::check-mark
                 ] ?
                 MI_ROW + LOADI C_TEXT + LOADI
                 DRAW::fd SWAP
@@ -2398,6 +2394,61 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     9 unframe!
 ;
 
+@ch-init ( addr x y w h text -- )
+    6 frame! ( 0:text 1:h 2:w 3:y 4:x 5:addr )
+    4 local@ 5 local@ CH_X + STOREI
+    3 local@ 5 local@ CH_Y + STOREI
+    2 local@ 5 local@ CH_W + STOREI
+    1 local@ 5 local@ CH_H + STOREI
+    0 local@ 5 local@ CH_TEXT + STOREI
+    6 unframe!
+;
+
+( Labeled FrameRect. (x,y,w,h) is the frame; title sits on the top edge. )
+@groupbox-draw { fd addr -- }
+    fd addr CH_X + LOADI addr CH_Y + LOADI addr CH_W + LOADI addr CH_H + LOADI CLR_BORDER DRAW::frame-rect
+    addr CH_TEXT + LOADI dup 0 > [
+        { ptr }
+            ptr DRAW::str-w 8 + { tw }
+                fd addr CH_X + LOADI 6 + addr CH_Y + LOADI 5 - tw 10 CLR_BG DRAW::paint-rect
+                fd addr CH_X + LOADI 10 + addr CH_Y + LOADI 6 - ptr CLR_TEXT 1 DRAW::draw-str
+            }
+        }
+    ] [ drop ] ?:
+;
+
+@label-draw ( fd addr -- )
+    2 frame! ( 0:addr 1:fd )
+    1 local@
+    0 local@ CH_X + LOADI
+    0 local@ CH_Y + LOADI
+    0 local@ CH_TEXT + LOADI
+    CLR_TEXT 1 DRAW::draw-str
+    2 unframe!
+;
+
+@groupbox ( text x y w h -- )
+    5 frame! ( 0:h 1:w 2:y 3:x 4:text )
+    CH_N LOADI CH_MAX < COMP_N LOADI COMP_MAX < AND [
+        CH_SLAB CH_N LOADI CH_SIZE * +
+        dup 3 local@ 2 local@ 1 local@ 0 local@ 4 local@ ch-init
+        4 local@ SWAP K_GROUPBOX SWAP 0 SWAP 0 0 comp-put
+        CH_N LOADI 1 + CH_N STOREI
+    ] ?
+    5 unframe!
+;
+
+@label ( text x y -- )
+    3 frame! ( 0:y 1:x 2:text )
+    CH_N LOADI CH_MAX < COMP_N LOADI COMP_MAX < AND [
+        CH_SLAB CH_N LOADI CH_SIZE * +
+        dup 1 local@ 0 local@ 0 0 2 local@ ch-init
+        2 local@ SWAP K_LABEL SWAP 0 SWAP 0 0 comp-put
+        CH_N LOADI 1 + CH_N STOREI
+    ] ?
+    3 unframe!
+;
+
 @cb-add ( name x y size label -- )
     5 frame! ( 0:label 1:size 2:y 3:x 4:name )
     0 local@ 3 local@ 2 local@ 1 local@ 1 local@ 0 checkbox
@@ -2466,8 +2517,14 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
             drop drop drop
             mb-draw-bar
         ] [
+        dup K_GROUPBOX = [
+            drop groupbox-draw
+        ] [
+        dup K_LABEL = [
+            drop label-draw
+        ] [
             drop drop drop
-        ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+        ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
         1 +
     ] |:
     drop
@@ -3017,7 +3074,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 @ctl-slider   { name -- ctl } name K_SLIDER   create ;
 @scrollbar { name -- ctl } name K_SCROLLBAR create ;
 @field    { name -- ctl } name K_FIELD    create ;
-@label    { name -- ctl } name K_LABEL    create ;
+@ctl-label { name -- ctl } name K_LABEL    create ;
 @window   { name -- ctl } name K_WINDOW   create ;
 
 @sync-payload ( ctl -- )
@@ -3154,39 +3211,39 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     DRAW::fd ctl CTL.minx@ 2 + ctl CTL.miny@ 2 +
     ctl CTL.maxx@ ctl CTL.minx@ -
     ctl CTL.maxy@ ctl CTL.miny@ -
-    CLR_BORDER DRAW::fill-rect
+    CLR_BORDER DRAW::paint-rect
     ( black 1px frame, white body )
     DRAW::fd ctl CTL.minx@ ctl CTL.miny@
     ctl CTL.maxx@ ctl CTL.minx@ -
     ctl CTL.maxy@ ctl CTL.miny@ -
-    CLR_BORDER DRAW::fill-rect
+    CLR_BORDER DRAW::paint-rect
     DRAW::fd ctl CTL.minx@ 1 + ctl CTL.miny@ 1 +
     ctl CTL.maxx@ ctl CTL.minx@ - 2 -
     ctl CTL.maxy@ ctl CTL.miny@ - 2 -
-    CLR_BG DRAW::fill-rect
+    CLR_BG DRAW::paint-rect
     ( title bar: white, then even horizontal black lines )
     DRAW::fd ctl CTL.minx@ 1 + ctl CTL.miny@ 1 +
     ctl CTL.maxx@ ctl CTL.minx@ - 2 - TITLE_H 2 -
-    CLR_BG DRAW::fill-rect
+    CLR_BG DRAW::paint-rect
     DRAW::fd ctl CTL.minx@ 1 + ctl CTL.miny@ 1 +
     ctl CTL.maxx@ ctl CTL.minx@ - 2 - TITLE_H 2 -
-    hline-rect
+    CLR_BORDER 1 DRAW::fill-pat
     DRAW::fd ctl CTL.minx@ ctl CTL.miny@ TITLE_H + 1 -
-    ctl CTL.maxx@ ctl CTL.minx@ - 1 CLR_BORDER DRAW::fill-rect
+    ctl CTL.maxx@ ctl CTL.minx@ - 1 CLR_BORDER DRAW::paint-rect
     ( go-away box, left )
     DRAW::fd ctl CTL.minx@ CLOSE_INSET + ctl CTL.miny@ CLOSE_Y +
-    CLOSE_SZ CLOSE_SZ CLR_BG DRAW::fill-rect
+    CLOSE_SZ CLOSE_SZ CLR_BG DRAW::paint-rect
     DRAW::fd ctl CTL.minx@ CLOSE_INSET + ctl CTL.miny@ CLOSE_Y +
-    CLOSE_SZ CLOSE_SZ CLR_BORDER DRAW::draw-rect
+    CLOSE_SZ CLOSE_SZ CLR_BORDER DRAW::frame-rect
     DRAW::fd ctl CTL.minx@ CLOSE_INSET + 2 + ctl CTL.miny@ CLOSE_Y + 2 +
-    7 7 CLR_BORDER DRAW::draw-rect
+    7 7 CLR_BORDER DRAW::frame-rect
     ctl CTL.label@ 0 > [
         ctl CTL.label@ strlen DRAW::char-w * 16 +
         { tw }
             DRAW::fd
             ctl CTL.minx@ ctl CTL.maxx@ + tw - 2 /
             ctl CTL.miny@ 3 +
-            tw 12 CLR_BG DRAW::fill-rect
+            tw 12 CLR_BG DRAW::paint-rect
             DRAW::fd
             ctl CTL.minx@ ctl CTL.maxx@ + tw - 2 / 8 +
             ctl CTL.miny@ 3 +
