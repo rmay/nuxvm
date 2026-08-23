@@ -1,5 +1,5 @@
 ( Checkbox, radios, volume slider, scrollbars, System 6 buttons,
-  and a Standard File picker (SF::).
+  a menu bar (command / check / radio / separator), and SF::.
   ./bin/cloister apps/UIDemo.bin )
 
 INCLUDE "lib/app.lux"
@@ -21,9 +21,19 @@ IMPORT SF
 @grp  0x8A0020 ;
 @nbuf 0x8A0030 ;
 
-@on-hidden ( val -- )
-    dup last STOREI
-    dup SF::hidden!
+@cb-set ( name val -- )
+    2 frame! ( 0:val 1:name )
+    1 local@ UI::comp-find
+    dup 0 = [
+        drop
+    ] [
+        UI::C_PAY + LOADI
+        0 local@ SWAP UI::CB_CHK + STOREI
+    ] ?:
+    2 unframe!
+;
+
+@hidden-msg ( val -- )
     0 kind STOREI
     [
         T"message: checked"
@@ -33,17 +43,50 @@ IMPORT SF
     msg STOREI
 ;
 
+( Panel checkbox: feed already toggled the box. Only sync the menu mark. )
+@on-hidden ( val -- )
+    dup last STOREI
+    dup SF::hidden!
+    T"Show hidden" SWAP UI::item-set
+    last LOADI hidden-msg
+;
+
+( Edit → Show hidden: toolkit already toggled the mark. Only sync the box. )
+@on-hidden-item ( val -- )
+    dup last STOREI
+    dup SF::hidden!
+    T"Show hidden files" SWAP cb-set
+    last LOADI hidden-msg
+;
+
 @on-pick ( path -- )
     6 kind STOREI
     msg STOREI
 ;
 
-@on-left   ( val -- ) drop 1 kind STOREI T"message: Left"   msg STOREI ;
-@on-center ( val -- ) drop 1 kind STOREI T"message: Center" msg STOREI ;
-@on-right  ( val -- ) drop 1 kind STOREI T"message: Right"  msg STOREI ;
+@on-left ( val -- )
+    drop
+    T"Left" UI::rd-pick
+    T"Align Left" 1 UI::item-set
+    1 kind STOREI T"message: Left" msg STOREI
+;
+@on-center ( val -- )
+    drop
+    T"Center" UI::rd-pick
+    T"Align Center" 1 UI::item-set
+    1 kind STOREI T"message: Center" msg STOREI
+;
+@on-right ( val -- )
+    drop
+    T"Right" UI::rd-pick
+    T"Align Right" 1 UI::item-set
+    1 kind STOREI T"message: Right" msg STOREI
+;
 @on-ok     ( val -- ) drop 3 kind STOREI T"message: OK"     msg STOREI ;
 @on-cancel ( val -- ) drop 3 kind STOREI T"message: Cancel" msg STOREI ;
 @on-open   ( val -- ) drop SF::show ;
+@on-quit   ( val -- ) drop HALT ;
+@on-about  ( val -- ) drop 3 kind STOREI T"message: About UI Demo" msg STOREI ;
 
 @on-vol ( val -- )
     last STOREI
@@ -73,9 +116,14 @@ IMPORT SF
         SF::kbd
     ] [
         dup EVENT::kbd-type EVENT::KEY_DOWN = [
-            EVENT::kbd-key EVENT::KEY_ENTER = [
-                UI::enter drop
-            ] ?
+            dup EVENT::kbd-key EVENT::KEY_ESC = [
+                drop
+                UI::escape drop
+            ] [
+                EVENT::kbd-key EVENT::KEY_ENTER = [
+                    UI::enter drop
+                ] ?
+            ] ?:
         ] [
             drop
         ] ?:
@@ -125,12 +173,24 @@ IMPORT SF
     0 msg STOREI
     0 SF::hidden!
     [ on-pick ] SF::on-ok!
-    T"Show hidden files" 56 88 200 12 [ on-hidden ] UI::checkbox
     T"align" grp STOREI
+    APP::width UI::menubar
+    T"File" UI::menu
+    T"Open File" [ on-open ]  UI::item
+    T"About"     [ on-about ] UI::item
+    UI::sep
+    T"Quit"      [ on-quit ]  UI::item
+    T"Edit" UI::menu
+    T"Show hidden" [ on-hidden-item ] UI::check-item
+    UI::sep
+    T"Align Left"   grp LOADI [ on-left ]   UI::radio-item
+    T"Align Center" grp LOADI [ on-center ] UI::radio-item
+    T"Align Right"  grp LOADI [ on-right ]  UI::radio-item
+    T"Show hidden files" 56 88 200 12 [ on-hidden ] UI::checkbox
     T"Left"   56 140 80 12 grp LOADI [ on-left ]   UI::radio
     T"Center" 56 164 80 12 grp LOADI [ on-center ] UI::radio
     T"Right"  56 188 80 12 grp LOADI [ on-right ]  UI::radio
-    T"Left" UI::rd-pick
+    T"Show hidden" 0 UI::item-set
     1 on-left
     T"Volume" 320 80 17 112 0 7 4 [ on-vol ] UI::slider
     T"V" 412 80 16 112 0 20 6 [ on-vbar ] UI::vscroll

@@ -1,4 +1,4 @@
-( Graphics Command Packing for /sys/draw )
+( QuickDraw for /sys/draw: pack rect/text commands; oval, roundrect, and line are spans of fill-rect. )
 
 INCLUDE "lib/vfs.lux"
 INCLUDE "lib/core.lux"
@@ -176,6 +176,269 @@ MODULE DRAW
     2 local@ 0x530900 STR::int-to-str
     5 local@ 4 local@ 3 local@ 0x530900 1 local@ 0 local@ draw-str
     6 unframe!
+;
+
+( --- QuickDraw primitives. Emit fill-rect / draw-rect. --- )
+
+@paint-rect fill-rect ;
+@frame-rect draw-rect ;
+
+@hline { fd x y w color -- }
+    fd x y w 1 color fill-rect
+;
+
+@vline { fd x y h color -- }
+    fd x y 1 h color fill-rect
+;
+
+@pix { fd x y color -- }
+    fd x y 1 1 color fill-rect
+;
+
+( Filled-ellipse span on row py of a w×h oval. xoff is relative to the box. )
+@oval-span { w h py -- xoff spanw }
+    py 0 < py h >= OR w 1 < OR h 1 < OR [
+        0 0
+    ] [
+        2 py * 1 + h - dup *
+        w dup *
+        h dup *
+        dup 2 PICK *
+        3 PICK 3 PICK *
+        -1 0 0
+        { dy2 ww hh rhs term xoff spanw px }
+            [ px w < ]
+            [
+                2 px * 1 + w - dup * hh * term + rhs <= [
+                    xoff 0 < [ px xoff! ] ?
+                    px 1 + xoff - spanw!
+                ] ?
+                px 1 + px!
+            ] |:
+            xoff 0 < [ 0 0 ] [ xoff spanw ] ?:
+        }
+    ] ?:
+;
+
+@paint-oval { fd x y w h color -- }
+    w 1 < h 1 < OR [
+    ] [
+        0 { py }
+            [ py h < ]
+            [
+                w h py oval-span
+                dup 0 > [
+                    { xoff spanw }
+                        fd x xoff + y py + spanw 1 color fill-rect
+                    }
+                ] [ drop drop ] ?:
+                py 1 + py!
+            ] |:
+        }
+    ] ?:
+;
+
+( Outline: outer span minus the inset oval, so the interior is not painted. )
+@frame-oval { fd x y w h color -- }
+    w 3 < h 3 < OR [
+        fd x y w h color paint-oval
+    ] [
+        0 { py }
+            [ py h < ]
+            [
+                w h py oval-span
+                { ox osw }
+                    osw 0 = [
+                    ] [
+                        w 2 - h 2 - py 1 - oval-span
+                        { ix iw }
+                            iw 0 = [
+                                fd x ox + y py + osw 1 color fill-rect
+                            ] [
+                                1 ix + ox - { lw }
+                                    lw 0 > [
+                                        fd x ox + y py + lw 1 color fill-rect
+                                    ] ?
+                                }
+                                ox osw + 1 ix + iw + - { rw }
+                                    rw 0 > [
+                                        fd x 1 + ix + iw + y py + rw 1 color fill-rect
+                                    ] ?
+                                }
+                            ] ?:
+                        }
+                    ] ?:
+                }
+                py 1 + py!
+            ] |:
+        }
+    ] ?:
+;
+
+( System 6 r=3 stair: Macintosh ovalWidth/Height 6. Pixel-matched to the old UI nibble. )
+@paint-rrect-6 { fd x y w h color -- }
+    h 6 > [
+        fd x y 3 + w h 6 - color fill-rect
+    ] ?
+    fd x 3 + y         w 6 - 1 color fill-rect
+    fd x 2 + y 1 +     w 4 - 1 color fill-rect
+    fd x 1 + y 2 +     w 2 - 1 color fill-rect
+    fd x 1 + y h + 3 - w 2 - 1 color fill-rect
+    fd x 2 + y h + 2 - w 4 - 1 color fill-rect
+    fd x 3 + y h + 1 - w 6 - 1 color fill-rect
+;
+
+@frame-rrect-6 { fd x y w h color -- }
+    fd x 3 +     y         w 6 - 1 color fill-rect
+    fd x 3 +     y h + 1 - w 6 - 1 color fill-rect
+    fd x         y 3 +     1 h 6 - color fill-rect
+    fd x w + 1 - y 3 +     1 h 6 - color fill-rect
+    fd x 2 +     y 1 +     color pix
+    fd x 1 +     y 2 +     color pix
+    fd x w + 3 - y 1 +     color pix
+    fd x w + 2 - y 2 +     color pix
+    fd x 1 +     y h + 3 - color pix
+    fd x 2 +     y h + 2 - color pix
+    fd x w + 2 - y h + 3 - color pix
+    fd x w + 3 - y h + 2 - color pix
+;
+
+@rrect-span { w h ow oh py -- xoff spanw }
+    py 0 < py h >= OR w 1 < OR h 1 < OR [
+        0 0
+    ] [
+        ow w MIN ow!
+        oh h MIN oh!
+        ow 1 < oh 1 < OR [
+            0 w
+        ] [
+            py oh < [
+                ow oh py oval-span
+                dup 0 = [ drop drop 0 0 ] [
+                    { xoff spanw }
+                        xoff
+                        w ow - spanw +
+                    }
+                ] ?:
+            ] [
+                py h oh - >= [
+                    ow oh py h oh - - oval-span
+                    dup 0 = [ drop drop 0 0 ] [
+                        { xoff spanw }
+                            xoff
+                            w ow - spanw +
+                        }
+                    ] ?:
+                ] [
+                    0 w
+                ] ?:
+            ] ?:
+        ] ?:
+    ] ?:
+;
+
+@paint-rrect { fd x y w h ow oh color -- }
+    w 1 < h 1 < OR [
+    ] [
+        ow 6 = oh 6 = AND w 6 >= AND h 6 >= AND [
+            fd x y w h color paint-rrect-6
+        ] [
+            ow 1 < oh 1 < OR [
+                fd x y w h color fill-rect
+            ] [
+                0 { py }
+                    [ py h < ]
+                    [
+                        w h ow oh py rrect-span
+                        dup 0 > [
+                            { xoff spanw }
+                                fd x xoff + y py + spanw 1 color fill-rect
+                            }
+                        ] [ drop drop ] ?:
+                        py 1 + py!
+                    ] |:
+                }
+            ] ?:
+        ] ?:
+    ] ?:
+;
+
+@frame-rrect { fd x y w h ow oh color -- }
+    w 1 < h 1 < OR [
+    ] [
+        ow 6 = oh 6 = AND w 6 >= AND h 6 >= AND [
+            fd x y w h color frame-rrect-6
+        ] [
+            0 { py }
+                [ py h < ]
+                [
+                    w h ow oh py rrect-span
+                    { ox osw }
+                        osw 0 = [
+                        ] [
+                            w 2 - h 2 - ow oh py 1 - rrect-span
+                            { ix iw }
+                                iw 0 = [
+                                    fd x ox + y py + osw 1 color fill-rect
+                                ] [
+                                    1 ix + ox - { lw }
+                                        lw 0 > [
+                                            fd x ox + y py + lw 1 color fill-rect
+                                        ] ?
+                                    }
+                                    ox osw + 1 ix + iw + - { rw }
+                                        rw 0 > [
+                                            fd x 1 + ix + iw + y py + rw 1 color fill-rect
+                                        ] ?
+                                    }
+                                ] ?:
+                            }
+                        ] ?:
+                    }
+                    py 1 + py!
+                ] |:
+            }
+        ] ?:
+    ] ?:
+;
+
+( 1px Bresenham. )
+@line { fd x0 y0 x1 y1 color -- }
+    x1 x0 - ABS
+    y1 y0 - ABS NEGATE
+    x0 x1 < [ 1 ] [ -1 ] ?:
+    y0 y1 < [ 1 ] [ -1 ] ?:
+    { adx ady sx sy }
+        adx ady + { err }
+            fd x0 y0 color pix
+            [ x0 x1 = y0 y1 = AND 0 = ]
+            [
+                err 2 * { e2 }
+                    e2 ady >= [
+                        err ady + err!
+                        x0 sx + x0!
+                    ] ?
+                    e2 adx <= [
+                        err adx + err!
+                        y0 sy + y0!
+                    ] ?
+                }
+                fd x0 y0 color pix
+            ] |:
+        }
+    }
+;
+
+( System 6 checkbox X: 2px diagonals inset 1 from an s×s box. )
+@x-mark { fd x y s color -- }
+    1 { i }
+        [ i s 3 - < ]
+        [
+            fd x i + y i + 2 2 color fill-rect
+            fd x s + 2 - i - y i + 2 2 color fill-rect
+            i 1 + i!
+        ] |:
+    }
 ;
 
 ( --- Current draw fd + cached font metrics --- )

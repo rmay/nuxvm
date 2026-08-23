@@ -946,7 +946,12 @@ static void test_regression_menu_includes(void) {
         "INCLUDE \"lib/app.lux\"\n"
         "INCLUDE \"lib/ui.lux\"\n"
         "INCLUDE \"lib/sf.lux\"\n"
-        "INCLUDE \"lib/menu.lux\"\n";
+        "INCLUDE \"lib/menu.lux\"\n"
+        "IMPORT UI\n"
+        "UI::new\n"
+        "320 UI::menubar\n"
+        "T\"File\" UI::menu\n"
+        "T\"New\" 0 UI::item\n";
     size_t len;
     uint8_t* bc = must_compile(src, &len);
     free(bc);

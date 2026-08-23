@@ -29,6 +29,11 @@ INCLUDE "lib/ui.lux"
     T"Cancel" 248 228 59 20 [ on-cancel ] UI::button
     T"OK"     319 228 59 20 [ on-ok ]     UI::button
     T"OK" UI::default
+    APP::width UI::menubar
+    T"File" UI::menu
+    T"Save" [ on-ok ] UI::item
+    T"View" UI::menu
+    T"Hex"  [ on-hidden ] UI::check-item
     [ UI::feed ] APP::on-mouse!
     [ on-frame ] APP::on-frame!
     APP::loop
@@ -52,13 +57,25 @@ INCLUDE "lib/ui.lux"
 | `UI::hscroll` | `text x y w h min max val handler --` | new integer |
 | `UI::default` | `text --` | mark that button as the Return target |
 | `UI::enter` | `-- posted?` | post the default button |
+| `UI::menubar` | `w --` | one bar at `(0,0,w,20)` |
+| `UI::menu` | `title --` | add a pull-down to the bar |
+| `UI::item` | `text handler --` | command item (`EV_PRESS 1`) |
+| `UI::check-item` | `text handler --` | check item (`EV_CHECK` / `EV_UNCHECK`) |
+| `UI::radio-item` | `text group handler --` | radio item (`EV_SELECT 1`) |
+| `UI::sep` | `--` | dashed separator, not clickable |
+| `UI::item-set` | `name 0\|1 --` | seed or sync a check / radio mark |
+| `UI::item@` | `name -- 0\|1` | read a check / radio mark |
+| `UI::menu-open?` | `-- f` | a pull-down is open |
+| `UI::escape` | `-- closed?` | close the pull-down if open |
 | `UI::feed` | `mpkt --` | give `/dev/mouse` to the toolkit |
 | `UI::handle` | `--` | drain the ring and CALL handlers |
 | `UI::draw` | `--` | paint every component |
 
 `text` is the label and the identity (`T"OK"`). Radio `group` is one stored string pointer (`T"align" grp STOREI` then `grp LOADI` — `T"` is not interned). Checkbox/radio `w h` is the clickable strip; the mark is the 12px System 6 box at `x,y`.
 
-Wire keyboard Return to `UI::enter`. The ring is still there (`UI::poll`) if an app wants raw records instead of handlers.
+The menu bar is always the top 20px strip. Click a title to open, click an item to post and close, click outside or Esc to dismiss. An open menu sets `APP::modal!` so Esc does not raise the system menu. Check and radio marks live on the item; a menu radio group is **not** linked to a panel `UI::radio` group even if the group string matches. `draw` paints the open dropdown last, on top of other controls.
+
+Wire keyboard Return to `UI::enter` and Esc to `UI::escape`. The ring is still there (`UI::poll`) if an app wants raw records instead of handlers.
 
 Windows are chrome + hit-test. rio-style child VMs still own `/dev/draw`; the Shell offsets their commands into the client rect.
 
@@ -68,11 +85,11 @@ Windows are chrome + hit-test. rio-style child VMs still own `/dev/draw`; the Sh
 |---|---|
 | `lib/geom.lux` | Point (`x y`) and Rect (`minx miny maxx maxy`, max exclusive) |
 | `lib/mem.lux` | Bump heap at `0xA00000` |
-| `lib/draw.lux` | `/dev/draw` packing, `DRAW::use` / `fd`, `fill-r` / `stroke-r`, `char-w` / `char-h` |
-| `lib/ui.lux` | Controlset + existing struct widgets |
+| `lib/draw.lux` | QuickDraw: `/dev/draw` packing plus `paint-rect` / `frame-rect`, `paint-oval` / `frame-oval`, `paint-rrect` / `frame-rrect` (ovalWidth/Height), `hline` / `vline` / `line`, `x-mark`, `fill-r` / `stroke-r`, `char-w` / `char-h` |
+| `lib/ui.lux` | Controls. Faces call DRAW primitives (button → RoundRect, radio → Oval, checkbox → Rect + `x-mark`) |
 | `lib/sf.lux` | System 6 Standard File picker (`SF::`) |
 | `lib/app.lux` | Devices, loop, `dirty!` |
-| `lib/menu.lux` | Menu bar |
+| `lib/menu.lux` | Leftover quotation menu bar (Quill uses `UI::`) |
 
 ## Standard File (`SF`)
 
@@ -113,7 +130,9 @@ The slider is vertical (System 6 Speaker Volume): max at the top. `val` is poste
 
 Scrollbars are System 6 16px bars: arrow buttons at both ends, dithered track, white thumb. Min is at the top (`vscroll`) or left (`hscroll`). Arrow click steps by 1; track click pages; the thumb drags. `val` is posted only when the integer changes.
 
-A button is one generic System 6 push button: 20px high, r=3 rounded rect, Chicago label centered. `UI::default` adds the HIG ring. Press inverts; drag out un-inverts; the handler runs only on release still inside.
+A button is one generic System 6 push button: 20px high, r=3 rounded rect (DRAW::paint-rrect / frame-rrect with ovalWidth 6), Chicago label centered. `UI::default` adds the HIG ring. Press inverts; drag out un-inverts; the handler runs only on release still inside. Radios call DRAW::frame-oval / paint-oval. Checkboxes call a framed rect plus DRAW::x-mark.
+
+A menu bar is Chicago 12, 20px high, white with a 1px black rule. The open title and hovered item invert. Check and radio items show a checkmark in the left column, not the standalone checkbox X. Separators are a dashed line. Click-to-open, not press-and-hold.
 
 ## Controlset (legacy)
 
@@ -158,7 +177,7 @@ Or `name kind create` with `K_BUTTON` … `K_WINDOW`.
 | `kbd` | `kpkt --` |
 | `poll` | `-- name ev \| 0` |
 
-Old struct words (`button-init`, `button-draw`, …) remain for the leftover listbox and the legacy `ctl-*` controlset. Calculator, UIDemo, and Quill use `UI::new`.
+Old struct words (`button-init`, `button-draw`, …) remain for the leftover listbox and the legacy `ctl-*` controlset. `lib/menu.lux` remains for anything still on quotation menus. Calculator, UIDemo, and Quill use `UI::new`.
 
 ### Window chrome
 
