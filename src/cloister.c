@@ -5,12 +5,14 @@
 #include <dirent.h>
 #include <stdbool.h>
 #include <math.h>
+#include <time.h>
 
 #include "machine.h"
 #include "vfs.h"
 #include "compiler.h"
 #include "dialog.h"
 #include "chicago.h"
+#include "cff.h"
 
 #define WIN_WIDTH 960
 #define WIN_HEIGHT 720
@@ -18,6 +20,10 @@
 #define LIST_X 40
 #define LIST_Y 72
 #define LIST_ROW 20
+#define BAR_H 20
+#define MENU_TITLE "Cloister"
+#define MENU_QUIT "Quit"
+#define MENU_ITEM_H 16
 
 // Audio handling
 #define AUDIO_SAMPLE_RATE 44100
@@ -242,7 +248,8 @@ static void draw_char(uint32_t* pixels, int pitch, int x, int y, char c, uint32_
     int width = data[(uint8_t)c];
     if (width == 0 && c != ' ') return;
 
-    int tile_size = 16;
+    int tile_size = cff_tile_size((int)chicago12x12_cff_len);
+    if (tile_size <= 0) tile_size = 16;
     int num_v_tiles = tile_size / 8;
     int num_h_tiles = tile_size / 8;
     int tile_count = num_h_tiles * num_v_tiles;
@@ -267,6 +274,16 @@ static void draw_char(uint32_t* pixels, int pitch, int x, int y, char c, uint32_
     (void)width;
 }
 
+static int text_width(const char* str) {
+    int cur = 0;
+    while (*str) {
+        unsigned char c = (unsigned char)*str++;
+        int w = chicago12x12_cff[c];
+        cur += (w > 0 ? w : 8) + 1;
+    }
+    return cur;
+}
+
 static void draw_text(uint32_t* pixels, int pitch, int x, int y, const char* str, uint32_t color) {
     int cur_x = x;
     while (*str) {
@@ -277,16 +294,16 @@ static void draw_text(uint32_t* pixels, int pitch, int x, int y, const char* str
     }
 }
 
+static void format_clock(char* buf, size_t n) {
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    strftime(buf, n, "%a %d %b %Y  %H:%M:%S", &tm);
+}
+
 static bool ends_with(const char* name, const char* ext) {
     size_t n = strlen(name), e = strlen(ext);
     return n >= e && strcmp(name + n - e, ext) == 0;
-}
-
-static void stem_copy(const char* name, char* out, size_t n) {
-    strncpy(out, name, n - 1);
-    out[n - 1] = '\0';
-    char* dot = strrchr(out, '.');
-    if (dot) *dot = '\0';
 }
 
 typedef struct {
@@ -299,40 +316,16 @@ static int cmp_rom(const void* a, const void* b) {
 }
 
 static int scan_roms(RomEntry* roms, int cap) {
-    char bins[MAX_ROMS][256];
-    int nbin = 0;
     DIR* d = opendir("apps");
     if (!d) return 0;
 
-    struct dirent* ent;
-    while ((ent = readdir(d)) != NULL && nbin < MAX_ROMS) {
-        if (ends_with(ent->d_name, ".bin") && strcmp(ent->d_name, "Shell.bin") != 0) {
-            strncpy(bins[nbin], ent->d_name, 255);
-            bins[nbin][255] = '\0';
-            nbin++;
-        }
-    }
-    rewinddir(d);
-
     int n = 0;
-    for (int i = 0; i < nbin && n < cap; i++) {
-        snprintf(roms[n].path, sizeof(roms[n].path), "apps/%s", bins[i]);
-        stem_copy(bins[i], roms[n].label, sizeof(roms[n].label));
-        n++;
-    }
-
+    struct dirent* ent;
     while ((ent = readdir(d)) != NULL && n < cap) {
         if (!ends_with(ent->d_name, ".lux")) continue;
         if (strcmp(ent->d_name, "Shell.lux") == 0) continue;
-        char stem[256];
-        stem_copy(ent->d_name, stem, sizeof(stem));
-        int have_bin = 0;
-        for (int i = 0; i < n; i++) {
-            if (strcmp(roms[i].label, stem) == 0) { have_bin = 1; break; }
-        }
-        if (have_bin) continue;
         snprintf(roms[n].path, sizeof(roms[n].path), "apps/%s", ent->d_name);
-        strncpy(roms[n].label, stem, sizeof(roms[n].label) - 1);
+        strncpy(roms[n].label, ent->d_name, sizeof(roms[n].label) - 1);
         roms[n].label[sizeof(roms[n].label) - 1] = '\0';
         n++;
     }
@@ -342,33 +335,87 @@ static int scan_roms(RomEntry* roms, int cap) {
     return n;
 }
 
+static int title_width(void) {
+    return text_width(MENU_TITLE) + 16;
+}
+
+static int menu_drop_w(void) {
+    int tw = title_width();
+    int iw = text_width(MENU_QUIT) + 24;
+    if (iw < tw) iw = tw;
+    if (iw < 80) iw = 80;
+    return iw;
+}
+
+static bool title_hit(int mx, int my) {
+    return mx >= 0 && mx < title_width() && my >= 0 && my < BAR_H;
+}
+
+static bool quit_item_hit(int mx, int my) {
+    int w = menu_drop_w();
+    return mx >= 0 && mx < w && my >= BAR_H && my < BAR_H + 4 + MENU_ITEM_H;
+}
+
 static int list_hit(int mx, int my, int nroms) {
     if (mx < LIST_X || mx > WIN_WIDTH - 40) return -1;
     if (my < LIST_Y || my >= LIST_Y + nroms * LIST_ROW) return -1;
     return (my - LIST_Y) / LIST_ROW;
 }
 
-static void paint_picker(uint32_t* pixels, int pitch, const RomEntry* roms, int nroms, int selected) {
+static void paint_picker(uint32_t* pixels, int pitch, const RomEntry* roms, int nroms,
+                         int selected, bool menu_open, bool quit_hov) {
     const uint32_t white = 0xFFFFFFFF;
     const uint32_t black = 0xFF000000;
     const uint32_t desk  = 0xFFCCCCCC;
     fill_rect(pixels, pitch, 0, 0, WIN_WIDTH, WIN_HEIGHT, desk);
-    fill_rect(pixels, pitch, 0, 0, WIN_WIDTH, 36, white);
-    fill_rect(pixels, pitch, 0, 35, WIN_WIDTH, 1, black);
-    draw_text(pixels, pitch, 16, 10, "Cloister", black);
-    draw_text(pixels, pitch, 16, 48, "Select a program    Enter or click to run    Esc to quit", black);
+    fill_rect(pixels, pitch, 0, 0, WIN_WIDTH, BAR_H, white);
+    fill_rect(pixels, pitch, 0, BAR_H - 1, WIN_WIDTH, 1, black);
+
+    int tw = title_width();
+    if (menu_open) {
+        fill_rect(pixels, pitch, 0, 0, tw, BAR_H - 1, black);
+        draw_text(pixels, pitch, 8, 2, MENU_TITLE, white);
+    } else {
+        draw_text(pixels, pitch, 8, 2, MENU_TITLE, black);
+    }
+
+    char clock[64];
+    format_clock(clock, sizeof(clock));
+    int cw = text_width(clock);
+    int clock_x = WIN_WIDTH - 16 - cw;
+    if (clock_x < tw + 16) clock_x = tw + 16;
+    draw_text(pixels, pitch, clock_x, 2, clock, black);
+
+    draw_text(pixels, pitch, 16, 32, "Select a program    Enter or click to run", black);
 
     if (nroms == 0) {
-        draw_text(pixels, pitch, LIST_X, LIST_Y, "No programs in apps/", black);
-        return;
+        draw_text(pixels, pitch, LIST_X, LIST_Y, "No .lux programs in apps/", black);
+    } else {
+        for (int i = 0; i < nroms; i++) {
+            int y = LIST_Y + i * LIST_ROW;
+            if (i == selected) {
+                fill_rect(pixels, pitch, LIST_X - 8, y - 2, WIN_WIDTH - 2 * LIST_X, LIST_ROW, black);
+                draw_text(pixels, pitch, LIST_X, y, roms[i].label, white);
+            } else {
+                draw_text(pixels, pitch, LIST_X, y, roms[i].label, black);
+            }
+        }
     }
-    for (int i = 0; i < nroms; i++) {
-        int y = LIST_Y + i * LIST_ROW;
-        if (i == selected) {
-            fill_rect(pixels, pitch, LIST_X - 8, y - 2, WIN_WIDTH - 2 * LIST_X, LIST_ROW, black);
-            draw_text(pixels, pitch, LIST_X, y, roms[i].label, white);
+
+    if (menu_open) {
+        int dw = menu_drop_w();
+        int dh = 4 + MENU_ITEM_H;
+        fill_rect(pixels, pitch, 0, BAR_H, dw, dh, white);
+        fill_rect(pixels, pitch, 0, BAR_H, dw, 1, black);
+        fill_rect(pixels, pitch, 0, BAR_H + dh - 1, dw, 1, black);
+        fill_rect(pixels, pitch, 0, BAR_H, 1, dh, black);
+        fill_rect(pixels, pitch, dw - 1, BAR_H, 1, dh, black);
+        int iy = BAR_H + 2;
+        if (quit_hov) {
+            fill_rect(pixels, pitch, 1, iy, dw - 2, MENU_ITEM_H, black);
+            draw_text(pixels, pitch, 12, iy, MENU_QUIT, white);
         } else {
-            draw_text(pixels, pitch, LIST_X, y, roms[i].label, black);
+            draw_text(pixels, pitch, 12, iy, MENU_QUIT, black);
         }
     }
 }
@@ -416,6 +463,8 @@ int main(int argc, char** argv) {
     RomEntry roms[MAX_ROMS];
     int nroms = scan_roms(roms, MAX_ROMS);
     int selected = 0;
+    bool menu_open = false;
+    bool quit_hov = false;
 
     Machine* machine = NULL;
     uint8_t* program = NULL;
@@ -447,23 +496,51 @@ int main(int argc, char** argv) {
                 }
             } else if (!running_rom) {
                 if (e.type == SDL_KEYDOWN) {
-                    if (e.key.keysym.sym == SDLK_ESCAPE) {
+                    uint32_t mods = current_modifiers((SDL_Keymod)e.key.keysym.mod);
+                    if ((mods & 10) && (e.key.keysym.sym == SDLK_q)) {
                         quit = true;
-                    } else if (e.key.keysym.sym == SDLK_UP && nroms > 0) {
+                    } else if (e.key.keysym.sym == SDLK_ESCAPE) {
+                        if (menu_open) {
+                            menu_open = false;
+                            quit_hov = false;
+                        } else {
+                            quit = true;
+                        }
+                    } else if (!menu_open && e.key.keysym.sym == SDLK_UP && nroms > 0) {
                         selected = (selected + nroms - 1) % nroms;
-                    } else if (e.key.keysym.sym == SDLK_DOWN && nroms > 0) {
+                    } else if (!menu_open && e.key.keysym.sym == SDLK_DOWN && nroms > 0) {
                         selected = (selected + 1) % nroms;
-                    } else if (e.key.keysym.sym == SDLK_RETURN && nroms > 0) {
+                    } else if (!menu_open && e.key.keysym.sym == SDLK_RETURN && nroms > 0) {
                         if (load_app(roms[selected].path, &program, &machine, win)) {
                             running_rom = true;
                         }
                     }
+                } else if (e.type == SDL_MOUSEMOTION) {
+                    if (menu_open) {
+                        quit_hov = quit_item_hit(e.motion.x, e.motion.y);
+                    }
                 } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
-                    int hit = list_hit(e.button.x, e.button.y, nroms);
-                    if (hit >= 0) {
-                        selected = hit;
-                        if (load_app(roms[selected].path, &program, &machine, win)) {
-                            running_rom = true;
+                    int mx = e.button.x, my = e.button.y;
+                    if (menu_open) {
+                        if (quit_item_hit(mx, my)) {
+                            quit = true;
+                        } else if (title_hit(mx, my)) {
+                            menu_open = false;
+                            quit_hov = false;
+                        } else {
+                            menu_open = false;
+                            quit_hov = false;
+                        }
+                    } else if (title_hit(mx, my)) {
+                        menu_open = true;
+                        quit_hov = quit_item_hit(mx, my);
+                    } else {
+                        int hit = list_hit(mx, my, nroms);
+                        if (hit >= 0) {
+                            selected = hit;
+                            if (load_app(roms[selected].path, &program, &machine, win)) {
+                                running_rom = true;
+                            }
                         }
                     }
                 }
@@ -521,7 +598,7 @@ int main(int argc, char** argv) {
         SDL_LockTexture(tex, NULL, (void**)&pixels, &pitch);
 
         if (!running_rom) {
-            paint_picker(pixels, pitch, roms, nroms, selected);
+            paint_picker(pixels, pitch, roms, nroms, selected, menu_open, quit_hov);
         } else if (machine && machine->system->screen_pixels) {
             if (g_dialog.active) dialog_draw(&g_dialog);
             int w = machine->system->screen_width;

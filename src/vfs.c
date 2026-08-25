@@ -932,6 +932,28 @@ static int draw_write(VFSFile* file, const uint8_t* buf, int len) {
             case 7:
                 system_end_frame(sys);
                 break;
+            case 9: {
+                /* DrawCFFGlyph: x i16, y i16, color u32, scale u8, ch u8,
+                   font_ptr u32, nbytes u16. 17 bytes including cmd. */
+                if (i + 16 > len) return i - 1;
+                int16_t x = (int16_t)(buf[i] | (buf[i+1] << 8));
+                int16_t y = (int16_t)(buf[i+2] | (buf[i+3] << 8));
+                uint32_t color = (uint32_t)buf[i+4] | ((uint32_t)buf[i+5] << 8) |
+                                 ((uint32_t)buf[i+6] << 16) | ((uint32_t)buf[i+7] << 24);
+                uint8_t scale = buf[i+8];
+                uint8_t ch = buf[i+9];
+                uint32_t font_ptr = (uint32_t)buf[i+10] | ((uint32_t)buf[i+11] << 8) |
+                                    ((uint32_t)buf[i+12] << 16) | ((uint32_t)buf[i+13] << 24);
+                uint16_t nbytes = (uint16_t)(buf[i+14] | (buf[i+15] << 8));
+                i += 16;
+                if (!sys->memory || font_ptr >= sys->memory_size) break;
+                uint32_t avail = sys->memory_size - font_ptr;
+                if ((uint32_t)nbytes > avail) nbytes = (uint16_t)avail;
+                if (nbytes == 0) break;
+                system_draw_cff(sys, sys->memory + font_ptr, (int)nbytes,
+                                (char)ch, x, y, color, (int)scale);
+                break;
+            }
             default:
                 return i - 1;
         }

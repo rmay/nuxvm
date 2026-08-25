@@ -118,7 +118,7 @@ void system_draw_rect(System* sys, int32_t x, int32_t y, int32_t w, int32_t h, u
 int system_draw_char(System* sys, int32_t x, int32_t y, char c, uint32_t color, int scale);
 void system_draw_text(System* sys, int32_t x, int32_t y, const char* str, uint32_t color, int scale);
 void system_draw_text_len(System* sys, int32_t x, int32_t y, const char* str, int16_t len, uint32_t color, int scale);
-void system_draw_cff(System* sys, const uint8_t* font_data, char c, int32_t x, int32_t y, uint32_t color, int scale);
+void system_draw_cff(System* sys, const uint8_t* font_data, int nbytes, char c, int32_t x, int32_t y, uint32_t color, int scale);
 void system_set_pixel(System* sys, int32_t x, int32_t y, uint32_t color);
 double system_normalize_draw_scale(System* sys, int scale);
 int system_measure_char(System* sys, char c, int scale);

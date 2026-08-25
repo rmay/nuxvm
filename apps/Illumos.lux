@@ -1,0 +1,580 @@
+( Illumos: CFF / UFX bitmap font editor (Turye-shaped).
+  ./bin/cloister apps/Illumos.bin )
+
+INCLUDE "lib/app.lux"
+INCLUDE "lib/core.lux"
+INCLUDE "lib/str.lux"
+INCLUDE "lib/ui.lux"
+INCLUDE "lib/sf.lux"
+INCLUDE "lib/cff.lux"
+
+MODULE MAIN
+
+IMPORT APP
+IMPORT VFS
+IMPORT DRAW
+IMPORT EVENT
+IMPORT STR
+IMPORT UI
+IMPORT SF
+IMPORT CFF
+IMPORT MEMORY
+
+@FONT     0x900000 ;
+@PATH     0x910000 ;
+@PANG     0x910200 ;
+@HEXBUF   0x910380 ;
+@VFS_PATH 0x910500 ;
+
+@sel        0x911000 ;
+@file-dirty 0x911004 ;
+@guide      0x911008 ;
+@pang-len   0x91100C ;
+@drag-w     0x911010 ;
+@paint-m    0x911014 ;
+@save-as    0x911018 ;
+@cell       0x91101C ;
+@pang-x     0x911020 ;
+@pang-y     0x911024 ;
+
+@BAR_H     20 ;
+@ED_X      16 ;
+@ED_Y      36 ;
+@COL_X     440 ;
+@COL_Y     36 ;
+@COL_CELL  24 ;
+@PAN_Y     460 ;
+@CLR_BG    0xFFFFFF ;
+@CLR_FG    0x000000 ;
+@CLR_GRID  0xCCCCCC ;
+@CLR_HINT  0x444444 ;
+
+@make-vfs-path ( path-ptr -- vfs-path-ptr )
+    dup load-byte 47 = [ 1 + ] ?
+    T"/sys/file/" VFS_PATH STR::strcpy
+    VFS_PATH T"/sys/file/" STR::strlen + STR::strcpy
+    VFS_PATH
+;
+
+@mark-dirty ( -- )
+    1 file-dirty STOREI
+    APP::dirty!
+    sync-title
+;
+
+@sync-title ( -- )
+    file-dirty LOADI [ T"Illumos *" ] [ T"Illumos" ] ?:
+    VFS::set-window-title
+;
+
+@sync-cell ( -- )
+    CFF::tile
+    dup 8 = [ drop 24 ] [
+        dup 24 = [ drop 12 ] [ drop 16 ] ?:
+    ] ?:
+    cell STOREI
+    CFF::tile 8 = [ 6 ] [
+        CFF::tile 24 = [ 18 ] [ 11 ] ?:
+    ] ?:
+    guide STOREI
+;
+
+@ed-w ( -- n ) CFF::tile cell LOADI * ;
+
+@pang-reset ( -- )
+    T"A lazy dog. A quick fox. Jumping over." PANG STR::strcpy
+    PANG STR::strlen pang-len STOREI
+;
+
+@do-new ( t -- )
+    FONT OVER CFF::use
+    CFF::blank
+    sync-cell
+    65 sel STOREI
+    0 file-dirty STOREI
+    T"untitled.cff" PATH STR::strcpy
+    pang-reset
+    APP::dirty!
+    sync-title
+;
+
+@hex-nib ( n -- ch )
+    15 AND dup 10 < [ 48 + ] [ 55 + ] ?:
+;
+
+@draw-hint ( -- )
+    sel LOADI HEXBUF store-byte
+    32 HEXBUF 1 + store-byte
+    91 HEXBUF 2 + store-byte
+    48 HEXBUF 3 + store-byte
+    120 HEXBUF 4 + store-byte
+    sel LOADI 4 SHR hex-nib HEXBUF 5 + store-byte
+    sel LOADI hex-nib HEXBUF 6 + store-byte
+    93 HEXBUF 7 + store-byte
+    0 HEXBUF 8 + store-byte
+    APP::draw-fd COL_X COL_Y 16 - HEXBUF CLR_HINT 16 DRAW::draw-str
+;
+
+@draw-editor ( -- )
+    APP::draw-fd ED_X 1 - ED_Y 1 - ed-w 2 + ed-w 2 + CLR_FG DRAW::draw-rect
+    0 { y }
+        [ y CFF::tile < ]
+        [
+            0 { x }
+                [ x CFF::tile < ]
+                [
+                    sel LOADI x y CFF::pixel@ [
+                        APP::draw-fd
+                        ED_X x cell LOADI * +
+                        ED_Y y cell LOADI * +
+                        cell LOADI 1 -
+                        cell LOADI 1 -
+                        CLR_FG DRAW::fill-rect
+                    ] ?
+                    x 1 + x!
+                ] |:
+            }
+            y 1 + y!
+        ] |:
+    }
+    sel LOADI CFF::width@ cell LOADI * ED_X + { rule }
+        0 { i }
+            [ i ed-w < ]
+            [
+                i 4 MOD 2 < [
+                    APP::draw-fd rule ED_Y i + 1 2 CLR_FG DRAW::fill-rect
+                ] ?
+                i 2 + i!
+            ] |:
+        }
+    }
+    APP::draw-fd ED_X ED_Y guide LOADI cell LOADI * + ed-w CLR_GRID DRAW::dash-h
+;
+
+@draw-collection ( -- )
+    0 { i }
+        [ i 256 < ]
+        [
+            i 15 AND COL_CELL * COL_X + { x }
+            i 4 SHR COL_CELL * COL_Y + { y }
+                i sel LOADI = [
+                    APP::draw-fd x y COL_CELL COL_CELL CLR_FG DRAW::fill-rect
+                    APP::draw-fd x 4 + y 4 + i 0xFFFFFF 1 FONT CFF::bytes DRAW::cff-glyph
+                ] [
+                    APP::draw-fd x y COL_CELL COL_CELL CLR_BG DRAW::fill-rect
+                    APP::draw-fd x y COL_CELL COL_CELL CLR_GRID DRAW::draw-rect
+                    APP::draw-fd x 4 + y 4 + i CLR_FG 1 FONT CFF::bytes DRAW::cff-glyph
+                ] ?:
+            }
+            i 1 + i!
+        ] |:
+    }
+;
+
+@draw-pangram ( -- )
+    ED_X pang-x STOREI
+    PAN_Y pang-y STOREI
+    0 { i }
+        [ i pang-len LOADI < ]
+        [
+            PANG i + load-byte { ch }
+                ch 10 = [
+                    ED_X pang-x STOREI
+                    pang-y LOADI CFF::tile 2 * 4 + + pang-y STOREI
+                ] [
+                    APP::draw-fd pang-x LOADI pang-y LOADI ch CLR_FG 2 FONT CFF::bytes DRAW::cff-glyph
+                    pang-x LOADI ch CFF::width@ 2 * + pang-x STOREI
+                ] ?:
+            }
+            i 1 + i!
+        ] |:
+    }
+;
+
+@draw-all ( -- )
+    APP::draw-fd 0 0 APP::width APP::height CLR_BG DRAW::fill-rect
+    draw-editor
+    draw-hint
+    draw-collection
+    draw-pangram
+    UI::draw
+;
+
+@paint-at { mx my bit -- }
+    mx ED_X - cell LOADI / { px }
+        my ED_Y - cell LOADI / { py }
+            px 0 < py 0 < OR px CFF::tile >= OR py CFF::tile >= OR [
+            ] [
+                sel LOADI px py bit CFF::pixel!
+                mark-dirty
+            ] ?:
+        }
+    }
+;
+
+@set-width-from-x ( mx -- )
+    ED_X - cell LOADI /
+    sel LOADI SWAP CFF::width!
+    mark-dirty
+;
+
+@in-editor? ( mx my -- f )
+    dup ED_Y >= SWAP ED_Y ed-w + < AND
+    SWAP dup ED_X >= SWAP ED_X ed-w + 8 + < AND
+    AND
+;
+
+@in-collection? ( mx my -- f )
+    dup COL_Y >= SWAP COL_Y COL_CELL 16 * + < AND
+    SWAP dup COL_X >= SWAP COL_X COL_CELL 16 * + < AND
+    AND
+;
+
+@select-at ( mx my -- )
+    COL_Y - COL_CELL /
+    SWAP COL_X - COL_CELL /
+    SWAP 4 SHL +
+    255 AND sel STOREI
+    APP::dirty!
+;
+
+@pang-push ( ch -- )
+    pang-len LOADI 120 < [
+        dup PANG pang-len LOADI + store-byte
+        pang-len LOADI 1 + pang-len STOREI
+        0 PANG pang-len LOADI + store-byte
+        APP::dirty!
+    ] [ drop ] ?:
+;
+
+@pang-pop ( -- )
+    pang-len LOADI 0 > [
+        pang-len LOADI 1 - pang-len STOREI
+        0 PANG pang-len LOADI + store-byte
+        APP::dirty!
+    ] ?
+;
+
+@width-minus ( -- )
+    sel LOADI dup CFF::width@ 1 - CFF::width!
+    mark-dirty
+;
+
+@width-plus ( -- )
+    sel LOADI dup CFF::width@ 1 + CFF::width!
+    mark-dirty
+;
+
+@do-erase ( -- )
+    sel LOADI CFF::erase
+    mark-dirty
+;
+
+@do-shift ( dx dy -- )
+    sel LOADI ROT ROT CFF::shift
+    mark-dirty
+;
+
+@glyph-bytes-n ( -- n ) CFF::glyph-bytes ;
+
+@snarf-glyph ( -- )
+    T"/sys/snarf" VFS::open dup 0 >= [
+        dup sel LOADI CFF::glyph glyph-bytes-n VFS::write drop
+        VFS::close drop
+    ] [ drop ] ?:
+;
+
+@paste-glyph ( -- )
+    T"/sys/snarf" VFS::open dup 0 >= [
+        1 frame!
+        0 local@ CFF::scratch glyph-bytes-n VFS::read
+        glyph-bytes-n = [
+            CFF::scratch sel LOADI CFF::glyph glyph-bytes-n MEMORY::move-mem
+            mark-dirty
+        ] ?
+        0 local@ VFS::close drop
+        1 unframe!
+    ] [ drop ] ?:
+;
+
+@cut-glyph ( -- )
+    snarf-glyph
+    do-erase
+;
+
+@save-file ( -- )
+    PATH make-vfs-path 6 VFS::open-mode
+    dup 0 >= [
+        dup CFF::save drop
+        VFS::close drop
+        0 file-dirty STOREI
+        sync-title
+        APP::dirty!
+    ] [ drop ] ?:
+;
+
+@load-path ( path -- )
+    dup load-byte 47 = [ 1 + ] ?
+    PATH STR::strcpy
+    PATH make-vfs-path 0 VFS::open-mode
+    dup 0 >= [
+        dup CFF::load [
+            sync-cell
+            0 file-dirty STOREI
+            65 sel STOREI
+            sync-title
+            APP::dirty!
+        ] ?
+        VFS::close drop
+    ] [ drop ] ?:
+;
+
+@on-pick ( path -- )
+    save-as LOADI [
+        0 save-as STOREI
+        dup load-byte 47 = [ 1 + ] ?
+        PATH STR::strcpy
+        save-file
+    ] [
+        load-path
+    ] ?:
+    APP::dirty!
+;
+
+@on-cancel ( -- )
+    0 save-as STOREI
+    APP::dirty!
+;
+
+@menu-open ( val -- ) drop SF::show ;
+@menu-save ( val -- ) drop save-file ;
+@menu-quit ( val -- ) drop HALT ;
+@menu-new-8 ( val -- ) drop 8 do-new ;
+@menu-new-16 ( val -- ) drop 16 do-new ;
+@menu-new-24 ( val -- ) drop 24 do-new ;
+@menu-cut ( val -- ) drop cut-glyph ;
+@menu-snarf ( val -- ) drop snarf-glyph ;
+@menu-paste ( val -- ) drop paste-glyph ;
+@menu-erase ( val -- ) drop do-erase ;
+@menu-up ( val -- ) drop 0 -1 do-shift ;
+@menu-down ( val -- ) drop 0 1 do-shift ;
+@menu-left ( val -- ) drop -1 0 do-shift ;
+@menu-right ( val -- ) drop 1 0 do-shift ;
+@menu-wminus ( val -- ) drop width-minus ;
+@menu-wplus ( val -- ) drop width-plus ;
+@menu-mup ( val -- ) drop sel LOADI 16 - 255 AND sel STOREI APP::dirty! ;
+@menu-mdown ( val -- ) drop sel LOADI 16 + 255 AND sel STOREI APP::dirty! ;
+@menu-mleft ( val -- ) drop sel LOADI 1 - 255 AND sel STOREI APP::dirty! ;
+@menu-mright ( val -- ) drop sel LOADI 1 + 255 AND sel STOREI APP::dirty! ;
+
+@on-mouse ( mpkt -- )
+    SF::open? [
+        SF::mouse
+    ] [
+        dup EVENT::mouse-type EVENT::MOUSE_UP = [
+            0 drag-w STOREI
+            0 paint-m STOREI
+        ] ?
+        UI::menu-open?
+        OVER UI::feed
+        UI::menu-open? OR [
+            drop
+        ] [
+            dup EVENT::mouse-type EVENT::MOUSE_UP = [
+                drop
+            ] [
+                dup EVENT::mouse-x OVER EVENT::mouse-y
+                3 frame! ( 0:my 1:mx 2:mpkt )
+                2 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+                    1 local@ 0 local@ in-collection? [
+                        1 local@ 0 local@ select-at
+                    ] [
+                        1 local@ 0 local@ in-editor? [
+                            1 local@ ED_X - cell LOADI /
+                            sel LOADI CFF::width@ >= [
+                                1 drag-w STOREI
+                                1 local@ set-width-from-x
+                            ] [
+                                2 local@ EVENT::mouse-btn
+                                dup 3 = SWAP 1 = 0 = OR [
+                                    2 paint-m STOREI
+                                    1 local@ 0 local@ 0 paint-at
+                                ] [
+                                    1 paint-m STOREI
+                                    1 local@ 0 local@ 1 paint-at
+                                ] ?:
+                            ] ?:
+                        ] ?
+                    ] ?:
+                ] ?
+                2 local@ EVENT::mouse-type EVENT::MOUSE_MOVE = [
+                    drag-w LOADI [
+                        1 local@ set-width-from-x
+                    ] [
+                        paint-m LOADI 1 = [
+                            1 local@ 0 local@ 1 paint-at
+                        ] ?
+                        paint-m LOADI 2 = [
+                            1 local@ 0 local@ 0 paint-at
+                        ] ?
+                    ] ?:
+                ] ?
+                3 unframe!
+            ] ?:
+        ] ?:
+    ] ?:
+;
+
+@handle-cmd ( key -- )
+    32 OR
+    dup 111 = [ drop SF::show ] [
+    dup 115 = [ drop save-file ] [
+    dup 120 = [ drop cut-glyph ] [
+    dup 99 = [ drop snarf-glyph ] [
+    dup 118 = [ drop paste-glyph ] [
+    drop
+    ] ?: ] ?: ] ?: ] ?: ] ?:
+;
+
+@on-kbd ( kpkt -- )
+    SF::open? [
+        SF::kbd
+    ] [
+        dup EVENT::kbd-type EVENT::KEY_DOWN = [
+            dup EVENT::kbd-key EVENT::KEY_ESC = [
+                UI::escape drop
+            ] [
+                dup EVENT::kbd-mods
+                over EVENT::kbd-key
+                2 frame! ( 0:key 1:mods )
+                1 local@ EVENT::MOD_CMD EVENT::MOD_CTRL OR AND [
+                    0 local@ handle-cmd
+                ] [
+                    0 local@ EVENT::KEY_LEFT_ARROW = [
+                        1 local@ EVENT::MOD_SHIFT AND [
+                            -1 0 do-shift
+                        ] [
+                            sel LOADI 1 - 255 AND sel STOREI APP::dirty!
+                        ] ?:
+                    ] [
+                    0 local@ EVENT::KEY_RIGHT_ARROW = [
+                        1 local@ EVENT::MOD_SHIFT AND [
+                            1 0 do-shift
+                        ] [
+                            sel LOADI 1 + 255 AND sel STOREI APP::dirty!
+                        ] ?:
+                    ] [
+                    0 local@ EVENT::KEY_UP_ARROW = [
+                        1 local@ EVENT::MOD_SHIFT AND [
+                            0 -1 do-shift
+                        ] [
+                            sel LOADI 16 - 255 AND sel STOREI APP::dirty!
+                        ] ?:
+                    ] [
+                    0 local@ EVENT::KEY_DOWN_ARROW = [
+                        1 local@ EVENT::MOD_SHIFT AND [
+                            0 1 do-shift
+                        ] [
+                            sel LOADI 16 + 255 AND sel STOREI APP::dirty!
+                        ] ?:
+                    ] [
+                    0 local@ EVENT::KEY_BACKSPACE = [
+                        do-erase
+                    ] [
+                    0 local@ 127 = [
+                        pang-pop
+                    ] [
+                    0 local@ 91 = [
+                        width-minus
+                    ] [
+                    0 local@ 93 = [
+                        width-plus
+                    ] [
+                    0 local@ STR::printable? [
+                        0 local@ pang-push
+                    ] ?
+                    ] ?: ] ?: ] ?: ] ?:
+                    ] ?: ] ?: ] ?: ] ?:
+                ] ?:
+                2 unframe!
+            ] ?:
+        ] ?
+        drop
+    ] ?:
+;
+
+@on-frame ( -- )
+    UI::handle
+    APP::dirty? UI::menu-open? OR SF::open? OR [
+        draw-all
+        APP::dirty-off
+    ] [
+        UI::draw
+    ] ?:
+    SF::open? [ SF::draw ] ?
+;
+
+@try-chicago ( -- )
+    T"/sys/file/resources/chicago12x12.cff" 0 VFS::open-mode
+    dup 0 >= [
+        dup CFF::load [
+            T"resources/chicago12x12.cff" PATH STR::strcpy
+            sync-cell
+            0 file-dirty STOREI
+        ] [
+            16 do-new
+        ] ?:
+        VFS::close drop
+    ] [
+        drop
+        16 do-new
+    ] ?:
+;
+
+@start
+    T"Illumos" APP::init
+    FONT 16 CFF::use
+    UI::new
+    APP::width UI::menubar
+    T"File" UI::menu
+    T"New 8x8"   [ menu-new-8 ]  UI::item
+    T"New 16x16" [ menu-new-16 ] UI::item
+    T"New 24x24" [ menu-new-24 ] UI::item
+    UI::sep
+    T"Open" [ menu-open ] UI::item
+    T"Save" [ menu-save ] UI::item
+    UI::sep
+    T"Quit" [ menu-quit ] UI::item
+    T"Edit" UI::menu
+    T"Cut"   [ menu-cut ]   UI::item
+    T"Snarf" [ menu-snarf ] UI::item
+    T"Paste" [ menu-paste ] UI::item
+    T"Erase" [ menu-erase ] UI::item
+    T"Glyph" UI::menu
+    T"Shift Up"    [ menu-up ]     UI::item
+    T"Shift Down"  [ menu-down ]   UI::item
+    T"Shift Left"  [ menu-left ]   UI::item
+    T"Shift Right" [ menu-right ]  UI::item
+    UI::sep
+    T"Width -" [ menu-wminus ] UI::item
+    T"Width +" [ menu-wplus ]  UI::item
+    T"Move" UI::menu
+    T"Up"    [ menu-mup ]    UI::item
+    T"Down"  [ menu-mdown ]  UI::item
+    T"Left"  [ menu-mleft ]  UI::item
+    T"Right" [ menu-mright ] UI::item
+    [ on-pick ] SF::on-ok!
+    [ on-cancel ] SF::on-cancel!
+    pang-reset
+    65 sel STOREI
+    try-chicago
+    [ on-mouse ] APP::on-mouse!
+    [ on-kbd ] APP::on-kbd!
+    [ on-frame ] APP::on-frame!
+    [ draw-all ] APP::on-resume!
+    APP::dirty!
+    APP::loop
+;
+
+MAIN::start
+HALT

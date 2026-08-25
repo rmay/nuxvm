@@ -1,5 +1,6 @@
 #include "dialog.h"
 #include "chicago.h"
+#include "cff.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -134,12 +135,16 @@ static int dlg_draw_char(System* sys, int32_t x, int32_t y, char c, uint32_t col
     }
 
     uint8_t r = (color >> 16) & 0xFF, g = (color >> 8) & 0xFF, b = color & 0xFF;
-    int tile_count = 4; // 16x16 cell = 2x2 tiles of 8x8
+    int tile_size = cff_tile_size((int)chicago12x12_cff_len);
+    if (tile_size <= 0) tile_size = 16;
+    int num_h = tile_size / 8;
+    int num_v = tile_size / 8;
+    int tile_count = num_h * num_v;
     int offset = 256 + (uint8_t)c * tile_count * 8;
 
     int idx = 0;
-    for (int tx = 0; tx < 2; tx++) {
-        for (int ty = 0; ty < 2; ty++) {
+    for (int tx = 0; tx < num_h; tx++) {
+        for (int ty = 0; ty < num_v; ty++) {
             for (int row = 0; row < 8; row++) {
                 uint8_t bits = data[offset + idx++];
                 if (bits == 0) continue;

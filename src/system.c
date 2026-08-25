@@ -2,6 +2,7 @@
 #include "vfs.h"
 #include "machine.h"
 #include "chicago.h"
+#include "cff.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -275,7 +276,8 @@ static void handle_sci(System* sys) {
             }
             int scale = sys->font_size ? sys->font_size : 12;
             uint32_t color = sys->text_color ? sys->text_color : 0xFFFFFF;
-            system_draw_cff(sys, font, ch, x, y, color, scale);
+            int nbytes = (font == chicago12x12_cff) ? (int)chicago12x12_cff_len : CFF_LEN_UF2;
+            system_draw_cff(sys, font, nbytes, ch, x, y, color, scale);
             sys->sci_result = 0;
             break;
         }
@@ -706,12 +708,14 @@ void system_set_pixel(System* sys, int32_t x, int32_t y, uint32_t color) {
     fb[idx + 3] = color & 0xFF;
 }
 
-void system_draw_cff(System* sys, const uint8_t* font_data, char c, int32_t x, int32_t y, uint32_t color, int scale) {
+void system_draw_cff(System* sys, const uint8_t* font_data, int nbytes, char c, int32_t x, int32_t y, uint32_t color, int scale) {
     if (!sys || !font_data) return;
-    if (font_data == chicago12x12_cff) {
-        system_draw_char(sys, x, y, c, color, scale);
-        return;
+    if (nbytes <= 0 && font_data == chicago12x12_cff) {
+        nbytes = (int)chicago12x12_cff_len;
     }
+    int tile_size = cff_tile_size(nbytes);
+    if (tile_size <= 0) return;
+
     int32_t sw = sys->screen_width;
     int32_t sh = sys->screen_height;
     if (!sys->screen_pixels) return;
@@ -719,10 +723,19 @@ void system_draw_cff(System* sys, const uint8_t* font_data, char c, int32_t x, i
     int width = font_data[(uint8_t)c];
     if (width == 0 && c != ' ') return;
 
-    int tile_size = 16;
-    int tile_count = (tile_size / 8) * (tile_size / 8);
+    int num_h = tile_size / 8;
+    int num_v = tile_size / 8;
+    int tile_count = num_h * num_v;
     int offset = 256 + (uint8_t)c * tile_count * 8;
-    double sc = system_normalize_draw_scale(sys, scale);
+    if (offset < 256 || offset + tile_count * 8 > nbytes) return;
+
+    double sc;
+    if (scale < 6) {
+        sc = (scale <= 0) ? 1.0 : (double)scale;
+    } else {
+        sc = system_normalize_draw_scale(sys, scale);
+    }
+    if (sc <= 0.0) sc = 1.0;
 
     uint8_t a = 0xFF;
     uint8_t r = (color >> 16) & 0xFF;
@@ -730,8 +743,8 @@ void system_draw_cff(System* sys, const uint8_t* font_data, char c, int32_t x, i
     uint8_t b = color & 0xFF;
 
     int idx = 0;
-    for (int tx = 0; tx < tile_size / 8; tx++) {
-        for (int ty = 0; ty < tile_size / 8; ty++) {
+    for (int tx = 0; tx < num_h; tx++) {
+        for (int ty = 0; ty < num_v; ty++) {
             for (int row = 0; row < 8; row++) {
                 uint8_t bits = font_data[offset + idx++];
                 if (bits == 0) continue;

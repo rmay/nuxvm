@@ -23,7 +23,16 @@ REPL_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(REPL_SRCS))
 CLOISTER_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(SRC_DIR)/dialog.c $(SRC_DIR)/cloister.c
 CLOISTER_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(CLOISTER_SRCS))
 
-TARGETS = $(BIN_DIR)/nux $(BIN_DIR)/luxc $(BIN_DIR)/luxrepl $(BIN_DIR)/cloister $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler
+FLUXIO_COMPILER_SRCS = $(SRC_DIR)/fluxio_lexer.c $(SRC_DIR)/fluxio_ast.c \
+                       $(SRC_DIR)/fluxio_parser.c $(SRC_DIR)/fluxio_codegen.c $(SRC_DIR)/fluxio_include.c
+FLUXIO_COMPILER_OBJS = $(OBJ_DIR)/fluxio_lexer.o $(OBJ_DIR)/fluxio_ast.o \
+                       $(OBJ_DIR)/fluxio_parser.o $(OBJ_DIR)/fluxio_codegen.o $(OBJ_DIR)/fluxio_include.o
+
+FLUXIOC_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(FLUXIO_COMPILER_SRCS) $(SRC_DIR)/fluxioc.c
+FLUXIOC_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(FLUXIOC_SRCS))
+
+TARGETS = $(BIN_DIR)/nux $(BIN_DIR)/luxc $(BIN_DIR)/luxrepl $(BIN_DIR)/cloister $(BIN_DIR)/fluxioc \
+          $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler $(BIN_DIR)/test_fluxio_compiler
 
 APP_LUX = $(wildcard apps/*.lux)
 APP_BINS = $(APP_LUX:.lux=.bin)
@@ -62,6 +71,11 @@ $(BIN_DIR)/cloister: $(CLOISTER_OBJS)
 	$(CC) $(CLOISTER_OBJS) -o $@ $(LDFLAGS)
 	@echo "Built bin/cloister successfully!"
 
+$(BIN_DIR)/fluxioc: $(FLUXIOC_OBJS)
+	@echo "Linking fluxioc..."
+	$(CC) $(FLUXIOC_OBJS) -o $@ $(LDFLAGS)
+	@echo "Built bin/fluxioc successfully!"
+
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	@echo "Compiling $<..."
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -81,13 +95,21 @@ $(BIN_DIR)/test_compiler: $(OBJ_DIR)/test_compiler.o $(OBJ_DIR)/compiler.o $(OBJ
 	$(CC) $(OBJ_DIR)/test_compiler.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o -o $@ $(LDFLAGS)
 	@echo "Built bin/test_compiler successfully!"
 
-test: $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler
+$(BIN_DIR)/test_fluxio_compiler: $(OBJ_DIR)/test_fluxio_compiler.o $(FLUXIO_COMPILER_OBJS) $(COMPILER_OBJS) \
+    $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o
+	@echo "Linking test_fluxio_compiler..."
+	$(CC) $(OBJ_DIR)/test_fluxio_compiler.o $(FLUXIO_COMPILER_OBJS) $(COMPILER_OBJS) $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o -o $@ $(LDFLAGS)
+	@echo "Built bin/test_fluxio_compiler successfully!"
+
+test: $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler $(BIN_DIR)/test_fluxio_compiler
 	@echo "Running VFS tests..."
 	@./$(BIN_DIR)/test_vfs
 	@echo "Running VM opcode tests..."
 	@./$(BIN_DIR)/test_vm
 	@echo "Running Compiler tests..."
 	@./$(BIN_DIR)/test_compiler
+	@echo "Running Fluxio compiler tests..."
+	@./$(BIN_DIR)/test_fluxio_compiler
 
 clean:
 	rm -rf $(OBJ_DIR) $(BIN_DIR)

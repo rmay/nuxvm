@@ -1,0 +1,196 @@
+( CFF / UFX proportional 1-bit font codec.
+  256 width bytes, then column-major 8x8 ICN tiles per glyph.
+  INCLUDE "lib/cff.lux"  then  IMPORT CFF )
+
+INCLUDE "lib/core.lux"
+INCLUDE "lib/vfs.lux"
+
+MODULE CFF
+
+IMPORT MEMORY
+
+@LEN8  2304 ;
+@LEN16 8448 ;
+@LEN24 18688 ;
+
+@base-addr 0x8E0000 ;
+@tile-sz   0x8E0004 ;
+@file-len  0x8E0008 ;
+@scratch   0x8E0100 ;
+
+@base  ( -- addr ) base-addr LOADI ;
+@tile  ( -- n )    tile-sz LOADI ;
+@bytes ( -- n )    file-len LOADI ;
+
+@len-for ( t -- nbytes )
+    dup 8 = [ drop LEN8 ] [
+        dup 16 = [ drop LEN16 ] [
+            dup 24 = [ drop LEN24 ] [ drop 0 ] ?:
+        ] ?:
+    ] ?:
+;
+
+@tile-for ( nbytes -- t )
+    dup LEN8 = [ drop 8 ] [
+        dup LEN16 = [ drop 16 ] [
+            dup LEN24 = [ drop 24 ] [ drop 0 ] ?:
+        ] ?:
+    ] ?:
+;
+
+@ntiles ( -- n ) tile 8 / ;
+
+@glyph-bytes ( -- n )
+    ntiles dup * 8 *
+;
+
+@use ( addr t -- )
+    2 frame!
+    1 local@ base-addr STOREI
+    0 local@ tile-sz STOREI
+    0 local@ len-for file-len STOREI
+    2 unframe!
+;
+
+@glyph ( ch -- addr )
+    glyph-bytes * base 256 + +
+;
+
+@width@ ( ch -- w )
+    base + load-byte
+;
+
+@width! ( ch w -- )
+    2 frame!
+    0 local@ 0 < [ 0 0 local! ] ?
+    0 local@ tile > [ tile 0 local! ] ?
+    0 local@ 1 local@ base + store-byte
+    2 unframe!
+;
+
+@row-addr ( ch x y -- addr )
+    3 frame! ( 0:y 1:x 2:ch )
+    1 local@ 8 /
+    ntiles *
+    0 local@ 8 / +
+    8 *
+    0 local@ 8 MOD +
+    2 local@ glyph +
+    3 unframe!
+;
+
+@pixel@ ( ch x y -- bit )
+    3 frame! ( 0:y 1:x 2:ch )
+    1 local@ 0 < 0 local@ 0 < OR 1 local@ tile >= OR 0 local@ tile >= OR [
+        0
+    ] [
+        2 local@ 1 local@ 0 local@ row-addr load-byte
+        128 1 local@ 8 MOD SHR AND
+        0 = [ 0 ] [ 1 ] ?:
+    ] ?:
+    3 unframe!
+;
+
+@pixel! ( ch x y bit -- )
+    4 frame! ( 0:bit 1:y 2:x 3:ch )
+    2 local@ 0 < 1 local@ 0 < OR 2 local@ tile >= OR 1 local@ tile >= OR [
+    ] [
+        3 local@ 2 local@ 1 local@ row-addr
+        dup load-byte
+        128 2 local@ 8 MOD SHR
+        0 local@ [
+            OR
+        ] [
+            NOT AND
+        ] ?:
+        SWAP store-byte
+    ] ?:
+    4 unframe!
+;
+
+@fill-zero ( addr n -- )
+    [ dup 0 > ]
+    [
+        0 2 PICK store-byte
+        SWAP 1 + SWAP 1 -
+    ] |:
+    drop drop
+;
+
+@erase ( ch -- )
+    glyph glyph-bytes fill-zero
+;
+
+@blank ( t -- )
+    1 frame!
+    base 0 local@ use
+    base bytes fill-zero
+    32 0 local@ 2 / width!
+    1 unframe!
+;
+
+@copy ( src dst -- )
+    2 frame!
+    0 local@ 1 local@ width@ width!
+    1 local@ glyph 0 local@ glyph glyph-bytes MEMORY::move-mem
+    2 unframe!
+;
+
+@scratch-pixel ( x y -- bit )
+    2 frame! ( 0:y 1:x )
+    1 local@ 0 < 0 local@ 0 < OR 1 local@ tile >= OR 0 local@ tile >= OR [
+        0
+    ] [
+        scratch
+        1 local@ 8 / ntiles * 0 local@ 8 / + 8 * 0 local@ 8 MOD +
+        + load-byte
+        128 1 local@ 8 MOD SHR AND
+        0 = [ 0 ] [ 1 ] ?:
+    ] ?:
+    2 unframe!
+;
+
+@shift ( ch dx dy -- )
+    3 frame! ( 0:dy 1:dx 2:ch )
+    2 local@ glyph scratch glyph-bytes MEMORY::move-mem
+    2 local@ erase
+    0
+    [ dup tile < ]
+    [
+        0
+        [ dup tile < ]
+        [
+            dup 1 local@ -
+            2 PICK 0 local@ -
+            scratch-pixel
+            2 local@ 2 PICK 4 PICK 3 PICK pixel!
+            drop
+            1 +
+        ] |:
+        drop
+        1 +
+    ] |:
+    drop
+    3 unframe!
+;
+
+@load ( fd -- ok )
+    1 frame!
+    0 local@ base LEN24 VFS::read
+    dup tile-for
+    dup 0 = [
+        drop drop 0
+    ] [
+        tile-sz STOREI
+        file-len STOREI
+        1
+    ] ?:
+    1 unframe!
+;
+
+@save ( fd -- ok )
+    1 frame!
+    0 local@ base file-len LOADI VFS::write
+    file-len LOADI =
+    1 unframe!
+;

@@ -86,6 +86,8 @@ Wire keyboard Return to `UI::enter` and Esc to `UI::escape`. The ring is still t
 
 Cloister is a fantasy machine: one program at a time owns the 960×720 screen and its own menu bar. `./bin/cloister` opens a picker; `./bin/cloister apps/Quill.bin` boots that ROM directly. Esc in an app raises Continue / Restart / Quit. Halt (Quit) returns to the picker, or exits if the ROM was passed on the command line.
 
+**Illumos** (`apps/Illumos.lux`) is the CFF font editor: 16×16 glyph collection, magnified pixel editor, width rule, pangram. Open/Save through `SF::`. See `docs/CFF.md`.
+
 ## Layers
 
 | File | Role |

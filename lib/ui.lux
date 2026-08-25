@@ -2128,6 +2128,25 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     2 unframe!
 ;
 
+@mb-up-open ( mx my -- )
+    2 frame! ( 0:my 1:mx )
+    MB_HOVER LOADI dup -1 > [
+        MB_ACTIVE LOADI mn-at MN_FIRST + LOADI +
+        dup mi-at MI_KIND + LOADI MI_SEP = [
+            drop
+        ] [
+            mb-apply
+        ] ?:
+    ] [
+        drop
+        1 local@ 0 local@ mb-hit-title -1 > [
+        ] [
+            mb-close
+        ] ?:
+    ] ?:
+    2 unframe!
+;
+
 @mb-feed-open ( mpkt -- )
     1 frame! ( 0:mpkt )
     0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
@@ -2135,7 +2154,11 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     ] [
         0 local@ EVENT::mouse-type EVENT::MOUSE_MOVE = [
             0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y mb-move-open
-        ] ?
+        ] [
+            0 local@ EVENT::mouse-type EVENT::MOUSE_UP = [
+                0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y mb-up-open
+            ] ?
+        ] ?:
     ] ?:
     1 unframe!
 ;

@@ -2,12 +2,23 @@
 
 ## Cloister Font Format
 
+CFF is a proportional 1-bit font format, the same layout as Uxn UFX (`.uf1` / `.uf2` / `.uf3`).
 
-CFF is a proportional font format.
-The CFF file begins with 256 bytes corresponding to the width in pixels of each of the 256 glyphs in the spritesheet, followed by the pixel data in the .icn format for each character.
+The file begins with 256 bytes: the advance width in pixels of each of the 256 glyphs. Pixel data follows in the ICN format.
 
+ICN is a series of 8×8 tiles. Each tile is 64 bits (8 bytes), MSB = leftmost pixel of the row. Tiles inside a glyph are stored **column-major** (vertical strip, then the next column) so a narrow glyph can skip unused columns.
 
-The ICN defines the icon format, a series of bits equivalent to pixels in a 8x8 tile. The data for each tile is made up of 64 bits, or 8 bytes, in which each bit is a pixel. Since the ICN file is nothing but a series of 8x8 bitmaps without a header to indicate how large the image should be drawn, the size will be specified in the filename in in two decimal byte numbers, separated by a x. If a file name is lacking that information, the default is 24x24.
+Glyph cell size is taken from **file length**, not from the filename:
+
+| Length | Hex | Cell | Tiles / glyph |
+| ------ | --- | ---- | ------------- |
+| 2304 | `0x0900` | 8×8 | 1 |
+| 8448 | `0x2100` | 16×16 | 4 |
+| 18688 | `0x4900` | 24×24 | 9 |
+
+`resources/chicago12x12.cff` is 8448 bytes (16×16 storage). The `12x12` in the name is the visual cap height, not the tile grid.
+
+Edit CFF files with **Illumos** (`apps/Illumos.lux`): `./bin/cloister apps/Illumos.bin`.
 
 
 

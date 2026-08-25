@@ -3,6 +3,7 @@
 #include "machine.h"
 #include "compiler.h"
 #include "chicago.h"
+#include "cff.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -334,6 +335,81 @@ static void test_draw_small_scale_multiplier(void) {
 
     free_test_screen(sys);
     printf("  scale=1 multiplier: OK\n");
+}
+
+static void test_cff_tile_size(void) {
+    printf("Testing cff_tile_size...\n");
+    assert(cff_tile_size(CFF_LEN_UF1) == 8);
+    assert(cff_tile_size(CFF_LEN_UF2) == 16);
+    assert(cff_tile_size(CFF_LEN_UF3) == 24);
+    assert(cff_tile_size((int)chicago12x12_cff_len) == 16);
+    assert(cff_tile_size(0) == 0);
+    assert(cff_tile_size(100) == 0);
+    assert(cff_glyph_bytes(8) == 8);
+    assert(cff_glyph_bytes(16) == 32);
+    assert(cff_glyph_bytes(24) == 72);
+    assert(cff_file_len(16) == CFF_LEN_UF2);
+    printf("  cff_tile_size: OK\n");
+}
+
+static void test_draw_cff_cmd9(void) {
+    printf("Testing /sys/draw cmd 9 CFF glyph...\n");
+    System* sys = make_test_screen(64, 48);
+    sys->memory = (uint8_t*)calloc(1, (size_t)CFF_LEN_UF2);
+    sys->memory_size = (uint32_t)CFF_LEN_UF2;
+    assert(sys->memory != NULL);
+    memcpy(sys->memory, chicago12x12_cff, (size_t)CFF_LEN_UF2);
+
+    fill_screen_white(sys);
+    int32_t fd = vfs_open(sys, "/sys/draw", 0x02);
+    assert(fd >= 100);
+
+    uint8_t cmd[17];
+    memset(cmd, 0, sizeof(cmd));
+    cmd[0] = 9;
+    cmd[1] = 2; cmd[2] = 0;   /* x = 2 */
+    cmd[3] = 2; cmd[4] = 0;   /* y = 2 */
+    cmd[5] = 0x00; cmd[6] = 0x00; cmd[7] = 0x00; cmd[8] = 0x00; /* black */
+    cmd[9] = 1;               /* scale 1 */
+    cmd[10] = (uint8_t)'A';
+    /* font_ptr = 0 */
+    cmd[15] = (uint8_t)(CFF_LEN_UF2 & 0xFF);
+    cmd[16] = (uint8_t)((CFF_LEN_UF2 >> 8) & 0xFF);
+
+    assert(vfs_write(sys, fd, cmd, 17) == 17);
+    vfs_close(sys, fd);
+
+    int ink = 0;
+    for (int y = 2; y < 18; y++) {
+        for (int x = 2; x < 18; x++) {
+            if (pixel_is_ink(sys, x, y)) ink++;
+        }
+    }
+    assert(ink > 0);
+
+    free(sys->memory);
+    free_test_screen(sys);
+    printf("  cmd 9 Chicago A: OK\n");
+}
+
+static void test_draw_cff_uf1(void) {
+    printf("Testing CFF uf1 8x8 blit...\n");
+    System* sys = make_test_screen(32, 32);
+    sys->memory = (uint8_t*)calloc(1, (size_t)CFF_LEN_UF1);
+    sys->memory_size = (uint32_t)CFF_LEN_UF1;
+    assert(sys->memory != NULL);
+    sys->memory[0] = 8;           /* width of glyph 0 */
+    sys->memory[256] = 0x80;      /* pixel (0,0) on */
+
+    fill_screen_white(sys);
+    system_draw_cff(sys, sys->memory, CFF_LEN_UF1, 0, 4, 5, 0x000000, 1);
+    assert(pixel_is_ink(sys, 4, 5));
+    assert(!pixel_is_ink(sys, 5, 5));
+    assert(!pixel_is_ink(sys, 4, 6));
+
+    free(sys->memory);
+    free_test_screen(sys);
+    printf("  uf1 pixel: OK\n");
 }
 
 static void test_snarf_roundtrip(void) {
@@ -1074,6 +1150,44 @@ static void test_root_app_runs(void) {
     printf("  root app: OK\n");
 }
 
+static void test_illumos_starts(void) {
+    printf("Testing Illumos font editor boots...\n");
+    size_t slen = 0;
+    uint8_t* sprog = load_bin_file("apps/Illumos.bin", &slen);
+    if (!sprog) {
+        printf("  SKIP: apps/Illumos.bin missing\n");
+        return;
+    }
+    Machine* m = machine_create(sprog, (uint32_t)slen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
+    assert(m != NULL);
+    system_set_resolution(m->system, 960, 720);
+    if (!pump_ok(m, 80)) {
+        fprintf(stderr, "  Illumos died (halted=%d pc=0x%08X sp=%d)\n",
+                m->cpu->halted, m->cpu->pc, m->cpu->stack_ptr);
+        assert(0);
+    }
+    assert(!m->cpu->halted);
+    assert(m->cpu->stack_ptr < 32);
+
+    /* Mouse move/down used to underflow: frame! ate mpkt, then drop. */
+    system_push_mouse_event(m->system, 2 /* MOVE */, 80, 80, 0);
+    assert(pump_ok(m, 40));
+    system_push_mouse_event(m->system, 3 /* DOWN */, 80, 80, 1);
+    assert(pump_ok(m, 40));
+    system_push_mouse_event(m->system, 2 /* MOVE */, 90, 90, 1);
+    assert(pump_ok(m, 40));
+    system_push_mouse_event(m->system, 4 /* UP */, 90, 90, 1);
+    assert(pump_ok(m, 40));
+    system_push_kbd_event(m->system, 0 /* KEY_DOWN */, 27 /* Esc */, 0);
+    assert(pump_ok(m, 40));
+    assert(!m->cpu->halted);
+    assert(m->cpu->stack_ptr < 32);
+
+    machine_free(m);
+    free(sprog);
+    printf("  Illumos boot: OK\n");
+}
+
 int main() {
     test_host_file();
     test_dummy_file();
@@ -1087,6 +1201,9 @@ int main() {
     test_draw_string_vfs_scale18();
     test_draw_default_scale_from_font_size();
     test_draw_small_scale_multiplier();
+    test_cff_tile_size();
+    test_draw_cff_cmd9();
+    test_draw_cff_uf1();
     test_bind_mount_aliasing();
     test_chan_lifecycle();
     test_menu_unbound();
@@ -1099,6 +1216,7 @@ int main() {
     test_child_menu_export();
     test_two_child_apps_host();
     test_root_app_runs();
+    test_illumos_starts();
     printf("All VFS tests passed!\n");
     return 0;
 }

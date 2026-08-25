@@ -150,6 +150,21 @@ MODULE DRAW
     1 unframe!
 ;
 
+@cff-glyph ( fd x y ch color scale font-ptr nbytes -- )
+    ( Cmd 9: blit one CFF glyph from guest memory. scale 0/1 = 1x. )
+    8 frame! ( 0:nbytes 1:font-ptr 2:scale 3:color 4:ch 5:y 6:x 7:fd )
+    9 BUF store-byte
+    6 local@ BUF 1 + store-word-le
+    5 local@ BUF 3 + store-word-le
+    3 local@ BUF 5 + store-int-le
+    2 local@ BUF 9 + store-byte
+    4 local@ BUF 10 + store-byte
+    1 local@ BUF 11 + store-int-le
+    0 local@ BUF 15 + store-word-le
+    7 local@ BUF 17 VFS::write drop
+    8 unframe!
+;
+
 @draw-str ( fd x y ptr color scale -- )
     6 frame! ( 0:scale, 1:color, 2:ptr, 3:y, 4:x, 5:fd )
 

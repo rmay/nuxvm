@@ -1,6 +1,6 @@
 # NUX
 
-A simple stack-based virtual machine written in C.
+A simple stack-based virtual machine written in C, with two front-end languages: **Lux** (Forth-style, concatenative) and **Fluxio** (C-like, imperative).
 
 ## Features
 
@@ -40,6 +40,12 @@ make
 ```bash
 ./bin/luxc -target headless examples/modules/module_basic.lux
 ./bin/nux examples/modules/module_basic.bin
+```
+
+### Compile and run a Fluxio program
+```bash
+./bin/fluxioc -target headless -o examples/fib.bin examples/fib.fx
+./bin/nux examples/fib.bin
 ```
 
 ### Run tests
@@ -88,7 +94,9 @@ nuxvm/
 
 ## Documentation
 
-See [examples/README.md](../examples/README.md) for detailed examples and tutorials.
+- [using-lux.md](using-lux.md) / [lux_tutorial.md](lux_tutorial.md) — the Lux language and toolchain.
+- [using-fluxio.md](using-fluxio.md) / [fluxio_tutorial.md](fluxio_tutorial.md) — the Fluxio language and toolchain.
+- [examples/README.md](../examples/README.md) — detailed examples for both languages.
 
 ## License
 
