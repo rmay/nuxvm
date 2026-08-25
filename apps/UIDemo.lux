@@ -51,11 +51,12 @@ IMPORT SF
     last LOADI hidden-msg
 ;
 
-( Edit → Show hidden: toolkit already toggled the mark. Only sync the box. )
+( Edit → Show hidden: toolkit already toggled the mark. Sync the box. )
 @on-hidden-item ( val -- )
     dup last STOREI
     dup SF::hidden!
     T"Show hidden files" SWAP cb-set
+    T"Show hidden" last LOADI UI::item-set
     last LOADI hidden-msg
 ;
 

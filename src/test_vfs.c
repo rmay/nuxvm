@@ -430,7 +430,7 @@ static void test_bind_mount_aliasing(void) {
 }
 
 static void test_chan_lifecycle(void) {
-    printf("Testing channel lifecycle (Shell pattern)...\n");
+    printf("Testing channel lifecycle...\n");
     System* sys = system_create();
     assert(sys != NULL);
 
@@ -462,6 +462,34 @@ static void test_chan_lifecycle(void) {
     vfs_close(sys, cfd);
     system_free(sys);
     printf("  channel lifecycle: OK\n");
+}
+
+static void test_menu_unbound(void) {
+    printf("Testing /dev/menu unbound vs bound...\n");
+    System* sys = system_create();
+    assert(sys != NULL);
+
+    // Root/dev-mode apps must not get a dummy fd (that hid the Esc overlay).
+    assert(vfs_open(sys, "/dev/menu", 0) < 0);
+    assert(vfs_open(sys, "/sys/menu", 0) < 0);
+
+    int32_t cfd = vfs_open(sys, "/sys/chan/new", 0);
+    int32_t pfd = vfs_open(sys, "/sys/chan/peer", 0);
+    assert(cfd >= 100 && pfd >= 100);
+    assert(vfs_bind(sys, pfd, "/dev/menu") == 0);
+    vfs_close(sys, pfd);
+
+    int32_t mfd = vfs_open(sys, "/dev/menu", 0);
+    assert(mfd >= 100);
+    assert(vfs_write(sys, cfd, (const uint8_t*)"snap", 4) == 4);
+    char buf[8] = {0};
+    assert(vfs_read(sys, mfd, (uint8_t*)buf, sizeof(buf)) == 4);
+    assert(memcmp(buf, "snap", 4) == 0);
+
+    vfs_close(sys, mfd);
+    vfs_close(sys, cfd);
+    system_free(sys);
+    printf("  /dev/menu unbound: OK\n");
 }
 
 static void test_child_vm_ns(void) {
@@ -520,11 +548,24 @@ static void test_child_vm_ns(void) {
     assert(vfs_write(psys, cfd, (const uint8_t*)"pong", 4) == 4);
     assert(vfs_read(psys, parent_kbd, (uint8_t*)buf, sizeof(buf)) == 0); // real kbd queue: empty
 
+    // Status is 0 while the child has not run to HALT yet.
+    char stpath[64];
+    snprintf(stpath, sizeof(stpath), "/sys/vm/%d/status", id);
+    int32_t stfd = vfs_open(psys, stpath, 0);
+    assert(stfd >= 100);
+    uint8_t stbuf[4] = {0xFF, 0, 0, 0};
+    assert(vfs_read(psys, stfd, stbuf, 4) == 4);
+    assert(stbuf[0] == 0);
+
     // Parent tick must tick the child to completion (push 5, halt).
     assert(machine_tick(parent) == true); // parent still yielding
     assert(child->cpu->halted);
     assert(child->cpu->stack_ptr == 1);
     assert(child->cpu->stack[0] == 5);
+
+    assert(vfs_read(psys, stfd, stbuf, 4) == 4);
+    assert(stbuf[0] == 1);
+    vfs_close(psys, stfd);
 
     vfs_close(psys, parent_kbd);
     vfs_close(child->system, child_kbd);
@@ -535,6 +576,232 @@ static void test_child_vm_ns(void) {
     free(cprog);
     remove("test_child_tmp.bin");
     printf("  child VM + ns: OK\n");
+}
+
+static void test_mouse_chan_packet(void) {
+    printf("Testing 8-byte mouse packet over a bound channel...\n");
+    System* sys = system_create();
+    assert(sys != NULL);
+
+    int32_t cfd = vfs_open(sys, "/sys/chan/new", 0);
+    int32_t pfd = vfs_open(sys, "/sys/chan/peer", 0);
+    assert(cfd >= 100 && pfd >= 100);
+    assert(vfs_bind(sys, pfd, "/dev/mouse") == 0);
+    assert(vfs_close(sys, pfd) == 0);
+
+    int32_t mfd = vfs_open(sys, "/dev/mouse", 0);
+    assert(mfd >= 100);
+
+    // Type(1)=DOWN, Btn(1)=1, X(2 LE)=300, Y(2 LE)=400, pad(2).
+    uint8_t pkt[8] = { 3, 1, 0x2C, 0x01, 0x90, 0x01, 0, 0 };
+    assert(vfs_write(sys, cfd, pkt, 8) == 8);
+    uint8_t got[8] = {0};
+    assert(vfs_read(sys, mfd, got, 8) == 8);
+    assert(memcmp(got, pkt, 8) == 0);
+
+    vfs_close(sys, mfd);
+    vfs_close(sys, cfd);
+    system_free(sys);
+    printf("  mouse channel packet: OK\n");
+}
+
+static void test_child_fb_blit(void) {
+    printf("Testing child resolution inherit + /sys/vm/<id>/fb blit...\n");
+
+    size_t plen = 0;
+    uint8_t* pprog = compile_source("[ 1 ] [ YIELD ] |:", HEADLESS_BASE_ADDRESS, &plen, false);
+    assert(pprog != NULL);
+    Machine* parent = machine_create(pprog, (uint32_t)plen, HEADLESS_BASE_ADDRESS, 4 * 1024 * 1024, false);
+    assert(parent != NULL);
+    System* psys = parent->system;
+    system_set_resolution(psys, 64, 32);
+
+    size_t clen = 0;
+    uint8_t* cprog = compile_source("5", GRAPHICAL_BASE_ADDRESS, &clen, false);
+    assert(cprog != NULL);
+    FILE* f = fopen("test_child_tmp.bin", "wb");
+    assert(f != NULL);
+    fwrite(cprog, 1, clen, f);
+    fclose(f);
+
+    int32_t vmfd = vfs_open(psys, "/sys/vm/new", 0);
+    assert(vmfd >= 100);
+    const char* path = "test_child_tmp.bin";
+    assert(vfs_write(psys, vmfd, (const uint8_t*)path, (int)strlen(path)) == (int)strlen(path));
+
+    uint8_t idbuf[4] = {0};
+    assert(vfs_read(psys, vmfd, idbuf, 4) == 4);
+    int32_t id = (int32_t)(idbuf[0] | (idbuf[1] << 8) | (idbuf[2] << 16) | (idbuf[3] << 24));
+    assert(id >= 1 && id < SYS_MAX_CHILD_VMS);
+    Machine* child = psys->child_vms[id];
+    assert(child != NULL && child->system != NULL);
+    assert(child->system->screen_width == 64);
+    assert(child->system->screen_height == 32);
+    assert(child->system->screen_pixels != NULL);
+    assert(psys->back_pixels != NULL);
+
+    // Child /dev/draw is the real draw device (not a Shell channel).
+    int32_t cdfd = vfs_open(child->system, "/dev/draw", 0);
+    assert(cdfd >= 100);
+    uint8_t fill[13] = {
+        0,
+        2, 0, 3, 0, 4, 0, 5, 0,
+        0xCC, 0xBB, 0xAA, 0x00,
+    };
+    uint8_t endf[1] = { 7 };
+    assert(vfs_write(child->system, cdfd, fill, 13) == 13);
+    assert(vfs_write(child->system, cdfd, endf, 1) == 1);
+    vfs_close(child->system, cdfd);
+
+    char fbpath[64];
+    snprintf(fbpath, sizeof(fbpath), "/sys/vm/%d/fb", id);
+    int32_t fbfd = vfs_open(psys, fbpath, 0);
+    assert(fbfd >= 100);
+    uint8_t one = 0;
+    assert(vfs_read(psys, fbfd, &one, 1) == 1);
+    assert(one == 1);
+
+    uint8_t* px = psys->back_pixels + ((size_t)(3 * 64 + 2) * 4);
+    assert(px[0] == 0xFF);
+    assert(px[1] == 0xAA);
+    assert(px[2] == 0xBB);
+    assert(px[3] == 0xCC);
+    uint8_t* miss = psys->back_pixels; // (0,0) was not painted
+    assert(miss[1] == 0 && miss[2] == 0 && miss[3] == 0);
+
+    vfs_close(psys, fbfd);
+    vfs_close(psys, vmfd);
+    machine_free(parent);
+    free(pprog);
+    free(cprog);
+    remove("test_child_tmp.bin");
+    printf("  child fb blit: OK\n");
+}
+
+static Machine* spawn_test_child(Machine* parent, int32_t* out_id) {
+    size_t clen = 0;
+    uint8_t* cprog = compile_source("[ 1 ] [ YIELD ] |:", GRAPHICAL_BASE_ADDRESS, &clen, false);
+    assert(cprog != NULL);
+    FILE* f = fopen("test_child_tmp.bin", "wb");
+    assert(f != NULL);
+    fwrite(cprog, 1, clen, f);
+    fclose(f);
+    free(cprog);
+
+    int32_t vmfd = vfs_open(parent->system, "/sys/vm/new", 0);
+    assert(vmfd >= 100);
+    const char* path = "test_child_tmp.bin";
+    assert(vfs_write(parent->system, vmfd, (const uint8_t*)path, (int)strlen(path)) == (int)strlen(path));
+    uint8_t idbuf[4] = {0};
+    assert(vfs_read(parent->system, vmfd, idbuf, 4) == 4);
+    int32_t id = (int32_t)(idbuf[0] | (idbuf[1] << 8) | (idbuf[2] << 16) | (idbuf[3] << 24));
+    assert(id >= 1 && id < SYS_MAX_CHILD_VMS);
+    vfs_close(parent->system, vmfd);
+    remove("test_child_tmp.bin");
+    *out_id = id;
+    return parent->system->child_vms[id];
+}
+
+static void test_offset_fb_blit(void) {
+    printf("Testing /sys/vm/<id>/fb offset blit...\n");
+
+    size_t plen = 0;
+    uint8_t* pprog = compile_source("[ 1 ] [ YIELD ] |:", HEADLESS_BASE_ADDRESS, &plen, false);
+    assert(pprog != NULL);
+    Machine* parent = machine_create(pprog, (uint32_t)plen, HEADLESS_BASE_ADDRESS, 4 * 1024 * 1024, false);
+    assert(parent != NULL);
+    System* psys = parent->system;
+    system_set_resolution(psys, 64, 32);
+
+    int32_t id = 0;
+    Machine* child = spawn_test_child(parent, &id);
+    assert(child != NULL && child->system != NULL);
+
+    int32_t cdfd = vfs_open(child->system, "/dev/draw", 0);
+    assert(cdfd >= 100);
+    uint8_t fill[13] = {
+        0,
+        0, 0, 0, 0, 4, 0, 4, 0,
+        0x11, 0x22, 0x33, 0x00,
+    };
+    uint8_t endf[1] = { 7 };
+    assert(vfs_write(child->system, cdfd, fill, 13) == 13);
+    assert(vfs_write(child->system, cdfd, endf, 1) == 1);
+    vfs_close(child->system, cdfd);
+
+    char fbpath[64];
+    snprintf(fbpath, sizeof(fbpath), "/sys/vm/%d/fb", id);
+    int32_t fbfd = vfs_open(psys, fbpath, 0);
+    assert(fbfd >= 100);
+    uint8_t dest[8] = { 8, 0, 4, 0, 4, 0, 4, 0 }; // dx=8 dy=4 dw=4 dh=4
+    assert(vfs_write(psys, fbfd, dest, 8) == 8);
+    uint8_t one = 0;
+    assert(vfs_read(psys, fbfd, &one, 1) == 1);
+    assert(one == 1);
+
+    uint8_t* px = psys->back_pixels + ((size_t)(4 * 64 + 8) * 4);
+    assert(px[1] == 0x33 && px[2] == 0x22 && px[3] == 0x11);
+    uint8_t* miss = psys->back_pixels;
+    assert(miss[1] == 0 && miss[2] == 0 && miss[3] == 0);
+
+    vfs_close(psys, fbfd);
+    machine_free(parent);
+    free(pprog);
+    printf("  offset fb blit: OK\n");
+}
+
+static void test_child_geom_halt_drawsize(void) {
+    printf("Testing /sys/vm/<id>/geom, halt, /dev/draw size...\n");
+
+    size_t plen = 0;
+    uint8_t* pprog = compile_source("[ 1 ] [ YIELD ] |:", HEADLESS_BASE_ADDRESS, &plen, false);
+    assert(pprog != NULL);
+    Machine* parent = machine_create(pprog, (uint32_t)plen, HEADLESS_BASE_ADDRESS, 4 * 1024 * 1024, false);
+    assert(parent != NULL);
+    System* psys = parent->system;
+    system_set_resolution(psys, 64, 32);
+
+    int32_t id = 0;
+    Machine* child = spawn_test_child(parent, &id);
+    assert(child != NULL && child->system != NULL);
+    assert(child->system->screen_width == 64);
+    assert(child->system->screen_height == 32);
+
+    char gpath[64];
+    snprintf(gpath, sizeof(gpath), "/sys/vm/%d/geom", id);
+    int32_t gfd = vfs_open(psys, gpath, 0);
+    assert(gfd >= 100);
+    uint8_t gw[8] = { 32, 0, 16, 0, 0, 0, 0, 0 };
+    assert(vfs_write(psys, gfd, gw, 8) == 8);
+    assert(child->system->screen_width == 32);
+    assert(child->system->screen_height == 16);
+    uint8_t gr[8] = {0};
+    assert(vfs_read(psys, gfd, gr, 8) == 8);
+    assert(gr[0] == 32 && gr[1] == 0 && gr[2] == 16 && gr[3] == 0);
+    vfs_close(psys, gfd);
+
+    int32_t cdfd = vfs_open(child->system, "/dev/draw", 0);
+    assert(cdfd >= 100);
+    uint8_t sz[4] = {0};
+    assert(vfs_read(child->system, cdfd, sz, 4) == 4);
+    assert(sz[0] == 32 && sz[1] == 0 && sz[2] == 16 && sz[3] == 0);
+    vfs_close(child->system, cdfd);
+
+    char stpath[64];
+    snprintf(stpath, sizeof(stpath), "/sys/vm/%d/status", id);
+    int32_t stfd = vfs_open(psys, stpath, 0);
+    assert(stfd >= 100);
+    uint8_t one = 1;
+    assert(vfs_write(psys, stfd, &one, 1) == 1);
+    assert(child->cpu->halted);
+    uint8_t stbuf[4] = {0};
+    assert(vfs_read(psys, stfd, stbuf, 4) == 4);
+    assert(stbuf[0] == 1);
+    vfs_close(psys, stfd);
+
+    machine_free(parent);
+    free(pprog);
+    printf("  geom/halt/draw size: OK\n");
 }
 
 static void test_dir_listing(void) {
@@ -572,6 +839,241 @@ static void test_dir_listing(void) {
     printf("  dir listing: OK\n");
 }
 
+static int32_t read_id_le(System* sys, int32_t fd) {
+    uint8_t idbuf[4] = {0};
+    assert(vfs_read(sys, fd, idbuf, 4) == 4);
+    return (int32_t)(idbuf[0] | (idbuf[1] << 8) | (idbuf[2] << 16) | (idbuf[3] << 24));
+}
+
+static void test_child_menu_export(void) {
+    printf("Testing child UI::export snapshot on /dev/menu...\n");
+
+    const char* src =
+        "INCLUDE \"lib/app.lux\"\n"
+        "MODULE T\n"
+        "IMPORT APP\n"
+        "IMPORT UI\n"
+        "@start\n"
+        "    T\"T\" APP::init\n"
+        "    UI::new\n"
+        "    320 UI::menubar\n"
+        "    T\"File\" UI::menu\n"
+        "    T\"Open File\" [ drop ] UI::item\n"
+        "    T\"Quit\" [ drop HALT ] UI::item\n"
+        "    T\"Edit\" UI::menu\n"
+        "    T\"Show hidden\" [ drop ] UI::check-item\n"
+        "    [ ] APP::on-frame!\n"
+        "    APP::loop\n"
+        ";\n"
+        "T::start\n";
+
+    size_t clen = 0;
+    uint8_t* cprog = compile_source(src, GRAPHICAL_BASE_ADDRESS, &clen, false);
+    assert(cprog != NULL);
+    FILE* f = fopen("test_menu_child.bin", "wb");
+    assert(f != NULL);
+    fwrite(cprog, 1, clen, f);
+    fclose(f);
+    free(cprog);
+
+    size_t plen = 0;
+    uint8_t* pprog = compile_source("[ 1 ] [ YIELD ] |:", HEADLESS_BASE_ADDRESS, &plen, false);
+    assert(pprog != NULL);
+    Machine* parent = machine_create(pprog, (uint32_t)plen, HEADLESS_BASE_ADDRESS, 32 * 1024 * 1024, false);
+    assert(parent != NULL);
+    System* psys = parent->system;
+    system_set_resolution(psys, 960, 720);
+
+    int32_t vmfd = vfs_open(psys, "/sys/vm/new", 0);
+    assert(vmfd >= 100);
+    const char* path = "test_menu_child.bin";
+    assert(vfs_write(psys, vmfd, (const uint8_t*)path, (int)strlen(path)) == (int)strlen(path));
+    int32_t id = read_id_le(psys, vmfd);
+    vfs_close(psys, vmfd);
+    assert(psys->child_vms[id] != NULL);
+
+    int32_t mpar = vfs_open(psys, "/sys/chan/new", 0);
+    int32_t mpeer = vfs_open(psys, "/sys/chan/peer", 0);
+    int32_t kpar = vfs_open(psys, "/sys/chan/new", 0);
+    int32_t kpeer = vfs_open(psys, "/sys/chan/peer", 0);
+    int32_t npar = vfs_open(psys, "/sys/chan/new", 0);
+    int32_t npeer = vfs_open(psys, "/sys/chan/peer", 0);
+    char bind[64];
+    snprintf(bind, sizeof(bind), "/sys/vm/%d/ns/dev/mouse", id);
+    assert(vfs_bind(psys, mpeer, bind) == 0);
+    snprintf(bind, sizeof(bind), "/sys/vm/%d/ns/dev/kbd", id);
+    assert(vfs_bind(psys, kpeer, bind) == 0);
+    snprintf(bind, sizeof(bind), "/sys/vm/%d/ns/dev/menu", id);
+    assert(vfs_bind(psys, npeer, bind) == 0);
+    vfs_close(psys, mpeer);
+    vfs_close(psys, kpeer);
+    vfs_close(psys, npeer);
+
+    uint8_t snap[1024];
+    int n = 0;
+    for (int i = 0; i < 16; i++) {
+        machine_tick(parent);
+        n = vfs_read(psys, npar, snap, (int)sizeof(snap));
+        if (n > 2 && snap[0] == 1 && snap[1] >= 2) break;
+    }
+
+    fprintf(stderr, "  snapshot n=%d", n);
+    if (n > 0) {
+        fprintf(stderr, " bytes:");
+        for (int i = 0; i < n && i < 64; i++) fprintf(stderr, " %02x", snap[i]);
+    }
+    fprintf(stderr, "\n");
+    if (n > 2) {
+        fprintf(stderr, "  type=%u menus=%u\n", snap[0], snap[1]);
+    }
+
+    assert(n > 2);
+    assert(snap[0] == 1);
+    assert(snap[1] >= 2);
+
+    int found_edit = 0, found_open = 0, found_hidden = 0;
+    for (int i = 0; i < n - 4; i++) {
+        if (snap[i] == 4 && memcmp(snap + i + 1, "Edit", 4) == 0) found_edit = 1;
+        if (i + 10 <= n && snap[i] == 9 && memcmp(snap + i + 1, "Open File", 9) == 0) found_open = 1;
+        if (i + 12 <= n && snap[i] == 11 && memcmp(snap + i + 1, "Show hidden", 11) == 0) found_hidden = 1;
+    }
+    assert(found_edit);
+    assert(found_open);
+    assert(found_hidden);
+
+    vfs_close(psys, mpar);
+    vfs_close(psys, kpar);
+    vfs_close(psys, npar);
+    machine_free(parent);
+    free(pprog);
+    remove("test_menu_child.bin");
+    printf("  child menu export: OK\n");
+}
+
+static uint8_t* load_bin_file(const char* path, size_t* out_len) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { fclose(f); return NULL; }
+    uint8_t* buf = (uint8_t*)malloc((size_t)sz);
+    if (!buf) { fclose(f); return NULL; }
+    if (fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        free(buf);
+        fclose(f);
+        return NULL;
+    }
+    fclose(f);
+    *out_len = (size_t)sz;
+    return buf;
+}
+
+static bool pump_ok(Machine* m, int n) {
+    for (int i = 0; i < n; i++) {
+        if (!m || !m->cpu) return false;
+        if (m->cpu->halted) return false;
+        if (!machine_tick(m)) return false;
+        if (!m->cpu->running && !vm_yielded(m->cpu) && !m->system->yielded && !m->cpu->halted) {
+            return false;
+        }
+    }
+    return m && m->cpu && !m->cpu->halted;
+}
+
+static int spawn_child_app(Machine* parent, const char* bin_path) {
+    System* psys = parent->system;
+    int32_t mpar = vfs_open(psys, "/sys/chan/new", 0);
+    int32_t mpeer = vfs_open(psys, "/sys/chan/peer", 0);
+    int32_t kpar = vfs_open(psys, "/sys/chan/new", 0);
+    int32_t kpeer = vfs_open(psys, "/sys/chan/peer", 0);
+    int32_t npar = vfs_open(psys, "/sys/chan/new", 0);
+    int32_t npeer = vfs_open(psys, "/sys/chan/peer", 0);
+    int32_t vmfd = vfs_open(psys, "/sys/vm/new", 0);
+    if (vmfd < 100) return -1;
+    if (vfs_write(psys, vmfd, (const uint8_t*)bin_path, (int)strlen(bin_path)) <= 0) return -1;
+    int32_t id = read_id_le(psys, vmfd);
+    vfs_close(psys, vmfd);
+    char bind[64];
+    snprintf(bind, sizeof(bind), "/sys/vm/%d/ns/dev/mouse", id);
+    assert(vfs_bind(psys, mpeer, bind) == 0);
+    snprintf(bind, sizeof(bind), "/sys/vm/%d/ns/dev/kbd", id);
+    assert(vfs_bind(psys, kpeer, bind) == 0);
+    snprintf(bind, sizeof(bind), "/sys/vm/%d/ns/dev/menu", id);
+    assert(vfs_bind(psys, npeer, bind) == 0);
+    vfs_close(psys, mpeer);
+    vfs_close(psys, kpeer);
+    vfs_close(psys, npeer);
+    (void)mpar; (void)kpar; (void)npar;
+    return id;
+}
+
+static void test_two_child_apps_host(void) {
+    printf("Testing two child apps spawned via /sys/vm/new...\n");
+    size_t plen = 0;
+    uint8_t* pprog = compile_source("[ 1 ] [ YIELD ] |:", HEADLESS_BASE_ADDRESS, &plen, false);
+    assert(pprog != NULL);
+    Machine* parent = machine_create(pprog, (uint32_t)plen, HEADLESS_BASE_ADDRESS, 32 * 1024 * 1024, false);
+    assert(parent != NULL);
+    system_set_resolution(parent->system, 960, 720);
+
+    int id1 = spawn_child_app(parent, "apps/Hello.bin");
+    int id2 = spawn_child_app(parent, "apps/UIDemo.bin");
+    assert(id1 >= 1 && id2 >= 1 && id1 != id2);
+    assert(parent->system->child_vms[id1] != NULL);
+    assert(parent->system->child_vms[id2] != NULL);
+
+    for (int i = 0; i < 24; i++) {
+        assert(machine_tick(parent) == true);
+        assert(!parent->cpu->halted);
+        assert(parent->system->child_vms[id1]->cpu != NULL);
+        assert(!parent->system->child_vms[id1]->cpu->halted || parent->system->child_vms[id1]->cpu->running);
+    }
+
+    char fb1[64], fb2[64];
+    snprintf(fb1, sizeof(fb1), "/sys/vm/%d/fb", id1);
+    snprintf(fb2, sizeof(fb2), "/sys/vm/%d/fb", id2);
+    int32_t f1 = vfs_open(parent->system, fb1, 0);
+    int32_t f2 = vfs_open(parent->system, fb2, 0);
+    assert(f1 >= 100 && f2 >= 100);
+    uint8_t dest[8] = { 20, 0, 40, 0, 100, 0, 80, 0 };
+    assert(vfs_write(parent->system, f1, dest, 8) == 8);
+    uint8_t one = 0;
+    assert(vfs_read(parent->system, f1, &one, 1) == 1);
+    dest[0] = 140; dest[2] = 40;
+    assert(vfs_write(parent->system, f2, dest, 8) == 8);
+    assert(vfs_read(parent->system, f2, &one, 1) == 1);
+
+    vfs_close(parent->system, f1);
+    vfs_close(parent->system, f2);
+    machine_free(parent);
+    free(pprog);
+    printf("  two child apps host: OK\n");
+}
+
+static void test_root_app_runs(void) {
+    printf("Testing a root app on the graphical machine...\n");
+    size_t slen = 0;
+    uint8_t* sprog = load_bin_file("apps/Hello.bin", &slen);
+    if (!sprog) {
+        printf("  SKIP: apps/Hello.bin missing\n");
+        return;
+    }
+    Machine* m = machine_create(sprog, (uint32_t)slen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
+    assert(m != NULL);
+    system_set_resolution(m->system, 960, 720);
+    if (!pump_ok(m, 80)) {
+        fprintf(stderr, "  Hello died (halted=%d pc=0x%08X sp=%d)\n",
+                m->cpu->halted, m->cpu->pc, m->cpu->stack_ptr);
+        assert(0);
+    }
+    assert(!m->cpu->halted);
+    assert(m->cpu->stack_ptr < 16);
+    machine_free(m);
+    free(sprog);
+    printf("  root app: OK\n");
+}
+
 int main() {
     test_host_file();
     test_dummy_file();
@@ -587,8 +1089,16 @@ int main() {
     test_draw_small_scale_multiplier();
     test_bind_mount_aliasing();
     test_chan_lifecycle();
+    test_menu_unbound();
     test_child_vm_ns();
+    test_mouse_chan_packet();
+    test_child_fb_blit();
+    test_offset_fb_blit();
+    test_child_geom_halt_drawsize();
     test_dir_listing();
+    test_child_menu_export();
+    test_two_child_apps_host();
+    test_root_app_runs();
     printf("All VFS tests passed!\n");
     return 0;
 }

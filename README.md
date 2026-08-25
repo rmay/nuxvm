@@ -120,8 +120,9 @@ make test
 # Compile a LUX source file to bytecode
 ./bin/luxc program.lux
 
-# Run the compiled bytecode in the graphical emulator
-./bin/cloister program.bin
+# Graphical fantasy machine (picker, or a ROM)
+./bin/cloister
+./bin/cloister apps/Quill.bin
 
 # Run the compiled bytecode in the console runner
 ./bin/nux program.bin
@@ -792,9 +793,7 @@ Contributions welcome! Areas for improvement:
 
 # Cloister
 
-Cloister is the tiny OS running on top of Nux. Cloister is my attempt at a tiny Plan9 running on a virtual machine using Actors.
-
-It's very much a work-in-progress.
+Cloister is the graphical host for NUX — a Varvara-shaped fantasy machine, not a multi-app OS. One Lux program owns the screen, `/dev/draw`, `/dev/mouse`, and `/dev/kbd`. Run `./bin/cloister` to pick a ROM from `apps/`, or pass a `.bin` / `.lux` path. Esc is Continue / Restart / Quit inside the app.
 
 ---
 

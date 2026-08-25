@@ -75,6 +75,23 @@ static int32_t system_read(DeviceBus* bus, uint32_t address, bool* success) {
     if (address == CONTROLLER_PORT + 4) { *success = true; return 0; }
     if (address == CONTROLLER_PORT + 8) { *success = true; return 0; }
 
+    // TIME::unix@ / date@ / time@ / milli@ at DATETIME_PORT+4/8/12/16.
+    if (address == DATETIME_PORT || address == DATETIME_PORT + 4 ||
+        address == DATETIME_PORT + 8 || address == DATETIME_PORT + 12 ||
+        address == DATETIME_PORT + 16) {
+        time_t now = time(NULL);
+        struct tm tm;
+        localtime_r(&now, &tm);
+        *success = true;
+        if (address == DATETIME_PORT || address == DATETIME_PORT + 4)
+            return (int32_t)now;
+        if (address == DATETIME_PORT + 8)
+            return ((tm.tm_year + 1900) << 16) | ((tm.tm_mon + 1) << 8) | tm.tm_mday;
+        if (address == DATETIME_PORT + 12)
+            return (tm.tm_hour << 16) | (tm.tm_min << 8) | tm.tm_sec;
+        return 0; // milli: not tracked
+    }
+
     // Fallback: return mirrored memory for other device-region addresses.
     if (address >= DEVICE_MEMORY_OFFSET && address + 4 <= sys->memory_size) {
         *success = true;

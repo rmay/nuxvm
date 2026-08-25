@@ -939,6 +939,143 @@ static void test_regression_quot_stack_isolation(void) {
     printf("  quot-stack isolation: OK\n");
 }
 
+static void test_regression_strip_bin_stack(void) {
+    printf("Testing regression: strip-bin must consume its pointer...\n");
+    const char* src =
+        "INCLUDE \"lib/str.lux\"\n"
+        "MODULE T\n"
+        "IMPORT STR\n"
+        "@is-bin? ( ptr -- f )\n"
+        "    dup STR::strlen 4 < [ drop 0 ] [\n"
+        "        dup STR::strlen + 4 -\n"
+        "        T\".bin\" STR::streq\n"
+        "    ] ?:\n"
+        ";\n"
+        "@strip-bin ( ptr -- )\n"
+        "    1 frame!\n"
+        "    0 local@ is-bin? [\n"
+        "        0 local@ dup STR::strlen 4 - + 0 SWAP store-byte\n"
+        "    ] ?\n"
+        "    1 unframe!\n"
+        ";\n"
+        "@start\n"
+        "    T\"UIDemo.bin\" 0x300000 STR::strcpy\n"
+        "    99 7 0x300000 strip-bin\n"
+        ";\n"
+        "T::start\n";
+    size_t len;
+    uint8_t* bc = must_compile(src, &len);
+    VM* vm = vm_create(bc, (uint32_t)len, HEADLESS_BASE_ADDRESS, 32 * 1024 * 1024, false);
+    assert(vm != NULL);
+    vm_run(vm);
+    assert(vm->halted);
+    int32_t v;
+    assert(vm_pop(vm, &v) && v == 7);
+    assert(vm_pop(vm, &v) && v == 99);
+    check_stack_count(vm, 0);
+    assert(memcmp(vm->memory + 0x300000, "UIDemo", 7) == 0);
+    vm_free(vm);
+    free(bc);
+    printf("  strip-bin stack: OK\n");
+}
+
+static void test_regression_inj_drop_w_end_local(void) {
+    printf("Testing regression: inj-drop-w must not treat end as a pixel width...\n");
+    /* Same layout as Shell: IT_NAME words, LAUNCH_BUF at index 38.
+       ROT MAX SWAP on [best end i] replaces end with a string width, then
+       the scan LOADIs "apps/..." as a pointer (fault at 0x61707070). */
+    const char* good =
+        "INCLUDE \"lib/str.lux\"\n"
+        "MODULE T\n"
+        "IMPORT STR\n"
+        "@IT_NAME  0x20000 ;\n"
+        "@IN_FIRST 0x20100 ;\n"
+        "@IN_COUNT 0x20120 ;\n"
+        "@LAUNCH   0x20098 ;\n"
+        "@str-w ( ptr -- n )\n"
+        "    0 SWAP 2 frame!\n"
+        "    [ 0 local@ load-byte 0 > ] [\n"
+        "        1 local@ 1 + 1 local!\n"
+        "        0 local@ 1 + 0 local!\n"
+        "    ] |:\n"
+        "    1 local@\n"
+        "    2 unframe!\n"
+        ";\n"
+        "@inj-drop-w ( mi -- w )\n"
+        "    0 0 0 4 frame! ( 0:end 1:i 2:best 3:mi )\n"
+        "    120 2 local!\n"
+        "    3 local@ 4 * IN_FIRST + LOADI 1 local!\n"
+        "    1 local@ 3 local@ 4 * IN_COUNT + LOADI + 0 local!\n"
+        "    [ 1 local@ 0 local@ < ] [\n"
+        "        1 local@ 4 * IT_NAME + LOADI str-w 44 +\n"
+        "        2 local@ MAX 2 local!\n"
+        "        1 local@ 1 + 1 local!\n"
+        "    ] |:\n"
+        "    2 local@\n"
+        "    4 unframe!\n"
+        ";\n"
+        "@start\n"
+        "    T\"Show hidden\" 0 4 * IT_NAME + STOREI\n"
+        "    T\"-\"           1 4 * IT_NAME + STOREI\n"
+        "    T\"Align Left\"  2 4 * IT_NAME + STOREI\n"
+        "    T\"apps/UIDemo.bin\" LAUNCH STR::strcpy\n"
+        "    0 0 4 * IN_FIRST + STOREI\n"
+        "    3 0 4 * IN_COUNT + STOREI\n"
+        "    0 inj-drop-w\n"
+        ";\n"
+        "T::start\n";
+    size_t len;
+    uint8_t* bc = must_compile(good, &len);
+    VM* vm = run_and_capture(bc, len, false);
+    assert(vm->halted);
+    int32_t w;
+    assert(vm_pop(vm, &w) && w == 120);
+    check_stack_count(vm, 0);
+    vm_free(vm);
+    free(bc);
+
+    const char* bad =
+        "INCLUDE \"lib/str.lux\"\n"
+        "MODULE T\n"
+        "IMPORT STR\n"
+        "@IT_NAME  0x20000 ;\n"
+        "@LAUNCH   0x20098 ;\n"
+        "@str-w ( ptr -- n )\n"
+        "    0 SWAP 2 frame!\n"
+        "    [ 0 local@ load-byte 0 > ] [\n"
+        "        1 local@ 1 + 1 local!\n"
+        "        0 local@ 1 + 0 local!\n"
+        "    ] |:\n"
+        "    1 local@\n"
+        "    2 unframe!\n"
+        ";\n"
+        "@inj-drop-w ( first count -- w )\n"
+        "    120 ROT ROT\n"
+        "    OVER + SWAP\n"
+        "    [ dup 2 PICK < ] [\n"
+        "        dup 4 * IT_NAME + LOADI str-w 44 +\n"
+        "        ROT MAX SWAP\n"
+        "        1 +\n"
+        "    ] |:\n"
+        "    drop drop\n"
+        ";\n"
+        "@start\n"
+        "    T\"Show hidden\" 0 4 * IT_NAME + STOREI\n"
+        "    T\"-\"           1 4 * IT_NAME + STOREI\n"
+        "    T\"Align Left\"  2 4 * IT_NAME + STOREI\n"
+        "    T\"apps/UIDemo.bin\" LAUNCH STR::strcpy\n"
+        "    0 3 inj-drop-w\n"
+        ";\n"
+        "T::start\n";
+    bc = must_compile(bad, &len);
+    vm = run_and_capture(bc, len, false);
+    assert(!vm->halted);
+    assert(!vm->running);
+    vm_free(vm);
+    free(bc);
+    printf("  inj-drop-w end local: OK\n");
+}
+
 static void test_regression_menu_includes(void) {
     printf("Testing regression: app+ui+menu includes (Quill pattern)...\n");
     const char* src =
@@ -951,7 +1088,8 @@ static void test_regression_menu_includes(void) {
         "UI::new\n"
         "320 UI::menubar\n"
         "T\"File\" UI::menu\n"
-        "T\"New\" 0 UI::item\n";
+        "T\"New\" 0 UI::item\n"
+        "320 UI::ensure-file-quit\n";
     size_t len;
     uint8_t* bc = must_compile(src, &len);
     free(bc);
@@ -1054,6 +1192,69 @@ static void test_named_locals_no_tail_skip_unframe(void) {
     printf("  named locals tail-unframe: OK\n");
 }
 
+static void test_regression_while_counter_under_read(void) {
+    printf("Testing regression: |: retry count must not sit under a 0-read...\n");
+    /* Shell drain-one used to `drop 0` on empty read, leaving the retry
+       count underneath. One window open then leaked that count every frame
+       until the VM stack overflowed. */
+    const char* bad =
+        "@drain ( -- )\n"
+        "    8\n"
+        "    [ dup 0 > ]\n"
+        "    [\n"
+        "        0\n"
+        "        dup 0 > [ drop 1 - ] [ drop 0 ] ?:\n"
+        "    ] |:\n"
+        "    drop\n"
+        ";\n"
+        "drain drain drain HALT\n";
+    size_t len;
+    uint8_t* bc = must_compile(bad, &len);
+    VM* vm = run_and_capture(bc, len, false);
+    assert(vm->halted);
+    /* Three leftover 8s from the buggy empty-read branch. */
+    assert(vm->stack_ptr == 3);
+    vm_free(vm);
+    free(bc);
+
+    const char* good =
+        "@drain ( -- )\n"
+        "    8\n"
+        "    [ dup 0 > ]\n"
+        "    [\n"
+        "        0\n"
+        "        dup 0 > [ drop 1 - ] [ drop drop 0 ] ?:\n"
+        "    ] |:\n"
+        "    drop\n"
+        ";\n"
+        "99 drain drain drain HALT\n";
+    bc = must_compile(good, &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm->halted);
+    int32_t v;
+    assert(vm_pop(vm, &v) && v == 99);
+    check_stack_count(vm, 0);
+    vm_free(vm);
+    free(bc);
+    printf("  while-counter-under-read: OK\n");
+}
+
+static void test_regression_question_takes_one_quot(void) {
+    printf("Testing regression: skip-if uses one quotation (8 >= [ body ] ?)...\n");
+    /* Shell parse-snap used `8 < [ ] [ body ] ?` which `?` cannot pair;
+       the compare result leaked every frame once a window was open. */
+    size_t len;
+    uint8_t* bc = must_compile("2 8 >= [ 99 ] ? 7 HALT", &len);
+    VM* vm = run_and_capture(bc, len, false);
+    assert(vm->halted);
+    int32_t v;
+    assert(vm_pop(vm, &v) && v == 7);
+    check_stack_count(vm, 0);
+    vm_free(vm);
+    free(bc);
+    printf("  question-one-quot: OK\n");
+}
+
 static void test_fields_directive(void) {
     printf("Testing FIELDS directive...\n");
     size_t len;
@@ -1154,11 +1355,15 @@ int main(void) {
     test_regression_nested_trouble();
     test_regression_loop_in_quotation();
     test_regression_quot_stack_isolation();
+    test_regression_inj_drop_w_end_local();
+    test_regression_strip_bin_stack();
     test_regression_menu_includes();
     test_deep_stack();
     test_empty_definition();
     test_named_locals();
     test_named_locals_no_tail_skip_unframe();
+    test_regression_while_counter_under_read();
+    test_regression_question_takes_one_quot();
     test_fields_directive();
     test_yield_and_explicit_halt();
 

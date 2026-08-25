@@ -39,6 +39,7 @@ MODULE VFS
 @PATH_DRAW      T"/sys/draw" ;
 @PATH_MOUSE     T"/sys/mouse" ;
 @PATH_KBD       T"/sys/kbd" ;
+@PATH_MENU      T"/dev/menu" ;
 
 ( Helper: Execute an SCI command )
 @EXEC ( cmd arg1 arg2 -- result )

@@ -594,22 +594,154 @@ typedef struct {
     int32_t vm_id;
     char kind[16];
     int32_t last_created_id;
+    int32_t blit_dx, blit_dy, blit_dw, blit_dh;
+    int blit_set;
 } VmFileData;
+
+static Machine* vm_child(VmFileData* d) {
+    if (!d || !d->sys) return NULL;
+    if (d->vm_id < 0 || d->vm_id >= SYS_MAX_CHILD_VMS) return NULL;
+    return d->sys->child_vms[d->vm_id];
+}
+
+// Copy the child's presented framebuffer onto the parent's back buffer
+// (the buffer Shell is composing this frame). Used by /sys/vm/<id>/fb.
+// Optional dest rect from a prior 8-byte write: dx dy dw dh (LE i16).
+static int vm_blit_fb(VmFileData* d) {
+    Machine* ch = vm_child(d);
+    if (!ch || !ch->system) return 0;
+
+    System* parent = d->sys;
+    System* child = ch->system;
+    uint8_t* src = child->screen_pixels;
+    uint8_t* dst = parent->back_pixels ? parent->back_pixels : parent->screen_pixels;
+    if (!src || !dst) return 0;
+
+    int32_t pw = parent->screen_width > 0 ? parent->screen_width : 960;
+    int32_t ph = parent->screen_height > 0 ? parent->screen_height : 720;
+    int32_t cw = child->screen_width > 0 ? child->screen_width : 960;
+    int32_t chh = child->screen_height > 0 ? child->screen_height : 720;
+
+    int32_t dx = 0, dy = 0, dw = pw, dh = ph;
+    if (d->blit_set) {
+        dx = d->blit_dx;
+        dy = d->blit_dy;
+        dw = d->blit_dw;
+        dh = d->blit_dh;
+    }
+    int32_t sx = 0, sy = 0;
+    if (dx < 0) { sx = -dx; dw += dx; dx = 0; }
+    if (dy < 0) { sy = -dy; dh += dy; dy = 0; }
+    if (dw <= 0 || dh <= 0) return 1;
+    if (dx >= pw || dy >= ph || sx >= cw || sy >= chh) return 1;
+    if (dx + dw > pw) dw = pw - dx;
+    if (dy + dh > ph) dh = ph - dy;
+    if (sx + dw > cw) dw = cw - sx;
+    if (sy + dh > chh) dh = chh - sy;
+    if (dw <= 0 || dh <= 0) return 1;
+
+    for (int32_t y = 0; y < dh; y++) {
+        memcpy(dst + ((size_t)(dy + y) * (size_t)pw + (size_t)dx) * 4,
+               src + ((size_t)(sy + y) * (size_t)cw + (size_t)sx) * 4,
+               (size_t)dw * 4);
+    }
+    return 1;
+}
+
+static int16_t rd_i16le(const uint8_t* p) {
+    return (int16_t)(p[0] | (p[1] << 8));
+}
+
+static void wr_i16le(uint8_t* p, int32_t v) {
+    p[0] = (uint8_t)(v & 0xFF);
+    p[1] = (uint8_t)((v >> 8) & 0xFF);
+}
 
 static int vm_read(VFSFile* file, uint8_t* buf, int len) {
     VmFileData* d = (VmFileData*)file->private_data;
-    if (!d || strcmp(d->kind, "new") != 0 || len < 4) return 0;
-    buf[0] = (uint8_t)(d->last_created_id & 0xFF);
-    buf[1] = (uint8_t)((d->last_created_id >> 8) & 0xFF);
-    buf[2] = (uint8_t)((d->last_created_id >> 16) & 0xFF);
-    buf[3] = (uint8_t)((d->last_created_id >> 24) & 0xFF);
-    d->last_created_id = 0;
-    return 4;
+    if (!d || !buf || len <= 0) return 0;
+    if (strcmp(d->kind, "fb") == 0) {
+        if (!vm_blit_fb(d)) return 0;
+        buf[0] = 1;
+        return 1;
+    }
+    if (strcmp(d->kind, "geom") == 0) {
+        if (len < 4) return 0;
+        int32_t w = 0, h = 0;
+        Machine* ch = vm_child(d);
+        if (ch && ch->system) {
+            w = ch->system->screen_width;
+            h = ch->system->screen_height;
+        }
+        wr_i16le(buf, w);
+        wr_i16le(buf + 2, h);
+        if (len >= 8) {
+            buf[4] = buf[5] = buf[6] = buf[7] = 0;
+            return 8;
+        }
+        return 4;
+    }
+    if (len < 4) return 0;
+    if (strcmp(d->kind, "new") == 0) {
+        buf[0] = (uint8_t)(d->last_created_id & 0xFF);
+        buf[1] = (uint8_t)((d->last_created_id >> 8) & 0xFF);
+        buf[2] = (uint8_t)((d->last_created_id >> 16) & 0xFF);
+        buf[3] = (uint8_t)((d->last_created_id >> 24) & 0xFF);
+        d->last_created_id = 0;
+        return 4;
+    }
+    if (strcmp(d->kind, "status") == 0) {
+        int32_t halted = 1;
+        Machine* chm = vm_child(d);
+        if (chm && chm->cpu && !chm->cpu->halted) halted = 0;
+        buf[0] = (uint8_t)(halted & 0xFF);
+        buf[1] = 0;
+        buf[2] = 0;
+        buf[3] = 0;
+        return 4;
+    }
+    return 0;
+}
+
+static int vm_write_fb(VmFileData* d, const uint8_t* buf, int len) {
+    if (len < 8) return 0;
+    d->blit_dx = rd_i16le(buf);
+    d->blit_dy = rd_i16le(buf + 2);
+    d->blit_dw = rd_i16le(buf + 4);
+    d->blit_dh = rd_i16le(buf + 6);
+    d->blit_set = 1;
+    return 8;
+}
+
+static int vm_write_geom(VmFileData* d, const uint8_t* buf, int len) {
+    if (len < 4) return 0;
+    Machine* ch = vm_child(d);
+    if (!ch || !ch->system) return 0;
+    int32_t w = rd_i16le(buf);
+    int32_t h = rd_i16le(buf + 2);
+    int32_t pw = d->sys->screen_width > 0 ? d->sys->screen_width : 960;
+    int32_t ph = d->sys->screen_height > 0 ? d->sys->screen_height : 720;
+    if (w < 16) w = 16;
+    if (h < 16) h = 16;
+    if (w > pw) w = pw;
+    if (h > ph) h = ph;
+    system_set_resolution(ch->system, w, h);
+    return len >= 8 ? 8 : 4;
+}
+
+static int vm_write_status(VmFileData* d, int len) {
+    Machine* ch = vm_child(d);
+    if (ch && ch->cpu) ch->cpu->halted = true;
+    return len > 0 ? len : 1;
 }
 
 static int vm_write(VFSFile* file, const uint8_t* buf, int len) {
     VmFileData* d = (VmFileData*)file->private_data;
-    if (!d || !d->sys || strcmp(d->kind, "new") != 0) return 0;
+    if (!d || !d->sys || !buf || len <= 0) return 0;
+    if (strcmp(d->kind, "fb") == 0) return vm_write_fb(d, buf, len);
+    if (strcmp(d->kind, "geom") == 0) return vm_write_geom(d, buf, len);
+    if (strcmp(d->kind, "status") == 0) return vm_write_status(d, len);
+    if (strcmp(d->kind, "new") != 0) return 0;
 
     char path[512];
     int plen = len;
@@ -662,10 +794,15 @@ static int vm_write(VFSFile* file, const uint8_t* buf, int len) {
         Machine* child = machine_create(program, (uint32_t)prog_len, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
         if (child) {
             if (child->system) {
-                // Children inherit the parent's sandbox and sound output.
+                // Children inherit the parent's sandbox, sound, and canvas size
+                // so /dev/draw and rio blit share the same 960×720 (or whatever
+                // cloister set on the root).
                 memcpy(child->system->sandbox_root, d->sys->sandbox_root,
                        sizeof(child->system->sandbox_root));
                 child->system->play_sound = d->sys->play_sound;
+                int32_t rw = d->sys->screen_width > 0 ? d->sys->screen_width : 960;
+                int32_t rh = d->sys->screen_height > 0 ? d->sys->screen_height : 720;
+                system_set_resolution(child->system, rw, rh);
             }
             d->sys->child_vms[id] = child;
             d->last_created_id = id;
@@ -697,8 +834,15 @@ static VFSFile* create_vm_file(System* sys, const char* kind, int32_t vm_id) {
 // --- draw / audio / font (existing logic) ---
 
 static int draw_read(VFSFile* file, uint8_t* buf, int len) {
-    (void)file; (void)buf; (void)len;
-    return 0;
+    System* sys = (System*)file->private_data;
+    if (!sys || !buf || len < 4) return 0;
+    int32_t w = sys->screen_width > 0 ? sys->screen_width : 960;
+    int32_t h = sys->screen_height > 0 ? sys->screen_height : 720;
+    buf[0] = (uint8_t)(w & 0xFF);
+    buf[1] = (uint8_t)((w >> 8) & 0xFF);
+    buf[2] = (uint8_t)(h & 0xFF);
+    buf[3] = (uint8_t)((h >> 8) & 0xFF);
+    return 4;
 }
 
 static int draw_write(VFSFile* file, const uint8_t* buf, int len) {
@@ -900,6 +1044,12 @@ static VFSFile* open_path(System* sys, const char* path, int32_t flags) {
     }
     if (strcmp(path, "/sys/mouse") == 0 || strcmp(path, "/dev/mouse") == 0) {
         return create_input_file(sys, false);
+    }
+    // /dev/menu is a bound channel from rio, not a dummy /sys file.
+    // Unbound open must fail so a root app (cloister apps/UIDemo.lux) keeps
+    // its local menubar and the Esc Continue/Restart/Quit overlay.
+    if (strcmp(path, "/sys/menu") == 0 || strcmp(path, "/dev/menu") == 0) {
+        return NULL;
     }
     if (strcmp(path, "/sys/dialog") == 0) {
         return create_dialog_file(sys);

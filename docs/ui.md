@@ -1,6 +1,6 @@
 # Lux UI Toolkit
 
-Reusable System 6–looking controls for Cloister apps and the Shell. Architecture follows Plan 9 / Inferno (`libcontrol`): named controls, stack words, no widget inheritance, no layout manager.
+Reusable System 6–looking controls for Cloister apps. Architecture follows Plan 9 / Inferno (`libcontrol`): named controls, stack words, no widget inheritance, no layout manager.
 
 ## Components
 
@@ -67,6 +67,11 @@ INCLUDE "lib/ui.lux"
 | `UI::item@` | `name -- 0\|1` | read a check / radio mark |
 | `UI::menu-open?` | `-- f` | a pull-down is open |
 | `UI::escape` | `-- closed?` | close the pull-down if open |
+| `UI::export-fd!` | `fd --` | bind `/dev/menu`; `0` keeps a local bar |
+| `UI::export` | `--` | write a binary menu snapshot to that fd |
+| `UI::menu-pick` | `name --` | apply an item by label |
+| `UI::exported?` | `-- f` | true when `/dev/menu` is bound |
+| `UI::local-bar!` | `f --` | 1 = also paint/feed File/Edit in the window |
 | `UI::feed` | `mpkt --` | give `/dev/mouse` to the toolkit |
 | `UI::handle` | `--` | drain the ring and CALL handlers |
 | `UI::draw` | `--` | paint every component |
@@ -79,7 +84,7 @@ The menu bar is always the top 20px strip. Click a title to open, click an item 
 
 Wire keyboard Return to `UI::enter` and Esc to `UI::escape`. The ring is still there (`UI::poll`) if an app wants raw records instead of handlers.
 
-Windows are chrome + hit-test. rio-style child VMs still own `/dev/draw`; the Shell offsets their commands into the client rect.
+Cloister is a fantasy machine: one program at a time owns the 960×720 screen and its own menu bar. `./bin/cloister` opens a picker; `./bin/cloister apps/Quill.bin` boots that ROM directly. Esc in an app raises Continue / Restart / Quit. Halt (Quit) returns to the picker, or exits if the ROM was passed on the command line.
 
 ## Layers
 
@@ -189,7 +194,7 @@ Old struct words (`button-init`, `button-draw`, …) remain for the leftover lis
 - `win-hit ( ctl x y -- where )` — 0 miss, 1 client, 2 title, 3 close
 - `win-chrome ( ctl -- )`
 
-The Shell uses these so a child VM's `/dev/draw` lands in the client, and only the title bar drags.
+Apps can use these for in-window frames; Cloister itself does not manage overlapping process windows.
 
 ## Geometry (`GEOM`)
 

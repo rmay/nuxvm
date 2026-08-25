@@ -7,13 +7,17 @@
 #include <math.h>
 
 #include "machine.h"
-#include "chicago.h"
 #include "vfs.h"
 #include "compiler.h"
 #include "dialog.h"
+#include "chicago.h"
 
 #define WIN_WIDTH 960
 #define WIN_HEIGHT 720
+#define MAX_ROMS 100
+#define LIST_X 40
+#define LIST_Y 72
+#define LIST_ROW 20
 
 // Audio handling
 #define AUDIO_SAMPLE_RATE 44100
@@ -32,190 +36,31 @@ static void audio_callback(void* userdata, Uint8* stream, int len) {
     (void)userdata;
     int16_t* buffer = (int16_t*)stream;
     int samples = len / 2;
-    
+
     if (current_sound_id == 0 || audio_samples_played >= audio_duration_samples) {
         memset(stream, 0, len);
         return;
     }
-    
+
     double freq = (double)current_sound_id;
     double duration = 0.12;
     double fade = 0.02;
-    
+
     for (int i = 0; i < samples; i++) {
         if (audio_samples_played >= audio_duration_samples) {
             buffer[i] = 0;
             continue;
         }
-        
+
         double t = (double)audio_samples_played / (double)AUDIO_SAMPLE_RATE;
         double env = 1.0;
-        
-        if (t < fade) {
-            env = t / fade;
-        } else if (t > duration - fade) {
-            env = (duration - t) / fade;
-        }
-        
-        int16_t val = (int16_t)(env * 0.25 * 32767.0 * sin(2.0 * M_PI * freq * t));
-        buffer[i] = val;
+        if (t < fade) env = t / fade;
+        else if (t > duration - fade) env = (duration - t) / fade;
+
+        buffer[i] = (int16_t)(env * 0.25 * 32767.0 * sin(2.0 * M_PI * freq * t));
         audio_samples_played++;
     }
 }
-
-// Drawing chicago font directly to a 32-bit pixel buffer
-static void draw_char(uint32_t* pixels, int pitch, int x, int y, char c, uint32_t color, int scale) {
-    unsigned char* data = chicago12x12_cff;
-    int width = data[(uint8_t)c];
-    if (width == 0 && c != ' ') return;
-    
-    int tile_size = 16;
-    int num_v_tiles = tile_size / 8;
-    int num_h_tiles = tile_size / 8;
-    int tile_count = num_h_tiles * num_v_tiles;
-    int offset = 256 + (uint8_t)c * tile_count * 8;
-    
-    int idx = 0;
-    for (int tx = 0; tx < num_h_tiles; tx++) {
-        for (int ty = 0; ty < num_v_tiles; ty++) {
-            for (int row = 0; row < 8; row++) {
-                uint8_t bits = data[offset + idx++];
-                if (bits == 0) continue;
-                
-                int row_abs = ty * 8 + row;
-                int start_y = row_abs * scale;
-                int end_y = (row_abs + 1) * scale;
-                
-                for (int py = start_y; py < end_y; py++) {
-                    int pixel_y = y + py;
-                    if (pixel_y < 0 || pixel_y >= WIN_HEIGHT) continue;
-                    
-                    for (int col = 0; col < 8; col++) {
-                        if ((bits & (0x80 >> col)) == 0) continue;
-                        
-                        int col_abs = tx * 8 + col;
-                        int start_x = col_abs * scale;
-                        int end_x = (col_abs + 1) * scale;
-                        
-                        for (int px = start_x; px < end_x; px++) {
-                            int pixel_x = x + px;
-                            if (pixel_x < 0 || pixel_x >= WIN_WIDTH) continue;
-                            
-                            pixels[pixel_y * (pitch / 4) + pixel_x] = color;
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-static void draw_text(uint32_t* pixels, int pitch, int x, int y, const char* str, uint32_t color, int scale) {
-    int cur_x = x;
-    while (*str) {
-        char c = *str++;
-        draw_char(pixels, pitch, cur_x, y, c, color, scale);
-        // approx width
-        cur_x += 10 * scale; 
-    }
-}
-
-static void fill_rect(uint32_t* pixels, int pitch, int x, int y, int w, int h, uint32_t color) {
-    for (int j = y; j < y + h; j++) {
-        if (j < 0 || j >= WIN_HEIGHT) continue;
-        for (int i = x; i < x + w; i++) {
-            if (i < 0 || i >= WIN_WIDTH) continue;
-            pixels[j * (pitch / 4) + i] = color;
-        }
-    }
-}
-
-#define ESC_BTN_W 120
-#define ESC_BTN_H 20
-#define ESC_BTN_X 40
-#define ESC_BTN_Y0 50
-#define ESC_BTN_GAP 28
-
-static int esc_btn_y(int i) {
-    return ESC_BTN_Y0 + (i - 1) * ESC_BTN_GAP;
-}
-
-/* r=3 nibble: punch the corner stairs out to `erase`. */
-static void rr_cut_corners(uint32_t* pixels, int pitch, int x, int y, int w, int h,
-                           uint32_t erase) {
-    fill_rect(pixels, pitch, x,         y,         3, 1, erase);
-    fill_rect(pixels, pitch, x + w - 3, y,         3, 1, erase);
-    fill_rect(pixels, pitch, x,         y + 1,     2, 1, erase);
-    fill_rect(pixels, pitch, x + w - 2, y + 1,     2, 1, erase);
-    fill_rect(pixels, pitch, x,         y + 2,     1, 1, erase);
-    fill_rect(pixels, pitch, x + w - 1, y + 2,     1, 1, erase);
-    fill_rect(pixels, pitch, x,         y + h - 1, 3, 1, erase);
-    fill_rect(pixels, pitch, x + w - 3, y + h - 1, 3, 1, erase);
-    fill_rect(pixels, pitch, x,         y + h - 2, 2, 1, erase);
-    fill_rect(pixels, pitch, x + w - 2, y + h - 2, 2, 1, erase);
-    fill_rect(pixels, pitch, x,         y + h - 3, 1, 1, erase);
-    fill_rect(pixels, pitch, x + w - 1, y + h - 3, 1, 1, erase);
-}
-
-static void rr_fill(uint32_t* pixels, int pitch, int x, int y, int w, int h,
-                    uint32_t fill, uint32_t erase) {
-    fill_rect(pixels, pitch, x, y, w, h, fill);
-    rr_cut_corners(pixels, pitch, x, y, w, h, erase);
-}
-
-static void rr_frame(uint32_t* pixels, int pitch, int x, int y, int w, int h,
-                     uint32_t color) {
-    fill_rect(pixels, pitch, x + 3, y,         w - 6, 1, color);
-    fill_rect(pixels, pitch, x + 3, y + h - 1, w - 6, 1, color);
-    fill_rect(pixels, pitch, x,         y + 3, 1, h - 6, color);
-    fill_rect(pixels, pitch, x + w - 1, y + 3, 1, h - 6, color);
-    /* r=3 stairs: (2,1) (1,2) */
-    fill_rect(pixels, pitch, x + 2,         y + 1,         1, 1, color);
-    fill_rect(pixels, pitch, x + 1,         y + 2,         1, 1, color);
-    fill_rect(pixels, pitch, x + w - 3,     y + 1,         1, 1, color);
-    fill_rect(pixels, pitch, x + w - 2,     y + 2,         1, 1, color);
-    fill_rect(pixels, pitch, x + 2,         y + h - 2,     1, 1, color);
-    fill_rect(pixels, pitch, x + 1,         y + h - 3,     1, 1, color);
-    fill_rect(pixels, pitch, x + w - 3,     y + h - 2,     1, 1, color);
-    fill_rect(pixels, pitch, x + w - 2,     y + h - 3,     1, 1, color);
-}
-
-static void rr_inside(uint32_t* pixels, int pitch, int x, int y, int w, int h,
-                      uint32_t color) {
-    fill_rect(pixels, pitch, x + 3, y + 1,     w - 6, 1, color);
-    fill_rect(pixels, pitch, x + 2, y + 2,     w - 4, 1, color);
-    fill_rect(pixels, pitch, x + 3, y + h - 2, w - 6, 1, color);
-    fill_rect(pixels, pitch, x + 2, y + h - 3, w - 4, 1, color);
-    fill_rect(pixels, pitch, x + 1, y + 3,     w - 2, h - 6, color);
-}
-
-static void draw_sys_button(uint32_t* pixels, int pitch, int x, int y, int w, int h,
-                            const char* label, bool is_default, bool pressed) {
-    const uint32_t black = 0xFF000000;
-    const uint32_t white = 0xFFFFFFFF;
-    if (is_default) {
-        rr_frame(pixels, pitch, x - 4, y - 4, w + 8, h + 8, black);
-        rr_frame(pixels, pitch, x - 3, y - 3, w + 6, h + 6, black);
-        rr_frame(pixels, pitch, x - 2, y - 2, w + 4, h + 4, black);
-    }
-    rr_fill(pixels, pitch, x, y, w, h, black, white);
-    if (!pressed) rr_inside(pixels, pitch, x, y, w, h, white);
-    int tw = (int)strlen(label) * 10;
-    int tx = x + (w - tw) / 2;
-    int ty = y + h / 2 - 6;
-    draw_text(pixels, pitch, tx, ty, label, pressed ? white : black, 1);
-}
-
-static int esc_hit(int mx, int my, int menu_x, int menu_y) {
-    int bx = menu_x + ESC_BTN_X;
-    if (mx < bx || mx >= bx + ESC_BTN_W) return 0;
-    for (int i = 1; i <= 3; i++) {
-        int by = menu_y + esc_btn_y(i);
-        if (my >= by && my < by + ESC_BTN_H) return i;
-    }
-    return 0;
-}
-
 
 static void queue_event(Machine* m, uint32_t type, uint32_t data, uint32_t mods) {
     if (!m || !m->system) return;
@@ -225,18 +70,15 @@ static void queue_event(Machine* m, uint32_t type, uint32_t data, uint32_t mods)
         m->system->event_tail = next;
     }
     if (type == 0) {
-        // Only KeyDown feeds /sys/kbd — KeyUps stay on the legacy event ring.
         system_push_kbd_event(m->system, (uint8_t)type, (int32_t)(data & 0xFFFFFF), mods);
     } else if (type >= 2 && type <= 4) {
         int32_t mx = (int32_t)(data >> 12);
         int32_t my = (int32_t)(data & 0xFFF);
-        uint8_t btn = (type == 3) ? 1 : 0;
+        uint8_t btn = (type == 2) ? 0 : (uint8_t)(mods & 0xFF);
         system_push_mouse_event(m->system, (uint8_t)type, mx, my, btn);
     }
 }
 
-// Packs SDL modifier state into the bitmask expected by Lux apps
-// (mirrors lib/event.lux MOD_*: shift=1, ctrl=2, alt=4, cmd=8).
 static uint32_t current_modifiers(SDL_Keymod m) {
     uint32_t mods = 0;
     if (m & KMOD_SHIFT) mods |= 1;
@@ -246,9 +88,6 @@ static uint32_t current_modifiers(SDL_Keymod m) {
     return mods;
 }
 
-// Maps an SDL keycode to the integer keycode that Lux apps see. Letters/digits
-// become ASCII; arrows use the dedicated 17-20 codes that Snake.lux and other
-// apps key off. Returns false for keys that should not produce an event.
 static bool translate_key(SDL_Keycode k, bool shift, int32_t* out) {
     switch (k) {
         case SDLK_UP:        *out = 17; return true;
@@ -273,7 +112,6 @@ static bool translate_key(SDL_Keycode k, bool shift, int32_t* out) {
         *out = shift ? ('A' + (k - SDLK_a)) : k;
         return true;
     }
-
     if (k >= SDLK_0 && k <= SDLK_9) {
         static const char shifted[] = ")!@#$%^&*(";
         *out = shift ? shifted[k - SDLK_0] : k;
@@ -303,7 +141,6 @@ static bool translate_key(SDL_Keycode k, bool shift, int32_t* out) {
         *out = '0';
         return true;
     }
-
     return false;
 }
 
@@ -311,8 +148,6 @@ static void cloister_set_title(void* ctx, const char* title) {
     SDL_SetWindowTitle((SDL_Window*)ctx, title);
 }
 
-// The single modal file dialog; opened via the /sys/dialog VFS write (or
-// SCI_OPEN_FILE_DIALOG), driven by the SDL event loop below.
 static FileDialog g_dialog;
 
 static void cloister_open_dialog(void* ctx) {
@@ -320,9 +155,6 @@ static void cloister_open_dialog(void* ctx) {
     dialog_open(d, d->sys);
 }
 
-// Load a .bin (raw bytecode) or .lux (compile in-process) at the graphical base
-// address. On success, frees any previous *program_out / *machine_out and replaces
-// them. Returns true if a machine was created.
 static bool load_app(const char* path, uint8_t** program_out, Machine** machine_out,
                      SDL_Window* win) {
     FILE* f = fopen(path, "rb");
@@ -395,12 +227,164 @@ static bool load_app(const char* path, uint8_t** program_out, Machine** machine_
     return true;
 }
 
-static bool is_launchable(const char* name) {
-    size_t n = strlen(name);
-    if (n < 5) return false;
-    if (strcmp(name + n - 4, ".bin") == 0) return true;
-    if (strcmp(name + n - 4, ".lux") == 0) return true;
-    return false;
+static void fill_rect(uint32_t* pixels, int pitch, int x, int y, int w, int h, uint32_t color) {
+    for (int j = y; j < y + h; j++) {
+        if (j < 0 || j >= WIN_HEIGHT) continue;
+        for (int i = x; i < x + w; i++) {
+            if (i < 0 || i >= WIN_WIDTH) continue;
+            pixels[j * (pitch / 4) + i] = color;
+        }
+    }
+}
+
+static void draw_char(uint32_t* pixels, int pitch, int x, int y, char c, uint32_t color) {
+    unsigned char* data = chicago12x12_cff;
+    int width = data[(uint8_t)c];
+    if (width == 0 && c != ' ') return;
+
+    int tile_size = 16;
+    int num_v_tiles = tile_size / 8;
+    int num_h_tiles = tile_size / 8;
+    int tile_count = num_h_tiles * num_v_tiles;
+    int offset = 256 + (uint8_t)c * tile_count * 8;
+    int idx = 0;
+    for (int tx = 0; tx < num_h_tiles; tx++) {
+        for (int ty = 0; ty < num_v_tiles; ty++) {
+            for (int row = 0; row < 8; row++) {
+                uint8_t bits = data[offset + idx++];
+                if (bits == 0) continue;
+                int pixel_y = y + ty * 8 + row;
+                if (pixel_y < 0 || pixel_y >= WIN_HEIGHT) continue;
+                for (int col = 0; col < 8; col++) {
+                    if ((bits & (0x80 >> col)) == 0) continue;
+                    int pixel_x = x + tx * 8 + col;
+                    if (pixel_x < 0 || pixel_x >= WIN_WIDTH) continue;
+                    pixels[pixel_y * (pitch / 4) + pixel_x] = color;
+                }
+            }
+        }
+    }
+    (void)width;
+}
+
+static void draw_text(uint32_t* pixels, int pitch, int x, int y, const char* str, uint32_t color) {
+    int cur_x = x;
+    while (*str) {
+        unsigned char c = (unsigned char)*str++;
+        draw_char(pixels, pitch, cur_x, y, (char)c, color);
+        int w = chicago12x12_cff[c];
+        cur_x += (w > 0 ? w : 8) + 1;
+    }
+}
+
+static bool ends_with(const char* name, const char* ext) {
+    size_t n = strlen(name), e = strlen(ext);
+    return n >= e && strcmp(name + n - e, ext) == 0;
+}
+
+static void stem_copy(const char* name, char* out, size_t n) {
+    strncpy(out, name, n - 1);
+    out[n - 1] = '\0';
+    char* dot = strrchr(out, '.');
+    if (dot) *dot = '\0';
+}
+
+typedef struct {
+    char path[256];
+    char label[256];
+} RomEntry;
+
+static int cmp_rom(const void* a, const void* b) {
+    return strcmp(((const RomEntry*)a)->label, ((const RomEntry*)b)->label);
+}
+
+static int scan_roms(RomEntry* roms, int cap) {
+    char bins[MAX_ROMS][256];
+    int nbin = 0;
+    DIR* d = opendir("apps");
+    if (!d) return 0;
+
+    struct dirent* ent;
+    while ((ent = readdir(d)) != NULL && nbin < MAX_ROMS) {
+        if (ends_with(ent->d_name, ".bin") && strcmp(ent->d_name, "Shell.bin") != 0) {
+            strncpy(bins[nbin], ent->d_name, 255);
+            bins[nbin][255] = '\0';
+            nbin++;
+        }
+    }
+    rewinddir(d);
+
+    int n = 0;
+    for (int i = 0; i < nbin && n < cap; i++) {
+        snprintf(roms[n].path, sizeof(roms[n].path), "apps/%s", bins[i]);
+        stem_copy(bins[i], roms[n].label, sizeof(roms[n].label));
+        n++;
+    }
+
+    while ((ent = readdir(d)) != NULL && n < cap) {
+        if (!ends_with(ent->d_name, ".lux")) continue;
+        if (strcmp(ent->d_name, "Shell.lux") == 0) continue;
+        char stem[256];
+        stem_copy(ent->d_name, stem, sizeof(stem));
+        int have_bin = 0;
+        for (int i = 0; i < n; i++) {
+            if (strcmp(roms[i].label, stem) == 0) { have_bin = 1; break; }
+        }
+        if (have_bin) continue;
+        snprintf(roms[n].path, sizeof(roms[n].path), "apps/%s", ent->d_name);
+        strncpy(roms[n].label, stem, sizeof(roms[n].label) - 1);
+        roms[n].label[sizeof(roms[n].label) - 1] = '\0';
+        n++;
+    }
+    closedir(d);
+
+    qsort(roms, (size_t)n, sizeof(RomEntry), cmp_rom);
+    return n;
+}
+
+static int list_hit(int mx, int my, int nroms) {
+    if (mx < LIST_X || mx > WIN_WIDTH - 40) return -1;
+    if (my < LIST_Y || my >= LIST_Y + nroms * LIST_ROW) return -1;
+    return (my - LIST_Y) / LIST_ROW;
+}
+
+static void paint_picker(uint32_t* pixels, int pitch, const RomEntry* roms, int nroms, int selected) {
+    const uint32_t white = 0xFFFFFFFF;
+    const uint32_t black = 0xFF000000;
+    const uint32_t desk  = 0xFFCCCCCC;
+    fill_rect(pixels, pitch, 0, 0, WIN_WIDTH, WIN_HEIGHT, desk);
+    fill_rect(pixels, pitch, 0, 0, WIN_WIDTH, 36, white);
+    fill_rect(pixels, pitch, 0, 35, WIN_WIDTH, 1, black);
+    draw_text(pixels, pitch, 16, 10, "Cloister", black);
+    draw_text(pixels, pitch, 16, 48, "Select a program    Enter or click to run    Esc to quit", black);
+
+    if (nroms == 0) {
+        draw_text(pixels, pitch, LIST_X, LIST_Y, "No programs in apps/", black);
+        return;
+    }
+    for (int i = 0; i < nroms; i++) {
+        int y = LIST_Y + i * LIST_ROW;
+        if (i == selected) {
+            fill_rect(pixels, pitch, LIST_X - 8, y - 2, WIN_WIDTH - 2 * LIST_X, LIST_ROW, black);
+            draw_text(pixels, pitch, LIST_X, y, roms[i].label, white);
+        } else {
+            draw_text(pixels, pitch, LIST_X, y, roms[i].label, black);
+        }
+    }
+}
+
+static void eject_rom(Machine** machine, uint8_t** program, SDL_Window* win) {
+    dialog_free(&g_dialog);
+    g_dialog.sys = NULL;
+    if (*machine) {
+        machine_free(*machine);
+        *machine = NULL;
+    }
+    if (*program) {
+        free(*program);
+        *program = NULL;
+    }
+    SDL_SetWindowTitle(win, "Cloister");
 }
 
 int main(int argc, char** argv) {
@@ -426,43 +410,21 @@ int main(int argc, char** argv) {
     want.channels = 1;
     want.samples = 1024;
     want.callback = audio_callback;
-
     audio_device = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
-    if (audio_device != 0) {
-        SDL_PauseAudioDevice(audio_device, 0);
-    }
+    if (audio_device != 0) SDL_PauseAudioDevice(audio_device, 0);
 
-    char apps[100][256];
-    int num_apps = 0;
-    
-    DIR* d = opendir("apps");
-    if (d) {
-        struct dirent* dir;
-        while ((dir = readdir(d)) != NULL && num_apps < 100) {
-            if (is_launchable(dir->d_name)) {
-                strncpy(apps[num_apps], dir->d_name, 255);
-                apps[num_apps][255] = '\0';
-                num_apps++;
-            }
-        }
-        closedir(d);
-    }
-
-    bool launcher_mode = true;
-    int selected_index = 0;
-    bool esc_menu_open = false;
-    int esc_menu_hover = 0; // 0=none, 1=continue, 2=restart, 3=quit
-    int esc_menu_press = 0; // button held from mouse-down, 0 if none
+    RomEntry roms[MAX_ROMS];
+    int nroms = scan_roms(roms, MAX_ROMS);
+    int selected = 0;
 
     Machine* machine = NULL;
     uint8_t* program = NULL;
+    bool from_argv = argc > 1;
+    bool running_rom = false;
 
-    if (argc > 1) {
-        if (load_app(argv[1], &program, &machine, win)) {
-            launcher_mode = false;
-        } else {
-            return 1;
-        }
+    if (from_argv) {
+        if (!load_app(argv[1], &program, &machine, win)) return 1;
+        running_rom = true;
     }
 
     bool quit = false;
@@ -471,8 +433,7 @@ int main(int argc, char** argv) {
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) {
                 quit = true;
-            } else if (!launcher_mode && g_dialog.active) {
-                // Modal file dialog consumes all input while active.
+            } else if (running_rom && g_dialog.active) {
                 if (e.type == SDL_KEYDOWN) {
                     int32_t code;
                     bool shift = (e.key.keysym.mod & KMOD_SHIFT) != 0;
@@ -484,168 +445,85 @@ int main(int argc, char** argv) {
                 } else if (e.type == SDL_MOUSEWHEEL) {
                     dialog_wheel(&g_dialog, e.wheel.y);
                 }
-                // Mouse motion / key up are consumed silently.
-            } else if (e.type == SDL_KEYDOWN) {
-                if (launcher_mode) {
-                    if (esc_menu_open) {
-                        if (e.key.keysym.sym == SDLK_UP) {
-                            esc_menu_hover--;
-                            if (esc_menu_hover < 1) esc_menu_hover = 3;
-                        } else if (e.key.keysym.sym == SDLK_DOWN) {
-                            esc_menu_hover++;
-                            if (esc_menu_hover > 3) esc_menu_hover = 1;
-                        } else if (e.key.keysym.sym == SDLK_RETURN) {
-                            if (esc_menu_hover == 1 || esc_menu_hover == 2) {
-                                esc_menu_open = false;
-                            } else if (esc_menu_hover == 3) {
-                                quit = true;
-                            }
-                        } else if (e.key.keysym.sym == SDLK_ESCAPE) {
-                            esc_menu_open = false;
-                            esc_menu_press = 0;
-                        }
-                    } else {
-                        if (e.key.keysym.sym == SDLK_ESCAPE) {
-                            esc_menu_open = true;
-                            esc_menu_hover = 1;
-                            esc_menu_press = 0;
-                        } else if (e.key.keysym.sym == SDLK_UP) {
-                            selected_index--;
-                            if (selected_index < 0) selected_index = num_apps - 1;
-                        } else if (e.key.keysym.sym == SDLK_DOWN) {
-                            selected_index++;
-                            if (selected_index >= num_apps) selected_index = 0;
-                        } else if (e.key.keysym.sym == SDLK_RETURN) {
-                            if (num_apps > 0) {
-                                char path[512];
-                                snprintf(path, sizeof(path), "apps/%s", apps[selected_index]);
-                                if (load_app(path, &program, &machine, win)) {
-                                    launcher_mode = false;
-                                }
-                            }
+            } else if (!running_rom) {
+                if (e.type == SDL_KEYDOWN) {
+                    if (e.key.keysym.sym == SDLK_ESCAPE) {
+                        quit = true;
+                    } else if (e.key.keysym.sym == SDLK_UP && nroms > 0) {
+                        selected = (selected + nroms - 1) % nroms;
+                    } else if (e.key.keysym.sym == SDLK_DOWN && nroms > 0) {
+                        selected = (selected + 1) % nroms;
+                    } else if (e.key.keysym.sym == SDLK_RETURN && nroms > 0) {
+                        if (load_app(roms[selected].path, &program, &machine, win)) {
+                            running_rom = true;
                         }
                     }
-                } else if (machine) {
-                    // App mode: translate the key and deliver it to the app.
-                    // Escape is delivered too (27) — apps handle their own menus;
-                    // we return to the launcher when the app halts.
+                } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                    int hit = list_hit(e.button.x, e.button.y, nroms);
+                    if (hit >= 0) {
+                        selected = hit;
+                        if (load_app(roms[selected].path, &program, &machine, win)) {
+                            running_rom = true;
+                        }
+                    }
+                }
+            } else if (machine) {
+                if (e.type == SDL_KEYDOWN) {
                     int32_t code;
                     bool shift = (e.key.keysym.mod & KMOD_SHIFT) != 0;
                     if (translate_key(e.key.keysym.sym, shift, &code)) {
                         uint32_t mods = current_modifiers((SDL_Keymod)e.key.keysym.mod);
                         queue_event(machine, 0, (uint32_t)code & 0xFFFFFF, mods);
-                        if (machine->system->get_vector) {
-                            uint32_t vec = machine->system->get_vector(machine->system, 4); // Controller
-                            if (vec != 0) vm_call_vector(machine->cpu, vec);
-                        }
                     }
-                }
-            } else if (e.type == SDL_MOUSEMOTION) {
-                if (launcher_mode && esc_menu_open) {
-                    int menu_x = (WIN_WIDTH - 200) / 2;
-                    int menu_y = (WIN_HEIGHT - 160) / 2;
-                    int hit = esc_hit(e.motion.x, e.motion.y, menu_x, menu_y);
-                    if (hit != 0) esc_menu_hover = hit;
-                } else if (!launcher_mode && machine) {
+                } else if (e.type == SDL_KEYUP) {
+                    int32_t code;
+                    bool shift = (e.key.keysym.mod & KMOD_SHIFT) != 0;
+                    if (translate_key(e.key.keysym.sym, shift, &code)) {
+                        queue_event(machine, 1, (uint32_t)code & 0xFFFFFF, 0);
+                    }
+                } else if (e.type == SDL_MOUSEMOTION) {
                     machine->system->mouse_x = e.motion.x;
                     machine->system->mouse_y = e.motion.y;
                     queue_event(machine, 2, (e.motion.x << 12) | (e.motion.y & 0xFFF), 0);
-                    if (machine->system->get_vector) {
-                        uint32_t vec = machine->system->get_vector(machine->system, 5); // Mouse Vector
-
-                        if (vec != 0) {
-                            vm_call_vector(machine->cpu, vec);
-                        }
-
-                    }
-                }
-            } else if (e.type == SDL_MOUSEBUTTONDOWN) {
-                if (launcher_mode && esc_menu_open) {
-                    int menu_x = (WIN_WIDTH - 200) / 2;
-                    int menu_y = (WIN_HEIGHT - 160) / 2;
-                    esc_menu_press = esc_hit(e.button.x, e.button.y, menu_x, menu_y);
-                    if (esc_menu_press != 0) esc_menu_hover = esc_menu_press;
-                    else esc_menu_open = false;
-                } else if (!launcher_mode && machine) {
-                    machine->system->mouse_btn |= 1;
-                    queue_event(machine, 3, (e.button.x << 12) | (e.button.y & 0xFFF), 0);
-                }
-            } else if (e.type == SDL_MOUSEBUTTONUP) {
-                if (launcher_mode && esc_menu_open && esc_menu_press != 0) {
-                    int menu_x = (WIN_WIDTH - 200) / 2;
-                    int menu_y = (WIN_HEIGHT - 160) / 2;
-                    int hit = esc_hit(e.button.x, e.button.y, menu_x, menu_y);
-                    if (hit == esc_menu_press) {
-                        if (hit == 3) quit = true;
-                        else esc_menu_open = false;
-                    } else if (hit == 0) {
-                        esc_menu_open = false;
-                    }
-                    esc_menu_press = 0;
-                } else if (!launcher_mode && machine) {
-                    machine->system->mouse_btn &= ~1;
-                    queue_event(machine, 4, (e.button.x << 12) | (e.button.y & 0xFFF), 0);
-                }
-            } else if (e.type == SDL_KEYUP && !launcher_mode && machine) {
-                int32_t code;
-                bool shift = (e.key.keysym.mod & KMOD_SHIFT) != 0;
-                if (translate_key(e.key.keysym.sym, shift, &code)) {
-                    queue_event(machine, 1, (uint32_t)code & 0xFFFFFF, 0); // type 1 = KeyUp
-                    if (machine->system->get_vector) {
-                        uint32_t vec = machine->system->get_vector(machine->system, 4); // Controller
-                        if (vec != 0) vm_call_vector(machine->cpu, vec);
-                    }
+                } else if (e.type == SDL_MOUSEBUTTONDOWN) {
+                    uint32_t mods = current_modifiers(SDL_GetModState());
+                    uint8_t btn = 1;
+                    if (e.button.button == SDL_BUTTON_MIDDLE) btn = 2;
+                    else if (e.button.button == SDL_BUTTON_RIGHT) btn = 3;
+                    else if (e.button.button == SDL_BUTTON_LEFT && (mods & 2)) btn = 3;
+                    machine->system->mouse_btn |= (1u << (btn - 1));
+                    queue_event(machine, 3, (e.button.x << 12) | (e.button.y & 0xFFF), btn);
+                } else if (e.type == SDL_MOUSEBUTTONUP) {
+                    uint32_t mods = current_modifiers(SDL_GetModState());
+                    uint8_t btn = 1;
+                    if (e.button.button == SDL_BUTTON_MIDDLE) btn = 2;
+                    else if (e.button.button == SDL_BUTTON_RIGHT) btn = 3;
+                    else if (e.button.button == SDL_BUTTON_LEFT && (mods & 2)) btn = 3;
+                    machine->system->mouse_btn &= ~(1u << (btn - 1));
+                    queue_event(machine, 4, (e.button.x << 12) | (e.button.y & 0xFFF), btn);
                 }
             }
         }
 
-        if (!launcher_mode && machine) {
-            // Tick machine
+        if (running_rom && machine) {
             if (!machine_tick(machine)) {
-                launcher_mode = true;
-                SDL_SetWindowTitle(win, "Cloister");
-                dialog_free(&g_dialog);
-                g_dialog.sys = NULL;
+                if (from_argv) {
+                    quit = true;
+                } else {
+                    eject_rom(&machine, &program, win);
+                    running_rom = false;
+                }
             }
         }
-
-        // Audio is now triggered synchronously via SCI_PLAY_SOUND, audio control port,
-        // or /sys/audio VFS writes (see cloister_play_sound + vfs audio handler).
 
         uint32_t* pixels;
         int pitch;
         SDL_LockTexture(tex, NULL, (void**)&pixels, &pitch);
 
-        if (launcher_mode) {
-            // Draw launcher
-            fill_rect(pixels, pitch, 0, 0, WIN_WIDTH, WIN_HEIGHT, 0xFF141414); // Dark gray
-            draw_text(pixels, pitch, 20, 20, "--- NUXVM LAUNCHER ---", 0xFFFFFFFF, 1);
-            
-            for (int i = 0; i < num_apps; i++) {
-                char buf[256];
-                snprintf(buf, sizeof(buf), "%s%s", (i == selected_index) ? "> " : "  ", apps[i]);
-                draw_text(pixels, pitch, 20, 50 + i * 20, buf, 0xFFFFFFFF, 1);
-            }
-
-            if (esc_menu_open) {
-                int menu_x = (WIN_WIDTH - 200) / 2;
-                int menu_y = (WIN_HEIGHT - 160) / 2;
-                fill_rect(pixels, pitch, menu_x - 2, menu_y - 2, 204, 164, 0xFF000000);
-                fill_rect(pixels, pitch, menu_x, menu_y, 200, 160, 0xFFFFFFFF);
-                draw_text(pixels, pitch, menu_x + 44, menu_y + 16, "System Menu", 0xFF000000, 1);
-                const char* labels[4] = { NULL, "Continue", "Restart App", "Quit" };
-                for (int i = 1; i <= 3; i++) {
-                    int bx = menu_x + ESC_BTN_X;
-                    int by = menu_y + esc_btn_y(i);
-                    bool pressed = (esc_menu_press == i);
-                    draw_sys_button(pixels, pitch, bx, by, ESC_BTN_W, ESC_BTN_H,
-                                    labels[i], esc_menu_hover == i, pressed);
-                }
-            }
+        if (!running_rom) {
+            paint_picker(pixels, pitch, roms, nroms, selected);
         } else if (machine && machine->system->screen_pixels) {
-            if (g_dialog.active) {
-                dialog_draw(&g_dialog);
-            }
+            if (g_dialog.active) dialog_draw(&g_dialog);
             int w = machine->system->screen_width;
             int h = machine->system->screen_height;
             for (int y = 0; y < h; y++) {
@@ -653,11 +531,10 @@ int main(int argc, char** argv) {
                 for (int x = 0; x < w; x++) {
                     if (x >= WIN_WIDTH) break;
                     int src_idx = (y * w + x) * 4;
-                    uint8_t a = 0xFF;
-                    uint8_t r = machine->system->screen_pixels[src_idx+1];
-                    uint8_t g = machine->system->screen_pixels[src_idx+2];
-                    uint8_t b = machine->system->screen_pixels[src_idx+3];
-                    pixels[y * (pitch / 4) + x] = (a << 24) | (r << 16) | (g << 8) | b;
+                    uint8_t r = machine->system->screen_pixels[src_idx + 1];
+                    uint8_t g = machine->system->screen_pixels[src_idx + 2];
+                    uint8_t b = machine->system->screen_pixels[src_idx + 3];
+                    pixels[y * (pitch / 4) + x] = (0xFFu << 24) | (r << 16) | (g << 8) | b;
                 }
             }
         }
@@ -665,17 +542,13 @@ int main(int argc, char** argv) {
         SDL_UnlockTexture(tex);
         SDL_RenderCopy(ren, tex, NULL, NULL);
         SDL_RenderPresent(ren);
-        // No fixed delay; rely on SDL_RENDERER_PRESENTVSYNC + natural loop timing for better input responsiveness
     }
 
-    if (machine) machine_free(machine);
-    if (program) free(program);
-    
+    eject_rom(&machine, &program, win);
     SDL_DestroyTexture(tex);
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
     SDL_CloseAudioDevice(audio_device);
     SDL_Quit();
-
     return 0;
 }

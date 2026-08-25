@@ -17,6 +17,8 @@ IMPORT UI
 @dfd      0x8C0000 ;
 @mfd      0x8C0004 ;
 @kfd      0x8C0008 ;
+@nfd      0x8C0058 ;
+@npkt     0x8C0060 ; ( 32 bytes for /dev/menu picks )
 @v-frame  0x8C000C ;
 @v-mouse  0x8C0010 ;
 @v-kbd    0x8C0014 ;
@@ -36,6 +38,8 @@ IMPORT UI
 @draw-fd  ( -- fd ) dfd LOADI ;
 @mouse-fd ( -- fd ) mfd LOADI ;
 @kbd-fd   ( -- fd ) kfd LOADI ;
+@menu-fd  ( -- fd ) nfd LOADI ;
+@under-shell? ( -- f ) nfd LOADI ;
 @width    ( -- w )  win-w LOADI ;
 @height   ( -- h )  win-h LOADI ;
 @dirty!   ( -- )    1 dirty-f STOREI ;
@@ -176,12 +180,29 @@ IMPORT UI
     ] |:
     kfd STOREI
 
-    ( Get Resolution )
-    960 win-w STOREI
-    720 win-h STOREI
+    ( /dev/menu is optional; a missing file means the app owns its bar. )
+    T"/dev/menu" VFS::open dup 0 < [ drop 0 ] ?
+    nfd STOREI
+    nfd LOADI UI::export-fd!
+
+    ( Canvas size from /dev/draw: LE u16 w, u16 h. Fallback 960×720. )
+    dfd LOADI npkt 4 VFS::read 4 = [
+        npkt DRAW::load-word-le win-w STOREI
+        npkt 2 + DRAW::load-word-le win-h STOREI
+    ] [
+        960 win-w STOREI
+        720 win-h STOREI
+    ] ?:
 ;
 
 ( --- Framework Lifecycle --- )
+
+@sync-canvas ( -- )
+    dfd LOADI npkt 4 VFS::read 4 = [
+        npkt DRAW::load-word-le win-w STOREI
+        npkt 2 + DRAW::load-word-le win-h STOREI
+    ] ?
+;
 
 @init ( title-ptr -- )
     VFS::set-window-title
@@ -195,6 +216,7 @@ IMPORT UI
 @loop ( -- )
     [ 1 ] [
         dfd LOADI DRAW::begin-frame
+        sync-canvas
 
         ( 1. Handle Mouse — drain the queue so a drag sees every move )
         [ mfd LOADI mpkt 8 VFS::read 8 = ]
@@ -226,10 +248,26 @@ IMPORT UI
             ] ?:
         ] ?
 
+        nfd LOADI 0 > [
+            nfd LOADI npkt 32 VFS::read
+            dup 2 >= [
+                npkt load-byte 1 = [
+                    npkt 1 + load-byte
+                    dup 30 > [ drop 30 ] ?
+                    npkt 2 + OVER + 0 SWAP store-byte
+                    npkt 2 + UI::menu-pick
+                ] ?
+            ] ?
+            drop
+        ] ?
+        UI::handle
+
         ( 3. Handle Frame )
         v-frame LOADI dup 0 > [
             CALLSTACK
         ] [ drop ] ?:
+
+        nfd LOADI 0 > [ UI::export ] ?
 
         ( 4. Handle Overlay )
         esc-open LOADI [

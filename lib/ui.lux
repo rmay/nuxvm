@@ -1665,6 +1665,8 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 @MB_HOVER  0x8E0F60 ;
 @MB_W      0x8E0F64 ;
 @MB_HAS    0x8E0F68 ;
+@MB_XFD    0x8E0F70 ; ( /dev/menu fd; 0 = draw the bar locally )
+@MB_LOCAL  0x8E0F74 ; ( 1 = also paint/feed the bar in the window )
 @CH_N      0x8E0F6C ;
 @CH_SLAB   0x8E1F40 ;
 @CH_MAX    8 ;
@@ -1721,6 +1723,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     -1 MB_HOVER STOREI
     0 MB_W STOREI
     0 MB_HAS STOREI
+    0 MB_LOCAL STOREI
     0 CH_N STOREI
 ;
 
@@ -2280,6 +2283,86 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     T"-" 0 MI_SEP 0 item-add
 ;
 
+@exported? ( -- f ) MB_XFD LOADI ;
+
+@export-fd! ( fd -- ) MB_XFD STOREI ;
+
+( 1 = File/Edit still live in the window while a host injects the same bar. )
+@local-bar! ( f -- ) MB_LOCAL STOREI ;
+
+@local-bar? ( -- f )
+    exported? 0 = MB_LOCAL LOADI OR
+;
+
+( File → Quit when the app never built a bar. w is the bar width. )
+@ensure-file-quit ( w -- )
+    MN_N LOADI 0 = [
+        -1 MB_ACTIVE STOREI
+        -1 MB_HOVER STOREI
+        -1 MB_CUR STOREI
+        menubar
+        T"File" menu
+        T"Quit" [ drop HALT ] item
+    ] [
+        drop
+    ] ?:
+;
+
+@MB_XBUF 0x8E3000 ;
+
+@xcopy ( src dst n -- dst+n )
+    3 frame! ( 0:n 1:dst 2:src )
+    0
+    [ dup 0 local@ < ] [
+        2 local@ OVER + load-byte
+        1 local@ 2 PICK + store-byte
+        1 +
+    ] |:
+    drop
+    1 local@ 0 local@ +
+    3 unframe!
+;
+
+@export ( -- )
+    MB_XFD LOADI 0 = [ ] [
+        1 MB_XBUF store-byte
+        MN_N LOADI MB_XBUF 1 + store-byte
+        MB_XBUF 2 + 0 2 frame! ( 0:mi 1:dst )
+        0 0 local!
+        [ 0 local@ MN_N LOADI < ] [
+            0 local@ mn-at MN_TEXT + LOADI
+            dup STR::strlen dup 255 > [ drop 255 ] ?
+            dup 1 local@ store-byte
+            1 local@ 1 + 1 local!
+            1 local@ SWAP xcopy 1 local!
+            0 local@ mn-at MN_COUNT + LOADI
+            dup 1 local@ store-byte
+            1 local@ 1 + 1 local!
+            drop
+            0 local@ mn-at MN_FIRST + LOADI
+            0 local@ mn-at MN_COUNT + LOADI OVER + SWAP
+            [ dup 2 PICK < ] [
+                dup mi-at MI_KIND + LOADI 1 local@ store-byte
+                1 local@ 1 + 1 local!
+                dup mi-at MI_CHK + LOADI 1 local@ store-byte
+                1 local@ 1 + 1 local!
+                0 1 local@ store-byte
+                1 local@ 1 + 1 local!
+                dup mi-at MI_ROW + LOADI C_TEXT + LOADI
+                dup STR::strlen dup 255 > [ drop 255 ] ?
+                dup 1 local@ store-byte
+                1 local@ 1 + 1 local!
+                1 local@ SWAP xcopy 1 local!
+                1 +
+            ] |:
+            drop drop
+            0 local@ 1 + 0 local!
+        ] |:
+        MB_XFD LOADI MB_XBUF 1 local@ MB_XBUF - VFS::write drop
+        2 unframe!
+    ] ?
+;
+
 @item-set ( name val -- )
     2 frame! ( 0:val 1:name )
     0
@@ -2311,6 +2394,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     ] |:
     drop
     2 unframe!
+    export
 ;
 
 @item@ ( name -- 0|1 )
@@ -2325,6 +2409,23 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
             drop 0
         ] ?:
     ] ?:
+    1 unframe!
+;
+
+@menu-pick ( name -- )
+    1 frame! ( 0:name )
+    0
+    [ dup MI_N LOADI < ] [
+        dup mi-at MI_ROW + LOADI C_TEXT + LOADI
+        0 local@ STR::streq [
+            dup mb-apply
+            drop
+            MI_N LOADI
+        ] [
+            1 +
+        ] ?:
+    ] |:
+    drop
     1 unframe!
 ;
 
@@ -2515,7 +2616,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
         ] [
         dup K_MENUBAR = [
             drop drop drop
-            mb-draw-bar
+            local-bar? [ mb-draw-bar ] ?
         ] [
         dup K_GROUPBOX = [
             drop groupbox-draw
@@ -2528,7 +2629,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
         1 +
     ] |:
     drop
-    mb-draw-drop
+    local-bar? [ mb-draw-drop ] ?
 ;
 
 @cb-draw ( -- ) draw ;
@@ -2789,20 +2890,22 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 @feed ( mpkt -- )
     0 SWAP 2 frame! ( 0:mpkt 1:hit )
     0 1 local!
-    MB_ACTIVE LOADI -1 > [
-        0 local@ mb-feed-open
-        1 1 local!
-    ] [
-        0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
-            0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y mb-hit-title
-            dup -1 > [
-                mb-open
-                1 1 local!
-            ] [
-                drop
-            ] ?:
-        ] ?
-    ] ?:
+    local-bar? [
+        MB_ACTIVE LOADI -1 > [
+            0 local@ mb-feed-open
+            1 1 local!
+        ] [
+            0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+                0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y mb-hit-title
+                dup -1 > [
+                    mb-open
+                    1 1 local!
+                ] [
+                    drop
+                ] ?:
+            ] ?
+        ] ?:
+    ] ?
     1 local@ [
     ] [
     SL_DRAG LOADI [

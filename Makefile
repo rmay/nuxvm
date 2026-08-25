@@ -34,7 +34,7 @@ all: dir $(TARGETS)
 # Needed after compiler or base-address changes; *.bin is gitignored.
 apps: $(BIN_DIR)/luxc $(APP_BINS)
 
-apps/%.bin: apps/%.lux $(BIN_DIR)/luxc
+apps/%.bin: apps/%.lux $(BIN_DIR)/luxc $(wildcard lib/*.lux)
 	@echo "Compiling $< -> $@"
 	@$(BIN_DIR)/luxc -target graphical -o $@ $<
 
