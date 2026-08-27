@@ -10,8 +10,8 @@
  * emit(), the same way the Lux tutorial does it before string support, and
  * runs directly under bin/nux (no Cloister host needed):
  *
- *   bin/fluxioc -target headless -o examples/hello_console.bin examples/hello_console.fx
- *   bin/nux examples/hello_console.bin
+ *   bin/fluxioc -target headless -o examples/fluxio/hello_console.bin examples/fluxio/hello_console.fx
+ *   bin/nux examples/fluxio/hello_console.bin
  */
 
 /** prints "Hello, World!" followed by a newline, one ASCII code at a time */

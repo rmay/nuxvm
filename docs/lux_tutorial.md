@@ -621,7 +621,7 @@ IMPORT MATH AS M
 
 After playing around in the REPL, it stands to reason that the more inquisitive or just plain nosy might look into compiling code.
 
-There are examples in the examples directory.
+There are examples in `examples/lux/`.
 
 Here's `hello.lux`
 
@@ -673,14 +673,14 @@ Here's `hello.lux`
 
 Run the compiler using that file:
 
-> $ ./luxc ./luxc examples/hello.lux
-> Compiled: examples/hello.bin
+> $ ./luxc examples/lux/hello.lux
+> Compiled: examples/lux/hello.bin
 
 The `bin` file is the compiled opcodes.
 
 Run that through the `nux vm`
 
-> ./nux examples/hello.bin
+> ./nux examples/lux/hello.bin
 > 42 Hi
 > Hello, World!
 > Hi 2

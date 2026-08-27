@@ -62,15 +62,15 @@ The two base addresses matter because `nux` and `cloister` load programs at diff
 Compile for the console runner:
 
 ```bash
-./bin/fluxioc -target headless -o examples/fib.bin examples/fib.fx
-./bin/nux examples/fib.bin
+./bin/fluxioc -target headless -o examples/fluxio/fib.bin examples/fluxio/fib.fx
+./bin/nux examples/fluxio/fib.bin
 ```
 
 Compile for the graphical host:
 
 ```bash
-./bin/fluxioc -target graphical -o examples/hello_cloister.bin examples/hello_cloister.fx
-./bin/cloister examples/hello_cloister.bin
+./bin/fluxioc -target graphical -o examples/fluxio/hello_cloister.bin examples/fluxio/hello_cloister.fx
+./bin/cloister examples/fluxio/hello_cloister.bin
 ```
 
 Programs that only touch `emit`/`print` (no `vfs_open`/draw calls) behave identically under either target — but the target must still match whichever host actually runs the `.bin`, since it's baked into every absolute address in the bytecode.
@@ -78,7 +78,7 @@ Programs that only touch `emit`/`print` (no `vfs_open`/draw calls) behave identi
 Inspect the compiled bytecode around a specific address (useful when a VM fault reports a PC):
 
 ```bash
-./bin/fluxioc -dumpAt 0x10120 -dumpRange 32 examples/fib.fx
+./bin/fluxioc -dumpAt 0x10120 -dumpRange 32 examples/fluxio/fib.fx
 ```
 
 ### Multi-file programs
@@ -86,11 +86,11 @@ Inspect the compiled bytecode around a specific address (useful when a VM fault 
 `include "path.fx";` splices another file's tokens in place, resolved relative to the *including* file's directory. `fluxioc` handles this transparently — pass only the entry file:
 
 ```bash
-./bin/fluxioc -target headless -o examples/include_demo.bin examples/include_demo.fx
-./bin/nux examples/include_demo.bin
+./bin/fluxioc -target headless -o examples/fluxio/include_demo.bin examples/fluxio/include_demo.fx
+./bin/nux examples/fluxio/include_demo.bin
 ```
 
-See `examples/include_demo.fx` + `examples/include_lib/mathlib.fx`.
+See `examples/fluxio/include_demo.fx` + `examples/fluxio/include_lib/mathlib.fx`.
 
 ## Fluxio and Cloister
 

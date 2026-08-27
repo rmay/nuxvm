@@ -33,7 +33,7 @@ int main() {
 ./bin/nux hello.bin
 ```
 
-Every Fluxio program needs an `int main()` — that's the compiled entry point. See `examples/hello_console.fx`.
+Every Fluxio program needs an `int main()` — that's the compiled entry point. See `examples/fluxio/hello_console.fx`.
 
 ## Naming and documentation rules
 
@@ -110,7 +110,7 @@ recursive(32) int fib(int n) {
 }
 ```
 
-Exceeding the declared depth halts the program cleanly with a distinct sentinel return value (`-1`) rather than overrunning the VM's fixed-size return stack. This is a deliberate JSF AV-style constraint: "no unbounded recursion," enforced by the compiler rather than trusted to the programmer. See `examples/fib.fx`.
+Exceeding the declared depth halts the program cleanly with a distinct sentinel return value (`-1`) rather than overrunning the VM's fixed-size return stack. This is a deliberate JSF AV-style constraint: "no unbounded recursion," enforced by the compiler rather than trusted to the programmer. See `examples/fluxio/fib.fx`.
 
 ## Arrays
 
@@ -151,7 +151,7 @@ int main() {
 }
 ```
 
-See `examples/array_string_demo.fx`.
+See `examples/fluxio/array_string_demo.fx`.
 
 ## Structs
 
@@ -180,7 +180,7 @@ Struct instances follow the same reference rules as arrays, deliberately:
 - A **local** struct instance has no stable address (same VM constraint as local arrays) and cannot be passed to a function at all — compile error if attempted.
 - There is **no whole-instance assignment** (`a = b;` between two structs is rejected) and **no struct-typed return** — a function that needs to hand back struct-shaped data takes the struct as a parameter and mutates it, as `translate` does above.
 
-See `examples/struct_demo.fx`.
+See `examples/fluxio/struct_demo.fx`.
 
 ## Splitting a program across files
 
@@ -196,7 +196,7 @@ int main() {
 
 `include "path.fx";` is textual inclusion, resolved relative to the *including* file's own directory (not the entry file's), spliced in before parsing. There is no module/namespace keyword — Fluxio stays a single flat global namespace, same as the rest of the language, so cross-file name collisions are caught by the ordinary "already defined" check. The convention is descriptive, prefixed names (`fx_max`, `fx_factorial`) rather than a namespacing mechanism, matching C/embedded-C practice.
 
-Circular includes are a compile error, not infinite recursion, and a file included through two different paths (a diamond) contributes its tokens exactly once. Pass only the entry file to `fluxioc` — includes are resolved automatically. See `examples/include_demo.fx` + `examples/include_lib/mathlib.fx`.
+Circular includes are a compile error, not infinite recursion, and a file included through two different paths (a diamond) contributes its tokens exactly once. Pass only the entry file to `fluxioc` — includes are resolved automatically. See `examples/fluxio/include_demo.fx` + `examples/fluxio/include_lib/mathlib.fx`.
 
 ## Cloister builtins
 
@@ -248,7 +248,7 @@ int main() {
 }
 ```
 
-Compile for the target that will actually run it (`-target graphical` for `bin/cloister`, `-target headless` for `bin/nux`) — see [`using-fluxio.md`](using-fluxio.md). See `examples/cloister_hello.fx` and `examples/hello_cloister.fx`.
+Compile for the target that will actually run it (`-target graphical` for `bin/cloister`, `-target headless` for `bin/nux`) — see [`using-fluxio.md`](using-fluxio.md). See `examples/fluxio/cloister_hello.fx` and `examples/fluxio/hello_cloister.fx`.
 
 ## What's not here (yet)
 

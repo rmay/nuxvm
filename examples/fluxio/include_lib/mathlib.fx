@@ -1,4 +1,4 @@
-/* Small library file, included by examples/include_demo.fx to show how a
+/* Small library file, included by examples/fluxio/include_demo.fx to show how a
  * Fluxio program splits across files. Paths in `include "...";` resolve
  * relative to the file that contains the directive. */
 

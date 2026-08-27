@@ -4,8 +4,8 @@
  * check. The convention is descriptive prefixed names (fx_max, fx_factorial
  * below), same as C/embedded-C practice.
  *
- *   bin/fluxioc -target headless -o examples/include_demo.bin examples/include_demo.fx
- *   bin/nux examples/include_demo.bin
+ *   bin/fluxioc -target headless -o examples/fluxio/include_demo.bin examples/fluxio/include_demo.fx
+ *   bin/nux examples/fluxio/include_demo.bin
  */
 
 include "include_lib/mathlib.fx";

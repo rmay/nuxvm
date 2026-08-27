@@ -4,11 +4,11 @@
  * since Fluxio has no operator overloading and structs can't be returned
  * by value.
  *
- *   bin/fluxioc -target headless -o examples/float_demo.bin examples/float_demo.fx
- *   bin/nux examples/float_demo.bin
+ *   bin/fluxioc -target headless -o examples/fluxio/float_demo.bin examples/fluxio/float_demo.fx
+ *   bin/nux examples/fluxio/float_demo.bin
  */
 
-include "../lib/float.fx";
+include "../../lib/float.fx";
 
 Float a;
 Float b;

@@ -6,8 +6,8 @@
  * through the real graphical host rather than headless nux).
  *
  * Run for real, in a window:
- *   bin/fluxioc -target graphical -o examples/hello_cloister.bin examples/hello_cloister.fx
- *   bin/cloister examples/hello_cloister.bin
+ *   bin/fluxioc -target graphical -o examples/fluxio/hello_cloister.bin examples/fluxio/hello_cloister.fx
+ *   bin/cloister examples/fluxio/hello_cloister.bin
  *
  * Note: when a .bin is passed directly on the command line, cloister quits
  * the instant the program halts (src/cloister.c: `from_argv` -> `quit =
@@ -19,8 +19,8 @@
  * Run headless (compiles/executes identically, just no window to look at --
  * see docs/fluxio-language-plan.md's v2b section for how this was verified
  * pixel-exact against the framebuffer without a display):
- *   bin/fluxioc -target headless -o examples/hello_cloister.bin examples/hello_cloister.fx
- *   bin/nux examples/hello_cloister.bin
+ *   bin/fluxioc -target headless -o examples/fluxio/hello_cloister.bin examples/fluxio/hello_cloister.fx
+ *   bin/nux examples/fluxio/hello_cloister.bin
  */
 
 /** entry point */

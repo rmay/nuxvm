@@ -36,16 +36,16 @@ make
 ./bin/nux -trace program.bin
 ```
 
-### Run example modules
+### Run a Lux example
 ```bash
-./bin/luxc -target headless examples/modules/module_basic.lux
-./bin/nux examples/modules/module_basic.bin
+./bin/luxc -target headless examples/lux/modules/module_basic.lux
+./bin/nux examples/lux/modules/module_basic.bin
 ```
 
-### Compile and run a Fluxio program
+### Compile and run a Fluxio example
 ```bash
-./bin/fluxioc -target headless -o examples/fib.bin examples/fib.fx
-./bin/nux examples/fib.bin
+./bin/fluxioc -target headless -o examples/fluxio/fib.bin examples/fluxio/fib.fx
+./bin/nux examples/fluxio/fib.bin
 ```
 
 ### Run tests
@@ -88,7 +88,9 @@ vm_free(vm);
 nuxvm/
 ├── src/              # C sources (VM, compiler, tools, tests)
 ├── include/          # C headers
-├── examples/         # Example programs
+├── examples/
+│   ├── lux/          # Lux (Forth-style) examples
+│   └── fluxio/       # Fluxio (C-like) examples
 └── docs/             # Documentation
 ```
 
@@ -96,7 +98,9 @@ nuxvm/
 
 - [using-lux.md](using-lux.md) / [lux_tutorial.md](lux_tutorial.md) — the Lux language and toolchain.
 - [using-fluxio.md](using-fluxio.md) / [fluxio_tutorial.md](fluxio_tutorial.md) — the Fluxio language and toolchain.
-- [examples/README.md](../examples/README.md) — detailed examples for both languages.
+- [examples/README.md](../examples/README.md) — index for both languages.
+- [examples/lux/README.md](../examples/lux/README.md) — Lux example programs.
+- [examples/fluxio/README.md](../examples/fluxio/README.md) — Fluxio example programs.
 
 ## License
 

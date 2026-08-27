@@ -3,7 +3,7 @@
  * "float" here is a plain user-level struct of two ints, and arithmetic is
  * exposed as named functions that mutate an `out` struct parameter through
  * the same reference-passing mechanism `translate(Point p, ...)` already
- * uses (see examples/struct_demo.fx). Every argument passed to these
+ * uses (see examples/fluxio/struct_demo.fx). Every argument passed to these
  * functions (including `out`) must itself be a global Float or an incoming
  * struct parameter -- a local Float instance has no stable address and
  * can't be passed to a function at all (same VM constraint as local

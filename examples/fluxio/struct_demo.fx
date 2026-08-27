@@ -5,8 +5,8 @@
  * function can mutate the caller's struct through it; a local struct has
  * no stable address and can't be passed at all (compile error if tried).
  *
- *   bin/fluxioc -target headless -o examples/struct_demo.bin examples/struct_demo.fx
- *   bin/nux examples/struct_demo.bin
+ *   bin/fluxioc -target headless -o examples/fluxio/struct_demo.bin examples/fluxio/struct_demo.fx
+ *   bin/nux examples/fluxio/struct_demo.bin
  */
 
 /** a point in 2D space */

@@ -58,33 +58,33 @@ The default output path logic is exactly: strip a trailing `.lux` extension (cas
 Compile with defaults:
 
 ```bash
-./bin/luxc examples/hello.lux
-# Compiled: examples/hello.bin
+./bin/luxc examples/lux/hello.lux
+# Compiled: examples/lux/hello.bin
 ```
 
 Explicit output path:
 
 ```bash
-./bin/luxc -o /tmp/out.bin examples/hello.lux
+./bin/luxc -o /tmp/out.bin examples/lux/hello.lux
 ```
 
 Capture a trace for a compile failure:
 
 ```bash
-./bin/luxc -trace examples/hello.lux 2> trace.log
+./bin/luxc -trace examples/lux/hello.lux 2> trace.log
 ```
 
 ### Compile-and-run
 
 ```bash
-./bin/luxc examples/hello.lux
-./bin/nux examples/hello.bin
+./bin/luxc examples/lux/hello.lux
+./bin/nux examples/lux/hello.bin
 ```
 
 Or skip the intermediate file — `nux` and `cloister` detect a `.lux` suffix and compiles in-process:
 
 ```bash
-./bin/nux examples/hello.lux
+./bin/nux examples/lux/hello.lux
 ```
 
 The shortcut recompiles on every run. Prefer `luxc` when you're distributing a program or want a stable bytecode artifact.

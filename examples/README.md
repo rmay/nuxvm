@@ -1,51 +1,44 @@
 # Example Programs
 
-Example programs and module demos for the NUX VM, in both front-end languages: Lux (`.lux`, Forth-style) and Fluxio (`.fx`, C-like).
+Example programs for the NUX VM, split by front-end language:
+
+| Tree | Language | Sources |
+| ---- | -------- | ------- |
+| [`lux/`](lux/) | Lux — Forth-style, concatenative | `.lux` |
+| [`fluxio/`](fluxio/) | Fluxio — C-like, imperative | `.fx` |
+
+Both compile to the same 55-opcode bytecode and run on `nux` (console) and `cloister` (graphical).
 
 ## Quick Start — Lux
 
 ```bash
 # From the repo root, after `make`:
-./bin/luxc -target headless examples/modules/module_basic.lux
-./bin/nux examples/modules/module_basic.bin
+./bin/luxc -target headless examples/lux/hello.lux
+./bin/nux examples/lux/hello.bin
 ```
+
+`nux` and `cloister` also compile `.lux` in-process:
+
+```bash
+./bin/nux examples/lux/hello.lux
+```
+
+See [`lux/README.md`](lux/README.md) for the full list, and [`docs/using-lux.md`](../docs/using-lux.md) / [`docs/lux_tutorial.md`](../docs/lux_tutorial.md) for the CLI and language.
 
 ## Quick Start — Fluxio
 
 ```bash
-./bin/fluxioc -target headless -o examples/hello_console.bin examples/hello_console.fx
-./bin/nux examples/hello_console.bin
+./bin/fluxioc -target headless -o examples/fluxio/hello_console.bin examples/fluxio/hello_console.fx
+./bin/nux examples/fluxio/hello_console.bin
 ```
 
-See [`docs/using-fluxio.md`](../docs/using-fluxio.md) and [`docs/fluxio_tutorial.md`](../docs/fluxio_tutorial.md) for the full CLI and language reference.
+Fluxio always goes through `fluxioc` first — `nux` and `cloister` do not compile `.fx` in-process.
 
-## What's Included — Lux
-
-- `hello.bin` / `hello.lux` — hello-world bytecode (`./bin/nux examples/hello.bin`)
-- `modules/module_basic.lux` — defining and calling words inside a `MODULE`
-- `modules/module_imports.lux` — `IMPORT ... AS ...` aliasing between modules
-- `modules/module_isolation.lux` — namespace isolation between modules
-- `modules/calculator.lux` — a small calculator built from modules
-
-See `modules/MODULE_SYSTEM.md` for a walkthrough of the module system.
-
-## What's Included — Fluxio
-
-Each `.fx` file's compile/run command is documented in its own header comment; the general pattern is `./bin/fluxioc -target <headless|graphical> -o out.bin file.fx` then `./bin/nux out.bin` or `./bin/cloister out.bin`.
-
-- `hello_console.fx` — console "hello world" via `emit()`, the Fluxio counterpart to `hello.lux`
-- `fib.fx` — bounded recursion (`recursive(N)`)
-- `array_string_demo.fx` — fixed-size arrays, string-literal initializers, bounds-checked indexing
-- `struct_demo.fx` — `struct` declarations, field access, pass-by-reference mutation
-- `include_demo.fx` + `include_lib/mathlib.fx` — splitting a program across files with `include "...";`
-- `cloister_hello.fx` — windowed draw-device demo (filled rects + text), runnable headless or under Cloister
-- `hello_cloister.fx` — the Fluxio counterpart to a windowed Lux hello-world, meant to be watched under `./bin/cloister`
-
-See [`docs/fluxio-language-plan.md`](../docs/fluxio-language-plan.md) for the design rationale behind each of these.
+See [`fluxio/README.md`](fluxio/README.md) for the full list, and [`docs/using-fluxio.md`](../docs/using-fluxio.md) / [`docs/fluxio_tutorial.md`](../docs/fluxio_tutorial.md) for the CLI and language.
 
 ## Writing Bytecode Directly
 
-The VM executes raw big-endian bytecode; you can build programs without Lux by
+The VM executes raw big-endian bytecode; you can build programs without Lux or Fluxio by
 emitting opcodes yourself (see `include/opcodes.h` for the full set):
 
 ```c

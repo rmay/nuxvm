@@ -29,5 +29,6 @@
   "SF::draw",
   "SF::picked?",
   "SF::cancelled?",
-  "SF::clear-result!"
+  "SF::clear-result!",
+  "DRAW::use"
 ]

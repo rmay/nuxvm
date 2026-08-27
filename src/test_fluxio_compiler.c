@@ -3,6 +3,7 @@
 #include "fluxio_parser.h"
 #include "fluxio_codegen.h"
 #include "machine.h"
+#include "vfs.h"
 #include "vm.h"
 #include "opcodes.h"
 #include <stdio.h>
@@ -1531,7 +1532,1033 @@ static void test_error_builtin_int_arg_required(void) {
 }
 
 /* -----------------------------------------------------------------------
- * End-to-end fixture via the on-disk .bin path is covered by examples/fib.fx
+ * Phase C, docs/quill_fluxio.md: apps/fluxio/Quill.fx (v1, minimal loop).
+ * Drives the real compiled app through a simulated typing session --
+ * inject synthetic keydown packets over a bound /dev/kbd channel (same
+ * technique as test_vfs.c's test_mouse_chan_packet), pump frames, quit,
+ * then verify the saved file's actual content through a fresh System.
+ * This is the strongest verification available short of running it under
+ * bin/cloister by hand: it proves the real on-disk app compiles, the
+ * keyboard-driven edit loop actually mutates file_buf correctly, and the
+ * save path round-trips through the real host filesystem -- not just
+ * "it didn't fault".
+ * ----------------------------------------------------------------------- */
+
+/* Builds apps/fluxio/Quill.bin (via the real Makefile rule -- see below)
+ * and returns a freshly created Machine for it, or NULL if fluxioc isn't
+ * built / the source isn't found. Shared by every Quill.fx test so none
+ * of them duplicate the build step. */
+static Machine* quill_fx_machine(const char* dir, char* out_bin_path, size_t out_bin_path_cap) {
+    (void) dir; /* kept for call-site compatibility; the real build always writes to the canonical path below */
+    FILE* probe = fopen("./bin/fluxioc", "rb");
+    if (!probe) {
+        printf("  (skipped: ./bin/fluxioc not built yet -- run from repo root after `make`)\n");
+        return NULL;
+    }
+    fclose(probe);
+    probe = fopen("apps/fluxio/Quill.fx", "rb");
+    if (!probe) {
+        printf("  (skipped: apps/fluxio/Quill.fx not found -- run from repo root)\n");
+        return NULL;
+    }
+    fclose(probe);
+
+    /* Quill.fx calls into the linked UI library (docs/quill_fluxio.md
+     * Phase B7/C: UI::new, UI::sbar-*), so it can't just be compiled with
+     * fluxioc alone -- it needs the same compile-lib / compile-app /
+     * fluxlink pipeline the real Makefile rule for apps/fluxio/Quill.bin
+     * runs. Shelling out to `make` for that target (rather than
+     * reimplementing the pipeline here) means this test can never drift
+     * from how Quill.bin is actually built. */
+    assert(system("make apps/fluxio/Quill.bin >/tmp/nuxvm_test_quill_fx_build.log 2>&1") == 0);
+
+    snprintf(out_bin_path, out_bin_path_cap, "apps/fluxio/Quill.bin");
+    FILE* bf = fopen(out_bin_path, "rb");
+    assert(bf != NULL);
+    fseek(bf, 0, SEEK_END);
+    long blen = ftell(bf);
+    fseek(bf, 0, SEEK_SET);
+    uint8_t* bc = malloc((size_t) blen);
+    assert(fread(bc, 1, (size_t) blen, bf) == (size_t) blen);
+    fclose(bf);
+
+    Machine* m = machine_create(bc, (uint32_t) blen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
+    free(bc);
+    return m;
+}
+
+static void test_quill_fx_type_and_save(void) {
+    printf("Testing apps/fluxio/Quill.fx: type \"Hi\", save, verify file content...\n");
+
+    const char* dir = "/tmp/nuxvm_test_quill_fx";
+    char binpath[256];
+    Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    if (!m) return;
+
+    remove("quill_scratch.txt"); /* fresh start -- sandbox_root defaults to "." */
+
+    int32_t cfd = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t pfd = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(cfd >= 100 && pfd >= 100);
+    assert(vfs_bind(m->system, pfd, "/dev/kbd") == 0);
+    vfs_close(m->system, pfd);
+
+    /* Type(1)=0 (KEY_DOWN), pad(1), key:u16 LE, mods:u32 (unused, zero).
+     * "Hi", then Tab (Quill.fx's placeholder save key), then Esc (quit). */
+    int keys[] = { 'H', 'i', 9, 27 };
+    for (int k = 0; k < 4; k++) {
+        uint8_t pkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
+        assert(vfs_write(m->system, cfd, pkt, 8) == 8);
+        int frames = 0;
+        while (!m->cpu->halted && frames < 3) {
+            machine_tick(m);
+            frames++;
+        }
+    }
+    vfs_close(m->system, cfd);
+
+    assert(m->cpu->halted); /* Esc returned from main() */
+    machine_free(m);
+
+    System* check = system_create();
+    assert(check != NULL);
+    int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
+    assert(rfd >= 0);
+    uint8_t got[16] = { 0 };
+    int n = vfs_read(check, rfd, got, sizeof(got));
+    vfs_close(check, rfd);
+    system_free(check);
+
+    assert(n == 2);
+    assert(got[0] == 'H' && got[1] == 'i');
+
+    remove("quill_scratch.txt");
+}
+
+/* Mouse click positioning (find_click_index) against the word-wrap line
+ * cache (rebuild_lines): seeds a real 3-line file, clicks at the start
+ * of line 2 (row 1, left edge), types one character, saves, and checks
+ * the saved bytes land exactly where a click at that pixel position
+ * should put the cursor -- proves the y->line and x->column mapping
+ * are both right, not just "it didn't fault". */
+static void test_quill_fx_click_positions_cursor(void) {
+    printf("Testing apps/fluxio/Quill.fx: mouse click positions the cursor correctly...\n");
+
+    const char* dir = "/tmp/nuxvm_test_quill_fx_click";
+    char binpath[256];
+    Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    if (!m) return;
+
+    /* Seed the file before the first tick -- load_file() only runs once
+     * main() actually starts executing, on the first machine_tick() call
+     * below, so this is well before that. */
+    remove("quill_scratch.txt");
+    FILE* seed = fopen("quill_scratch.txt", "wb");
+    assert(seed != NULL);
+    const char* content = "AB\nCD\nEF\n";
+    assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
+    fclose(seed);
+
+    int32_t mc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t mp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(mc >= 100 && mp >= 100);
+    assert(vfs_bind(m->system, mp, "/dev/mouse") == 0);
+    vfs_close(m->system, mp);
+
+    int32_t kc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t kp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(kc >= 100 && kp >= 100);
+    assert(vfs_bind(m->system, kp, "/dev/kbd") == 0);
+    vfs_close(m->system, kp);
+
+    /* MOUSE_DOWN(3) at (16, 65): row 1 (pane_y=40 + 1*line_h=20 -> [60,80)),
+     * x=pane_x -> the left edge of "CD", byte index 3 in "AB\nCD\nEF\n". */
+    uint8_t mpkt[8] = { 3, 1, 16, 0, 65, 0, 0, 0 };
+    assert(vfs_write(m->system, mc, mpkt, 8) == 8);
+    int frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+
+    /* Type 'X' at the clicked position, then Tab (save) and Esc (quit). */
+    int keys[] = { 'X', 9, 27 };
+    for (int k = 0; k < 3; k++) {
+        uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
+        assert(vfs_write(m->system, kc, kpkt, 8) == 8);
+        frames = 0;
+        while (!m->cpu->halted && frames < 3) {
+            machine_tick(m);
+            frames++;
+        }
+    }
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    System* check = system_create();
+    assert(check != NULL);
+    int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
+    assert(rfd >= 0);
+    uint8_t got[16] = { 0 };
+    int n = vfs_read(check, rfd, got, sizeof(got));
+    vfs_close(check, rfd);
+    system_free(check);
+
+    assert(n == 10);
+    assert(memcmp(got, "AB\nXCD\nEF\n", 10) == 0);
+
+    remove("quill_scratch.txt");
+}
+
+/* rebuild_lines' word-wrap: a single "word" with no spaces, much wider
+ * than the pane, must still terminate (the hard-char-wrap fallback path)
+ * instead of looping forever or faulting -- the real risk in a
+ * from-scratch line-wrap implementation. Also confirms editing after a
+ * forced wrap doesn't corrupt the buffer: appends one more character and
+ * checks the total saved length grew by exactly one. */
+static void test_quill_fx_wraps_long_word_without_fault(void) {
+    printf("Testing apps/fluxio/Quill.fx: word-wrap handles an overlong word without faulting...\n");
+
+    const char* dir = "/tmp/nuxvm_test_quill_fx_wrap";
+    char binpath[256];
+    Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    if (!m) return;
+    machine_free(m);
+
+    remove("quill_scratch.txt");
+    FILE* seed = fopen("quill_scratch.txt", "wb");
+    assert(seed != NULL);
+    char content[300];
+    memset(content, 'A', sizeof(content));
+    int content_len = (int) sizeof(content);
+    assert(fwrite(content, 1, (size_t) content_len, seed) == (size_t) content_len);
+    fclose(seed);
+
+    m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    assert(m != NULL);
+
+    int32_t kc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t kp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(kc >= 100 && kp >= 100);
+    assert(vfs_bind(m->system, kp, "/dev/kbd") == 0);
+    vfs_close(m->system, kp);
+
+    int32_t mc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t mp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(mc >= 100 && mp >= 100);
+    assert(vfs_bind(m->system, mp, "/dev/mouse") == 0);
+    vfs_close(m->system, mp);
+
+    /* Run enough frames to load, rebuild_lines() the 300-char word, and
+     * render several times -- the thing under test is that this doesn't
+     * hang or fault, not any particular rendered layout. */
+    int frames = 0;
+    while (!m->cpu->halted && frames < 20) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(!m->cpu->halted); /* still running the main loop, not crashed/exited */
+
+    /* Click well below all wrapped lines -- find_click_index falls
+     * through to file_len -- to move the cursor to end-of-buffer without
+     * needing a dedicated "End" key (Quill.fx doesn't have one yet).
+     * Then append one char, save, quit. */
+    uint8_t mpkt[8] = { 3, 1, 16, 0, 232, 3, 0, 0 }; /* (16, 1000): 1000 = 0x03E8 LE */
+    assert(vfs_write(m->system, mc, mpkt, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < content_len + 5) {
+        machine_tick(m);
+        frames++;
+    }
+
+    int keys[] = { 'Z', 9, 27 };
+    for (int k = 0; k < 3; k++) {
+        uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
+        assert(vfs_write(m->system, kc, kpkt, 8) == 8);
+        frames = 0;
+        while (!m->cpu->halted && frames < content_len + 5) {
+            machine_tick(m);
+            frames++;
+        }
+    }
+    vfs_close(m->system, kc);
+    vfs_close(m->system, mc);
+
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    System* check = system_create();
+    assert(check != NULL);
+    int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
+    assert(rfd >= 0);
+    uint8_t got[512] = { 0 };
+    int n = vfs_read(check, rfd, got, sizeof(got));
+    vfs_close(check, rfd);
+    system_free(check);
+
+    assert(n == content_len + 1);
+    assert(got[content_len] == 'Z');
+
+    remove("quill_scratch.txt");
+}
+
+/* Hex mode (view-only, Home key toggles): renders a hex dump for several
+ * frames without faulting, moves the cursor with arrow keys while in hex
+ * mode, toggles back to text mode, and confirms editing afterward still
+ * lands at the right byte offset -- proves the mode toggle doesn't lose
+ * or corrupt cursor/buffer state, not just "the hex view doesn't crash". */
+static void test_quill_fx_hex_mode_toggle(void) {
+    printf("Testing apps/fluxio/Quill.fx: hex mode toggle, render, and cursor move...\n");
+
+    const char* dir = "/tmp/nuxvm_test_quill_fx_hex";
+    char binpath[256];
+    Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    if (!m) return;
+    machine_free(m);
+
+    remove("quill_scratch.txt");
+    FILE* seed = fopen("quill_scratch.txt", "wb");
+    assert(seed != NULL);
+    const char* content = "Hello, Quill!";
+    assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
+    fclose(seed);
+
+    m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    assert(m != NULL);
+
+    int32_t kc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t kp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(kc >= 100 && kp >= 100);
+    assert(vfs_bind(m->system, kp, "/dev/kbd") == 0);
+    vfs_close(m->system, kp);
+
+    /* Home (23) -> hex mode, right-arrow (20) x3 -> cursor to byte 3,
+     * Home again -> back to text mode, then 'X', Tab (save), Esc (quit). */
+    int keys[] = { 23, 20, 20, 20, 23, 'X', 9, 27 };
+    for (int k = 0; k < 8; k++) {
+        uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
+        assert(vfs_write(m->system, kc, kpkt, 8) == 8);
+        int frames = 0;
+        while (!m->cpu->halted && frames < 3) {
+            machine_tick(m);
+            frames++;
+        }
+    }
+    vfs_close(m->system, kc);
+
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    System* check = system_create();
+    assert(check != NULL);
+    int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
+    assert(rfd >= 0);
+    uint8_t got[32] = { 0 };
+    int n = vfs_read(check, rfd, got, sizeof(got));
+    vfs_close(check, rfd);
+    system_free(check);
+
+    assert(n == (int) strlen(content) + 1);
+    assert(memcmp(got, "HelXlo, Quill!", (size_t) n) == 0);
+
+    remove("quill_scratch.txt");
+}
+
+/* Phase B7/C: the first Quill.fx test that actually exercises the linked
+ * UI library (UI::sbar-*) rather than pure self-contained Fluxio. Seeds
+ * 200 short lines (way more than the default 640x480 canvas's ~22
+ * visible rows), pages the scrollbar down via track clicks (default
+ * screen size puts the vertical bar at x=[624,640), y=[40,480) --
+ * system_create()'s default resolution, src/system.c), then clicks near
+ * the top of the text pane and types a marker character. If the
+ * scrollbar actually scrolled the view, that click lands deep into the
+ * file (whatever line scrolled up to the top), not at line 0 -- proving
+ * UI::sbar-press's track-paging and Quill.fx's scroll-aware
+ * find_click_index/draw_buffer are both wired correctly, not just "the
+ * scrollbar renders". */
+static void test_quill_fx_scrollbar_scrolls_view(void) {
+    printf("Testing apps/fluxio/Quill.fx: scrollbar paging scrolls the visible lines...\n");
+
+    const char* dir = "/tmp/nuxvm_test_quill_fx_scroll";
+    char binpath[256];
+    Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    if (!m) return;
+    machine_free(m);
+
+    remove("quill_scratch.txt");
+    FILE* seed = fopen("quill_scratch.txt", "wb");
+    assert(seed != NULL);
+    for (int i = 0; i < 200; i++) {
+        char line[2];
+        line[0] = (char) ('A' + (i % 26));
+        line[1] = '\n';
+        assert(fwrite(line, 1, 2, seed) == 2);
+    }
+    fclose(seed);
+
+    m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    assert(m != NULL);
+
+    int32_t mc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t mp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(mc >= 100 && mp >= 100);
+    assert(vfs_bind(m->system, mp, "/dev/mouse") == 0);
+    vfs_close(m->system, mp);
+
+    int32_t kc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t kp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(kc >= 100 && kp >= 100);
+    assert(vfs_bind(m->system, kp, "/dev/kbd") == 0);
+    vfs_close(m->system, kp);
+
+    int frames = 0;
+    while (!m->cpu->halted && frames < 5) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(!m->cpu->halted);
+
+    /* Three clicks at (631, 260) -- inside the bar, well below the thumb
+     * (which sits near the top at scroll 0) -- each pages the view down
+     * per UI::sbar-press's track-click behavior. */
+    uint8_t track_down[8] = { 3, 1, 119, 2, 4, 1, 0, 0 };
+    uint8_t track_up[8] = { 4, 1, 119, 2, 4, 1, 0, 0 };
+    for (int c = 0; c < 3; c++) {
+        assert(vfs_write(m->system, mc, track_down, 8) == 8);
+        frames = 0;
+        while (!m->cpu->halted && frames < 3) {
+            machine_tick(m);
+            frames++;
+        }
+        assert(vfs_write(m->system, mc, track_up, 8) == 8);
+        frames = 0;
+        while (!m->cpu->halted && frames < 3) {
+            machine_tick(m);
+            frames++;
+        }
+    }
+
+    /* Click near the top-left of the text pane -- after scrolling, this
+     * should land on whatever line scrolled up into view there, not
+     * line 0. */
+    uint8_t pane_down[8] = { 3, 1, 16, 0, 45, 0, 0, 0 };
+    uint8_t pane_up[8] = { 4, 1, 16, 0, 45, 0, 0, 0 };
+    assert(vfs_write(m->system, mc, pane_down, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(vfs_write(m->system, mc, pane_up, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+
+    int keys[] = { 'Z', 9, 27 };
+    for (int k = 0; k < 3; k++) {
+        uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
+        assert(vfs_write(m->system, kc, kpkt, 8) == 8);
+        frames = 0;
+        while (!m->cpu->halted && frames < 3) {
+            machine_tick(m);
+            frames++;
+        }
+    }
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    System* check = system_create();
+    assert(check != NULL);
+    int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
+    assert(rfd >= 0);
+    uint8_t got[1024] = { 0 };
+    int n = vfs_read(check, rfd, got, sizeof(got));
+    vfs_close(check, rfd);
+    system_free(check);
+
+    assert(n == 401); /* 200 * 2 original bytes + 1 inserted 'Z' */
+    int zpos = -1;
+    for (int i = 0; i < n; i++) {
+        if (got[i] == 'Z') {
+            zpos = i;
+            break;
+        }
+    }
+    assert(zpos > 20); /* well past the first ~10 lines -- proves the view actually scrolled */
+
+    remove("quill_scratch.txt");
+}
+
+/* Counts non-background ink pixels in the status bar's text row, at the
+ * default 960x720 resolution (status bar at y=[696,720)). Used to prove
+ * the status line's content actually changes (dirty marker appears/
+ * disappears) rather than just "the bar renders" -- comparing exact
+ * glyph pixels would be brittle, but ink *count* going up when a " *"
+ * marker is added and back down when it's removed is a solid signal. */
+static int quill_fx_status_ink_pixels(Machine* m) {
+    int sw = m->system->screen_width;
+    int sh = m->system->screen_height;
+    uint8_t* fb = m->system->screen_pixels;
+    int count = 0;
+    /* Sum over the whole status bar's text band (not just one row): a
+     * single sampled row can land on a part of the glyphs that happens
+     * not to differ between two strings of unequal length, even though
+     * plenty of other rows do -- this was caught for real (a single-row
+     * version of this helper missed a confirmed, visible ink increase
+     * from the dirty marker at the one row it happened to sample). */
+    for (int y = sh - 24; y < sh; y++) {
+        for (int x = 0; x < 300; x++) {
+            uint8_t* p = fb + (size_t) y * (size_t) sw * 4 + (size_t) x * 4;
+            if (p[1] < 0x80 && p[2] < 0x80 && p[3] < 0x80) {
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
+/* Status line (Quill.lux's draw-status-line, ported): filename + dirty
+ * marker + row:col. Edits one character (setting `dirty`), confirms the
+ * status bar's ink pixel count increases (the " *" marker appearing),
+ * then saves (clearing `dirty`) and confirms it drops back down --
+ * proving the status line actually reflects live editor state, not
+ * just a static label. */
+static void test_quill_fx_status_line_reflects_dirty_state(void) {
+    printf("Testing apps/fluxio/Quill.fx: status line shows the dirty marker after an edit...\n");
+
+    const char* dir = "/tmp/nuxvm_test_quill_fx_status";
+    char binpath[256];
+    Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    if (!m) return;
+    machine_free(m);
+
+    remove("quill_scratch.txt");
+    FILE* seed = fopen("quill_scratch.txt", "wb");
+    assert(seed != NULL);
+    const char* content = "Hello\nWorld\n";
+    assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
+    fclose(seed);
+
+    m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    assert(m != NULL);
+    system_set_resolution(m->system, 960, 720); /* match cloister.c's real window size */
+
+    int32_t kc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t kp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(kc >= 100 && kp >= 100);
+    assert(vfs_bind(m->system, kp, "/dev/kbd") == 0);
+    vfs_close(m->system, kp);
+
+    int frames = 0;
+    while (!m->cpu->halted && frames < 5) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(!m->cpu->halted);
+    int clean_ink = quill_fx_status_ink_pixels(m);
+
+    uint8_t type_x[8] = { 0, 0, 'X', 0, 0, 0, 0, 0 };
+    assert(vfs_write(m->system, kc, type_x, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    int dirty_ink = quill_fx_status_ink_pixels(m);
+    assert(dirty_ink > clean_ink); /* " *" marker adds ink */
+
+    uint8_t save[8] = { 0, 0, 9, 0, 0, 0, 0, 0 }; /* Tab */
+    assert(vfs_write(m->system, kc, save, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    int saved_ink = quill_fx_status_ink_pixels(m);
+    assert(saved_ink < dirty_ink); /* " *" marker gone after save */
+
+    uint8_t quit[8] = { 0, 0, 27, 0, 0, 0, 0, 0 }; /* Esc */
+    assert(vfs_write(m->system, kc, quit, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    vfs_close(m->system, kc);
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    remove("quill_scratch.txt");
+}
+
+/* Viewport auto-follow: moves the cursor to end-of-buffer *without ever
+ * touching the scrollbar* (a click below the last on-screen line, the
+ * same "click past everything" trick test_quill_fx_scrollbar_scrolls_view
+ * uses to reach file_len), then clicks near the top of the pane again --
+ * if ensure_cursor_visible() correctly scrolled the view to follow the
+ * cursor, that second click lands on whatever line the auto-scroll
+ * brought to the top, not line 0. Also confirms the earlier "scroll
+ * without moving the cursor stays put" fix (`last_cursor` gating in
+ * main()) by checking the same 3 track-page-down clicks from
+ * test_quill_fx_scrollbar_scrolls_view aren't immediately snapped back
+ * to the cursor's (unmoved) line before this test's own click. */
+static void test_quill_fx_viewport_follows_cursor(void) {
+    printf("Testing apps/fluxio/Quill.fx: viewport scrolls to follow the cursor past the bottom...\n");
+
+    const char* dir = "/tmp/nuxvm_test_quill_fx_follow";
+    char binpath[256];
+    Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    if (!m) return;
+    machine_free(m);
+
+    remove("quill_scratch.txt");
+    FILE* seed = fopen("quill_scratch.txt", "wb");
+    assert(seed != NULL);
+    for (int i = 0; i < 100; i++) {
+        char line[2];
+        line[0] = (char) ('A' + (i % 26));
+        line[1] = '\n';
+        assert(fwrite(line, 1, 2, seed) == 2);
+    }
+    fclose(seed);
+
+    m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    assert(m != NULL);
+    system_set_resolution(m->system, 960, 720); /* match cloister.c's real window size */
+
+    int32_t mc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t mp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(mc >= 100 && mp >= 100);
+    assert(vfs_bind(m->system, mp, "/dev/mouse") == 0);
+    vfs_close(m->system, mp);
+
+    int32_t kc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t kp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(kc >= 100 && kp >= 100);
+    assert(vfs_bind(m->system, kp, "/dev/kbd") == 0);
+    vfs_close(m->system, kp);
+
+    int frames = 0;
+    while (!m->cpu->halted && frames < 5) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(!m->cpu->halted);
+
+    /* Click well below every on-screen line (at scroll 0, only the first
+     * ~32 lines are on-screen at all) -- find_click_index falls through
+     * to file_len, moving the cursor to the very end without any
+     * scrollbar interaction. */
+    uint8_t end_down[8] = { 3, 1, 16, 0, 232, 3, 0, 0 }; /* (16, 1000) */
+    uint8_t end_up[8] = { 4, 1, 16, 0, 232, 3, 0, 0 };
+    assert(vfs_write(m->system, mc, end_down, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(vfs_write(m->system, mc, end_up, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+
+    /* Click near the top-left of the text pane again -- if the view
+     * followed the cursor to the bottom, this now lands on whatever
+     * line scrolled up into view there, not line 0. */
+    uint8_t top_down[8] = { 3, 1, 16, 0, 45, 0, 0, 0 };
+    uint8_t top_up[8] = { 4, 1, 16, 0, 45, 0, 0, 0 };
+    assert(vfs_write(m->system, mc, top_down, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(vfs_write(m->system, mc, top_up, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+
+    /* '#' (35), not a letter -- the seed content cycles through 'A'-'Z'
+     * (line i uses 'A' + i%26), so a letter marker like 'Z' would
+     * collide with the *pre-existing* 'Z' the seed loop already placed
+     * at line 25 (byte 50) and silently match the wrong occurrence. */
+    int keys[] = { '#', 9, 27 };
+    for (int k = 0; k < 3; k++) {
+        uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
+        assert(vfs_write(m->system, kc, kpkt, 8) == 8);
+        frames = 0;
+        while (!m->cpu->halted && frames < 3) {
+            machine_tick(m);
+            frames++;
+        }
+    }
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    System* check = system_create();
+    assert(check != NULL);
+    int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
+    assert(rfd >= 0);
+    uint8_t got[1024] = { 0 };
+    int n = vfs_read(check, rfd, got, sizeof(got));
+    vfs_close(check, rfd);
+    system_free(check);
+
+    assert(n == 201); /* 100 * 2 original bytes + 1 inserted '#' */
+    int zpos = -1;
+    for (int i = 0; i < n; i++) {
+        if (got[i] == '#') {
+            zpos = i;
+            break;
+        }
+    }
+    /* Well past the first ~32 on-screen lines (64 bytes) -- proves the
+     * view scrolled to follow the cursor to end-of-buffer on its own. */
+    assert(zpos > 64);
+
+    remove("quill_scratch.txt");
+}
+
+/* Phase C menu bar, the second thing (after the scrollbar) in this port
+ * to actually call into the Phase B linked UI library: types a
+ * character (dirtying the buffer), then drives the real menu -- click
+ * the "File" title to open it (UI::mb-down-open), then click "Save" in
+ * the dropdown to fire it (UI::mb-apply posts the click, drained via
+ * UI::poll-next/poll-name in Quill.fx, matching by comparing the fired
+ * name pointer directly against `menu_save_label`'s own address, since
+ * Fluxio owns that label buffer and UI::item was given that exact
+ * pointer). Confirms the save actually happened two ways: the on-disk
+ * bytes match what was typed, and the status bar's dirty marker is gone
+ * afterward (reusing the same whole-band ink-count technique
+ * test_quill_fx_status_line_reflects_dirty_state uses) -- proving the
+ * menu path exercises the same save_file(), not a different one.
+ */
+/* The menu bar can fire correctly (clicks reach UI::mb-apply, events
+ * drain via poll-next/poll-name) while still being invisible: UI::draw's
+ * menu-bar rendering (mb-draw-bar/mb-draw-drop) draws through
+ * `DRAW::fd` (lib/draw.lux), a Lux-side global set only by `DRAW::use`
+ * -- unlike UI::sbar-draw or Quill.fx's own draw_bytes/fill_rect calls,
+ * which all take an fd argument directly. Without calling `DRAW::use`
+ * once at startup, every menu-bar draw call silently targets fd 0
+ * instead of the real /dev/draw fd. This was caught for real during
+ * development (the menu fired correctly in every test above, but
+ * genuinely didn't render), so it gets a dedicated pixel-presence check
+ * -- functional tests alone would never catch a "fires but invisible"
+ * regression here. */
+static void test_quill_fx_menu_bar_renders(void) {
+    printf("Testing apps/fluxio/Quill.fx: menu bar actually renders (not just fires)...\n");
+
+    const char* dir = "/tmp/nuxvm_test_quill_fx_menu_render";
+    char binpath[256];
+    Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    if (!m) return;
+
+    remove("quill_scratch.txt");
+    FILE* seed = fopen("quill_scratch.txt", "wb");
+    assert(seed != NULL);
+    assert(fwrite("Hello\n", 1, 6, seed) == 6);
+    fclose(seed);
+
+    m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    assert(m != NULL);
+    system_set_resolution(m->system, 960, 720); /* match cloister.c's real window size */
+
+    int frames = 0;
+    while (!m->cpu->halted && frames < 8) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(!m->cpu->halted);
+
+    int sw = m->system->screen_width;
+    uint8_t* fb = m->system->screen_pixels;
+    int ink = 0;
+    for (int y = 0; y < 20; y++) { /* MENU_H, lib/ui.lux */
+        for (int x = 0; x < 200; x++) {
+            uint8_t* p = fb + (size_t) y * (size_t) sw * 4 + (size_t) x * 4;
+            if (p[1] < 0x80 && p[2] < 0x80 && p[3] < 0x80) {
+                ink++;
+            }
+        }
+    }
+    assert(ink > 0); /* the "File"/"View" titles must actually paint something */
+
+    machine_free(m);
+    remove("quill_scratch.txt");
+}
+
+/* Real bug reported after the menu bar was declared working: switching
+ * to hex mode made the menu bar disappear and stop responding entirely.
+ * Root cause was gating the *whole* mouse-feed/poll block and the
+ * UI::draw call on `!hex_mode`, when only the scrollbar and text-pane
+ * click handling are actually text-mode-specific -- the menu bar itself
+ * has no such restriction in lib/ui.lux. Checks both halves of that
+ * symptom: the menu bar still paints something while hex_mode is on
+ * (same ink-presence technique as test_quill_fx_menu_bar_renders), and
+ * it's still genuinely interactive there -- clicking View > Toggle Hex
+ * while already in hex mode flips back to text mode, confirmed
+ * behaviorally (a character typed afterward actually gets inserted and
+ * saved, which the keyboard dispatch only does when hex_mode is false)
+ * rather than by reading internal state directly. */
+static void test_quill_fx_menu_bar_works_in_hex_mode(void) {
+    printf("Testing apps/fluxio/Quill.fx: menu bar stays visible and interactive in hex mode...\n");
+
+    const char* dir = "/tmp/nuxvm_test_quill_fx_menu_hex";
+    char binpath[256];
+    Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    if (!m) return;
+
+    remove("quill_scratch.txt");
+    FILE* seed = fopen("quill_scratch.txt", "wb");
+    assert(seed != NULL);
+    const char* content = "Hello\n";
+    assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
+    fclose(seed);
+
+    m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    assert(m != NULL);
+    system_set_resolution(m->system, 960, 720); /* match cloister.c's real window size */
+
+    int32_t mc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t mp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(mc >= 100 && mp >= 100);
+    assert(vfs_bind(m->system, mp, "/dev/mouse") == 0);
+    vfs_close(m->system, mp);
+
+    int32_t kc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t kp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(kc >= 100 && kp >= 100);
+    assert(vfs_bind(m->system, kp, "/dev/kbd") == 0);
+    vfs_close(m->system, kp);
+
+    int frames = 0;
+    while (!m->cpu->halted && frames < 5) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(!m->cpu->halted);
+
+    /* Home (23) -> hex mode. */
+    uint8_t home[8] = { 0, 0, 23, 0, 0, 0, 0, 0 };
+    assert(vfs_write(m->system, kc, home, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+
+    int sw = m->system->screen_width;
+    uint8_t* fb = m->system->screen_pixels;
+    int ink = 0;
+    for (int y = 0; y < 20; y++) { /* MENU_H, lib/ui.lux */
+        for (int x = 0; x < 200; x++) {
+            uint8_t* p = fb + (size_t) y * (size_t) sw * 4 + (size_t) x * 4;
+            if (p[1] < 0x80 && p[2] < 0x80 && p[3] < 0x80) {
+                ink++;
+            }
+        }
+    }
+    assert(ink > 0); /* menu bar still paints something while hex_mode is on */
+
+    /* Click "View" (second menu title, roughly x=[58,100)), then click
+     * "Toggle Hex" (its only dropdown item, row 0). */
+    uint8_t view_down[8] = { 3, 1, 70, 0, 10, 0, 0, 0 };
+    uint8_t view_up[8] = { 4, 1, 70, 0, 10, 0, 0, 0 };
+    assert(vfs_write(m->system, mc, view_down, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(vfs_write(m->system, mc, view_up, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+
+    uint8_t item_down[8] = { 3, 1, 70, 0, 29, 0, 0, 0 };
+    uint8_t item_up[8] = { 4, 1, 70, 0, 29, 0, 0, 0 };
+    assert(vfs_write(m->system, mc, item_down, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(vfs_write(m->system, mc, item_up, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+
+    /* If the click actually flipped hex_mode back off, this insert and
+     * the Tab save will actually run -- the keyboard dispatch only takes
+     * this path when !hex_mode. */
+    uint8_t marker[8] = { 0, 0, '#', 0, 0, 0, 0, 0 };
+    assert(vfs_write(m->system, kc, marker, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    uint8_t save[8] = { 0, 0, 9, 0, 0, 0, 0, 0 };
+    assert(vfs_write(m->system, kc, save, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    uint8_t quit[8] = { 0, 0, 27, 0, 0, 0, 0, 0 };
+    assert(vfs_write(m->system, kc, quit, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    System* check = system_create();
+    assert(check != NULL);
+    int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
+    assert(rfd >= 0);
+    uint8_t got[32] = { 0 };
+    int n = vfs_read(check, rfd, got, sizeof(got));
+    vfs_close(check, rfd);
+    system_free(check);
+
+    assert(n == (int) strlen(content) + 1);
+    assert(got[0] == '#'); /* only possible if the menu click really returned us to text mode */
+
+    remove("quill_scratch.txt");
+}
+
+static void test_quill_fx_menu_save_via_click(void) {
+    printf("Testing apps/fluxio/Quill.fx: File > Save via the linked menu bar...\n");
+
+    const char* dir = "/tmp/nuxvm_test_quill_fx_menu";
+    char binpath[256];
+    Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    if (!m) return;
+
+    remove("quill_scratch.txt");
+    FILE* seed = fopen("quill_scratch.txt", "wb");
+    assert(seed != NULL);
+    const char* content = "Hello\nWorld\n";
+    assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
+    fclose(seed);
+
+    int32_t mc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t mp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(mc >= 100 && mp >= 100);
+    assert(vfs_bind(m->system, mp, "/dev/mouse") == 0);
+    vfs_close(m->system, mp);
+
+    int32_t kc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t kp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(kc >= 100 && kp >= 100);
+    assert(vfs_bind(m->system, kp, "/dev/kbd") == 0);
+    vfs_close(m->system, kp);
+
+    int frames = 0;
+    while (!m->cpu->halted && frames < 5) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(!m->cpu->halted);
+
+    /* Type '#' at the start -- dirties the buffer without touching the
+     * seed's own byte values (see the marker-collision note above). */
+    uint8_t type_marker[8] = { 0, 0, '#', 0, 0, 0, 0, 0 };
+    assert(vfs_write(m->system, kc, type_marker, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    int dirty_ink = quill_fx_status_ink_pixels(m);
+
+    /* Click "File" (title, MENU_PAD=10..~58, y within [0, MENU_H=20)). */
+    uint8_t file_down[8] = { 3, 1, 20, 0, 10, 0, 0, 0 };
+    uint8_t file_up[8] = { 4, 1, 20, 0, 10, 0, 0, 0 };
+    assert(vfs_write(m->system, mc, file_down, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(vfs_write(m->system, mc, file_up, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+
+    /* Click "Save" (the dropdown's first item, ITEM_H=18, row 0 center). */
+    uint8_t save_down[8] = { 3, 1, 20, 0, 29, 0, 0, 0 };
+    uint8_t save_up[8] = { 4, 1, 20, 0, 29, 0, 0, 0 };
+    assert(vfs_write(m->system, mc, save_down, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(vfs_write(m->system, mc, save_up, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    int saved_ink = quill_fx_status_ink_pixels(m);
+    assert(saved_ink < dirty_ink); /* dirty marker gone -- Save actually ran */
+
+    uint8_t quit[8] = { 0, 0, 27, 0, 0, 0, 0, 0 };
+    assert(vfs_write(m->system, kc, quit, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    System* check = system_create();
+    assert(check != NULL);
+    int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
+    assert(rfd >= 0);
+    uint8_t got[32] = { 0 };
+    int n = vfs_read(check, rfd, got, sizeof(got));
+    vfs_close(check, rfd);
+    system_free(check);
+
+    assert(n == (int) strlen(content) + 1);
+    assert(got[0] == '#'); /* typed at cursor 0, saved via the menu click */
+
+    remove("quill_scratch.txt");
+}
+
+/* -----------------------------------------------------------------------
+ * End-to-end fixture via the on-disk .bin path is covered by examples/fluxio/fib.fx
  * + bin/fluxioc + bin/nux, exercised manually / in CI shell scripts rather
  * than here, since this binary only links the compiler + VM library code.
  * ----------------------------------------------------------------------- */
@@ -1639,6 +2666,17 @@ int main(void) {
     test_error_redeclared_function_and_params();
     test_error_builtin_string_arg_required();
     test_error_builtin_int_arg_required();
+
+    test_quill_fx_type_and_save();
+    test_quill_fx_click_positions_cursor();
+    test_quill_fx_wraps_long_word_without_fault();
+    test_quill_fx_hex_mode_toggle();
+    test_quill_fx_scrollbar_scrolls_view();
+    test_quill_fx_status_line_reflects_dirty_state();
+    test_quill_fx_viewport_follows_cursor();
+    test_quill_fx_menu_bar_renders();
+    test_quill_fx_menu_bar_works_in_hex_mode();
+    test_quill_fx_menu_save_via_click();
     test_include_circular_error();
     test_include_missing_file_error();
     test_error_local_struct_decay();

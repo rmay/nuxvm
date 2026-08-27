@@ -3,8 +3,8 @@
  * see docs/fluxio-language-plan.md for why local arrays can't decay to
  * a passable address).
  *
- *   bin/fluxioc -target headless -o examples/array_string_demo.bin examples/array_string_demo.fx
- *   bin/nux examples/array_string_demo.bin
+ *   bin/fluxioc -target headless -o examples/fluxio/array_string_demo.bin examples/fluxio/array_string_demo.fx
+ *   bin/nux examples/fluxio/array_string_demo.bin
  */
 
 int greeting[] = "Hello, Fluxio!";

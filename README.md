@@ -597,12 +597,19 @@ Executes NUXVM bytecode:
 
 ## Examples
 
-### Example 1: Hello World
+Runnable programs live in two trees: [`examples/lux/`](examples/lux/) (Forth-style) and [`examples/fluxio/`](examples/fluxio/) (C-like). Both compile to the same NUX bytecode.
+
+### Lux examples
+
+#### Hello World
 
 ```forth
 "Hello, World!\n"
 ```
-### Example 2: Simple Calculation
+
+See `examples/lux/hello.lux`.
+
+#### Simple Calculation
 
 ```forth
 ( Calculate (5 + 3) * 2 )
@@ -610,7 +617,7 @@ Executes NUXVM bytecode:
 ( Output: 16 )
 ```
 
-### Example 3: Using Word Definitions
+#### Using Word Definitions
 
 ```forth
 @square dup * ;
@@ -624,7 +631,7 @@ Executes NUXVM bytecode:
 7 quad .       ( Output: 28 )
 ```
 
-### Example 4: Bitwise Operations
+#### Bitwise Operations
 
 ```forth
 ( Binary calculations )
@@ -638,7 +645,7 @@ Executes NUXVM bytecode:
 7 is-even .       ( Output: 0 for false )
 ```
 
-### Example 5: Module Usage
+#### Module Usage
 
 ```forth
 MODULE MATH
@@ -663,9 +670,11 @@ IMPORT SHAPES
 10 SHAPES::AREA-CIRCLE . ( 314 )
 ```
 
-### Example 6: Practical REPL Session
+See `examples/lux/modules/` and `examples/lux/modules/MODULE_SYSTEM.md`.
 
-Here's a realistic workflow in the REPL:
+#### Practical REPL Session
+
+Here's a realistic workflow in the Lux REPL (`./bin/luxrepl`):
 
 ```forth
 lux> @double 2 * ;
@@ -698,6 +707,119 @@ lux> .s
   Stack: [25]
 ```
 
+### Fluxio examples
+
+#### Hello World
+
+```c
+/** prints "Hello, World!" followed by a newline */
+int say_hello() {
+    emit(72);  /* H */
+    emit(101); /* e */
+    emit(108); /* l */
+    emit(108); /* l */
+    emit(111); /* o */
+    emit(44);  /* , */
+    emit(32);  /* space */
+    emit(87);  /* W */
+    emit(111); /* o */
+    emit(114); /* r */
+    emit(108); /* l */
+    emit(100); /* d */
+    emit(33);  /* ! */
+    emit(10);  /* newline */
+    return 0;
+}
+
+/** entry point */
+int main() {
+    say_hello();
+    return 0;
+}
+```
+
+See `examples/fluxio/hello_console.fx`. Compile, then run:
+
+```bash
+./bin/fluxioc -target headless -o examples/fluxio/hello_console.bin examples/fluxio/hello_console.fx
+./bin/nux examples/fluxio/hello_console.bin
+```
+
+#### Simple Calculation
+
+```c
+/** entry point */
+int main() {
+    print((5 + 3) * 2);  /* Output: 16 */
+    return 0;
+}
+```
+
+#### Using Functions
+
+```c
+/** n squared */
+int square(int n) { return n * n; }
+
+/** n times two */
+int double_n(int n) { return n * 2; }
+
+/** compose double twice */
+int quad(int n) { return double_n(double_n(n)); }
+
+/** entry point */
+int main() {
+    print(square(5));     /* 25 */
+    emit(10);
+    print(double_n(10));  /* 20 */
+    emit(10);
+    print(quad(7));       /* 28 */
+    emit(10);
+    return 0;
+}
+```
+
+#### Bitwise Operations
+
+```c
+/** 1 if n is even, else 0 */
+int is_even(int n) { return n % 2 == 0; }
+
+/** entry point */
+int main() {
+    print(0xFF & 0x0F);  /* 15 */
+    emit(10);
+    print(12 | 10);      /* 14 */
+    emit(10);
+    print(5 << 2);       /* 20 */
+    emit(10);
+    print(is_even(10));  /* 1 */
+    emit(10);
+    print(is_even(7));   /* 0 */
+    emit(10);
+    return 0;
+}
+```
+
+#### Includes (no modules)
+
+Fluxio has no `MODULE`/`IMPORT` namespacing — it is a single flat global namespace, so related helpers live in another file and are pulled in with `include`:
+
+```c
+include "include_lib/mathlib.fx";
+
+/** entry point */
+int main() {
+    int m = fx_max(17, 42);
+    int f = fx_factorial(5);
+    return m + f; /* 42 + 120 = 162 */
+}
+```
+
+See `examples/fluxio/include_demo.fx` and `examples/fluxio/include_lib/mathlib.fx`.
+
+There is no Fluxio REPL — compile with `fluxioc`, then run the `.bin` under `nux` or `cloister`. Other Fluxio demos (bounded recursion, arrays, structs, fixed-point floats, Cloister drawing) are listed in [`examples/fluxio/README.md`](examples/fluxio/README.md).
+
 ---
 
 ## Development
@@ -708,7 +830,9 @@ lux> .s
 nuxvm/
 ├── apps/           - Sample Lux applications
 ├── docs/           - Extended documentation
-├── examples/       - Example Lux programs and modules
+├── examples/
+│   ├── lux/        - Lux (Forth-style) example programs
+│   └── fluxio/     - Fluxio (C-like) example programs
 ├── include/        - C headers
 │   ├── vm.h        - Core VM
 │   ├── opcodes.h   - Opcode definitions

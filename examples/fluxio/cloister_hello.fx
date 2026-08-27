@@ -14,8 +14,8 @@
  * src/cloister.c does for Lux via repeated machine_tick() calls) would
  * pump this every frame and show the rectangle actually moving.
  *
- *   bin/fluxioc -target headless -o examples/cloister_hello.bin examples/cloister_hello.fx
- *   bin/nux examples/cloister_hello.bin
+ *   bin/fluxioc -target headless -o examples/fluxio/cloister_hello.bin examples/fluxio/cloister_hello.fx
+ *   bin/nux examples/fluxio/cloister_hello.bin
  *
  * See docs/fluxio-language-plan.md for what's built (and what's still out
  * of scope, e.g. dynamic/runtime text) in this v2b Cloister-bindings slice.

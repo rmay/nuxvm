@@ -68,8 +68,13 @@ apps/fluxio/%.bin: apps/fluxio/%.fx $(BIN_DIR)/fluxioc
 	@echo "Compiling $< -> $@"
 	@$(BIN_DIR)/fluxioc -target graphical -o $@ $<
 
-# MM_ABI_LIBRARY_CODE_BASE (include/memory_map.h) -- keep in sync.
+# MM_ABI_LIBRARY_CODE_BASE / MM_ABI_LIBRARY_LINK_BASE (include/memory_map.h)
+# -- keep in sync. LINK is the trampoline table's base (fluxlink --lib-base);
+# BASE is where the library's own code starts (luxc -base), fixed at
+# LINK + MM_ABI_TRAMPOLINE_RESERVE regardless of export count (Phase 0.5).
+UI_LIB_LINK_BASE = 0x700000
 UI_LIB_BASE = 0x701000
+GRAPHICAL_BASE = 0x600000
 
 # Compiled Lux UI/SF library for linking into Fluxio apps via fluxlink
 # (docs/quill_fluxio.md Phase B7). lib/sf.lux transitively includes
@@ -80,6 +85,23 @@ UI_LIB_BASE = 0x701000
 uilib: $(BIN_DIR)/luxc
 	@echo "Compiling lib/sf.lux (+ lib/ui.lux) -> lib/uisf.bin"
 	@$(BIN_DIR)/luxc -base $(UI_LIB_BASE) -symbols lib/uisf.symtab.json -o lib/uisf.bin lib/sf.lux
+
+# Quill.fx is the first Fluxio app that actually calls into the linked
+# UI/SF library (docs/quill_fluxio.md Phase C menus/scrollbar/file-picker)
+# -- an explicit rule overrides the generic apps/fluxio/%.bin pattern above
+# (GNU make: an explicit target rule always wins over a pattern rule for
+# the same target) so this one compile-then-link pipeline runs instead of
+# a plain fluxioc compile. $@.app is a scratch intermediate, not shipped.
+apps/fluxio/Quill.bin: apps/fluxio/Quill.fx $(BIN_DIR)/fluxioc $(BIN_DIR)/fluxlink $(BIN_DIR)/luxc \
+    lib/sf.lux lib/ui.lux abi/uisf.exports.json
+	@echo "Compiling lib/sf.lux (+ lib/ui.lux) -> lib/uisf.bin"
+	@$(BIN_DIR)/luxc -base $(UI_LIB_BASE) -symbols lib/uisf.symtab.json -o lib/uisf.bin lib/sf.lux
+	@echo "Compiling $< -> $@.app"
+	@$(BIN_DIR)/fluxioc -target graphical -o $@.app apps/fluxio/Quill.fx
+	@echo "Linking $@.app + lib/uisf.bin -> $@"
+	@$(BIN_DIR)/fluxlink --lib lib/uisf.bin --symtab lib/uisf.symtab.json --exports abi/uisf.exports.json \
+	    --app $@.app --app-base $(GRAPHICAL_BASE) --lib-base $(UI_LIB_LINK_BASE) -o $@
+	@rm -f $@.app
 
 dir:
 	@mkdir -p $(OBJ_DIR)
