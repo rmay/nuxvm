@@ -1,6 +1,6 @@
-/* Quill (Fluxio port, v8 -- word-wrap + mouse selection + hex view +
- * scrollbar + status bar + viewport auto-follow + menu bar) --
- * docs/quill_fluxio.md Phase C.
+/* Quill (Fluxio port, v9 -- word-wrap + mouse selection + hex view +
+ * scrollbar (text and hex mode both) + status bar + viewport auto-follow +
+ * menu bar) -- docs/quill_fluxio.md Phase C.
  *
  * Port of apps/Quill.lux's core edit loop: open a file, display it with
  * word-wrap, move the cursor (keyboard or mouse click), select text by
@@ -18,12 +18,11 @@
  *     keyboard-modifier accessor builtin today, so selection is
  *     mouse-drag only (click sets the anchor, drag extends, release
  *     keeps it). Arrow keys collapse an active selection instead.
- *   - Hex mode is view-only (no nibble editing yet, unlike Quill.lux's
- *     hex-mode editing), has no mouse click-to-position, and doesn't
- *     scroll yet -- the menu bar works in both modes, but the scrollbar
- *     and text-pane click handling are still text-mode-only (harmless:
- *     the renderer clips off-canvas draws to the screen bounds on its
- *     own).
+ *   - Hex mode still has no nibble editing (unlike Quill.lux's hex-mode
+ *     editing) -- the cursor can only move via arrow keys or a mouse
+ *     click, not edit bytes in place. It does now scroll (the shared
+ *     sb_bar scrollbar is re-ranged in 16-byte-row units) and support
+ *     click-to-position (hex_find_click_index), same as text mode.
  *   - The menu only has File > Save/Quit and View > Toggle Hex --
  *     there's no Edit menu (cut/copy/paste aren't implemented at all
  *     yet) and no keyboard shortcuts shown or bound for any item.
@@ -249,11 +248,27 @@ int visible_lines() {
 }
 
 /**
- * Highest legal scroll offset (in lines) for the current content and
- * canvas size -- 0 once everything fits on screen.
+ * How many 16-byte hex-dump rows the buffer takes, including the
+ * trailing (possibly empty) row at end-of-buffer draw_hex_buffer also
+ * draws -- same row count that loop produces.
+ */
+int hex_row_count() {
+    return file_len / 16 + 1;
+}
+
+/**
+ * Highest legal scroll offset (in rows) for the current content, canvas
+ * size, and mode -- 0 once everything fits on screen. Text mode counts
+ * wrapped lines; hex mode counts 16-byte rows -- different units, same
+ * `sb_bar` widget, re-ranged by update_scrollbar_geometry whenever the
+ * mode changes.
  */
 int max_scroll() {
-    int m = line_count - visible_lines();
+    int rows = line_count;
+    if (hex_mode) {
+        rows = hex_row_count();
+    }
+    int m = rows - visible_lines();
     if (m < 0) {
         m = 0;
     }
@@ -284,6 +299,28 @@ int update_scrollbar_geometry() {
 }
 
 /**
+ * Flips hex_mode and re-ranges the scrollbar for the new mode's row
+ * units (text: wrapped lines; hex: 16-byte rows) -- the two modes share
+ * one `sb_bar` widget, so switching modes without this would leave its
+ * min/max describing the mode you just left. The old scroll value is
+ * clamped into the new range by update_scrollbar_geometry, not reset;
+ * it won't line up with anything meaningful across the switch, but
+ * clamping is a reasonable fallback and avoids always snapping to the
+ * top.
+ */
+int toggle_hex_mode() {
+    if (hex_mode) {
+        hex_mode = 0;
+    } else {
+        hex_mode = 1;
+    }
+    anchor = -1;
+    mouse_held = 0;
+    update_scrollbar_geometry();
+    return 0;
+}
+
+/**
  * Scrolls the view (via UI::sbar-set-val) so the cursor's wrapped line
  * is within the visible range, if it isn't already -- keeps typing and
  * arrow-key/mouse cursor movement from running the cursor off the
@@ -296,6 +333,9 @@ int update_scrollbar_geometry() {
  */
 int ensure_cursor_visible() {
     int row = cursor_row();
+    if (hex_mode) {
+        row = cursor / 16;
+    }
     int scroll_y = sb_get_val();
     int vis = visible_lines();
     if (row < scroll_y) {
@@ -701,26 +741,36 @@ int nibble_to_hex(int n) {
 }
 
 /**
- * Renders one hex-dump row into hex_line_buf: a 4-digit address, up to 16
+ * Renders one hex-dump row into hex_line_buf: a 4-digit address, 16
  * space-separated hex byte pairs, then the same bytes' printable ASCII
  * (or '.' for anything outside 32..126). Same 72-column layout as
  * Quill.lux's hex view (addr at 0-3, hex pairs at 6+i*3, ASCII at 56+i).
+ * Always renders all 16 columns -- a column past end-of-file is treated
+ * as a phantom zero byte (matching hex_col_x's caret-positioning
+ * convention) rather than left blank, so every row's hex-pair and ASCII
+ * regions occupy identical width and line up regardless of how many real
+ * bytes that row has (a short row rendered with literal blank filler
+ * measured narrower than real digit pairs in this proportional font,
+ * throwing its ASCII column out of line with the rows above it -- a real
+ * bug, caught from a screenshot).
  */
-int render_hex_row(int addr, int n_bytes) {
-    int i = 0;
-    while (i < 72) {
-        hex_line_buf[i] = 32;
-        i = i + 1;
-    }
+int render_hex_row(int addr) {
     hex_line_buf[0] = nibble_to_hex((addr >> 12) & 15);
     hex_line_buf[1] = nibble_to_hex((addr >> 8) & 15);
     hex_line_buf[2] = nibble_to_hex((addr >> 4) & 15);
     hex_line_buf[3] = nibble_to_hex(addr & 15);
-    i = 0;
-    while (i < n_bytes) {
-        int b = file_buf[addr + i];
+    hex_line_buf[4] = 32;
+    hex_line_buf[5] = 32;
+    int i = 0;
+    while (i < 16) {
+        int idx = addr + i;
+        int b = 0;
+        if (idx < file_len) {
+            b = file_buf[idx];
+        }
         hex_line_buf[6 + i * 3] = nibble_to_hex((b >> 4) & 15);
         hex_line_buf[6 + i * 3 + 1] = nibble_to_hex(b & 15);
+        hex_line_buf[6 + i * 3 + 2] = 32;
         int ch = b;
         if (ch < 32) {
             ch = 46;
@@ -732,6 +782,8 @@ int render_hex_row(int addr, int n_bytes) {
         hex_line_buf[56 + i] = ch;
         i = i + 1;
     }
+    hex_line_buf[54] = 32;
+    hex_line_buf[55] = 32;
     return 0;
 }
 
@@ -769,22 +821,25 @@ int hex_col_x(int row_addr, int col) {
 
 /**
  * Draws the buffer as a hex dump, 16 bytes per row, and the caret at the
- * cursor's row/column. View-only for now -- see the file header.
+ * cursor's row/column -- scrolled per the shared `sb_bar` (re-ranged to
+ * row units by update_scrollbar_geometry/toggle_hex_mode). Rows scrolled
+ * off-screen are skipped entirely, same reasoning as draw_buffer. View-only
+ * for now -- see the file header.
  */
 int draw_hex_buffer(int fd) {
+    int scroll_y = sb_get_val();
+    int vis = visible_lines();
     int addr = 0;
     int row = 0;
     while (addr <= file_len) {
-        int n = file_len - addr;
-        if (n > 16) {
-            n = 16;
+        int screen_row = row - scroll_y;
+        if (screen_row >= 0) {
+            if (screen_row < vis) {
+                render_hex_row(addr);
+                int y = pane_y + screen_row * line_h;
+                draw_bytes(fd, pane_x, y, clr_text, font_size, hex_line_buf, 72);
+            }
         }
-        if (n < 0) {
-            n = 0;
-        }
-        render_hex_row(addr, n);
-        int y = pane_y + row * line_h;
-        draw_bytes(fd, pane_x, y, clr_text, font_size, hex_line_buf, 72);
         if (addr == file_len) {
             addr = addr + 17;
         } else {
@@ -794,11 +849,57 @@ int draw_hex_buffer(int fd) {
     }
 
     int caret_row = cursor / 16;
-    int caret_col = cursor % 16;
-    int caret_x = hex_col_x(caret_row * 16, caret_col);
-    int caret_y = pane_y + caret_row * line_h;
-    fill_rect(fd, caret_x, caret_y, 2, caret_h, clr_caret);
+    int caret_screen_row = caret_row - scroll_y;
+    if (caret_screen_row >= 0) {
+        if (caret_screen_row < vis) {
+            int caret_col = cursor % 16;
+            int caret_x = hex_col_x(caret_row * 16, caret_col);
+            int caret_y = pane_y + caret_screen_row * line_h;
+            fill_rect(fd, caret_x, caret_y, 2, caret_h, clr_caret);
+        }
+    }
     return 0;
+}
+
+/**
+ * Maps a click point in hex mode to the nearest byte index, using the
+ * shared scroll offset (row units) and hex_col_x for the reverse x->column
+ * lookup (walking columns until one's right edge passes the click, same
+ * "nearest cell" rule find_click_index uses for text mode).
+ */
+int hex_find_click_index(int mx, int my) {
+    int scroll_y = sb_get_val();
+    int vis = visible_lines();
+    int row_in_view = (my - pane_y) / line_h;
+    if (row_in_view < 0) {
+        row_in_view = 0;
+    }
+    if (row_in_view >= vis) {
+        row_in_view = vis - 1;
+    }
+    int row = scroll_y + row_in_view;
+    int row_addr = row * 16;
+    if (row_addr > file_len) {
+        row_addr = (file_len / 16) * 16;
+    }
+    int col = 0;
+    int result_col = 15;
+    int done = 0;
+    while (col < 16) {
+        if (done == 0) {
+            int x1 = hex_col_x(row_addr, col + 1);
+            if (mx < x1) {
+                result_col = col;
+                done = 1;
+            }
+        }
+        col = col + 1;
+    }
+    int idx = row_addr + result_col;
+    if (idx > file_len) {
+        idx = file_len;
+    }
+    return idx;
 }
 
 /**
@@ -874,34 +975,38 @@ int main() {
             } else {
                 if (menu_now_open) {
                 } else {
-                    if (!hex_mode) {
-                        if (mtype == 3) {
-                            if (ui_in_rect(mx, my, sb_x, sb_y, sb_w, sb_h)) {
-                                ui_sbar_press(sb_bar, mx, my);
-                                sb_dragging = 1;
+                    if (mtype == 3) {
+                        if (ui_in_rect(mx, my, sb_x, sb_y, sb_w, sb_h)) {
+                            ui_sbar_press(sb_bar, mx, my);
+                            sb_dragging = 1;
+                        } else {
+                            if (hex_mode) {
+                                cursor = hex_find_click_index(mx, my);
                             } else {
                                 int idx = find_click_index(mx, my);
                                 cursor = idx;
                                 anchor = idx;
                                 mouse_held = 1;
                             }
-                        } else {
-                            if (mtype == 2) {
-                                if (sb_dragging) {
-                                    ui_sbar_drag(sb_bar, mx, my);
-                                } else {
+                        }
+                    } else {
+                        if (mtype == 2) {
+                            if (sb_dragging) {
+                                ui_sbar_drag(sb_bar, mx, my);
+                            } else {
+                                if (!hex_mode) {
                                     if (mouse_held) {
                                         cursor = find_click_index(mx, my);
                                     }
                                 }
-                            } else {
-                                if (mtype == 4) {
-                                    if (sb_dragging) {
-                                        ui_sbar_release(sb_bar);
-                                        sb_dragging = 0;
-                                    }
-                                    mouse_held = 0;
+                            }
+                        } else {
+                            if (mtype == 4) {
+                                if (sb_dragging) {
+                                    ui_sbar_release(sb_bar);
+                                    sb_dragging = 0;
                                 }
+                                mouse_held = 0;
                             }
                         }
                     }
@@ -921,11 +1026,7 @@ int main() {
                     return 0;
                 } else {
                     if (fired == menu_hex_label) {
-                        if (hex_mode) {
-                            hex_mode = 0;
-                        } else {
-                            hex_mode = 1;
-                        }
+                        toggle_hex_mode();
                     }
                 }
             }
@@ -936,13 +1037,7 @@ int main() {
             if (kbd_type() == 0) {
                 int key = kbd_key();
                 if (key == 23) {
-                    if (hex_mode) {
-                        hex_mode = 0;
-                    } else {
-                        hex_mode = 1;
-                    }
-                    anchor = -1;
-                    mouse_held = 0;
+                    toggle_hex_mode();
                 } else {
                     if (key == 9) {
                         save_file();
@@ -1032,11 +1127,9 @@ int main() {
             }
         }
 
-        if (!hex_mode) {
-            if (cursor != last_cursor) {
-                ensure_cursor_visible();
-                last_cursor = cursor;
-            }
+        if (cursor != last_cursor) {
+            ensure_cursor_visible();
+            last_cursor = cursor;
         }
 
         begin_frame(fd);

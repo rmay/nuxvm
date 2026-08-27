@@ -1997,6 +1997,255 @@ static void test_quill_fx_scrollbar_scrolls_view(void) {
     remove("quill_scratch.txt");
 }
 
+/* Hex mode's own scrollbar+click support (v9): same shared sb_bar as text
+ * mode, but re-ranged in 16-byte-row units (hex_row_count/max_scroll) and
+ * with its own reverse pixel->offset mapping (hex_find_click_index). Seeds
+ * a file with far more than one screen's worth of hex rows, enters hex
+ * mode, pages the scrollbar down via track clicks, then clicks near the
+ * top-left of the pane and moves one step with the right arrow. If hex
+ * mode's scroll-follow and click mapping are both wired correctly, that
+ * click+step lands deep into the file (not near offset 0) -- confirmed by
+ * flipping back to text mode and typing a marker at the resulting cursor,
+ * then checking where it landed in the saved file. */
+static void test_quill_fx_hex_click_after_scroll(void) {
+    printf("Testing apps/fluxio/Quill.fx: hex mode scrollbar and click-to-position after scrolling...\n");
+
+    const char* dir = "/tmp/nuxvm_test_quill_fx_hex_scroll";
+    char binpath[256];
+    Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    if (!m) return;
+    machine_free(m);
+
+    remove("quill_scratch.txt");
+    FILE* seed = fopen("quill_scratch.txt", "wb");
+    assert(seed != NULL);
+    const int seed_len = 2000; /* far more than one screen's ~20 hex rows (320 bytes) */
+    for (int i = 0; i < seed_len; i++) {
+        uint8_t b = (uint8_t) ('a' + (i % 26));
+        assert(fwrite(&b, 1, 1, seed) == 1);
+    }
+    fclose(seed);
+
+    m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    assert(m != NULL);
+
+    int32_t mc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t mp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(mc >= 100 && mp >= 100);
+    assert(vfs_bind(m->system, mp, "/dev/mouse") == 0);
+    vfs_close(m->system, mp);
+
+    int32_t kc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t kp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(kc >= 100 && kp >= 100);
+    assert(vfs_bind(m->system, kp, "/dev/kbd") == 0);
+    vfs_close(m->system, kp);
+
+    int frames = 0;
+    while (!m->cpu->halted && frames < 5) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(!m->cpu->halted);
+
+    /* Home -> hex mode. */
+    uint8_t home[8] = { 0, 0, 23, 0, 0, 0, 0, 0 };
+    assert(vfs_write(m->system, kc, home, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+
+    /* Page the (now hex-row-ranged) scrollbar down three times, same
+     * track-click coordinates test_quill_fx_scrollbar_scrolls_view uses. */
+    uint8_t track_down[8] = { 3, 1, 119, 2, 4, 1, 0, 0 };
+    uint8_t track_up[8] = { 4, 1, 119, 2, 4, 1, 0, 0 };
+    for (int c = 0; c < 3; c++) {
+        assert(vfs_write(m->system, mc, track_down, 8) == 8);
+        frames = 0;
+        while (!m->cpu->halted && frames < 3) {
+            machine_tick(m);
+            frames++;
+        }
+        assert(vfs_write(m->system, mc, track_up, 8) == 8);
+        frames = 0;
+        while (!m->cpu->halted && frames < 3) {
+            machine_tick(m);
+            frames++;
+        }
+    }
+
+    /* Click near the top-left of the hex pane -- after scrolling, this
+     * should map (via hex_find_click_index) to whatever row scrolled up
+     * into view there, not row 0. */
+    uint8_t pane_down[8] = { 3, 1, 16, 0, 45, 0, 0, 0 };
+    uint8_t pane_up[8] = { 4, 1, 16, 0, 45, 0, 0, 0 };
+    assert(vfs_write(m->system, mc, pane_down, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(vfs_write(m->system, mc, pane_up, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+    vfs_close(m->system, mc);
+
+    /* Home again -> back to text mode (cursor, a byte offset, carries
+     * over unchanged), then type a marker at that offset, save, quit. */
+    int keys[] = { 23, '#', 9, 27 };
+    for (int k = 0; k < 4; k++) {
+        uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
+        assert(vfs_write(m->system, kc, kpkt, 8) == 8);
+        frames = 0;
+        while (!m->cpu->halted && frames < 10) {
+            machine_tick(m);
+            frames++;
+        }
+    }
+    vfs_close(m->system, kc);
+
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    System* check = system_create();
+    assert(check != NULL);
+    int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
+    assert(rfd >= 0);
+    uint8_t got[4096] = { 0 };
+    int n = vfs_read(check, rfd, got, sizeof(got));
+    vfs_close(check, rfd);
+    system_free(check);
+
+    assert(n == seed_len + 1);
+    int marker_pos = -1;
+    for (int i = 0; i < n; i++) {
+        if (got[i] == '#') {
+            marker_pos = i;
+            break;
+        }
+    }
+    assert(marker_pos > 320); /* past a single screen's worth of hex rows -- proves the view actually scrolled and the click mapped into it */
+
+    remove("quill_scratch.txt");
+}
+
+/* Finds the pixel x where the widest gap in a hex-mode row's ink ends,
+ * within a row's y band -- used below to locate where the ASCII column
+ * starts (the biggest horizontal gap in a hex-dump row is always the one
+ * between the last hex-pair digit and the first ASCII character). */
+static int quill_fx_hex_row_ascii_x(Machine* m, int y0, int y1) {
+    int sw = m->system->screen_width;
+    uint8_t* fb = m->system->screen_pixels;
+    int last_ink = -1;
+    int best_gap = 0;
+    int best_gap_end = -1;
+    for (int x = 0; x < 500; x++) {
+        int ink = 0;
+        for (int y = y0; y < y1; y++) {
+            uint8_t* p = fb + (size_t) y * (size_t) sw * 4 + (size_t) x * 4;
+            if (p[1] < 0x80 && p[2] < 0x80 && p[3] < 0x80) {
+                ink = 1;
+                break;
+            }
+        }
+        if (ink && last_ink >= 0 && (x - last_ink) > best_gap) {
+            best_gap = x - last_ink;
+            best_gap_end = x;
+        }
+        if (ink) {
+            last_ink = x;
+        }
+    }
+    return best_gap_end;
+}
+
+/* Real bug, caught from a user screenshot: a file whose last hex row has
+ * fewer than 16 bytes showed that row's ASCII column noticeably out of
+ * line with the ASCII column in the full rows above it. Root cause: the
+ * unused hex-pair slots in a short row used to be rendered as literal
+ * blank space characters (render_hex_row), and in Quill.fx's proportional
+ * font a run of spaces doesn't measure the same as a run of real hex
+ * digits -- so a single draw_bytes call over the whole 72-byte row buffer
+ * put the ASCII column at a different accumulated x for a short row than
+ * for a full one. Fixed by having render_hex_row always render all 16
+ * columns, treating a column past end-of-file as a phantom zero byte
+ * (matching hex_col_x's existing caret-positioning convention) instead of
+ * leaving it blank -- every row now accumulates the same real-digit width
+ * regardless of how many bytes it actually has. Seeds a 3-row file whose
+ * last row has only 11 of 16 bytes (same shape as the reported
+ * screenshot) and confirms all three rows' ASCII columns land within a
+ * few pixels of each other -- the same small (~4px) row-to-row jitter
+ * full rows already show each other, from real digit glyphs of different
+ * values measuring slightly differently in the proportional font. */
+static void test_quill_fx_hex_ascii_column_aligns_on_short_row(void) {
+    printf("Testing apps/fluxio/Quill.fx: hex mode ASCII column stays aligned on a short last row...\n");
+
+    const char* dir = "/tmp/nuxvm_test_quill_fx_hex_align";
+    char binpath[256];
+    Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    if (!m) return;
+    machine_free(m);
+
+    remove("quill_scratch.txt");
+    FILE* seed = fopen("quill_scratch.txt", "wb");
+    assert(seed != NULL);
+    const char* content = "Line One\nLine Two\nLine Three\nskip\nLINE FOUR"; /* 43 bytes: two full 16-byte rows + an 11-byte last row */
+    assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
+    fclose(seed);
+
+    m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    assert(m != NULL);
+
+    int32_t kc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t kp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(kc >= 100 && kp >= 100);
+    assert(vfs_bind(m->system, kp, "/dev/kbd") == 0);
+    vfs_close(m->system, kp);
+
+    int frames = 0;
+    while (!m->cpu->halted && frames < 5) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(!m->cpu->halted);
+
+    uint8_t home[8] = { 0, 0, 23, 0, 0, 0, 0, 0 }; /* Home -> hex mode */
+    assert(vfs_write(m->system, kc, home, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+
+    int ascii_x_row0 = quill_fx_hex_row_ascii_x(m, 40, 60);
+    int ascii_x_row1 = quill_fx_hex_row_ascii_x(m, 60, 80);
+    int ascii_x_row2 = quill_fx_hex_row_ascii_x(m, 80, 100); /* the short (11-byte) row */
+    assert(ascii_x_row0 > 0 && ascii_x_row1 > 0 && ascii_x_row2 > 0);
+    /* Within a few pixels, not exact -- real digit glyphs of different
+     * values measure slightly differently even between two full rows
+     * (confirmed: row0 vs row1 alone differ by ~4px here). The bug this
+     * guards against was a ~50-130px miss, far outside this tolerance. */
+    int diff01 = ascii_x_row2 - ascii_x_row0;
+    if (diff01 < 0) {
+        diff01 = -diff01;
+    }
+    int diff12 = ascii_x_row2 - ascii_x_row1;
+    if (diff12 < 0) {
+        diff12 = -diff12;
+    }
+    assert(diff01 <= 10);
+    assert(diff12 <= 10);
+
+    vfs_close(m->system, kc);
+    machine_free(m);
+    remove("quill_scratch.txt");
+}
+
 /* Counts non-background ink pixels in the status bar's text row, at the
  * default 960x720 resolution (status bar at y=[696,720)). Used to prove
  * the status line's content actually changes (dirty marker appears/
@@ -2672,6 +2921,8 @@ int main(void) {
     test_quill_fx_wraps_long_word_without_fault();
     test_quill_fx_hex_mode_toggle();
     test_quill_fx_scrollbar_scrolls_view();
+    test_quill_fx_hex_click_after_scroll();
+    test_quill_fx_hex_ascii_column_aligns_on_short_row();
     test_quill_fx_status_line_reflects_dirty_state();
     test_quill_fx_viewport_follows_cursor();
     test_quill_fx_menu_bar_renders();
