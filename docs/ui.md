@@ -77,6 +77,13 @@ INCLUDE "lib/ui.lux"
 | `UI::draw` | `--` | paint every component |
 | `UI::label` | `text x y --` | Chicago static text |
 | `UI::groupbox` | `text x y w h --` | labeled FrameRect; title sits on the top edge |
+| `UI::list` | `text x y w h handler --` | group box with a selectable item column. `text` is the header and the identity. Click posts `EV_PRESS` with the row index (`val` in the handler). |
+| `UI::list-add` | `name item --` | append a NUL-terminated label |
+| `UI::list-clear` | `name --` | drop every item |
+| `UI::list-count` | `name -- n` | |
+| `UI::list-sel@` / `UI::list-sel!` | `name -- idx` / `name idx --` | `-1` means none |
+| `UI::list-item@` | `name idx -- ptr` | item string, or `0` |
+| `UI::list-active` | `name --` | focus that list: inverted title, inverted selection. Sibling lists go inactive (plain title, outline selection). |
 
 `text` is the label and the identity (`T"OK"`). Radio `group` is one stored string pointer (`T"align" grp STOREI` then `grp LOADI` — `T"` is not interned). Checkbox/radio `w h` is the clickable strip; the mark is the 12px System 6 box at `x,y`.
 
@@ -84,7 +91,9 @@ The menu bar is always the top 20px strip. Click a title to open, click an item 
 
 Wire keyboard Return to `UI::enter` and Esc to `UI::escape`. The ring is still there (`UI::poll`) if an app wants raw records instead of handlers.
 
-Cloister is a fantasy machine: one program at a time owns the 960×720 screen and its own menu bar. `./bin/cloister` opens a picker; `./bin/cloister apps/Quill.bin` boots that ROM directly. Esc in an app raises Continue / Restart / Quit. Halt (Quit) returns to the picker, or exits if the ROM was passed on the command line.
+Cloister is a fantasy machine: one program at a time owns the 960×720 screen and its own menu bar. `./bin/cloister` boots `apps/Picker.lux`, a Lux guest that shows two group-box lists (Lux sources from `apps/` on the left, compiled Fluxio bins from `apps/fluxio/` on the right). Click or Enter writes the path to `/sys/launch` and HALTs; the host loads that ROM. `./bin/cloister apps/Quill.bin` boots that ROM directly. Esc in an app raises Continue / Restart / Quit. Halt (Quit) returns to the picker, or exits if the ROM was passed on the command line or Quit was chosen in the picker itself.
+
+A group box is FrameRect with the title punched through the top edge. `UI::groupbox` is that chrome alone (place radios or other controls inside by coordinates). `UI::list` is the same chrome plus a clickable column of strings — two of them side by side is how the picker does headers-and-columns, with no layout manager.
 
 **Illumos** (`apps/Illumos.lux`) is the CFF font editor: 16×16 glyph collection, magnified pixel editor, width rule, pangram. Open/Save through `SF::`. See `docs/CFF.md`.
 
@@ -95,7 +104,7 @@ Cloister is a fantasy machine: one program at a time owns the 960×720 screen an
 | `lib/geom.lux` | Point (`x y`) and Rect (`minx miny maxx maxy`, max exclusive) |
 | `lib/mem.lux` | Bump heap at `0xA00000` |
 | `lib/draw.lux` | QuickDraw: `/dev/draw` packing plus `paint-rect` / `frame-rect`, `paint-oval` / `frame-oval`, `paint-rrect` / `frame-rrect`, `paint-tri`, `hline` / `vline` / `line` / `dash-h`, `x-mark` / `check-mark`, `fill-r` / `stroke-r`, `char-w` / `char-h` |
-| `lib/ui.lux` | Controls. Faces call DRAW primitives (button → RoundRect, radio → Oval, checkbox → Rect + `x-mark`, scrollbar arrows → `paint-tri`, menu check → `check-mark`, separator → `dash-h`) |
+| `lib/ui.lux` | Controls. Faces call DRAW primitives (button → RoundRect, radio → Oval, checkbox → Rect + `x-mark`, scrollbar arrows → `paint-tri`, menu check → `check-mark`, separator → `dash-h`, group box / list → FrameRect + title) |
 | `lib/sf.lux` | System 6 Standard File picker (`SF::`) |
 | `lib/app.lux` | Devices, loop, `dirty!` |
 | `lib/menu.lux` | Leftover quotation menu bar (Quill uses `UI::`) |
@@ -139,7 +148,7 @@ The slider is vertical (System 6 Speaker Volume): max at the top. `val` is poste
 
 Scrollbars are System 6 16px bars: arrow buttons at both ends, dithered track, white thumb. Min is at the top (`vscroll`) or left (`hscroll`). Arrow click steps by 1; track click pages; the thumb drags. `val` is posted only when the integer changes.
 
-A button is one generic System 6 push button: 20px high, r=3 rounded rect (DRAW::paint-rrect / frame-rrect with ovalWidth 6), Chicago label centered. `UI::default` adds the HIG ring. Press inverts; drag out un-inverts; the handler runs only on release still inside. Radios call DRAW::frame-oval / paint-oval. Checkboxes call a framed rect plus DRAW::x-mark. Scrollbar arrows call DRAW::paint-tri. A group box is FrameRect with the title punched through the top edge.
+A button is one generic System 6 push button: 20px high, r=3 rounded rect (DRAW::paint-rrect / frame-rrect with ovalWidth 6), Chicago label centered. `UI::default` adds the HIG ring. Press inverts; drag out un-inverts; the handler runs only on release still inside. Radios call DRAW::frame-oval / paint-oval. Checkboxes call a framed rect plus DRAW::x-mark. Scrollbar arrows call DRAW::paint-tri. A group box is FrameRect with the title punched through the top edge. A list is that group box plus inverted-row selection.
 
 A menu bar is Chicago 12, 20px high, white with a 1px black rule. The open title and hovered item invert. Check and radio items show a checkmark in the left column, not the standalone checkbox X. Separators are a dashed line. Click-to-open, not press-and-hold.
 

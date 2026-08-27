@@ -8,9 +8,28 @@
 
 static void usage(const char* prog) {
     fprintf(stderr,
-            "Usage: %s [-trace] [-o out.bin] [-target graphical|headless] "
-            "[-dumpAt 0xADDR] [-dumpRange N] <file.lux>\n",
+            "Usage: %s [-trace] [-o out.bin] [-target graphical|headless] [-base 0xADDR] "
+            "[-symbols out.symtab.json] [-dumpAt 0xADDR] [-dumpRange N] <file.lux>\n",
             prog);
+}
+
+/* Writes every dictionary entry (name -> final compiled address) as JSON.
+ * Consumed by fluxlink (docs/quill_fluxio.md Phase B3) to build a linked
+ * library's trampoline table; see abi/nux-abi.json's append_only_policy
+ * for why this is a *committed* file, not a throwaway build artifact, once
+ * a library starts being linked against. */
+static bool write_symtab(const char* path, Compiler* c) {
+    FILE* f = fopen(path, "w");
+    if (!f) return false;
+    fprintf(f, "{\n  \"symbols\": [\n");
+    for (size_t i = 0; i < c->dict_count; i++) {
+        fprintf(f, "    { \"name\": \"%s\", \"address\": %d }%s\n",
+                c->dictionary[i].name, c->dictionary[i].address,
+                (i + 1 < c->dict_count) ? "," : "");
+    }
+    fprintf(f, "  ]\n}\n");
+    fclose(f);
+    return true;
 }
 
 // Parse a decimal or 0x-prefixed hex address. Returns false on garbage.
@@ -104,8 +123,10 @@ static void dump_around(const uint8_t* bytecode, size_t code_len, int32_t base_a
 int main(int argc, char** argv) {
     bool trace = false;
     int base_address = GRAPHICAL_BASE_ADDRESS;
+    const char* base_override_arg = NULL;
     const char* filename = NULL;
     const char* out_filename_arg = NULL;
+    const char* symbols_out_arg = NULL;
     const char* dump_at_arg = NULL;
     int dump_range = 64;
 
@@ -122,8 +143,22 @@ int main(int argc, char** argv) {
                 return 1;
             }
             i++;
+        } else if (strcmp(argv[i], "-base") == 0 && i + 1 < argc) {
+            /* Overrides -target's base address. For a Lux "library build"
+             * meant to be linked by fluxlink (docs/quill_fluxio.md Phase B),
+             * which needs to target the ABI library-link band
+             * (MM_ABI_LIBRARY_LINK_BASE, include/memory_map.h) instead of
+             * colliding with GRAPHICAL_BASE_ADDRESS, where the Fluxio
+             * program it gets linked into already loads. Applied after the
+             * full argument scan below, so it always wins regardless of
+             * whether -target appears before or after it. */
+            base_override_arg = argv[i+1];
+            i++;
         } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             out_filename_arg = argv[i+1];
+            i++;
+        } else if (strcmp(argv[i], "-symbols") == 0 && i + 1 < argc) {
+            symbols_out_arg = argv[i+1];
             i++;
         } else if (strcmp(argv[i], "-dumpAt") == 0 && i + 1 < argc) {
             dump_at_arg = argv[i+1];
@@ -142,6 +177,15 @@ int main(int argc, char** argv) {
     if (!filename) {
         usage(argv[0]);
         return 1;
+    }
+
+    if (base_override_arg) {
+        long long override_val;
+        if (!parse_address(base_override_arg, &override_val)) {
+            fprintf(stderr, "luxc: bad -base \"%s\"\n", base_override_arg);
+            return 1;
+        }
+        base_address = (int)override_val;
     }
 
     FILE* f = fopen(filename, "rb");
@@ -179,13 +223,37 @@ int main(int argc, char** argv) {
     source[fsize] = '\0';
     fclose(f);
 
-    size_t code_len = 0;
-    uint8_t* bytecode = compile_source(source, base_address, &code_len, trace);
-
-    if (!bytecode) {
+    /* Compiled via the lower-level compiler_create/compiler_compile API
+     * (rather than the compile_source one-shot helper) so the dictionary
+     * is still reachable afterward for -symbols -- compile_source frees
+     * its Compiler internally before returning. */
+    TokenList* token_list = tokenize(source);
+    if (!token_list) {
         fprintf(stderr, "Compilation failed\n");
         free(source);
         return 1;
+    }
+    Compiler* compiler = compiler_create(token_list, base_address, trace);
+    size_t code_len = 0;
+    uint8_t* bytecode = compiler_compile(compiler, &code_len);
+
+    if (!bytecode) {
+        fprintf(stderr, "Compilation failed\n");
+        compiler_free(compiler);
+        token_list_free(token_list);
+        free(source);
+        return 1;
+    }
+
+    if (symbols_out_arg) {
+        if (!write_symtab(symbols_out_arg, compiler)) {
+            fprintf(stderr, "luxc: could not write symbol table to \"%s\"\n", symbols_out_arg);
+            free(bytecode);
+            compiler_free(compiler);
+            token_list_free(token_list);
+            free(source);
+            return 1;
+        }
     }
 
     if (dump_at_arg) {
@@ -193,14 +261,20 @@ int main(int argc, char** argv) {
         if (!parse_address(dump_at_arg, &pc)) {
             fprintf(stderr, "luxc: bad -dumpAt \"%s\"\n", dump_at_arg);
             free(bytecode);
+            compiler_free(compiler);
+            token_list_free(token_list);
             free(source);
             return 1;
         }
         dump_around(bytecode, code_len, base_address, pc, dump_range);
         free(bytecode);
+        compiler_free(compiler);
+        token_list_free(token_list);
         free(source);
         return 0;
     }
+    compiler_free(compiler);
+    token_list_free(token_list);
 
     char out_filename[256];
     if (out_filename_arg) {

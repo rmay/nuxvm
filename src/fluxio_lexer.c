@@ -44,6 +44,9 @@ const char* fx_token_type_name(FxTokenType type) {
         case FXTOK_KW_RECURSIVE: return "recursive";
         case FXTOK_KW_INCLUDE: return "include";
         case FXTOK_KW_STRUCT: return "struct";
+        case FXTOK_KW_EXTERN: return "extern";
+        case FXTOK_KW_VOID: return "void";
+        case FXTOK_KW_BYTE: return "byte";
         case FXTOK_LPAREN: return "(";
         case FXTOK_RPAREN: return ")";
         case FXTOK_LBRACE: return "{";
@@ -172,6 +175,9 @@ static FxTokenType keyword_type(const char* s) {
     if (strcmp(s, "recursive") == 0) return FXTOK_KW_RECURSIVE;
     if (strcmp(s, "include") == 0) return FXTOK_KW_INCLUDE;
     if (strcmp(s, "struct") == 0) return FXTOK_KW_STRUCT;
+    if (strcmp(s, "extern") == 0) return FXTOK_KW_EXTERN;
+    if (strcmp(s, "void") == 0) return FXTOK_KW_VOID;
+    if (strcmp(s, "byte") == 0) return FXTOK_KW_BYTE;
     return FXTOK_IDENT;
 }
 

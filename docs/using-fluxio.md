@@ -16,7 +16,7 @@ Fluxio is a second, C-like language for the NUX VM, alongside Lux (the Forth-sty
   hello.fx ──(fluxioc)──▶ hello.bin ──(nux | cloister)──▶ output
 ```
 
-Unlike `luxc`'s output, `nux` and `cloister` do **not** compile `.fx` in-process — they only recognize a `.lux` suffix for that shortcut (`src/nux.c`, `src/cloister.c`). Fluxio programs always go through `fluxioc` to a `.bin` first.
+Unlike `luxc`'s output, `nux` and `cloister` do **not** compile `.fx` in-process — they only recognize a `.lux` suffix for that shortcut (`src/nux.c`, `src/cloister.c`). Fluxio programs always go through `fluxioc` to a `.bin` first. `make apps` compiles `apps/*.lux` to `apps/*.bin` and `apps/fluxio/*.fx` to `apps/fluxio/*.bin` (graphical). `make all` builds the tools and then `apps`, so the two stay in sync. Cloister's picker lists Lux sources from `apps/*.lux` on the left and those Fluxio bins on the right.
 
 ## Building the tools
 

@@ -4,8 +4,10 @@ INCLUDE "lib/sci.lux"
 
 MODULE LOG
 
-( Memory for logging state )
-@ENABLED-FLAG 0x803000 ;
+( Memory for logging state.
+  0x500000: MM_SHARED_LUX_FLAGS_BASE, see include/memory_map.h /
+  docs/memory-map.md -- was 0x803000, which collided with Quill's FILE_BUF. )
+@ENABLED-FLAG 0x500000 ;
 
 @ENABLE ( -- )
     1 ENABLED-FLAG STOREI

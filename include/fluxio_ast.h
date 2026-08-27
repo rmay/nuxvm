@@ -74,7 +74,18 @@ struct FxNode {
          *     decoded bytes, array_len == string_len + 1 for the NUL)
          *   struct_type_name != NULL: a struct instance (array_len is set
          *     to the struct's field count for storage-sizing purposes;
-         *     init/has_string_init are unused) */
+         *     init/has_string_init are unused)
+         *
+         * is_byte (Phase A1, docs/quill_fluxio.md): only meaningful when
+         * array_len > 0. A *local* byte array still lives in the VM's
+         * word-sized frame-relative locals region (locals aren't
+         * byte-addressable), so it costs identical codegen to a local
+         * `int[]` -- one full word per element either way. is_byte only
+         * changes anything for a *global* byte array (see FxGlobal below),
+         * where it halves-to-quarters real memory use. Kept here anyway so
+         * a local declared `byte buf[N]` reads correctly and a future
+         * pointer-decay path (if locals ever get one) has the type to key
+         * off of. */
         struct {
             char* name;
             int32_t array_len;
@@ -83,6 +94,7 @@ struct FxNode {
             char* string_value;
             int32_t string_len;
             char* struct_type_name;
+            bool is_byte;
         } local_decl;
 
         struct { FxNode* expr; } expr_stmt;
@@ -104,6 +116,7 @@ struct FxNode {
 typedef struct {
     char* name;
     bool is_array;          /* declared as "int name[]" -- receives a decayed base address */
+    bool is_byte;            /* is_array only: declared "byte name[]" -- 1-byte element stride */
     char* struct_type_name; /* declared as "TypeName name" -- receives a decayed base address, field offsets known */
     int line;
 } FxParam;
@@ -120,7 +133,15 @@ typedef struct {
 } FxFunc;
 
 /* Exactly one of {scalar, array, struct} -- see FX_LOCAL_DECL's comment
- * above, same three-way split applies to globals. */
+ * above, same three-way split applies to globals.
+ *
+ * is_byte (Phase A1, docs/quill_fluxio.md): only meaningful when
+ * array_len > 0. Global storage is real, byte-addressable VM memory
+ * (unlike locals), so a byte array actually packs 1 byte/element instead
+ * of 4 -- this is what makes a 1MB `byte file_buf[1048576];` fit in a
+ * quarter of the memory a `int[]` of the same element count would need.
+ * See the global-allocation loop and string-init codegen in
+ * src/fluxio_codegen.c. */
 typedef struct {
     char* name;
     int32_t array_len;
@@ -131,6 +152,7 @@ typedef struct {
     int32_t string_len;
     char* struct_type_name;
     int line;
+    bool is_byte;
 } FxGlobal;
 
 typedef struct {
@@ -145,6 +167,34 @@ typedef struct {
     int line;
 } FxStructDef;
 
+/* `extern int name(int a, int b, ...) = 0xADDR;` -- binds a name + arity
+ * to a fixed absolute address instead of a compiled body (Phase B5,
+ * docs/quill_fluxio.md). Used to call into a `fluxlink`-produced
+ * trampoline slot (abi/nux-abi.json): the address is always known at
+ * parse time (there's no dynamic linking), so codegen emits a plain
+ * `OP_CALL <address>` at the call site, no different from calling a
+ * compiled Fluxio function once its own address is known. Only plain
+ * `int` parameters are supported (no arrays/structs) -- arity is all
+ * that's checked against a call site, param names exist only for
+ * readability in source.
+ *
+ * `is_void` (docs/quill_fluxio.md Phase B6/B7): plain Fluxio functions
+ * always leave exactly one value on the stack, so FX_EXPR_STMT always
+ * emits a trailing OP_POP after any call used as a statement. Most of
+ * the Lux UI/SF library words this binds against are `( ... -- )` --
+ * they push nothing -- so blindly popping after them would consume
+ * whatever the *next* instruction leaves instead. `extern void f(...)`
+ * marks that case: codegen skips the POP, and using its result as a
+ * value (assignment, argument, ...) is a compile error instead of
+ * silently reading garbage. */
+typedef struct {
+    char* name;
+    int nparams;
+    int32_t address;
+    int line;
+    bool is_void;
+} FxExtern;
+
 typedef struct {
     FxGlobal* globals;
     int nglobals;
@@ -152,6 +202,8 @@ typedef struct {
     int nfuncs;
     FxStructDef* structs;
     int nstructs;
+    FxExtern* externs;
+    int nexterns;
 } FxProgram;
 
 /* Looks up a struct definition by name, or NULL if none exists. */

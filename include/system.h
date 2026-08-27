@@ -24,6 +24,7 @@
 #define GPU_PORT         (DEVICE_MEMORY_OFFSET + 0x0100)
 
 #define SYS_SNARF_MAX       65536
+#define SYS_LAUNCH_MAX      256
 #define SYS_MAX_CHILD_VMS   16
 #define SYS_INPUT_QUEUE_SZ  64
 
@@ -91,6 +92,10 @@ typedef struct System {
 
     char dialog_result[512];
     bool dialog_ready;
+
+    /* Path written to /sys/launch. Cloister copies this on HALT and
+       loads that ROM in place of the current one (picker -> app). */
+    char launch_path[SYS_LAUNCH_MAX];
 
     VFSState vfs;
 

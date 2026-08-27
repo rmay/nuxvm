@@ -793,7 +793,7 @@ Contributions welcome! Areas for improvement:
 
 # Cloister
 
-Cloister is the graphical host for NUX — a Varvara-shaped fantasy machine, not a multi-app OS. One Lux program owns the screen, `/dev/draw`, `/dev/mouse`, and `/dev/kbd`. Run `./bin/cloister` to pick a ROM from `apps/`, or pass a `.bin` / `.lux` path. Esc is Continue / Restart / Quit inside the app.
+Cloister is the graphical host for NUX — a Varvara-shaped fantasy machine, not a multi-app OS. One program owns the screen, `/dev/draw`, `/dev/mouse`, and `/dev/kbd`. Run `./bin/cloister` to pick a ROM: the picker is itself a Lux app (`apps/Picker.lux`) with two group-box columns, Lux sources on the left (compiled on the fly) and compiled Fluxio bins from `apps/fluxio/` on the right. Pass a `.bin` / `.lux` path to boot that ROM directly. Esc is Continue / Restart / Quit inside the app.
 
 ---
 

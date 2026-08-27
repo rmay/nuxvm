@@ -4,6 +4,7 @@
 #include "fluxio_codegen.h"
 #include "machine.h"
 #include "vm.h"
+#include "opcodes.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -116,6 +117,40 @@ static Machine* run_machine_pumped(const uint8_t* bc, size_t len, int max_frames
     return m;
 }
 
+/* True iff `bc` contains an OP_CALL whose 4-byte big-endian immediate is
+ * `addr`. Used to prove extern codegen binds to the declared address
+ * without needing a linked library to actually run the call. */
+static bool bytecode_contains_call(const uint8_t* bc, size_t len, int32_t addr) {
+    uint32_t u = (uint32_t) addr;
+    for (size_t i = 0; i + 5 <= len; i++) {
+        if (bc[i] == OP_CALL &&
+            bc[i + 1] == (uint8_t) ((u >> 24) & 0xFF) &&
+            bc[i + 2] == (uint8_t) ((u >> 16) & 0xFF) &&
+            bc[i + 3] == (uint8_t) ((u >> 8) & 0xFF) &&
+            bc[i + 4] == (uint8_t) (u & 0xFF)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* True iff the OP_CALL to `addr` is immediately followed by OP_POP
+ * (the trailing discard FX_EXPR_STMT emits for a value-producing call
+ * used as a statement). `extern void` must NOT have this pop. */
+static bool call_followed_by_pop(const uint8_t* bc, size_t len, int32_t addr) {
+    uint32_t u = (uint32_t) addr;
+    for (size_t i = 0; i + 5 <= len; i++) {
+        if (bc[i] == OP_CALL &&
+            bc[i + 1] == (uint8_t) ((u >> 24) & 0xFF) &&
+            bc[i + 2] == (uint8_t) ((u >> 16) & 0xFF) &&
+            bc[i + 3] == (uint8_t) ((u >> 8) & 0xFF) &&
+            bc[i + 4] == (uint8_t) (u & 0xFF)) {
+            return i + 5 < len && bc[i + 5] == OP_POP;
+        }
+    }
+    return false;
+}
+
 /* Compile+run a program whose main() leaves a single int on the stack at
  * HALT, and assert it equals `expected`. */
 static void check_result(const char* source, int32_t expected) {
@@ -226,6 +261,42 @@ static void test_lexer_doc_comment_tracking(void) {
     fx_token_list_free(toks);
 }
 
+static void test_lexer_new_keywords(void) {
+    printf("Testing lexer keywords: extern, void, byte...\n");
+    FxTokenList* toks = fx_tokenize("extern void byte int struct");
+    assert(toks != NULL);
+    assert(toks->tokens[0].type == FXTOK_KW_EXTERN);
+    assert(toks->tokens[1].type == FXTOK_KW_VOID);
+    assert(toks->tokens[2].type == FXTOK_KW_BYTE);
+    assert(toks->tokens[3].type == FXTOK_KW_INT);
+    assert(toks->tokens[4].type == FXTOK_KW_STRUCT);
+    fx_token_list_free(toks);
+}
+
+static void test_lexer_string_escapes(void) {
+    printf("Testing lexer string-literal escapes...\n");
+    FxTokenList* toks = fx_tokenize("\"a\\nb\\tc\\\\d\\\"e\\0f\"");
+    assert(toks != NULL);
+    assert(toks->tokens[0].type == FXTOK_STRING_LIT);
+    assert(toks->tokens[0].str_len == 11); /* a \n b \t c \\ d " e \0 f */
+    assert(toks->tokens[0].value[0] == 'a');
+    assert(toks->tokens[0].value[1] == '\n');
+    assert(toks->tokens[0].value[2] == 'b');
+    assert(toks->tokens[0].value[3] == '\t');
+    assert(toks->tokens[0].value[4] == 'c');
+    assert(toks->tokens[0].value[5] == '\\');
+    assert(toks->tokens[0].value[6] == 'd');
+    assert(toks->tokens[0].value[7] == '"');
+    assert(toks->tokens[0].value[8] == 'e');
+    assert(toks->tokens[0].value[9] == '\0');
+    assert(toks->tokens[0].value[10] == 'f');
+    fx_token_list_free(toks);
+
+    /* Unknown escape and unterminated string are lex errors. */
+    assert(fx_tokenize("\"\\q\"") == NULL);
+    assert(fx_tokenize("\"unterminated") == NULL);
+}
+
 /* -----------------------------------------------------------------------
  * Expressions / precedence
  * ----------------------------------------------------------------------- */
@@ -241,6 +312,18 @@ static void test_arithmetic_precedence(void) {
     check_result("/** e */\nint main() { return !5; }", 0);
     check_result("/** e */\nint main() { return 6 & 3 | 8; }", 10);
     check_result("/** e */\nint main() { return - -5; }", 5);
+    check_result("/** e */\nint main() { return + +7; }", 7); /* unary plus is a no-op */
+    check_result("/** e */\nint main() { return 0xF0 ^ 0x0F; }", 0xFF);
+    check_result("/** e */\nint main() { return 16 >> 2; }", 4);
+    check_result("/** e */\nint main() { return (0 - 8) >> 1; }", -4); /* >> is arithmetic */
+    check_result("/** e */\nint main() { return 1 == 1 && 2 != 3 && 3 < 4 && 5 >= 5; }", 1);
+    check_result("/** e */\nint main() { return 1 < 2 == 1; }", 1); /* comparisons bind tighter than == */
+    check_result(
+        "/** e */\n"
+        "int main() { int a; int b; a = b = 7; return a + b; }", 14);
+    check_result(
+        "/** e */\n"
+        "int main() { int msg[] = \"A\\nB\"; return msg[1]; }", 10);
 }
 
 static void test_short_circuit(void) {
@@ -317,6 +400,24 @@ static void test_if_else(void) {
     check_result("/** e */\nint main() { if (0) { return 1; } return 0; }", 0);
     check_result("/** e */\nint main() { if (0) { return 1; } else { return 2; } }", 2);
     check_result("/** e */\nint main() { int r; if (3 > 5) { r = 1; } else { r = 2; } return r; }", 2);
+    /* Nested if/else and else-if chain. */
+    check_result(
+        "/** e */\n"
+        "int main() {\n"
+        "    int x = 2;\n"
+        "    int r = 0;\n"
+        "    if (x == 0) { r = 10; } else {\n"
+        "        if (x == 1) { r = 20; } else { r = 30; }\n"
+        "    }\n"
+        "    return r;\n"
+        "}", 30);
+    check_result(
+        "/** classify */\n"
+        "int classify(int n) {\n"
+        "    if (n < 0) { return 0 - 1; } else { if (n == 0) { return 0; } else { return 1; } }\n"
+        "}\n"
+        "/** e */\n"
+        "int main() { return classify(0 - 3) + classify(0) * 10 + classify(4) * 100; }", 99);
 }
 
 static void test_while_loop(void) {
@@ -335,6 +436,19 @@ static void test_for_loop(void) {
     check_result(
         "/** e */\n"
         "int main() { int i = 0; int s = 0; for (;;) { if (i >= 5) { return s; } s = s + i; i = i + 1; } }", 10);
+    /* Nested for; empty init/post. */
+    check_result(
+        "/** e */\n"
+        "int main() {\n"
+        "    int s = 0;\n"
+        "    for (int i = 0; i < 3; i = i + 1) {\n"
+        "        for (int j = 0; j < 3; j = j + 1) { s = s + 1; }\n"
+        "    }\n"
+        "    return s;\n"
+        "}", 9);
+    check_result(
+        "/** e */\n"
+        "int main() { int i = 0; int s = 0; for (; i < 4; ) { s = s + i; i = i + 1; } return s; }", 6);
 }
 
 /* -----------------------------------------------------------------------
@@ -599,6 +713,60 @@ static void test_fill_rect_pixel_exact(void) {
     free(bc);
 }
 
+/* Phase A3, docs/quill_fluxio.md: draw_bytes(fd,x,y,color,scale,buf,len)
+ * has the same wire format as draw_str, sourced from a runtime byte[]
+ * instead of a compile-time string literal (needed for Quill to draw live
+ * file/line content). Draws the same text both ways at two different y
+ * offsets in one frame and asserts the rendered pixels are byte-identical
+ * -- a much stronger check than "it didn't fault", and doesn't require
+ * hand-verifying glyph bitmaps. */
+static void test_draw_bytes_matches_draw_str(void) {
+    printf("Testing draw_bytes renders pixel-identical output to draw_str...\n");
+    size_t len;
+    uint8_t* bc = must_compile(
+        "byte msg[4] = \"Hi\";\n"
+        "/** e */\n"
+        "int main() {\n"
+        "    int fd = vfs_open(\"/dev/draw\");\n"
+        "    begin_frame(fd);\n"
+        "    fill_rect(fd, 0, 0, 60, 60, 0x000000);\n"
+        "    draw_str(fd, 5, 5, 0xFFFFFF, 12, \"Hi\");\n"
+        "    draw_bytes(fd, 5, 30, 0xFFFFFF, 12, msg, 2);\n"
+        "    end_frame(fd);\n"
+        "    return 0;\n"
+        "}", &len);
+    Machine* m = run_machine_pumped(bc, len, 1);
+    assert(m->cpu->halted);
+    int sw = m->system->screen_width ? m->system->screen_width : 960;
+    uint8_t* fb = m->system->screen_pixels;
+    bool any_ink = false;
+    for (int y = 0; y < 20; y++) {
+        for (int x = 0; x < 20; x++) {
+            uint8_t* p1 = fb + (size_t) (5 + y) * sw * 4 + (size_t) (5 + x) * 4;
+            uint8_t* p2 = fb + (size_t) (30 + y) * sw * 4 + (size_t) (5 + x) * 4;
+            assert(p1[0] == p2[0] && p1[1] == p2[1] && p1[2] == p2[2] && p1[3] == p2[3]);
+            if (p1[1] || p1[2] || p1[3]) any_ink = true;
+        }
+    }
+    assert(any_ink); /* sanity: text actually drew ink, not just matching blanks */
+    machine_free(m);
+    free(bc);
+}
+
+static void test_draw_bytes_oversized_len_clamped(void) {
+    printf("Testing draw_bytes clamps an oversized len instead of overrunning scratch memory...\n");
+    check_machine_result(
+        "byte msg[4] = \"Hi\";\n"
+        "/** e */\n"
+        "int main() {\n"
+        "    int fd = vfs_open(\"/dev/draw\");\n"
+        "    begin_frame(fd);\n"
+        "    draw_bytes(fd, 5, 5, 0xFFFFFF, 12, msg, 999999);\n"
+        "    end_frame(fd);\n"
+        "    return 1;\n"
+        "}", 1, 1);
+}
+
 static void test_poll_no_events(void) {
     printf("Testing poll_mouse/poll_kbd return 0 with no queued events...\n");
     /* A VFS read on an empty input queue implicitly sets system->yielded
@@ -641,6 +809,82 @@ static void test_frame_loop_multi_yield(void) {
         "    }\n"
         "    return i;\n"
         "}", 5, 10);
+}
+
+/* -----------------------------------------------------------------------
+ * Phase A2, docs/quill_fluxio.md: runtime-buffer VFS builtins
+ * (vfs_open_buf/vfs_read/vfs_write/vfs_seek/vfs_stat/vfs_write_chunk) --
+ * unlike vfs_open, none of these accept a literal, so they're exercised
+ * through real host-backed files under /sys/file/ (src/vfs.c), not a /dev
+ * pseudo-file.
+ * ----------------------------------------------------------------------- */
+
+static void test_vfs_write_read_roundtrip(void) {
+    printf("Testing vfs_write/vfs_read round-trip on a real host file...\n");
+    check_machine_result(
+        "byte path[32] = \"/sys/file/fx_a2_rw.txt\";\n"
+        "byte msg[16] = \"HelloA2\";\n"
+        "byte rbuf[16];\n"
+        "/** e */\n"
+        "int main() {\n"
+        "    int fd = vfs_open_buf(path, 22, 4);\n"
+        "    int written = vfs_write(fd, msg, 7);\n"
+        "    vfs_close(fd);\n"
+        "    int fd2 = vfs_open_buf(path, 22, 0);\n"
+        "    int read_n = vfs_read(fd2, rbuf, 16);\n"
+        "    vfs_close(fd2);\n"
+        "    if (written != 7) { return 0; }\n"
+        "    if (read_n != 7) { return 0; }\n"
+        "    if (rbuf[0] != 72) { return 0; }\n"  /* 'H' */
+        "    if (rbuf[6] != 50) { return 0; }\n"  /* '2' */
+        "    return 1;\n"
+        "}", 1, 1);
+    remove("fx_a2_rw.txt");
+}
+
+static void test_vfs_seek_and_stat(void) {
+    printf("Testing vfs_seek/vfs_stat on a real host file...\n");
+    check_machine_result(
+        "byte path[32] = \"/sys/file/fx_a2_seek.txt\";\n"
+        "byte msg[16] = \"abcdef\";\n"
+        "byte rbuf[16];\n"
+        "/** e */\n"
+        "int main() {\n"
+        "    int fd = vfs_open_buf(path, 24, 6);\n" /* 0x04 truncate | 0x02 read+write */
+        "    vfs_write(fd, msg, 6);\n"
+        "    int size = vfs_stat(fd);\n"
+        "    vfs_seek(fd, 2);\n"
+        "    int n = vfs_read(fd, rbuf, 16);\n"
+        "    vfs_close(fd);\n"
+        "    if (size != 6) { return 0; }\n"
+        /* seeked past the first 2 bytes -- 4 of the original 6 remain */
+        "    if (n != 4) { return 0; }\n"
+        "    if (rbuf[0] != 99) { return 0; }\n" /* 'c' */
+        "    return 1;\n"
+        "}", 1, 1);
+    remove("fx_a2_seek.txt");
+}
+
+static void test_vfs_write_chunk(void) {
+    printf("Testing vfs_write_chunk on a real host file...\n");
+    check_machine_result(
+        "byte path[32] = \"/sys/file/fx_a2_chunk.txt\";\n"
+        "byte msg[16] = \"chunked\";\n"
+        "byte rbuf[16];\n"
+        "/** e */\n"
+        "int main() {\n"
+        "    int fd = vfs_open_buf(path, 25, 4);\n"
+        "    int written = vfs_write_chunk(fd, msg, 7, 0, 7);\n"
+        "    vfs_close(fd);\n"
+        "    int fd2 = vfs_open_buf(path, 25, 0);\n"
+        "    int n = vfs_read(fd2, rbuf, 16);\n"
+        "    vfs_close(fd2);\n"
+        "    if (written != 7) { return 0; }\n"
+        "    if (n != 7) { return 0; }\n"
+        "    if (rbuf[0] != 99) { return 0; }\n" /* 'c' */
+        "    return 1;\n"
+        "}", 1, 1);
+    remove("fx_a2_chunk.txt");
 }
 
 /* -----------------------------------------------------------------------
@@ -1062,6 +1306,215 @@ static void test_error_string_init_misuse(void) {
     assert(must_fail_compile("int msg[2] = \"Hello\";\n/** e */\nint main() { return msg[0]; }")); /* too long */
 }
 
+/* Phase A1, docs/quill_fluxio.md: `byte name[N]` -- global (real memory,
+ * 1 byte/element), local (frame-relative, same codegen as int[] locals --
+ * see the comment on FxNode.local_decl.is_byte), and array parameters
+ * (decayed address, 1-byte index stride). */
+static void test_byte_arrays(void) {
+    printf("Testing byte arrays: global, local, string init, and array params...\n");
+    /* global byte array: string-literal init + explicit stores, string vs
+     * a mixed explicit-store byte to confirm 1-byte packing round-trips. */
+    check_result(
+        "byte msg[8] = \"hi\";\n"
+        "byte buf[4];\n"
+        "/** e */\n"
+        "int main() { buf[0] = msg[0]; buf[1] = msg[1]; return buf[0] + buf[1]; }",
+        'h' + 'i');
+    /* local byte array, plain stores/reads. */
+    check_result(
+        "/** e */\n"
+        "int main() { byte a[4]; a[0] = 10; a[1] = 20; a[2] = 30; return a[0] + a[1] + a[2]; }",
+        60);
+    /* byte array passed as a param, indexed with 1-byte stride inside the
+     * callee -- the actual bug this phase's design work was checking for
+     * (word-stride indexing on byte storage silently reading/writing the
+     * wrong bytes). */
+    check_result(
+        "byte g[4] = \"ab\";\n"
+        "/** sums first n bytes */\n"
+        "int sum_bytes(byte b[], int n) {\n"
+        "    int i = 0; int total = 0;\n"
+        "    while (i < n) { total = total + b[i]; i = i + 1; }\n"
+        "    return total;\n"
+        "}\n"
+        "/** e */\n"
+        "int main() { return sum_bytes(g, 2); }",
+        'a' + 'b');
+    /* a global byte array large enough to require the bulk-globals band
+     * (Phase 0's FX_BULK_GLOBAL_THRESHOLD) -- a byte array only needs the
+     * band at 1KB+ elements, unlike an equivalent int[] which needs it at
+     * 256+. MM_FX_BULK_GLOBALS_BASE (~13MB) is well past check_result's
+     * fixed 4MB VM, so this one needs its own bigger vm_create() call. */
+    {
+        const char* src =
+            "byte big[1048576];\n"
+            "/** e */\n"
+            "int main() { big[0] = 65; big[1048575] = 66; return big[0] + big[1048575]; }";
+        size_t len;
+        uint8_t* bc = must_compile(src, &len);
+        VM* vm = vm_create(bc, (uint32_t) len, HEADLESS_BASE_ADDRESS, 16 * 1024 * 1024, false);
+        assert(vm != NULL);
+        vm_run(vm);
+        assert(vm->halted);
+        check_stack_top(vm, 65 + 66);
+        vm_free(vm);
+        free(bc);
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * extern int / extern void (Phase B5/B6) -- compile-time shape, not the
+ * linked end-to-end path in src/test_abi_conformance.c. These prove the
+ * parser accepts the form, codegen emits OP_CALL to the bound address,
+ * void calls skip the statement-level POP, and the various collision /
+ * arity / naming errors reject.
+ * ----------------------------------------------------------------------- */
+
+static void test_extern_int_emits_call(void) {
+    printf("Testing extern int compiles to OP_CALL at the bound address...\n");
+    const int32_t addr = 0x00ABCDEF;
+    char src[512];
+    snprintf(src, sizeof(src),
+             "extern int get_answer() = 0x%X;\n"
+             "/** e */\n"
+             "int main() { return get_answer(); }\n",
+             (unsigned) addr);
+    size_t len;
+    uint8_t* bc = must_compile(src, &len);
+    assert(bytecode_contains_call(bc, len, addr));
+    free(bc);
+
+    /* Multi-arg form still emits a single CALL (args are PUSHed first). */
+    snprintf(src, sizeof(src),
+             "extern int add2(int a, int b) = 0x%X;\n"
+             "/** e */\n"
+             "int main() { return add2(1, 2); }\n",
+             (unsigned) addr);
+    bc = must_compile(src, &len);
+    assert(bytecode_contains_call(bc, len, addr));
+    free(bc);
+}
+
+static void test_extern_void_skips_pop(void) {
+    printf("Testing extern void as a statement does not emit a trailing POP...\n");
+    const int32_t poke_addr = 0x00100000;
+    const int32_t get_addr = 0x00ABCDEF;
+    char src[512];
+
+    snprintf(src, sizeof(src),
+             "extern void poke(int x) = 0x%X;\n"
+             "/** e */\n"
+             "int main() { poke(7); return 2; }\n",
+             (unsigned) poke_addr);
+    size_t len;
+    uint8_t* bc = must_compile(src, &len);
+    assert(bytecode_contains_call(bc, len, poke_addr));
+    assert(!call_followed_by_pop(bc, len, poke_addr));
+    free(bc);
+
+    /* Contrast: a value-returning extern used as a statement DOES pop. */
+    snprintf(src, sizeof(src),
+             "extern int get_answer() = 0x%X;\n"
+             "/** e */\n"
+             "int main() { get_answer(); return 0; }\n",
+             (unsigned) get_addr);
+    bc = must_compile(src, &len);
+    assert(bytecode_contains_call(bc, len, get_addr));
+    assert(call_followed_by_pop(bc, len, get_addr));
+    free(bc);
+}
+
+static void test_call_as_statement_discards_result(void) {
+    printf("Testing a Fluxio function used as a statement discards its result...\n");
+    check_result(
+        "int g = 0;\n"
+        "/** bumps g and returns it */\n"
+        "int bump() { g = g + 1; return g; }\n"
+        "/** e */\n"
+        "int main() { bump(); bump(); return g; }", 2);
+}
+
+static void test_error_extern_void_as_value(void) {
+    printf("Testing error: using an extern void call as a value...\n");
+    assert(must_fail_compile(
+        "extern void poke(int x) = 0x1000;\n"
+        "/** e */\n"
+        "int main() { int r = poke(1); return r; }"));
+    assert(must_fail_compile(
+        "extern void poke(int x) = 0x1000;\n"
+        "/** e */\n"
+        "int main() { return poke(1); }"));
+}
+
+static void test_error_extern_arity_and_shape(void) {
+    printf("Testing error: extern arity, naming, params, and missing address...\n");
+    assert(must_fail_compile(
+        "extern int add2(int a, int b) = 0x1000;\n"
+        "/** e */\n"
+        "int main() { return add2(1); }"));
+    assert(must_fail_compile(
+        "extern int Add2(int a) = 0x1000;\n" /* not snake_case */
+        "/** e */\n"
+        "int main() { return Add2(1); }"));
+    assert(must_fail_compile(
+        "extern int f(int a[]) = 0x1000;\n" /* arrays not allowed on externs */
+        "/** e */\n"
+        "int main() { return 0; }"));
+    assert(must_fail_compile(
+        "extern int f() ;\n" /* missing = addr */
+        "/** e */\n"
+        "int main() { return f(); }"));
+    assert(must_fail_compile(
+        "extern f() = 0x1000;\n" /* missing int/void */
+        "/** e */\n"
+        "int main() { return 0; }"));
+}
+
+static void test_error_extern_name_collisions(void) {
+    printf("Testing error: extern name collisions with functions, globals, builtins, itself...\n");
+    assert(must_fail_compile(
+        "extern int emit(int x) = 0x1000;\n"
+        "/** e */\n"
+        "int main() { return emit(1); }"));
+    assert(must_fail_compile(
+        "/** already a function */\n"
+        "int foo() { return 1; }\n"
+        "extern int foo() = 0x1000;\n"
+        "/** e */\n"
+        "int main() { return 0; }"));
+    assert(must_fail_compile(
+        "int foo = 1;\n"
+        "extern int foo() = 0x1000;\n"
+        "/** e */\n"
+        "int main() { return foo; }"));
+    assert(must_fail_compile(
+        "extern int foo() = 0x1000;\n"
+        "extern int foo() = 0x2000;\n"
+        "/** e */\n"
+        "int main() { return foo(); }"));
+}
+
+static void test_error_redeclared_function_and_params(void) {
+    printf("Testing error: redeclared function and duplicate parameters...\n");
+    assert(must_fail_compile(
+        "/** a */\nint foo() { return 1; }\n"
+        "/** b */\nint foo() { return 2; }\n"
+        "/** e */\nint main() { return foo(); }"));
+    assert(must_fail_compile(
+        "/** uses the same param name twice */\n"
+        "int add(int a, int a) { return a; }\n"
+        "/** e */\n"
+        "int main() { return add(1, 2); }"));
+}
+
+static void test_error_byte_type_misuse(void) {
+    printf("Testing error: 'byte' used outside array-declaration form...\n");
+    assert(must_fail_compile("byte x;\n/** e */\nint main() { return 0; }"));                    /* scalar global */
+    assert(must_fail_compile("/** e */\nint main() { byte x; return 0; }"));                     /* scalar local */
+    assert(must_fail_compile(
+        "/** f */\nint f(byte x) { return x; }\n/** e */\nint main() { return f(1); }"));        /* scalar param */
+}
+
 static void test_error_builtin_string_arg_required(void) {
     printf("Testing error: builtin requires a string-literal argument...\n");
     /* vfs_open's path must be a literal, not a general int/array expression */
@@ -1095,6 +1548,8 @@ int main(void) {
     test_lexer_literals_and_operators();
     test_lexer_comments();
     test_lexer_doc_comment_tracking();
+    test_lexer_new_keywords();
+    test_lexer_string_escapes();
 
     test_arithmetic_precedence();
     test_short_circuit();
@@ -1112,6 +1567,9 @@ int main(void) {
     test_leaf_and_falloff();
     test_recursion_bounded();
     test_recursion_guard_halts();
+    test_call_as_statement_discards_result();
+    test_extern_int_emits_call();
+    test_extern_void_skips_pop();
 
     test_builtin_emit_and_print();
 
@@ -1125,9 +1583,15 @@ int main(void) {
     test_canvas_size();
     test_draw_sequence_no_fault();
     test_fill_rect_pixel_exact();
+    test_draw_bytes_matches_draw_str();
+    test_draw_bytes_oversized_len_clamped();
     test_poll_no_events();
     test_accessors_callable();
     test_frame_loop_multi_yield();
+
+    test_vfs_write_read_roundtrip();
+    test_vfs_seek_and_stat();
+    test_vfs_write_chunk();
 
     test_include_basic();
     test_include_diamond_dedup();
@@ -1167,6 +1631,12 @@ int main(void) {
     test_error_local_array_decay();
     test_error_assign_whole_array();
     test_error_string_init_misuse();
+    test_byte_arrays();
+    test_error_byte_type_misuse();
+    test_error_extern_void_as_value();
+    test_error_extern_arity_and_shape();
+    test_error_extern_name_collisions();
+    test_error_redeclared_function_and_params();
     test_error_builtin_string_arg_required();
     test_error_builtin_int_arg_required();
     test_include_circular_error();

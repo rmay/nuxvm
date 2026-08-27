@@ -118,6 +118,10 @@ void fx_program_free(FxProgram* program) {
         free(s->fields);
     }
     free(program->structs);
+    for (int i = 0; i < program->nexterns; i++) {
+        free(program->externs[i].name);
+    }
+    free(program->externs);
     free(program);
 }
 

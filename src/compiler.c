@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 static void emit_byte(Compiler* c, uint8_t byte) {
     if (c->active_quot_idx >= 0) {
@@ -90,6 +91,65 @@ static bool is_builtin(const char* name, uint8_t* out_op) {
         }
     }
     return false;
+}
+
+/* Case-insensitive substring test, portable (avoids relying on strcasestr,
+ * which isn't in the C standard library on every platform). */
+static bool contains_ci(const char* haystack, const char* needle) {
+    size_t hlen = strlen(haystack), nlen = strlen(needle);
+    if (nlen == 0 || nlen > hlen) return false;
+    for (size_t i = 0; i + nlen <= hlen; i++) {
+        size_t j = 0;
+        for (; j < nlen; j++) {
+            if (tolower((unsigned char)haystack[i+j]) != tolower((unsigned char)needle[j])) break;
+        }
+        if (j == nlen) return true;
+    }
+    return false;
+}
+
+/* Records a `@NAME 0xHEX ;` constant for the best-effort duplicate-address
+ * check (docs/memory-map.md) -- see the call site in compile_word_def()
+ * and the warning scan at the end of compiler_compile(). */
+static void record_addr_const(Compiler* c, const char* name, int32_t value, int line) {
+    if (c->addr_const_count >= c->addr_const_cap) {
+        c->addr_const_cap = c->addr_const_cap == 0 ? 32 : c->addr_const_cap * 2;
+        c->addr_consts = realloc(c->addr_consts, c->addr_const_cap * sizeof(*c->addr_consts));
+    }
+    c->addr_consts[c->addr_const_count].name = strdup(name);
+    c->addr_consts[c->addr_const_count].value = value;
+    c->addr_consts[c->addr_const_count].line = line;
+    c->addr_const_count++;
+}
+
+/* Best-effort: warn (not a hard error) when two or more differently-named
+ * `@NAME 0xHEX ;` constants share the exact same value -- exactly the bug
+ * class fixed in docs/memory-map.md (lib/log.lux vs apps/Quill.lux, etc).
+ * Deliberately excludes names containing "CLR"/"COLOR": this codebase's
+ * dominant source of *intentional* duplicate hex constants is every
+ * app/library defining its own CLR_BG/CLR_TEXT/etc with the same RGB
+ * values, which would otherwise drown out real collisions. Sub-range
+ * overlap (one buffer's span containing another's base address, not just
+ * an exact duplicate) isn't caught here -- see docs/memory-map.md's
+ * "Collision checking" section for why that's out of scope for now. */
+static void warn_duplicate_addr_consts(Compiler* c) {
+    for (size_t i = 0; i < c->addr_const_count; i++) {
+        if (c->addr_consts[i].name == NULL) continue; // already reported as part of an earlier group
+        bool first = true;
+        for (size_t j = i + 1; j < c->addr_const_count; j++) {
+            if (c->addr_consts[j].name == NULL) continue;
+            if (c->addr_consts[i].value != c->addr_consts[j].value) continue;
+            if (first) {
+                fprintf(stderr, "Warning: address 0x%X is used by multiple constants (possible collision, see docs/memory-map.md):\n",
+                        (unsigned int)c->addr_consts[i].value);
+                fprintf(stderr, "  %s (line %d)\n", c->addr_consts[i].name, c->addr_consts[i].line);
+                first = false;
+            }
+            fprintf(stderr, "  %s (line %d)\n", c->addr_consts[j].name, c->addr_consts[j].line);
+            free(c->addr_consts[j].name);
+            c->addr_consts[j].name = NULL;
+        }
+    }
 }
 
 static bool resolve_word(Compiler* c, const char* name, WordDef* out_word) {
@@ -811,7 +871,24 @@ static bool compile_word_def(Compiler* c) {
     
     int32_t addr = current_address(c);
     add_dict(c, final_name, addr);
-    
+
+    /* Duplicate-address check (docs/memory-map.md): the `@NAME 0xHEX ;`
+     * constant idiom is exactly one number token followed by `;`. Record
+     * it before compiling the body so the same lookahead logic doesn't
+     * have to be duplicated post-hoc from bytecode. */
+    if (c->pos + 1 < (int)c->token_list->count) {
+        Token body0 = c->token_list->tokens[c->pos];
+        Token body1 = c->token_list->tokens[c->pos + 1];
+        if (body0.type == TOKEN_NUMBER && body1.type == TOKEN_SEMICOLON && body0.value &&
+            (strncmp(body0.value, "0x", 2) == 0 || strncmp(body0.value, "0X", 2) == 0) &&
+            !contains_ci(final_name, "CLR") && !contains_ci(final_name, "COLOR")) {
+            int32_t val;
+            if (parse_number(&body0, &val)) {
+                record_addr_const(c, final_name, val, name_tok.line);
+            }
+        }
+    }
+
     while (c->pos < (int)c->token_list->count && peek(c).type != TOKEN_SEMICOLON) {
         if (!compile_token(c, advance(c))) return false;
     }
@@ -838,6 +915,10 @@ void compiler_free(Compiler* c) {
         free(c->dictionary[i].name);
     }
     if (c->dictionary) free(c->dictionary);
+    for (size_t i = 0; i < c->addr_const_count; i++) {
+        if (c->addr_consts[i].name) free(c->addr_consts[i].name);
+    }
+    if (c->addr_consts) free(c->addr_consts);
     for (size_t i = 0; i < c->unresolved_count; i++) {
         free(c->unresolved[i].word);
     }
@@ -1122,6 +1203,8 @@ uint8_t* compiler_compile(Compiler* c, size_t* out_len) {
         emit_byte(c, 0); // null term
     }
     
+    warn_duplicate_addr_consts(c);
+
     *out_len = c->bytecode_len;
     uint8_t* result = malloc(c->bytecode_len);
     memcpy(result, c->bytecode, c->bytecode_len);

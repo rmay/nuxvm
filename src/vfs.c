@@ -317,6 +317,77 @@ static VFSFile* create_snarf_file(System* sys) {
     return file;
 }
 
+// --- launch ---
+// Guest writes a ROM path; Cloister reads System.launch_path on HALT.
+
+typedef struct {
+    System* sys;
+    int cursor;
+} LaunchFileData;
+
+static bool launch_path_ok(const char* p) {
+    if (!p || !p[0]) return false;
+    if (p[0] == '/') return false;
+    if (strstr(p, "..") != NULL) return false;
+    return true;
+}
+
+static int launch_read(VFSFile* file, uint8_t* buf, int len) {
+    LaunchFileData* d = (LaunchFileData*)file->private_data;
+    if (!d || !d->sys || !buf || len <= 0) return 0;
+    int slen = (int)strlen(d->sys->launch_path);
+    if (d->cursor >= slen) return 0;
+    int avail = slen - d->cursor;
+    if (avail > len) avail = len;
+    memcpy(buf, d->sys->launch_path + d->cursor, (size_t)avail);
+    d->cursor += avail;
+    return avail;
+}
+
+static int launch_write(VFSFile* file, const uint8_t* buf, int len) {
+    LaunchFileData* d = (LaunchFileData*)file->private_data;
+    if (!d || !d->sys) return -1;
+    if (len < 0) return -1;
+    if (len >= SYS_LAUNCH_MAX) len = SYS_LAUNCH_MAX - 1;
+    char tmp[SYS_LAUNCH_MAX];
+    if (len > 0 && buf) memcpy(tmp, buf, (size_t)len);
+    tmp[len] = '\0';
+    while (len > 0 && (tmp[len - 1] == '\n' || tmp[len - 1] == '\r' || tmp[len - 1] == '\0')) {
+        tmp[--len] = '\0';
+    }
+    if (len == 0) {
+        d->sys->launch_path[0] = '\0';
+        d->cursor = 0;
+        return 0;
+    }
+    if (!launch_path_ok(tmp)) return -1;
+    memcpy(d->sys->launch_path, tmp, (size_t)len + 1);
+    d->cursor = 0;
+    return len;
+}
+
+static int launch_close(VFSFile* file) {
+    free(file->private_data);
+    free(file);
+    return 0;
+}
+
+static VFSFile* create_launch_file(System* sys) {
+    LaunchFileData* d = (LaunchFileData*)calloc(1, sizeof(LaunchFileData));
+    VFSFile* file = (VFSFile*)calloc(1, sizeof(VFSFile));
+    if (!d || !file) {
+        free(d);
+        free(file);
+        return NULL;
+    }
+    d->sys = sys;
+    file->private_data = d;
+    file->read = launch_read;
+    file->write = launch_write;
+    file->close = launch_close;
+    return file;
+}
+
 // --- debug ---
 
 static int debug_write(VFSFile* file, const uint8_t* buf, int len) {
@@ -1057,6 +1128,9 @@ static VFSFile* open_path(System* sys, const char* path, int32_t flags) {
     }
     if (strcmp(path, "/sys/snarf") == 0) {
         return create_snarf_file(sys);
+    }
+    if (strcmp(path, "/sys/launch") == 0 || strcmp(path, "/dev/launch") == 0) {
+        return create_launch_file(sys);
     }
     if (strcmp(path, "/sys/debug") == 0) {
         return create_debug_file();

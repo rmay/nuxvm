@@ -128,6 +128,20 @@ typedef struct {
     int local_depth;
 
     bool trace;
+
+    /* Best-effort duplicate-base-address check (docs/memory-map.md):
+     * every `@NAME 0xHEX ;` constant across the whole compiled unit
+     * (including transitively-included files) that isn't named like a
+     * color constant gets recorded here, then compiler_compile() warns
+     * on any value shared by more than one name. See record_addr_const()
+     * in compiler.c. */
+    struct {
+        char* name;
+        int32_t value;
+        int line;
+    } *addr_consts;
+    size_t addr_const_count;
+    size_t addr_const_cap;
 } Compiler;
 
 Compiler* compiler_create(TokenList* list, int32_t base_addr, bool trace);

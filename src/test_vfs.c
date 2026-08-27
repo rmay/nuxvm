@@ -915,6 +915,38 @@ static void test_dir_listing(void) {
     printf("  dir listing: OK\n");
 }
 
+static void test_launch_file(void) {
+    printf("Testing /sys/launch...\n");
+    System* sys = system_create();
+    assert(sys != NULL);
+    assert(sys->launch_path[0] == '\0');
+
+    int32_t fd = vfs_open(sys, "/sys/launch", 0);
+    assert(fd >= 100);
+    const char* path = "apps/Hello.lux";
+    assert(vfs_write(sys, fd, (const uint8_t*)path, (int)strlen(path)) == (int)strlen(path));
+    assert(strcmp(sys->launch_path, path) == 0);
+    vfs_close(sys, fd);
+
+    fd = vfs_open(sys, "/sys/launch", 0);
+    char buf[64];
+    memset(buf, 0, sizeof(buf));
+    int n = vfs_read(sys, fd, (uint8_t*)buf, (int)sizeof(buf) - 1);
+    assert(n == (int)strlen(path));
+    assert(strcmp(buf, path) == 0);
+    vfs_close(sys, fd);
+
+    fd = vfs_open(sys, "/dev/launch", 0);
+    assert(fd >= 100);
+    assert(vfs_write(sys, fd, (const uint8_t*)"../etc/passwd", 13) < 0);
+    assert(strcmp(sys->launch_path, path) == 0);
+    assert(vfs_write(sys, fd, (const uint8_t*)"/tmp/x", 6) < 0);
+    vfs_close(sys, fd);
+
+    system_free(sys);
+    printf("  launch file: OK\n");
+}
+
 static int32_t read_id_le(System* sys, int32_t fd) {
     uint8_t idbuf[4] = {0};
     assert(vfs_read(sys, fd, idbuf, 4) == 4);
@@ -1188,6 +1220,105 @@ static void test_illumos_starts(void) {
     printf("  Illumos boot: OK\n");
 }
 
+static char* load_text_file(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    long sz = ftell(f);
+    if (sz <= 0) { fclose(f); return NULL; }
+    fseek(f, 0, SEEK_SET);
+    char* buf = (char*)malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return NULL; }
+    if (fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        free(buf);
+        fclose(f);
+        return NULL;
+    }
+    fclose(f);
+    buf[sz] = '\0';
+    return buf;
+}
+
+static void test_picker_starts(void) {
+    printf("Testing Picker.lux boots...\n");
+    char* src = load_text_file("apps/Picker.lux");
+    if (!src) {
+        printf("  SKIP: apps/Picker.lux missing\n");
+        return;
+    }
+    size_t slen = 0;
+    uint8_t* sprog = compile_source(src, GRAPHICAL_BASE_ADDRESS, &slen, false);
+    free(src);
+    if (!sprog) {
+        fprintf(stderr, "  Picker.lux failed to compile\n");
+        assert(0);
+    }
+    Machine* m = machine_create(sprog, (uint32_t)slen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
+    assert(m != NULL);
+    system_set_resolution(m->system, 960, 720);
+    if (!pump_ok(m, 80)) {
+        fprintf(stderr, "  Picker died (halted=%d pc=0x%08X sp=%d)\n",
+                m->cpu->halted, m->cpu->pc, m->cpu->stack_ptr);
+        assert(0);
+    }
+    assert(!m->cpu->halted);
+    assert(m->cpu->stack_ptr < 32);
+    assert(m->system->launch_path[0] == '\0');
+
+    system_push_mouse_event(m->system, 2 /* MOVE */, 60, 70, 0);
+    assert(pump_ok(m, 20));
+    system_push_mouse_event(m->system, 3 /* DOWN */, 60, 70, 1);
+    assert(pump_ok(m, 20));
+    system_push_kbd_event(m->system, 0 /* KEY_DOWN */, 20 /* RIGHT */, 0);
+    assert(pump_ok(m, 20));
+    assert(!m->cpu->halted);
+    assert(m->system->launch_path[0] == '\0');
+
+    /* Click the first Lux row (list at 40,64; items start at y=74). */
+    system_push_mouse_event(m->system, 3 /* DOWN */, 56, 80, 1);
+    bool halted = false;
+    for (int i = 0; i < 40; i++) {
+        if (!m->cpu || m->cpu->halted || !machine_tick(m)) {
+            halted = true;
+            break;
+        }
+    }
+    assert(halted);
+    assert(strncmp(m->system->launch_path, "apps/", 5) == 0);
+    assert(strstr(m->system->launch_path, ".lux") != NULL);
+
+    machine_free(m);
+    free(sprog);
+
+    /* Fluxio column lists compiled bins under apps/fluxio. */
+    src = load_text_file("apps/Picker.lux");
+    assert(src != NULL);
+    slen = 0;
+    sprog = compile_source(src, GRAPHICAL_BASE_ADDRESS, &slen, false);
+    free(src);
+    assert(sprog != NULL);
+    m = machine_create(sprog, (uint32_t)slen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
+    assert(m != NULL);
+    system_set_resolution(m->system, 960, 720);
+    assert(pump_ok(m, 80));
+    system_push_mouse_event(m->system, 3 /* DOWN */, 510, 80, 1);
+    halted = false;
+    for (int i = 0; i < 40; i++) {
+        if (!m->cpu || m->cpu->halted || !machine_tick(m)) {
+            halted = true;
+            break;
+        }
+    }
+    assert(halted);
+    assert(strncmp(m->system->launch_path, "apps/fluxio/", 12) == 0);
+    assert(strstr(m->system->launch_path, ".bin") != NULL);
+    assert(strstr(m->system->launch_path, ".lux") == NULL);
+
+    machine_free(m);
+    free(sprog);
+    printf("  Picker boot: OK\n");
+}
+
 int main() {
     test_host_file();
     test_dummy_file();
@@ -1213,10 +1344,12 @@ int main() {
     test_offset_fb_blit();
     test_child_geom_halt_drawsize();
     test_dir_listing();
+    test_launch_file();
     test_child_menu_export();
     test_two_child_apps_host();
     test_root_app_runs();
     test_illumos_starts();
+    test_picker_starts();
     printf("All VFS tests passed!\n");
     return 0;
 }

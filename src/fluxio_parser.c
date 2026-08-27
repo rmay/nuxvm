@@ -107,18 +107,22 @@ static FxNode* parse_expr(Parser* p);
 static FxNode* parse_statement(Parser* p);
 static FxNode* parse_block(Parser* p);
 
-/* Consumes a type token at the current position: either the 'int' keyword
- * (returns NULL) or an identifier matching an already-declared struct name
- * (returns that name, borrowed from p->structs -- valid for the parser's
- * lifetime, callers must strdup it to keep it past that). */
-static const char* parse_decl_type(Parser* p) {
+/* Consumes a type token at the current position: 'int' or 'byte' (returns
+ * NULL, *out_is_byte set accordingly), or an identifier matching an
+ * already-declared struct name (returns that name, borrowed from
+ * p->structs -- valid for the parser's lifetime, callers must strdup it to
+ * keep it past that; *out_is_byte set false). out_is_byte may be NULL for
+ * callers that don't accept 'byte' at all (e.g. function return types). */
+static const char* parse_decl_type(Parser* p, bool* out_is_byte) {
+    if (out_is_byte) *out_is_byte = false;
     if (match(p, FXTOK_KW_INT)) return NULL;
+    if (out_is_byte && match(p, FXTOK_KW_BYTE)) { *out_is_byte = true; return NULL; }
     if (check(p, FXTOK_IDENT) && is_known_struct(p, cur(p)->value)) {
         FxToken* t = advance(p);
         return t->value;
     }
-    fail(p, "expected a type ('int' or a declared struct name) but found '%s'",
-         fx_token_type_name(cur(p)->type));
+    fail(p, "expected a type ('int'%s, or a declared struct name) but found '%s'",
+         out_is_byte ? " or 'byte'" : "", fx_token_type_name(cur(p)->type));
     return NULL; /* unreachable */
 }
 
@@ -404,7 +408,8 @@ static bool parse_array_suffix(Parser* p, int32_t* out_len) {
 
 static FxNode* parse_local_decl(Parser* p) {
     FxToken* kw = cur(p);
-    const char* struct_type = parse_decl_type(p);
+    bool is_byte = false;
+    const char* struct_type = parse_decl_type(p, &is_byte);
     FxToken* id = expect(p, FXTOK_IDENT, "identifier");
     check_snake_case(p, id->value, id->line);
 
@@ -415,6 +420,7 @@ static FxNode* parse_local_decl(Parser* p) {
     n->as.local_decl.string_value = NULL;
     n->as.local_decl.string_len = 0;
     n->as.local_decl.struct_type_name = NULL;
+    n->as.local_decl.is_byte = is_byte;
 
     if (struct_type) {
         const FxStructDef* sd = find_parsed_struct(p, struct_type);
@@ -422,6 +428,10 @@ static FxNode* parse_local_decl(Parser* p) {
         n->as.local_decl.array_len = sd->nfields;
         expect(p, FXTOK_SEMI, "';'");
         return n;
+    }
+
+    if (is_byte && !check(p, FXTOK_LBRACKET)) {
+        fail(p, "'byte' may only be used as an array, e.g. 'byte %s[N];'", id->value);
     }
 
     int32_t array_len = 0;
@@ -460,7 +470,8 @@ static FxNode* parse_local_decl(Parser* p) {
 static FxNode* parse_statement(Parser* p) {
     FxToken* t = cur(p);
 
-    if (check(p, FXTOK_KW_INT) || (check(p, FXTOK_IDENT) && is_known_struct(p, cur(p)->value))) {
+    if (check(p, FXTOK_KW_INT) || check(p, FXTOK_KW_BYTE) ||
+        (check(p, FXTOK_IDENT) && is_known_struct(p, cur(p)->value))) {
         return parse_local_decl(p);
     }
 
@@ -580,7 +591,8 @@ static void parse_func_decl(Parser* p, FxToken* leading, char* doc_comment, FxFu
     int nparams = 0, cap = 0;
     if (!check(p, FXTOK_RPAREN)) {
         for (;;) {
-            const char* struct_type = parse_decl_type(p);
+            bool param_is_byte = false;
+            const char* struct_type = parse_decl_type(p, &param_is_byte);
             FxToken* pid = expect(p, FXTOK_IDENT, "identifier");
             check_snake_case(p, pid->value, pid->line);
             bool is_array_param = false;
@@ -590,10 +602,13 @@ static void parse_func_decl(Parser* p, FxToken* leading, char* doc_comment, FxFu
             } else if (match(p, FXTOK_LBRACKET)) {
                 expect(p, FXTOK_RBRACKET, "']' (array parameters take no size, e.g. 'int arr[]')");
                 is_array_param = true;
+            } else if (param_is_byte) {
+                fail(p, "'byte' may only be used as an array parameter, e.g. 'byte %s[]'", pid->value);
             }
             if (nparams == cap) { cap = cap ? cap * 2 : 4; params = realloc(params, sizeof(FxParam) * cap); }
             params[nparams].name = strdup(pid->value);
             params[nparams].is_array = is_array_param;
+            params[nparams].is_byte = param_is_byte;
             params[nparams].struct_type_name = param_struct_name;
             params[nparams].line = pid->line;
             nparams++;
@@ -656,6 +671,41 @@ static void parse_struct_decl(Parser* p, FxStructDef* out) {
     out->line = kw->line;
 }
 
+/* `extern int name(int a, int b, ...) = 0xADDR;` (Phase B5,
+ * docs/quill_fluxio.md). No doc-comment requirement (unlike functions/
+ * structs) -- an extern binds to code that lives outside this file
+ * entirely, so there's nothing here for a doc comment to usefully
+ * describe beyond what the linked library's own source already has. */
+static void parse_extern_decl(Parser* p, FxToken* leading, FxExtern* out) {
+    expect(p, FXTOK_KW_EXTERN, "'extern'");
+    bool is_void = check(p, FXTOK_KW_VOID);
+    if (is_void) { advance(p); } else { expect(p, FXTOK_KW_INT, "'int' or 'void'"); }
+    FxToken* id = expect(p, FXTOK_IDENT, "identifier");
+    check_snake_case(p, id->value, id->line);
+
+    expect(p, FXTOK_LPAREN, "'('");
+    int nparams = 0;
+    if (!check(p, FXTOK_RPAREN)) {
+        for (;;) {
+            expect(p, FXTOK_KW_INT, "'int' (extern declarations only support plain int parameters)");
+            FxToken* pid = expect(p, FXTOK_IDENT, "identifier");
+            check_snake_case(p, pid->value, pid->line);
+            nparams++;
+            if (!match(p, FXTOK_COMMA)) break;
+        }
+    }
+    expect(p, FXTOK_RPAREN, "')'");
+    expect(p, FXTOK_ASSIGN, "'=' 0xADDR (extern declarations must bind to a fixed address, e.g. 'extern int f() = 0x70000C;')");
+    FxToken* addr = expect(p, FXTOK_INT_LIT, "an address (integer literal)");
+    expect(p, FXTOK_SEMI, "';'");
+
+    out->name = strdup(id->value);
+    out->nparams = nparams;
+    out->address = addr->int_value;
+    out->line = leading->line;
+    out->is_void = is_void;
+}
+
 FxProgram* fx_parse(FxTokenList* tokens) {
     Parser p;
     p.list = tokens;
@@ -670,10 +720,13 @@ FxProgram* fx_parse(FxTokenList* tokens) {
     int nglobals = 0, gcap = 0;
     FxFunc* funcs = NULL;
     int nfuncs = 0, fcap = 0;
+    FxExtern* externs = NULL;
+    int nexterns = 0, ecap = 0;
 
     if (setjmp(p.error_jmp) != 0) {
         free(globals);
         free(funcs);
+        free(externs);
         for (size_t i = 0; i < p.nstructs; i++) {
             free(p.structs[i].name);
             for (int fi = 0; fi < p.structs[i].nfields; fi++) free(p.structs[i].fields[fi].name);
@@ -691,6 +744,13 @@ FxProgram* fx_parse(FxTokenList* tokens) {
         if (check(&p, FXTOK_KW_INCLUDE)) {
             fail(&p, "'include' directives are resolved before parsing (via fx_load_with_includes) "
                       "and should never reach the parser directly -- this token list wasn't preprocessed");
+        }
+
+        if (check(&p, FXTOK_KW_EXTERN)) {
+            if (nexterns == ecap) { ecap = ecap ? ecap * 2 : 8; externs = realloc(externs, sizeof(FxExtern) * ecap); }
+            parse_extern_decl(&p, t, &externs[nexterns]);
+            nexterns++;
+            continue;
         }
 
         if (check(&p, FXTOK_KW_STRUCT)) {
@@ -730,8 +790,10 @@ FxProgram* fx_parse(FxTokenList* tokens) {
             if (nfuncs == fcap) { fcap = fcap ? fcap * 2 : 8; funcs = realloc(funcs, sizeof(FxFunc) * fcap); }
             parse_func_decl(&p, t, doc, &funcs[nfuncs]);
             nfuncs++;
-        } else if (check(&p, FXTOK_KW_INT) || (check(&p, FXTOK_IDENT) && is_known_struct(&p, t->value))) {
-            const char* struct_type = parse_decl_type(&p);
+        } else if (check(&p, FXTOK_KW_INT) || check(&p, FXTOK_KW_BYTE) ||
+                   (check(&p, FXTOK_IDENT) && is_known_struct(&p, t->value))) {
+            bool is_byte = false;
+            const char* struct_type = parse_decl_type(&p, &is_byte);
             FxToken* id = expect(&p, FXTOK_IDENT, "identifier");
             check_snake_case(&p, id->value, id->line);
 
@@ -746,6 +808,10 @@ FxProgram* fx_parse(FxTokenList* tokens) {
                 globals[nglobals].line = id->line;
                 nglobals++;
                 continue;
+            }
+
+            if (is_byte && !check(&p, FXTOK_LBRACKET)) {
+                fail(&p, "'byte' may only be used as an array, e.g. 'byte %s[N];'", id->value);
             }
 
             int32_t array_len = 0;
@@ -799,6 +865,7 @@ FxProgram* fx_parse(FxTokenList* tokens) {
             globals[nglobals].string_len = string_len;
             globals[nglobals].struct_type_name = NULL;
             globals[nglobals].line = id->line;
+            globals[nglobals].is_byte = is_byte;
             nglobals++;
         } else {
             fail(&p, "expected a global, struct, or function declaration but found '%s'", fx_token_type_name(t->type));
@@ -811,5 +878,7 @@ FxProgram* fx_parse(FxTokenList* tokens) {
     program->nglobals = nglobals;
     program->funcs = funcs;
     program->nfuncs = nfuncs;
+    program->externs = externs;
+    program->nexterns = nexterns;
     return program;
 }

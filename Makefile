@@ -1,5 +1,16 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -Iinclude -O2 -g $(shell pkg-config --cflags sdl2)
+# -MMD -MP: emit a obj/%.d dependency file per translation unit, listing every
+# header it #includes. Without this, `make`'s dependency graph only knows
+# about %.c -> %.o (the pattern rule below), so editing a shared header
+# (e.g. include/fluxio_ast.h) with an unrelated .c file's mtime untouched
+# leaves that file's .o stale after an incremental `make` -- silently
+# linking mismatched struct layouts across translation units. Caught this
+# for real during Phase B5 (docs/quill_fluxio.md): an incremental build
+# after editing fluxio_ast.h produced an intermittently-crashing
+# test_fluxio_compiler that a full rebuild (`make clean && make`) fixed --
+# exactly this class of bug. The -include below wires the generated .d
+# files back into the dependency graph so incremental builds are safe.
+CFLAGS = -Wall -Wextra -Iinclude -O2 -g -MMD -MP $(shell pkg-config --cflags sdl2)
 LDFLAGS = $(shell pkg-config --libs sdl2)
 
 SRC_DIR = src
@@ -31,25 +42,49 @@ FLUXIO_COMPILER_OBJS = $(OBJ_DIR)/fluxio_lexer.o $(OBJ_DIR)/fluxio_ast.o \
 FLUXIOC_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(FLUXIO_COMPILER_SRCS) $(SRC_DIR)/fluxioc.c
 FLUXIOC_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(FLUXIOC_SRCS))
 
-TARGETS = $(BIN_DIR)/nux $(BIN_DIR)/luxc $(BIN_DIR)/luxrepl $(BIN_DIR)/cloister $(BIN_DIR)/fluxioc \
-          $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler $(BIN_DIR)/test_fluxio_compiler
+TARGETS = $(BIN_DIR)/nux $(BIN_DIR)/luxc $(BIN_DIR)/luxrepl $(BIN_DIR)/cloister $(BIN_DIR)/fluxioc $(BIN_DIR)/fluxlink \
+          $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler $(BIN_DIR)/test_fluxio_compiler \
+          $(BIN_DIR)/test_abi_conformance
 
 APP_LUX = $(wildcard apps/*.lux)
-APP_BINS = $(APP_LUX:.lux=.bin)
+APP_LUX_BINS = $(APP_LUX:.lux=.bin)
+APP_FX = $(wildcard apps/fluxio/*.fx)
+APP_FX_BINS = $(APP_FX:.fx=.bin)
+APP_BINS = $(APP_LUX_BINS) $(APP_FX_BINS)
 
-all: dir $(TARGETS)
+all: dir $(TARGETS) apps
 
-# Rebuild apps/*.bin for the graphical base address (0x600000).
-# Needed after compiler or base-address changes; *.bin is gitignored.
-apps: $(BIN_DIR)/luxc $(APP_BINS)
+# Rebuild guest ROMs for the graphical base address (0x600000).
+# Lux: apps/*.lux -> apps/*.bin (picker still compile-on-runs the .lux).
+# Fluxio: apps/fluxio/*.fx -> apps/fluxio/*.bin.
+# `make all` depends on this target so both stay in sync.
+apps: $(BIN_DIR)/luxc $(BIN_DIR)/fluxioc $(APP_BINS)
 
 apps/%.bin: apps/%.lux $(BIN_DIR)/luxc $(wildcard lib/*.lux)
 	@echo "Compiling $< -> $@"
 	@$(BIN_DIR)/luxc -target graphical -o $@ $<
 
+apps/fluxio/%.bin: apps/fluxio/%.fx $(BIN_DIR)/fluxioc
+	@echo "Compiling $< -> $@"
+	@$(BIN_DIR)/fluxioc -target graphical -o $@ $<
+
+# MM_ABI_LIBRARY_CODE_BASE (include/memory_map.h) -- keep in sync.
+UI_LIB_BASE = 0x701000
+
+# Compiled Lux UI/SF library for linking into Fluxio apps via fluxlink
+# (docs/quill_fluxio.md Phase B7). lib/sf.lux transitively includes
+# lib/ui.lux, so one compile covers both modules' exported words.
+# lib/uisf.bin and lib/uisf.symtab.json are build artifacts (like every
+# other *.bin, gitignored) -- the committed append-only contract is
+# abi/uisf.exports.json.
+uilib: $(BIN_DIR)/luxc
+	@echo "Compiling lib/sf.lux (+ lib/ui.lux) -> lib/uisf.bin"
+	@$(BIN_DIR)/luxc -base $(UI_LIB_BASE) -symbols lib/uisf.symtab.json -o lib/uisf.bin lib/sf.lux
+
 dir:
 	@mkdir -p $(OBJ_DIR)
 	@mkdir -p $(BIN_DIR)
+	@mkdir -p apps/fluxio
 
 $(BIN_DIR)/nux: $(NUX_OBJS) $(COMPILER_OBJS)
 	@echo "Linking nux..."
@@ -70,6 +105,11 @@ $(BIN_DIR)/cloister: $(CLOISTER_OBJS)
 	@echo "Linking cloister..."
 	$(CC) $(CLOISTER_OBJS) -o $@ $(LDFLAGS)
 	@echo "Built bin/cloister successfully!"
+
+$(BIN_DIR)/fluxlink: $(OBJ_DIR)/fluxlink.o
+	@echo "Linking fluxlink..."
+	$(CC) $(OBJ_DIR)/fluxlink.o -o $@
+	@echo "Built bin/fluxlink successfully!"
 
 $(BIN_DIR)/fluxioc: $(FLUXIOC_OBJS)
 	@echo "Linking fluxioc..."
@@ -101,7 +141,12 @@ $(BIN_DIR)/test_fluxio_compiler: $(OBJ_DIR)/test_fluxio_compiler.o $(FLUXIO_COMP
 	$(CC) $(OBJ_DIR)/test_fluxio_compiler.o $(FLUXIO_COMPILER_OBJS) $(COMPILER_OBJS) $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o -o $@ $(LDFLAGS)
 	@echo "Built bin/test_fluxio_compiler successfully!"
 
-test: $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler $(BIN_DIR)/test_fluxio_compiler
+$(BIN_DIR)/test_abi_conformance: $(OBJ_DIR)/test_abi_conformance.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o
+	@echo "Linking test_abi_conformance..."
+	$(CC) $(OBJ_DIR)/test_abi_conformance.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o -o $@ $(LDFLAGS)
+	@echo "Built bin/test_abi_conformance successfully!"
+
+test: $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler $(BIN_DIR)/test_fluxio_compiler $(BIN_DIR)/test_abi_conformance
 	@echo "Running VFS tests..."
 	@./$(BIN_DIR)/test_vfs
 	@echo "Running VM opcode tests..."
@@ -110,12 +155,20 @@ test: $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler $(BIN_DIR)
 	@./$(BIN_DIR)/test_compiler
 	@echo "Running Fluxio compiler tests..."
 	@./$(BIN_DIR)/test_fluxio_compiler
+	@echo "Running ABI conformance tests..."
+	@./$(BIN_DIR)/test_abi_conformance
 
 clean:
 	rm -rf $(OBJ_DIR) $(BIN_DIR)
+
+# Pulls in the per-translation-unit header dependencies emitted by -MMD -MP
+# above, so `make` rebuilds a .o when a header it includes changes, not
+# just when its own .c changes. Wildcard + -include: silently does nothing
+# on a fresh checkout (no .d files yet) rather than erroring.
+-include $(wildcard $(OBJ_DIR)/*.d)
 
 asan:
 	$(MAKE) clean
 	$(MAKE) all CFLAGS="$(CFLAGS) -O1 -fsanitize=address,undefined" LDFLAGS="$(LDFLAGS) -fsanitize=address,undefined"
 
-.PHONY: all clean dir test apps asan
+.PHONY: all clean dir test apps uilib asan

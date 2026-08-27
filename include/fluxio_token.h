@@ -20,6 +20,9 @@ typedef enum {
     FXTOK_KW_RECURSIVE,
     FXTOK_KW_INCLUDE,
     FXTOK_KW_STRUCT,
+    FXTOK_KW_EXTERN,
+    FXTOK_KW_VOID,
+    FXTOK_KW_BYTE,
 
     /* punctuation */
     FXTOK_LPAREN,

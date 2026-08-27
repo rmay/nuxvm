@@ -1,0 +1,53 @@
+{
+  "$comment": "Machine-readable ABI contract for calling between Lux- and Fluxio-compiled code on the NUX VM. See docs/quill_fluxio.md (Phase 0.5) and docs/memory-map.md. This is the source of truth fluxlink (Phase B3) and any future compiler targeting this ABI validate against -- not just documentation to read and hope to match.",
+  "abi_version": "1.0.0",
+
+  "calling_convention": {
+    "$comment": "Verified empirically, not just asserted -- see src/test_abi_conformance.c.",
+    "argument_order": "left-to-right push order: f(a, b) compiles to PUSH a; PUSH b; CALL f. A Forth `( a b -- )` word signature means the same thing (a pushed first/deeper, b pushed last/top) -- confirmed identical in src/test_abi_conformance.c's test_multi_arg_call_push_order (sub(10, 3) == 7, not -7).",
+    "call_mechanism": "OP_CALL (opcode 0x24) to a fixed absolute address, 5-byte encoding (1 byte opcode + 4-byte big-endian immediate). See include/opcodes.h.",
+    "frame_locals": "OP_FRAME (0x22) pops N values off the data stack into a dedicated locals[] region separate from the data stack; top-of-stack before FRAME becomes local 0 (src/vm.c ~line 526). OP_UNFRAME (0x23) restores the frame pointer WITHOUT touching the data stack -- a value pushed before UNFRAME survives as the return value.",
+    "return_value": "Left on the data stack after OP_RET (0x25); the caller is responsible for consuming exactly the arity the callee's signature promises. No multi-value returns. Some Lux words are `( ... -- )` -- they push nothing back. A caller MUST know statically whether a given target pushes a value or not, since nothing at the call site distinguishes the two cases; Fluxio's `extern` declarations encode this explicitly ('extern void f(...)' vs 'extern int f(...)', src/fluxio_parser.c/fluxio_codegen.c, docs/quill_fluxio.md Phase B6/B7) -- calling a void target through the `int` form (or vice versa) desyncs the caller's stack accounting silently, not with a fault. See src/test_abi_conformance.c's test_fluxio_extern_void_end_to_end.",
+    "no_change_needed": "Both luxc and fluxioc already emit this convention -- it's a property of the shared 55-opcode VM (include/opcodes.h), not something either compiler chose independently. Nothing to keep in sync beyond not breaking it."
+  },
+
+  "linked_image_format": {
+    "$comment": "Corrected twice before any fluxlink code was written, both times by tests/analysis catching a design bug early rather than a working linker being patched after the fact. (1) Phase B1 smoke-testing (src/test_abi_conformance.c, test_dual_image_single_blob): the VM restricts PC execution to a SINGLE contiguous [image_base, image_end) window (src/vm.c: vm_create sets image_end = base_address + program_size; execution outside it faults 'execute outside program', src/vm.c ~line 266) -- a linked library can't be a second, independently-loaded VM image, so it's concatenated into the SAME blob as the app that links it. No VM or host-runner (cloister.c/nux.c) changes needed. (2) The trampoline table's SIZE cannot vary with the export count: the library is compiled once via `luxc -base` to expect its own code at one fixed address, so if the table directly preceded the code and grew on each new export, the code's address -- and every internal CALL/JMP baked into it at compile time -- would silently shift on every recompile. Fixed with a fixed-size reserved trampoline region (MM_ABI_TRAMPOLINE_RESERVE, include/memory_map.h) instead of one sized to the current export count.",
+    "layout": [
+      { "field": "magic", "offset": 0, "size": 4, "value": "0x4E555831", "desc": "ASCII 'NUX1' -- identifies this as a linked-library trampoline table, not arbitrary code." },
+      { "field": "abi_version_major", "offset": 4, "size": 2, "desc": "Must exactly match the linking compiler's expected major version. Mismatch is a hard link error." },
+      { "field": "abi_version_minor", "offset": 6, "size": 2, "desc": "A linker may accept a library with a minor version >= its own (backward-compatible additions only)." },
+      { "field": "symbol_count", "offset": 8, "size": 4, "desc": "Number of trampoline slots actually in use (<= the fixed capacity below)." },
+      { "field": "trampoline_table", "offset": 12, "size": "MM_ABI_TRAMPOLINE_RESERVE - 12 (fixed, not 5 * symbol_count)", "desc": "One 5-byte JMP (opcode 0x21) per exported symbol, in the stable append-only order recorded in the library's committed *.symtab.json (see append_only_policy below), followed by OP_HALT-padded filler for any unused slots up to the fixed capacity. Slot order is the entire compatibility surface -- callers address symbols by slot index (baked in at compile time via `extern`), never by name at load time. Capacity: floor((MM_ABI_TRAMPOLINE_RESERVE - 12) / 5) = 816 slots with the current 0x1000 reserve." },
+      { "field": "library_code", "offset": "MM_ABI_TRAMPOLINE_RESERVE (fixed, e.g. 0x1000)", "size": "rest of the library's own compiled bytecode", "desc": "Unmodified `luxc -base MM_ABI_LIBRARY_CODE_BASE` output -- MM_ABI_LIBRARY_CODE_BASE = MM_ABI_LIBRARY_LINK_BASE + MM_ABI_TRAMPOLINE_RESERVE is a fixed constant the library is always compiled against, independent of how many symbols it currently exports. Every trampoline JMP target points somewhere in here." }
+    ],
+    "base_address_band": "MM_ABI_LIBRARY_LINK_BASE .. MM_ABI_LIBRARY_LINK_END (0x700000-0x800000), include/memory_map.h. Trampoline table occupies [MM_ABI_LIBRARY_LINK_BASE, MM_ABI_LIBRARY_CODE_BASE) = [0x700000, 0x701000); library code starts at MM_ABI_LIBRARY_CODE_BASE = 0x701000. A Lux library build targets the code base via `luxc -base 0x701000` (not the trampoline base).",
+    "merge_procedure": "fluxlink allocates one buffer spanning [app_base, MM_ABI_LIBRARY_CODE_BASE + lib_code_len), copies the app's own compiled bytes at offset 0, zero-fills the gap up to MM_ABI_LIBRARY_LINK_BASE, writes the header + trampoline table (padded to MM_ABI_TRAMPOLINE_RESERVE) at MM_ABI_LIBRARY_LINK_BASE, then the library's own code at MM_ABI_LIBRARY_CODE_BASE. That whole buffer is what gets loaded via the existing single-base-address vm_create()/machine_create() call path -- unchanged from how a standalone .bin loads today."
+  },
+
+  "append_only_policy": {
+    "$comment": "The actual compatibility guarantee. See docs/quill_fluxio.md Phase 0.5 point 2.",
+    "committed_symtab_file_pattern": "lib/<name>.symtab.json, produced by `luxc -symbols` and checked into the repo",
+    "rule": "Once a library's symtab file is committed, an existing entry's index, name, and arity may never change. New exports may only be appended after the last existing entry.",
+    "enforcement": "fluxlink diffs a fresh compile's symbol table against the committed file and refuses to link (hard error, not a warning) on any reorder, rename, arity change, or removal of an existing entry.",
+    "version_bump_policy": "An incompatible change gets a new abi_version major number and a new base address band reserved in include/memory_map.h -- the old version's linked libraries keep working at their frozen addresses indefinitely. Never overwrite a shipped slot's meaning."
+  },
+
+  "memory_bands": {
+    "$comment": "Mirrors include/memory_map.h exactly -- that header is the real source of truth for the VM/compilers; this block exists so a non-C tool (fluxlink's symtab tooling, docs generators) doesn't have to parse C to know the layout.",
+    "fx_small_scalar_globals": { "base": "0x001000", "end": "0x010000" },
+    "device_mmio": { "base": "0x010000", "end": "0x011000" },
+    "headless_code": { "base": "0x011000" },
+    "shared_lux_flags": { "base": "0x500000", "end": "0x510000" },
+    "graphical_code": { "base": "0x600000" },
+    "abi_library_link": { "base": "0x700000", "end": "0x800000" },
+    "abi_library_trampoline_reserve": { "base": "0x700000", "end": "0x701000", "desc": "Fixed-size trampoline table region; see linked_image_format above." },
+    "abi_library_code": { "base": "0x701000", "desc": "Where a linkable Lux library's own code is compiled to start (luxc -base 0x701000)." },
+    "app_small_state": { "base": "0x800000", "end": "0x900000" },
+    "app_bulk_buffer": { "base": "0x900000", "end": "0xA00000" },
+    "lux_mem_heap": { "base": "0xA00000", "end": "0xC00000" },
+    "fx_bulk_globals": { "base": "0xD00000", "end": "0x1000000" }
+  },
+
+  "conformance_suite": "src/test_abi_conformance.c -- any compiler targeting this ABI proves compliance by passing it, not by re-reading this document and hoping."
+}

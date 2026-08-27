@@ -64,6 +64,8 @@ IMPORT TIME
 @ok-h    0x8B2480 ;
 @can-h   0x8B2484 ;
 @dd-off  0x8B2500 ;
+@picked  0x8B2504 ;
+@cancld  0x8B2508 ;
 @dx      0x8B2540 ;
 @dy      0x8B2544 ;
 @dw      0x8B2548 ;
@@ -78,6 +80,14 @@ IMPORT TIME
 
 @on-ok!     ( quot -- ) ok-h STOREI ;
 @on-cancel! ( quot -- ) can-h STOREI ;
+
+( Fluxio can't pass Lux quotations to on-ok!/on-cancel!, so these flags
+  are set unconditionally alongside the existing (optional) callback
+  dispatch -- a Fluxio caller polls picked?/cancelled? after SF::mouse/
+  SF::kbd instead of registering a handler. Docs/quill_fluxio.md Phase B6. )
+@picked?    ( -- f ) picked LOADI ;
+@cancelled? ( -- f ) cancld LOADI ;
+@clear-result! ( -- ) 0 picked STOREI 0 cancld STOREI ;
 
 @lx ( -- x ) dlg-x LOADI 16 + ;
 @ly ( -- y ) dlg-y LOADI 56 + ;
@@ -395,6 +405,7 @@ IMPORT TIME
     0 local@ tok copy-tok
     tok result cat
     hide
+    1 picked STOREI
     ok-h LOADI dup 0 > [
         result SWAP CALL
     ] [
@@ -420,6 +431,7 @@ IMPORT TIME
 
 @cancel ( -- )
     hide
+    1 cancld STOREI
     can-h LOADI dup 0 > [ CALL ] [ drop ] ?:
 ;
 
@@ -566,6 +578,7 @@ IMPORT TIME
     0 bdrag STOREI
     0 sdrag STOREI
     0 dd STOREI
+    clear-result!
     place-title
     init-btns
     refresh

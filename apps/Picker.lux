@@ -1,0 +1,221 @@
+( Cloister home screen. Two group-box lists: Lux sources and compiled
+  Fluxio bins. Click or Enter writes the path to /sys/launch and HALTs;
+  the host loads that ROM. Quit HALTs with an empty launch path.
+  ./bin/cloister )
+
+INCLUDE "lib/app.lux"
+INCLUDE "lib/ui.lux"
+
+MODULE PICKER
+
+IMPORT APP
+IMPORT UI
+IMPORT DRAW
+IMPORT EVENT
+IMPORT STR
+IMPORT VFS
+
+( MM_APP_SMALL_STATE / MM_APP_BULK_BUFFER )
+@focus 0x8A0000 ;
+@raw   0x910000 ;
+@tok   0x911000 ;
+@path  0x911100 ;
+
+@LUX T"Lux" ;
+@FX  T"Fluxio" ;
+
+@cat ( src dest -- )
+    dup STR::strlen + STR::strcpy
+;
+
+@ends-with { str suf -- f }
+    str STR::strlen suf STR::strlen { n sn }
+        n sn < [
+            0
+        ] [
+            str n sn - + suf STR::streq
+        ] ?:
+    }
+;
+
+@skip-name? { name -- f }
+    name T"Picker.lux" STR::streq
+    name T"Picker.bin" STR::streq OR
+    name T"Shell.lux" STR::streq OR
+    name T"Shell.bin" STR::streq OR
+;
+
+@copy-tok ( src dest -- )
+    2 frame! ( 0:dest 1:src )
+    [ 1 local@ load-byte dup 10 <> SWAP 0 <> AND ] [
+        1 local@ load-byte 0 local@ store-byte
+        1 local@ 1 + 1 local!
+        0 local@ 1 + 0 local!
+    ] |:
+    0 0 local@ store-byte
+    2 unframe!
+;
+
+@next-tok ( src -- src' )
+    [ dup load-byte dup 10 <> SWAP 0 <> AND ] [ 1 + ] |:
+    dup load-byte 10 = [ 1 + ] ?
+;
+
+@read-dir ( dir -- )
+    VFS::open
+    dup 0 > [
+        dup raw 4095 VFS::read
+        0 raw 2 PICK + store-byte
+        drop
+        VFS::close drop
+    ] [
+        drop
+        0 raw store-byte
+    ] ?:
+;
+
+@fill-ext { list ext -- }
+    raw { p }
+        [ p load-byte 0 > ]
+        [
+            p tok copy-tok
+            tok skip-name? [
+            ] [
+                tok ext ends-with [
+                    list tok UI::list-add
+                ] ?
+            ] ?:
+            p next-tok p!
+        ] |:
+    }
+;
+
+@fill-lists ( -- )
+    LUX UI::list-clear
+    FX UI::list-clear
+    T"/sys/dir/apps" read-dir
+    LUX T".lux" fill-ext
+    T"/sys/dir/apps/fluxio" read-dir
+    FX T".bin" fill-ext
+    LUX UI::list-count 0 > [ LUX 0 UI::list-sel! ] ?
+    FX UI::list-count 0 > [ FX 0 UI::list-sel! ] ?
+    0 focus STOREI
+    LUX UI::list-active
+;
+
+@launch ( p -- )
+    1 frame! ( 0:p )
+    T"/sys/launch" VFS::open
+    dup 0 > [
+        dup 0 local@ 0 local@ STR::strlen VFS::write drop
+        VFS::close drop
+        HALT
+    ] [
+        drop
+    ] ?:
+    1 unframe!
+;
+
+@run-from { name prefix -- }
+    name UI::list-sel@
+    dup 0 < [
+        drop
+    ] [
+        name SWAP UI::list-item@
+        dup 0 = [
+            drop
+        ] [
+            prefix path STR::strcpy
+            path cat
+            path launch
+        ] ?:
+    ] ?:
+;
+
+@pfx ( -- ptr )
+    focus LOADI [ T"apps/fluxio/" ] [ T"apps/" ] ?:
+;
+
+@on-lux ( idx -- ) drop LUX T"apps/" run-from ;
+@on-fx  ( idx -- ) drop FX T"apps/fluxio/" run-from ;
+@on-quit ( val -- ) drop HALT ;
+
+@focused ( -- name )
+    focus LOADI [ FX ] [ LUX ] ?:
+;
+
+@on-mouse ( mpkt -- ) UI::feed ;
+
+@on-kbd ( kpkt -- )
+    dup EVENT::kbd-type EVENT::KEY_DOWN = [
+        dup EVENT::kbd-key
+        dup EVENT::KEY_ESC = [
+            drop drop
+            UI::escape drop
+        ] [
+        dup EVENT::KEY_ENTER = [
+            drop drop
+            focused pfx run-from
+        ] [
+        dup EVENT::KEY_UP_ARROW = [
+            drop drop
+            focused { name }
+                name UI::list-sel@
+                dup 0 > [ 1 - ] [ drop 0 ] ?:
+                name SWAP UI::list-sel!
+            }
+        ] [
+        dup EVENT::KEY_DOWN_ARROW = [
+            drop drop
+            focused { name }
+                name UI::list-count { n }
+                    n 0 = [
+                    ] [
+                        name UI::list-sel@ 1 +
+                        dup n >= [ drop n 1 - ] ?
+                        name SWAP UI::list-sel!
+                    ] ?:
+                }
+            }
+        ] [
+        dup EVENT::KEY_LEFT_ARROW = [
+            drop drop
+            0 focus STOREI
+            LUX UI::list-active
+        ] [
+        dup EVENT::KEY_RIGHT_ARROW = [
+            drop drop
+            1 focus STOREI
+            FX UI::list-active
+        ] [
+            drop drop
+        ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+    ] [
+        drop
+    ] ?:
+;
+
+@on-frame ( -- )
+    UI::handle
+    DRAW::fd 0 0 APP::width APP::height UI::CLR_DESK DRAW::paint-rect
+    UI::draw
+;
+
+@start
+    T"Cloister" APP::init
+    UI::new
+    APP::width UI::menubar
+    T"Cloister" UI::menu
+    T"Quit" [ on-quit ] UI::item
+    T"Select a program    Enter or click to run" 40 36 UI::label
+    LUX 40 64 430 600 [ on-lux ] UI::list
+    FX  490 64 430 600 [ on-fx ] UI::list
+    fill-lists
+    [ on-mouse ] APP::on-mouse!
+    [ on-kbd ] APP::on-kbd!
+    [ on-frame ] APP::on-frame!
+    APP::loop
+;
+
+PICKER::start
+HALT

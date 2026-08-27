@@ -28,7 +28,8 @@ IMPORT UI
 @win-w    0x8C0040 ;
 @win-h    0x8C0044 ;
 @dirty-f  0x8C0048 ;
-@modal-f  0x8C004C ;
+( Alias of UI::APP_MODAL — same cell, not a second reservation. )
+@modal-f  ( -- addr ) UI::APP_MODAL ;
 
 ( --- ESC Popup State --- )
 @esc-open     0x8C0050 ;

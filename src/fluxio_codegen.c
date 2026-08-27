@@ -7,7 +7,15 @@
 #include <stdarg.h>
 #include <setjmp.h>
 
-#define FX_DEVICE_BOUNDARY 0x10000
+#define FX_DEVICE_BOUNDARY MM_FX_GLOBALS_END
+
+/* Globals larger than this (in bytes) bump-allocate from the bulk-globals
+ * band (MM_FX_BULK_GLOBALS_BASE) instead of the small-scalar band -- see
+ * the allocation loop in fx_codegen() and docs/memory-map.md. 1KB comfortably
+ * fits many small fixed-size arrays in the ~60KB small-scalar budget while
+ * still routing anything meaningfully large (a 1MB file buffer, etc) to the
+ * band that's actually sized for it. */
+#define FX_BULK_GLOBAL_THRESHOLD 1024
 
 /* SCI (System Call Interface) protocol -- see src/system.c:11-14. A call is
  * issued by STORE-ing cmd/arg1/(arg3), then STORE-ing arg2 LAST (that write
@@ -24,6 +32,9 @@
 #define FX_SCI_CMD_VFS_WRITE         13
 #define FX_SCI_CMD_YIELD             16
 #define FX_SCI_CMD_SET_WINDOW_TITLE  22
+#define FX_SCI_CMD_VFS_SEEK          23
+#define FX_SCI_CMD_VFS_STAT          24
+#define FX_SCI_CMD_VFS_WRITE_CHUNK   25
 
 /* /dev/draw command-buffer byte layout (src/vfs.c draw_write) */
 #define FX_DRAW_CMD_FILL_RECT   0
@@ -39,6 +50,7 @@ typedef struct {
     int32_t array_len;              /* 0 = scalar/struct-via-pointer; >0 = own array/struct storage size in words */
     const FxStructDef* struct_def;   /* non-NULL if struct-typed (own storage or via-pointer) */
     bool struct_via_pointer;         /* true for struct params: `offset` is a LOCALGET slot holding an address */
+    bool is_byte;                    /* array_len==0 array params only: holds a decayed byte[] address, 1-byte stride */
 } FxScopeBinding;
 
 typedef struct {
@@ -53,6 +65,9 @@ typedef struct {
     int nfuncs;
     int32_t* func_addrs;      /* -1 until emitted */
     int32_t* recursion_slot;  /* -1 if not recursive */
+
+    FxExtern* externs;        /* borrowed from program */
+    int nexterns;
 
     FxFixup* fixups;
     int nfixups, fixups_cap;
@@ -73,6 +88,8 @@ typedef struct {
     int32_t scratch_shift;  /* holds a bit-shift amount mid-computation */
     int32_t scratch_word;   /* holds a partially-masked word mid-computation */
     int32_t scratch_field;  /* holds a field value being decomposed into bytes */
+    int32_t scratch_copy_src; /* draw_bytes: runtime byte-copy loop source cursor */
+    int32_t scratch_copy_dst; /* draw_bytes: runtime byte-copy loop dest cursor */
     int32_t mouse_buf_addr; /* 8-byte /dev/mouse event, persists across a frame */
     int32_t kbd_buf_addr;   /* 8-byte /dev/kbd event, persists across a frame */
     int32_t sci_buf_addr;   /* transient scratch: draw-command packing, string args, canvas-size reads */
@@ -143,6 +160,7 @@ typedef struct {
     int32_t offset_or_addr;
     int32_t array_len;              /* >0 for array/struct bindings (struct: field count) */
     const FxStructDef* struct_def;   /* non-NULL for *_STRUCT bindings */
+    bool is_byte;                    /* array bindings only: 1-byte element stride instead of 4 */
 } FxBinding;
 
 static FxBinding resolve_binding(Codegen* cg, FxProgram* program, const char* name) {
@@ -152,6 +170,7 @@ static FxBinding resolve_binding(Codegen* cg, FxProgram* program, const char* na
             b.offset_or_addr = cg->scope[i].offset;
             b.array_len = cg->scope[i].array_len;
             b.struct_def = cg->scope[i].struct_def;
+            b.is_byte = cg->scope[i].is_byte;
             if (cg->scope[i].struct_def) {
                 b.kind = cg->scope[i].struct_via_pointer ? FX_BINDING_PARAM_STRUCT : FX_BINDING_LOCAL_STRUCT;
             } else {
@@ -165,6 +184,7 @@ static FxBinding resolve_binding(Codegen* cg, FxProgram* program, const char* na
             FxBinding b;
             b.offset_or_addr = cg->global_addrs[i];
             b.array_len = program->globals[i].array_len;
+            b.is_byte = program->globals[i].is_byte;
             if (program->globals[i].struct_type_name) {
                 b.kind = FX_BINDING_GLOBAL_STRUCT;
                 b.struct_def = fx_find_struct(program, program->globals[i].struct_type_name);
@@ -175,7 +195,7 @@ static FxBinding resolve_binding(Codegen* cg, FxProgram* program, const char* na
             return b;
         }
     }
-    FxBinding none = { FX_BINDING_NONE, 0, 0, NULL };
+    FxBinding none = { FX_BINDING_NONE, 0, 0, NULL, false };
     return none;
 }
 
@@ -194,6 +214,17 @@ static int find_func_index(Codegen* cg, const char* name) {
     return -1;
 }
 
+/* externs (Phase B5, docs/quill_fluxio.md) bind a name+arity to an address
+ * known at parse time -- no backpatching needed, unlike a regular function
+ * call, since the address never depends on anything this compilation unit
+ * emits. */
+static const FxExtern* find_extern(Codegen* cg, const char* name) {
+    for (int i = 0; i < cg->nexterns; i++) {
+        if (strcmp(cg->externs[i].name, name) == 0) return &cg->externs[i];
+    }
+    return NULL;
+}
+
 /* Builtins: v1's console I/O (emit/print, wrapping OP_OUT) plus v2b's
  * Cloister bindings (wrapping the SCI/VFS/draw protocol). Not user-definable
  * (reserved names, checked in fx_codegen); not part of the user call graph
@@ -204,7 +235,7 @@ static int find_func_index(Codegen* cg, const char* name) {
  * buffer at the call site, entirely at compile time. */
 typedef enum { FX_ARG_INT, FX_ARG_STRING } FxArgKind;
 
-#define FX_BUILTIN_MAX_ARGS 6
+#define FX_BUILTIN_MAX_ARGS 7
 
 typedef struct {
     const char* name;
@@ -219,6 +250,18 @@ static const FxBuiltinSpec FX_BUILTINS[] = {
     /* VFS */
     { "vfs_open",          1, { FX_ARG_STRING } },
     { "vfs_close",         1, { FX_ARG_INT } },
+
+    /* Phase A2, docs/quill_fluxio.md: runtime buffer+length variants, for
+     * a path/data that's only known at runtime (a file-picker result, a
+     * lazily-loaded chunk) -- vfs_open only accepts a compile-time string
+     * literal, which can't express that. */
+    { "vfs_open_buf",      3, { FX_ARG_INT, FX_ARG_INT, FX_ARG_INT } },      /* path_buf, path_len, flags -> fd */
+    { "vfs_read",          3, { FX_ARG_INT, FX_ARG_INT, FX_ARG_INT } },      /* fd, buf, maxlen -> bytes_read */
+    { "vfs_write",         3, { FX_ARG_INT, FX_ARG_INT, FX_ARG_INT } },      /* fd, buf, len -> bytes_written */
+    { "vfs_seek",          2, { FX_ARG_INT, FX_ARG_INT } },                  /* fd, pos -> result */
+    { "vfs_stat",          1, { FX_ARG_INT } },                              /* fd -> size */
+    { "vfs_write_chunk",   5, { FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_INT } }, /* fd,buf,len,offset,orig_len -> result */
+
     { "yield",             0, { 0 } },
     { "set_window_title",  1, { FX_ARG_STRING } },
     { "canvas_size",       1, { FX_ARG_INT } }, /* fd -> (w<<16)|h */
@@ -228,6 +271,10 @@ static const FxBuiltinSpec FX_BUILTINS[] = {
     { "end_frame",         1, { FX_ARG_INT } },
     { "fill_rect",         6, { FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_INT } }, /* fd,x,y,w,h,color */
     { "draw_str",          6, { FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_STRING } }, /* fd,x,y,color,scale,text */
+    /* Phase A3, docs/quill_fluxio.md: same wire format as draw_str, but the
+     * text comes from a runtime buffer+length (e.g. a byte[] holding live
+     * file/line content) instead of a compile-time string literal. */
+    { "draw_bytes",        7, { FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_INT } }, /* fd,x,y,color,scale,buf,len */
 
     /* /dev/mouse, /dev/kbd -- poll_*() fills a persistent buffer; the
      * accessor builtins read fields out of whichever buffer was last polled. */
@@ -260,11 +307,21 @@ static void push_scope_ex(Codegen* cg, const char* name, int32_t offset, int32_t
     cg->scope[cg->scope_len].array_len = array_len;
     cg->scope[cg->scope_len].struct_def = struct_def;
     cg->scope[cg->scope_len].struct_via_pointer = struct_via_pointer;
+    cg->scope[cg->scope_len].is_byte = false;
     cg->scope_len++;
 }
 
 static void push_scope(Codegen* cg, const char* name, int32_t offset, int32_t array_len) {
     push_scope_ex(cg, name, offset, array_len, NULL, false);
+}
+
+/* Array parameter holding a decayed `byte[]` address (Phase A1,
+ * docs/quill_fluxio.md) -- same FX_BINDING_LOCAL_SCALAR shape as an
+ * `int[]` param (no compile-time-known length either way), but indexing
+ * must use 1-byte stride instead of 4. */
+static void push_scope_byte_array_param(Codegen* cg, const char* name, int32_t offset) {
+    push_scope_ex(cg, name, offset, 0, NULL, false);
+    cg->scope[cg->scope_len - 1].is_byte = true;
 }
 
 /* ---- generic AST walker (used for the analysis passes only) ---- */
@@ -384,6 +441,15 @@ static void visit_call(void* ctxv, FxNode* n) {
             }
         }
         return; /* builtins are not part of the user call graph */
+    }
+
+    const FxExtern* ext = find_extern(cg, n->as.call.name);
+    if (ext) {
+        if (ext->nparams != n->as.call.nargs) {
+            cg_error(cg, n->line, "extern '%s' expects %d argument(s) but %d given",
+                      n->as.call.name, ext->nparams, n->as.call.nargs);
+        }
+        return; /* externs are not part of the user call graph, same as builtins */
     }
 
     int callee_idx = find_func_index(cg, n->as.call.name);
@@ -555,6 +621,13 @@ static void codegen_var_load(Codegen* cg, FxProgram* program, FxNode* n) {
     }
 }
 
+/* Forward decls: emit_store_byte/emit_load_byte are compiler-internal
+ * byte-level memory helpers defined further down (see the "Cloister
+ * bindings" section), needed here already for byte-array [] codegen
+ * (Phase A1, docs/quill_fluxio.md). */
+static void emit_store_byte(Codegen* cg);
+static void emit_load_byte(Codegen* cg);
+
 /* Emits the index-computation + bounds-check prefix shared by array reads
  * and writes, for a binding known to be an array (local or global). Leaves
  * the checked index value on top of the stack. */
@@ -613,18 +686,29 @@ static void codegen_expr(Codegen* cg, FxProgram* program, FxNode* n) {
                     emit_imm_op(cg, OP_PUSH, b.offset_or_addr);
                     emit_op(cg, OP_LOCALGET);
                     codegen_expr(cg, program, n->as.index.index);
-                    emit_imm_op(cg, OP_PUSH, 4);
-                    emit_op(cg, OP_MUL);
-                    emit_op(cg, OP_ADD);
-                    emit_op(cg, OP_LOADI);
+                    if (b.is_byte) {
+                        emit_op(cg, OP_ADD);
+                        emit_load_byte(cg);
+                    } else {
+                        emit_imm_op(cg, OP_PUSH, 4);
+                        emit_op(cg, OP_MUL);
+                        emit_op(cg, OP_ADD);
+                        emit_op(cg, OP_LOADI);
+                    }
                     return;
                 case FX_BINDING_GLOBAL_ARRAY:
                     codegen_checked_index(cg, program, n->as.index.index, b);
-                    emit_imm_op(cg, OP_PUSH, 4);
-                    emit_op(cg, OP_MUL);
-                    emit_imm_op(cg, OP_PUSH, b.offset_or_addr);
-                    emit_op(cg, OP_ADD);
-                    emit_op(cg, OP_LOADI);
+                    if (b.is_byte) {
+                        emit_imm_op(cg, OP_PUSH, b.offset_or_addr);
+                        emit_op(cg, OP_ADD);
+                        emit_load_byte(cg);
+                    } else {
+                        emit_imm_op(cg, OP_PUSH, 4);
+                        emit_op(cg, OP_MUL);
+                        emit_imm_op(cg, OP_PUSH, b.offset_or_addr);
+                        emit_op(cg, OP_ADD);
+                        emit_op(cg, OP_LOADI);
+                    }
                     return;
                 case FX_BINDING_GLOBAL_SCALAR:
                     emit_imm_op(cg, OP_LOAD, b.offset_or_addr);
@@ -659,18 +743,29 @@ static void codegen_expr(Codegen* cg, FxProgram* program, FxNode* n) {
                     emit_imm_op(cg, OP_PUSH, b.offset_or_addr);
                     emit_op(cg, OP_LOCALGET);
                     codegen_expr(cg, program, n->as.index_assign.index);
-                    emit_imm_op(cg, OP_PUSH, 4);
-                    emit_op(cg, OP_MUL);
-                    emit_op(cg, OP_ADD);
-                    emit_op(cg, OP_STOREI);
+                    if (b.is_byte) {
+                        emit_op(cg, OP_ADD);
+                        emit_store_byte(cg);
+                    } else {
+                        emit_imm_op(cg, OP_PUSH, 4);
+                        emit_op(cg, OP_MUL);
+                        emit_op(cg, OP_ADD);
+                        emit_op(cg, OP_STOREI);
+                    }
                     return;
                 case FX_BINDING_GLOBAL_ARRAY:
                     codegen_checked_index(cg, program, n->as.index_assign.index, b);
-                    emit_imm_op(cg, OP_PUSH, 4);
-                    emit_op(cg, OP_MUL);
-                    emit_imm_op(cg, OP_PUSH, b.offset_or_addr);
-                    emit_op(cg, OP_ADD);
-                    emit_op(cg, OP_STOREI);
+                    if (b.is_byte) {
+                        emit_imm_op(cg, OP_PUSH, b.offset_or_addr);
+                        emit_op(cg, OP_ADD);
+                        emit_store_byte(cg);
+                    } else {
+                        emit_imm_op(cg, OP_PUSH, 4);
+                        emit_op(cg, OP_MUL);
+                        emit_imm_op(cg, OP_PUSH, b.offset_or_addr);
+                        emit_op(cg, OP_ADD);
+                        emit_op(cg, OP_STOREI);
+                    }
                     return;
                 case FX_BINDING_GLOBAL_SCALAR:
                     emit_imm_op(cg, OP_LOAD, b.offset_or_addr);
@@ -793,6 +888,16 @@ static void codegen_expr(Codegen* cg, FxProgram* program, FxNode* n) {
             const FxBuiltinSpec* builtin = find_builtin(n->as.call.name);
             if (builtin) {
                 codegen_builtin_call(cg, program, builtin, n);
+                return;
+            }
+            const FxExtern* ext = find_extern(cg, n->as.call.name);
+            if (ext) {
+                if (ext->is_void) {
+                    cg_error(cg, n->line, "'%s' is declared 'extern void' and produces no value; "
+                             "call it as a statement, not as an expression", ext->name);
+                }
+                for (int i = 0; i < n->as.call.nargs; i++) codegen_expr(cg, program, n->as.call.args[i]);
+                emit_imm_op(cg, OP_CALL, ext->address);
                 return;
             }
             int idx = find_func_index(cg, n->as.call.name);
@@ -983,6 +1088,92 @@ static void codegen_builtin_call(Codegen* cg, FxProgram* program, const FxBuilti
         emit_imm_op(cg, OP_LOAD, FX_SCI_PORT);
         return;
     }
+    if (strcmp(name, "vfs_open_buf") == 0) {
+        /* SCI_VFS_OPEN reads a NUL-terminated C string from arg1 (system.c's
+         * read loop) -- it has no length parameter of its own, so a runtime
+         * buffer+length path only works if we NUL-terminate it ourselves at
+         * buf[len] first. Caller must reserve len+1 bytes. */
+        codegen_expr(cg, program, args[0]); /* buf */
+        emit_imm_op(cg, OP_STORE, cg->scratch_field); /* stash: needed twice below */
+        emit_imm_op(cg, OP_PUSH, 0);
+        emit_imm_op(cg, OP_LOAD, cg->scratch_field);
+        codegen_expr(cg, program, args[1]); /* len */
+        emit_op(cg, OP_ADD);
+        emit_store_byte(cg); /* memory[buf+len] = 0 */
+        emit_imm_op(cg, OP_LOAD, cg->scratch_field);
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG1_ADDR);
+        emit_imm_op(cg, OP_PUSH, FX_SCI_CMD_VFS_OPEN);
+        emit_imm_op(cg, OP_STORE, FX_SCI_CMD_ADDR);
+        codegen_expr(cg, program, args[2]); /* flags */
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG2_ADDR);
+        emit_imm_op(cg, OP_LOAD, FX_SCI_PORT);
+        return;
+    }
+    if (strcmp(name, "vfs_read") == 0) {
+        codegen_expr(cg, program, args[0]); /* fd */
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG1_ADDR);
+        codegen_expr(cg, program, args[2]); /* maxlen */
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG3_ADDR);
+        emit_imm_op(cg, OP_PUSH, FX_SCI_CMD_VFS_READ);
+        emit_imm_op(cg, OP_STORE, FX_SCI_CMD_ADDR);
+        codegen_expr(cg, program, args[1]); /* buf */
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG2_ADDR);
+        emit_imm_op(cg, OP_LOAD, FX_SCI_PORT);
+        return;
+    }
+    if (strcmp(name, "vfs_write") == 0) {
+        codegen_expr(cg, program, args[0]); /* fd */
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG1_ADDR);
+        codegen_expr(cg, program, args[2]); /* len */
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG3_ADDR);
+        emit_imm_op(cg, OP_PUSH, FX_SCI_CMD_VFS_WRITE);
+        emit_imm_op(cg, OP_STORE, FX_SCI_CMD_ADDR);
+        codegen_expr(cg, program, args[1]); /* buf */
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG2_ADDR);
+        emit_imm_op(cg, OP_LOAD, FX_SCI_PORT);
+        return;
+    }
+    if (strcmp(name, "vfs_seek") == 0) {
+        codegen_expr(cg, program, args[0]); /* fd */
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG1_ADDR);
+        emit_imm_op(cg, OP_PUSH, FX_SCI_CMD_VFS_SEEK);
+        emit_imm_op(cg, OP_STORE, FX_SCI_CMD_ADDR);
+        codegen_expr(cg, program, args[1]); /* pos */
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG2_ADDR);
+        emit_imm_op(cg, OP_LOAD, FX_SCI_PORT);
+        return;
+    }
+    if (strcmp(name, "vfs_stat") == 0) {
+        codegen_expr(cg, program, args[0]); /* fd */
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG1_ADDR);
+        emit_imm_op(cg, OP_PUSH, FX_SCI_CMD_VFS_STAT);
+        emit_imm_op(cg, OP_STORE, FX_SCI_CMD_ADDR);
+        emit_imm_op(cg, OP_PUSH, 0);
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG2_ADDR);
+        emit_imm_op(cg, OP_LOAD, FX_SCI_PORT);
+        return;
+    }
+    if (strcmp(name, "vfs_write_chunk") == 0) {
+        /* Packs the 5-word param block SCI_VFS_WRITE_CHUNK expects, same as
+         * VFS::write-chunk (lib/vfs.lux) does for Lux -- system.c's handler
+         * currently only consumes fd/bufPtr/length (offset/orig_len are
+         * reserved for a fuller chunked-write implementation), but the
+         * whole block is packed regardless so this builtin's call signature
+         * won't need to change if/when that lands. */
+        codegen_expr(cg, program, args[0]); emit_imm_op(cg, OP_STORE, cg->sci_buf_addr + 0);  /* fd */
+        codegen_expr(cg, program, args[1]); emit_imm_op(cg, OP_STORE, cg->sci_buf_addr + 4);  /* buf */
+        codegen_expr(cg, program, args[2]); emit_imm_op(cg, OP_STORE, cg->sci_buf_addr + 8);  /* len */
+        codegen_expr(cg, program, args[3]); emit_imm_op(cg, OP_STORE, cg->sci_buf_addr + 12); /* offset */
+        codegen_expr(cg, program, args[4]); emit_imm_op(cg, OP_STORE, cg->sci_buf_addr + 16); /* orig_len */
+        emit_imm_op(cg, OP_PUSH, cg->sci_buf_addr);
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG1_ADDR);
+        emit_imm_op(cg, OP_PUSH, FX_SCI_CMD_VFS_WRITE_CHUNK);
+        emit_imm_op(cg, OP_STORE, FX_SCI_CMD_ADDR);
+        emit_imm_op(cg, OP_PUSH, 0);
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG2_ADDR);
+        emit_imm_op(cg, OP_LOAD, FX_SCI_PORT);
+        return;
+    }
     if (strcmp(name, "yield") == 0) {
         emit_imm_op(cg, OP_PUSH, FX_SCI_CMD_YIELD);
         emit_imm_op(cg, OP_STORE, FX_SCI_CMD_ADDR);
@@ -1099,6 +1290,97 @@ static void codegen_builtin_call(Codegen* cg, FxProgram* program, const FxBuilti
         emit_imm_op(cg, OP_LOAD, FX_SCI_PORT);
         return;
     }
+    if (strcmp(name, "draw_bytes") == 0) {
+        /* Same wire format as draw_str (cmd(1) x:i16(2) y:i16(2) color:u32(4)
+         * scale:u8(1) len:u16(2) text[len]), but the text bytes come from a
+         * runtime buffer+length instead of a compile-time string literal --
+         * draw_str's compile-time unrolled emit_pack_string_literal doesn't
+         * apply, this needs a real emitted copy loop instead. */
+        int32_t text_off = 12;
+        int32_t max_text = FX_SCI_BUF_SIZE - text_off;
+
+        emit_pack_const_byte(cg, cg->sci_buf_addr, 0, FX_DRAW_CMD_DRAW_STRING);
+        emit_pack_field(cg, program, args[1], cg->sci_buf_addr, 1, 2); /* x */
+        emit_pack_field(cg, program, args[2], cg->sci_buf_addr, 3, 2); /* y */
+        emit_pack_field(cg, program, args[3], cg->sci_buf_addr, 5, 4); /* color */
+        emit_pack_field(cg, program, args[4], cg->sci_buf_addr, 9, 1); /* scale */
+
+        /* n = clamp(len, 0, max_text): an oversized len would overrun the
+         * fixed sci_buf_addr scratch region into adjacent reserved scratch
+         * (mouse/kbd event buffers etc); a negative len, left unclamped,
+         * would underflow into a huge copy in the loop below. */
+        codegen_expr(cg, program, args[6]); /* len */
+        emit_imm_op(cg, OP_PUSH, 0);
+        emit_op(cg, OP_MAX);
+        emit_imm_op(cg, OP_PUSH, max_text);
+        emit_op(cg, OP_MIN);
+        emit_imm_op(cg, OP_STORE, cg->scratch_field); /* n */
+
+        /* len field of the wire format, u16 LE at offset 10-11. */
+        emit_imm_op(cg, OP_LOAD, cg->scratch_field);
+        emit_imm_op(cg, OP_PUSH, 0xFF);
+        emit_op(cg, OP_AND);
+        emit_imm_op(cg, OP_PUSH, cg->sci_buf_addr + 10);
+        emit_store_byte(cg);
+        emit_imm_op(cg, OP_LOAD, cg->scratch_field);
+        emit_imm_op(cg, OP_PUSH, 8);
+        emit_op(cg, OP_SHR);
+        emit_imm_op(cg, OP_PUSH, 0xFF);
+        emit_op(cg, OP_AND);
+        emit_imm_op(cg, OP_PUSH, cg->sci_buf_addr + 11);
+        emit_store_byte(cg);
+
+        /* SCI call args, set up before the copy loop below consumes
+         * scratch_field as its countdown counter -- store order among
+         * these three doesn't matter, only that ARG2 (below) is stored
+         * last, since that write is what fires the syscall. */
+        codegen_expr(cg, program, args[0]); /* fd */
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG1_ADDR);
+        emit_imm_op(cg, OP_PUSH, text_off);
+        emit_imm_op(cg, OP_LOAD, cg->scratch_field);
+        emit_op(cg, OP_ADD);
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG3_ADDR); /* total_len = 12+n */
+        emit_imm_op(cg, OP_PUSH, FX_SCI_CMD_VFS_WRITE);
+        emit_imm_op(cg, OP_STORE, FX_SCI_CMD_ADDR);
+
+        /* Copy n bytes from the runtime buffer into sci_buf_addr+text_off,
+         * one byte per iteration; scratch_field doubles as both the
+         * remaining-count and the loop condition (0 = done). */
+        codegen_expr(cg, program, args[5]); /* buf */
+        emit_imm_op(cg, OP_STORE, cg->scratch_copy_src);
+        emit_imm_op(cg, OP_PUSH, cg->sci_buf_addr + text_off);
+        emit_imm_op(cg, OP_STORE, cg->scratch_copy_dst);
+
+        int32_t loop_top = cur_addr(cg);
+        emit_imm_op(cg, OP_LOAD, cg->scratch_field);
+        size_t jz_done = emit_imm_op(cg, OP_JZ, 0);
+
+        emit_imm_op(cg, OP_LOAD, cg->scratch_copy_src);
+        emit_load_byte(cg);
+        emit_imm_op(cg, OP_LOAD, cg->scratch_copy_dst);
+        emit_store_byte(cg);
+
+        emit_imm_op(cg, OP_LOAD, cg->scratch_copy_src);
+        emit_imm_op(cg, OP_PUSH, 1);
+        emit_op(cg, OP_ADD);
+        emit_imm_op(cg, OP_STORE, cg->scratch_copy_src);
+        emit_imm_op(cg, OP_LOAD, cg->scratch_copy_dst);
+        emit_imm_op(cg, OP_PUSH, 1);
+        emit_op(cg, OP_ADD);
+        emit_imm_op(cg, OP_STORE, cg->scratch_copy_dst);
+        emit_imm_op(cg, OP_LOAD, cg->scratch_field);
+        emit_imm_op(cg, OP_PUSH, 1);
+        emit_op(cg, OP_SUB);
+        emit_imm_op(cg, OP_STORE, cg->scratch_field);
+
+        emit_imm_op(cg, OP_JMP, loop_top);
+        patch_i32(cg, jz_done, cur_addr(cg));
+
+        emit_imm_op(cg, OP_PUSH, cg->sci_buf_addr);
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG2_ADDR);
+        emit_imm_op(cg, OP_LOAD, FX_SCI_PORT);
+        return;
+    }
     if (strcmp(name, "poll_mouse") == 0 || strcmp(name, "poll_kbd") == 0) {
         int32_t buf = strcmp(name, "poll_mouse") == 0 ? cg->mouse_buf_addr : cg->kbd_buf_addr;
         codegen_expr(cg, program, args[0]);
@@ -1198,10 +1480,28 @@ static void codegen_stmt(Codegen* cg, FxProgram* program, FxNode* n, bool is_mai
             }
             return;
         }
-        case FX_EXPR_STMT:
-            codegen_expr(cg, program, n->as.expr_stmt.expr);
+        case FX_EXPR_STMT: {
+            FxNode* e = n->as.expr_stmt.expr;
+            /* A `void` extern (docs/quill_fluxio.md Phase B6/B7) leaves
+             * nothing on the stack, unlike every other call form -- codegen
+             * it directly here and skip the POP below, instead of routing
+             * through codegen_expr (which always assumes one value). */
+            if (e->kind == FX_CALL) {
+                const FxExtern* ext = find_extern(cg, e->as.call.name);
+                if (ext && ext->is_void) {
+                    if (ext->nparams != e->as.call.nargs) {
+                        cg_error(cg, e->line, "extern '%s' expects %d argument(s) but %d given",
+                                 ext->name, ext->nparams, e->as.call.nargs);
+                    }
+                    for (int i = 0; i < e->as.call.nargs; i++) codegen_expr(cg, program, e->as.call.args[i]);
+                    emit_imm_op(cg, OP_CALL, ext->address);
+                    return;
+                }
+            }
+            codegen_expr(cg, program, e);
             emit_op(cg, OP_POP);
             return;
+        }
         case FX_IF: {
             codegen_expr(cg, program, n->as.if_s.cond);
             size_t jz = emit_imm_op(cg, OP_JZ, 0);
@@ -1323,6 +1623,8 @@ static void codegen_func(Codegen* cg, FxProgram* program, int idx, bool is_main)
                  * is FX_BINDING_PARAM_STRUCT, not a plain unchecked scalar. */
                 const FxStructDef* sd = fx_find_struct(program, f->params[i].struct_type_name);
                 push_scope_ex(cg, f->params[i].name, offset, 0, sd, true);
+            } else if (f->params[i].is_byte) {
+                push_scope_byte_array_param(cg, f->params[i].name, offset);
             } else {
                 /* Array params are always registered as scalars: they hold a
                  * decayed base address at runtime, with no compile-time-known
@@ -1360,6 +1662,8 @@ uint8_t* fx_codegen(FxProgram* program, int32_t base_addr, size_t* out_len) {
     cg.base_addr = base_addr;
     cg.funcs = program->funcs;
     cg.nfuncs = program->nfuncs;
+    cg.externs = program->externs;
+    cg.nexterns = program->nexterns;
 
     if (setjmp(cg.error_jmp) != 0) {
         free(cg.code);
@@ -1408,17 +1712,59 @@ uint8_t* fx_codegen(FxProgram* program, int32_t base_addr, size_t* out_len) {
             }
         }
     }
+    for (int i = 0; i < cg.nexterns; i++) {
+        for (int j = i + 1; j < cg.nexterns; j++) {
+            if (strcmp(cg.externs[i].name, cg.externs[j].name) == 0) {
+                cg_error(&cg, cg.externs[j].line, "extern '%s' is already defined", cg.externs[j].name);
+            }
+        }
+        if (find_builtin(cg.externs[i].name)) {
+            cg_error(&cg, cg.externs[i].line, "'%s' is a reserved builtin name", cg.externs[i].name);
+        }
+        if (find_func_index(&cg, cg.externs[i].name) >= 0) {
+            cg_error(&cg, cg.externs[i].line, "'%s' is already defined as a function", cg.externs[i].name);
+        }
+        for (int j = 0; j < program->nglobals; j++) {
+            if (strcmp(program->globals[j].name, cg.externs[i].name) == 0) {
+                cg_error(&cg, cg.externs[i].line, "'%s' is already defined as a global", cg.externs[i].name);
+            }
+        }
+    }
 
     /* Allocate globals (each consuming 4*array_len bytes, 4 for a scalar),
      * then one counter slot per recursive function, contiguously in low RAM
-     * below device space. */
+     * below device space -- EXCEPT large arrays, which go to the dedicated
+     * bulk-globals band (MM_FX_BULK_GLOBALS_BASE, include/memory_map.h)
+     * instead: the small-scalar band above is only ~60KB total budget,
+     * nowhere near enough for something like a 1MB file buffer. See
+     * docs/memory-map.md. Anything at or under FX_BULK_GLOBAL_THRESHOLD
+     * bytes stays in the small band (most globals: loop counters, small
+     * fixed-size arrays); anything larger bump-allocates from the bulk
+     * band instead, tracked by a separate pointer so the two regions
+     * can't collide with each other. */
     cg.nglobals = program->nglobals;
     cg.global_addrs = malloc(sizeof(int32_t) * (cg.nglobals > 0 ? cg.nglobals : 1));
     int32_t next_addr = FX_GLOBALS_BASE;
+    int32_t next_bulk_addr = MM_FX_BULK_GLOBALS_BASE;
     for (int i = 0; i < cg.nglobals; i++) {
-        cg.global_addrs[i] = next_addr;
         int32_t len = program->globals[i].array_len > 0 ? program->globals[i].array_len : 1;
-        next_addr += 4 * len;
+        /* byte arrays (Phase A1, docs/quill_fluxio.md) pack 1 byte/element
+         * in real memory instead of a full word -- structs and scalars are
+         * never is_byte, so this only ever fires for a `byte name[N];`
+         * global. */
+        int32_t size_bytes = program->globals[i].is_byte ? len : 4 * len;
+        if (size_bytes > FX_BULK_GLOBAL_THRESHOLD) {
+            cg.global_addrs[i] = next_bulk_addr;
+            next_bulk_addr += size_bytes;
+            if (next_bulk_addr > MM_FX_BULK_GLOBALS_END) {
+                cg_error(&cg, program->globals[i].line, "bulk global '%s' overflows the bulk-globals "
+                          "band [0x%x, 0x%x) -- see docs/memory-map.md",
+                          program->globals[i].name, MM_FX_BULK_GLOBALS_BASE, MM_FX_BULK_GLOBALS_END);
+            }
+        } else {
+            cg.global_addrs[i] = next_addr;
+            next_addr += size_bytes;
+        }
     }
     cg.recursion_slot = malloc(sizeof(int32_t) * (cg.nfuncs > 0 ? cg.nfuncs : 1));
     for (int i = 0; i < cg.nfuncs; i++) {
@@ -1437,6 +1783,8 @@ uint8_t* fx_codegen(FxProgram* program, int32_t base_addr, size_t* out_len) {
     cg.scratch_shift = next_addr; next_addr += 4;
     cg.scratch_word = next_addr;  next_addr += 4;
     cg.scratch_field = next_addr; next_addr += 4;
+    cg.scratch_copy_src = next_addr; next_addr += 4;
+    cg.scratch_copy_dst = next_addr; next_addr += 4;
     cg.mouse_buf_addr = next_addr; next_addr += 8;
     cg.kbd_buf_addr = next_addr;   next_addr += 8;
     cg.sci_buf_addr = next_addr;   next_addr += FX_SCI_BUF_SIZE;
@@ -1472,7 +1820,12 @@ uint8_t* fx_codegen(FxProgram* program, int32_t base_addr, size_t* out_len) {
             for (int32_t k = 0; k < program->globals[i].string_len; k++) {
                 unsigned char c = (unsigned char) program->globals[i].string_value[k];
                 emit_imm_op(&cg, OP_PUSH, c);
-                emit_imm_op(&cg, OP_STORE, cg.global_addrs[i] + 4 * k);
+                if (program->globals[i].is_byte) {
+                    emit_imm_op(&cg, OP_PUSH, cg.global_addrs[i] + k);
+                    emit_store_byte(&cg);
+                } else {
+                    emit_imm_op(&cg, OP_STORE, cg.global_addrs[i] + 4 * k);
+                }
             }
         }
     }

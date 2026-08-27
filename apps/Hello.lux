@@ -4,7 +4,9 @@ INCLUDE "lib/app.lux"
 
 MODULE HELLO
 
-@tx 0x8E000C ; @ty 0x8E0010 ;
+( MM_APP_SMALL_STATE, same pocket as Snake/UIDemo/Picker — not 0x8E0000,
+  which is lib/ui.lux. )
+@tx 0x8A0000 ; @ty 0x8A0004 ;
 
 @on-frame
     ( Clear to black )

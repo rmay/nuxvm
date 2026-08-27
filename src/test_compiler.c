@@ -6,6 +6,7 @@
 #include <string.h>
 #include <assert.h>
 #include <stdbool.h>
+#include <unistd.h>
 
 // -----------------------------------------------------------------------------
 // Output capture for "." and EMIT
@@ -25,6 +26,7 @@ static void test_output_handler(int32_t value, int32_t format) {
             output_buffer[output_len++] = (char)value;
         }
     }
+    output_buffer[output_len] = '\0';
 }
 
 static void reset_output(void) {
@@ -69,6 +71,35 @@ static void check_stack_top(VM* vm, int32_t expected) {
 
 static void check_stack_count(VM* vm, int expected) {
     assert(vm->stack_ptr == expected);
+}
+
+/* Redirect stderr around compile_source() so warning/error text can be
+ * asserted. The duplicate-address check (docs/memory-map.md) only warns,
+ * so compile still succeeds -- tests have to read the diagnostic, not
+ * just look at a NULL return. */
+static char stderr_capture[8192];
+
+static uint8_t* compile_capturing_stderr(const char* source, size_t* out_len) {
+    char path[] = "/tmp/lux_compiler_stderr_XXXXXX";
+    int fd = mkstemp(path);
+    assert(fd >= 0);
+    fflush(stderr);
+    int saved = dup(STDERR_FILENO);
+    assert(saved >= 0);
+    int rc = dup2(fd, STDERR_FILENO);
+    assert(rc >= 0);
+    uint8_t* bc = compile_source(source, HEADLESS_BASE_ADDRESS, out_len, false);
+    fflush(stderr);
+    rc = dup2(saved, STDERR_FILENO);
+    assert(rc >= 0);
+    close(saved);
+    lseek(fd, 0, SEEK_SET);
+    ssize_t n = read(fd, stderr_capture, sizeof(stderr_capture) - 1);
+    if (n < 0) n = 0;
+    stderr_capture[n] = '\0';
+    close(fd);
+    unlink(path);
+    return bc;
 }
 
 // -----------------------------------------------------------------------------
@@ -1311,6 +1342,292 @@ static void test_yield_and_explicit_halt(void) {
 }
 
 // -----------------------------------------------------------------------------
+// Builtins that the earlier suites only touched indirectly
+// -----------------------------------------------------------------------------
+static void test_emit_inc_dec_negate(void) {
+    printf("Testing EMIT, INC, DEC, NEGATE...\n");
+    size_t len;
+    uint8_t* bc;
+    VM* vm;
+
+    reset_output();
+    bc = must_compile("65 EMIT 10 EMIT", &len);
+    vm = run_and_capture(bc, len, true);
+    assert(strcmp(get_output(), "A\n") == 0);
+    vm_free(vm); free(bc);
+
+    bc = must_compile("5 INC", &len);
+    vm = run_and_capture(bc, len, false);
+    check_stack_top(vm, 6);
+    vm_free(vm); free(bc);
+
+    bc = must_compile("5 DEC", &len);
+    vm = run_and_capture(bc, len, false);
+    check_stack_top(vm, 4);
+    vm_free(vm); free(bc);
+
+    bc = must_compile("5 NEGATE", &len);
+    vm = run_and_capture(bc, len, false);
+    check_stack_top(vm, -5);
+    vm_free(vm); free(bc);
+
+    printf("  emit/inc/dec/negate: OK\n");
+}
+
+static void test_shift_and_operator_aliases(void) {
+    printf("Testing SAR and word-form operator aliases...\n");
+    size_t len;
+    uint8_t* bc;
+    VM* vm;
+    int32_t v;
+
+    /* Arithmetic shift of a negative value must sign-extend. */
+    bc = must_compile("-8 1 SAR", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == -4);
+    vm_free(vm); free(bc);
+
+    /* Logical SHR of the same bit pattern yields a large unsigned result. */
+    bc = must_compile("-8 1 SHR", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == (int32_t)((uint32_t)-8 >> 1));
+    vm_free(vm); free(bc);
+
+    bc = must_compile("1 3 LSHIFT", &len);
+    vm = run_and_capture(bc, len, false);
+    check_stack_top(vm, 8);
+    vm_free(vm); free(bc);
+
+    bc = must_compile("8 2 RSHIFT", &len);
+    vm = run_and_capture(bc, len, false);
+    check_stack_top(vm, 2);
+    vm_free(vm); free(bc);
+
+    bc = must_compile("5 5 =", &len);
+    vm = run_and_capture(bc, len, false);
+    check_stack_top(vm, 1);
+    vm_free(vm); free(bc);
+
+    bc = must_compile("5 6 <>", &len);
+    vm = run_and_capture(bc, len, false);
+    check_stack_top(vm, 1);
+    vm_free(vm); free(bc);
+
+    printf("  shifts/aliases: OK\n");
+}
+
+static void test_nested_quotations_and_comments(void) {
+    printf("Testing nested quotations and nested comments...\n");
+    size_t len;
+    uint8_t* bc;
+    VM* vm;
+
+    bc = must_compile("[ [ 1 ] CALL 2 + ] CALL", &len);
+    vm = run_and_capture(bc, len, false);
+    check_stack_top(vm, 3);
+    vm_free(vm); free(bc);
+
+    /* Nested ( ) comments, plus a line comment, must not leak tokens. */
+    bc = must_compile("( outer ( inner ) still comment ) // line\n 41 1 +", &len);
+    vm = run_and_capture(bc, len, false);
+    check_stack_top(vm, 42);
+    vm_free(vm); free(bc);
+
+    printf("  nested quotations/comments: OK\n");
+}
+
+static void test_string_escapes(void) {
+    printf("Testing T-string escape sequences...\n");
+    size_t len;
+    uint8_t* bc = must_compile("T\"a\\nb\\t\"", &len);
+    VM* vm = run_and_capture(bc, len, false);
+    int32_t addr = 0;
+    assert(vm_pop(vm, &addr));
+    assert(addr > 0);
+    assert(vm->memory[addr] == 'a');
+    assert(vm->memory[addr + 1] == '\n');
+    assert(vm->memory[addr + 2] == 'b');
+    assert(vm->memory[addr + 3] == '\t');
+    assert(vm->memory[addr + 4] == '\0');
+    vm_free(vm); free(bc);
+    printf("  string escapes: OK\n");
+}
+
+static void test_leading_dot_skips_module_prefix(void) {
+    printf("Testing @.name defines an unprefixed word inside a MODULE...\n");
+    size_t len;
+    uint8_t* bc = must_compile(
+        "MODULE MATH\n"
+        "@.bare 99 ;\n"
+        "@sq dup * ;\n"
+        "MODULE MAIN\n"
+        "bare\n", &len);
+    VM* vm = run_and_capture(bc, len, false);
+    check_stack_top(vm, 99);
+    vm_free(vm); free(bc);
+    printf("  leading-dot word: OK\n");
+}
+
+static void test_include_file_and_dedup(void) {
+    printf("Testing INCLUDE of a real file, missing file, and once-only inclusion...\n");
+    char dir[] = "/tmp/lux_test_include_XXXXXX";
+    assert(mkdtemp(dir) != NULL);
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/inc.lux", dir);
+    FILE* f = fopen(path, "w");
+    assert(f != NULL);
+    fputs("99\n", f);
+    fclose(f);
+
+    char src[2048];
+    snprintf(src, sizeof(src), "INCLUDE \"%s\"\n1 +\n", path);
+    size_t len;
+    uint8_t* bc = must_compile(src, &len);
+    VM* vm = run_and_capture(bc, len, false);
+    check_stack_top(vm, 100);
+    vm_free(vm); free(bc);
+
+    /* Second INCLUDE of the same path is a no-op: the 99 is pushed once. */
+    snprintf(src, sizeof(src), "INCLUDE \"%s\"\nINCLUDE \"%s\"\n", path, path);
+    bc = must_compile(src, &len);
+    vm = run_and_capture(bc, len, false);
+    check_stack_top(vm, 99);
+    check_stack_count(vm, 0);
+    vm_free(vm); free(bc);
+
+    bc = compile_source("INCLUDE \"/no/such/lux/file/anywhere.lux\"\n1", HEADLESS_BASE_ADDRESS, &len, false);
+    assert(bc == NULL);
+
+    bc = compile_source("INCLUDE\n", HEADLESS_BASE_ADDRESS, &len, false);
+    assert(bc == NULL);
+
+    unlink(path);
+    rmdir(dir);
+    printf("  INCLUDE file/dedup/errors: OK\n");
+}
+
+static void test_custom_base_and_dictionary(void) {
+    printf("Testing compile at a custom base address and dictionary contents...\n");
+    /* Mirrors what `luxc -base` / `-symbols` do: compile via compiler_create
+     * so the dictionary stays reachable, at an address other than the
+     * headless default (the ABI library-link band is the realistic case). */
+    const int32_t lib_base = 0x701000;
+    TokenList* tokens = tokenize("@double dup + ; 21 double");
+    assert(tokens != NULL);
+    Compiler* c = compiler_create(tokens, lib_base, false);
+    assert(c != NULL);
+    size_t len = 0;
+    uint8_t* bc = compiler_compile(c, &len);
+    assert(bc != NULL);
+
+    bool found_double = false;
+    for (size_t i = 0; i < c->dict_count; i++) {
+        if (c->dictionary[i].name && strcasecmp(c->dictionary[i].name, "double") == 0) {
+            found_double = true;
+            assert(c->dictionary[i].address >= lib_base);
+        }
+    }
+    assert(found_double);
+
+    VM* vm = vm_create(bc, (uint32_t)len, lib_base, 4 * 1024 * 1024, false);
+    assert(vm != NULL);
+    vm_run(vm);
+    assert(vm->halted);
+    check_stack_top(vm, 42);
+    vm_free(vm);
+    free(bc);
+    compiler_free(c);
+    token_list_free(tokens);
+    printf("  custom base + dictionary: OK\n");
+}
+
+static void test_duplicate_addr_const_warning(void) {
+    printf("Testing duplicate @NAME 0xHEX ; address warning...\n");
+    size_t len;
+    uint8_t* bc;
+    VM* vm;
+
+    /* Two differently-named hex constants sharing a value: warn, but still
+     * compile (it's a warning, not a hard error). */
+    bc = compile_capturing_stderr(
+        "@FOO 0x800000 ;\n"
+        "@BAR 0x800000 ;\n"
+        "FOO BAR +\n", &len);
+    assert(bc != NULL);
+    assert(strstr(stderr_capture, "Warning: address 0x800000") != NULL);
+    assert(strstr(stderr_capture, "FOO") != NULL);
+    assert(strstr(stderr_capture, "BAR") != NULL);
+    vm = run_and_capture(bc, len, false);
+    check_stack_top(vm, (int32_t)0x800000 * 2);
+    vm_free(vm); free(bc);
+
+    /* Distinct addresses: silent. */
+    bc = compile_capturing_stderr(
+        "@FOO 0x800000 ;\n"
+        "@BAR 0x800004 ;\n"
+        "1\n", &len);
+    assert(bc != NULL);
+    assert(strstr(stderr_capture, "Warning:") == NULL);
+    free(bc);
+
+    /* Decimal constants are not the @NAME 0xHEX ; idiom: silent. */
+    bc = compile_capturing_stderr(
+        "@FOO 42 ;\n"
+        "@BAR 42 ;\n"
+        "FOO\n", &len);
+    assert(bc != NULL);
+    assert(strstr(stderr_capture, "Warning:") == NULL);
+    free(bc);
+
+    /* Color constants are the dominant *intentional* duplicate and are
+     * excluded, even when mixed with a real (non-color) collision partner
+     * -- a single remaining name isn't a group, so still silent. */
+    bc = compile_capturing_stderr(
+        "@CLR_BG 0xAABBCC ;\n"
+        "@FG_COLOR 0xAABBCC ;\n"
+        "@OTHER 0xAABBCC ;\n"
+        "1\n", &len);
+    assert(bc != NULL);
+    assert(strstr(stderr_capture, "Warning:") == NULL);
+    free(bc);
+
+    /* Two non-color names still collide even if a color constant shares
+     * the value too. */
+    bc = compile_capturing_stderr(
+        "@CLR_BG 0xAABBCC ;\n"
+        "@BUF_A 0xAABBCC ;\n"
+        "@BUF_B 0xAABBCC ;\n"
+        "1\n", &len);
+    assert(bc != NULL);
+    assert(strstr(stderr_capture, "Warning: address 0xAABBCC") != NULL);
+    assert(strstr(stderr_capture, "BUF_A") != NULL);
+    assert(strstr(stderr_capture, "BUF_B") != NULL);
+    free(bc);
+
+    /* A word whose body is more than `0xHEX ;` is not a constant. */
+    bc = compile_capturing_stderr(
+        "@FOO 0x10 1 + ;\n"
+        "@BAR 0x10 ;\n"
+        "1\n", &len);
+    assert(bc != NULL);
+    assert(strstr(stderr_capture, "Warning:") == NULL);
+    free(bc);
+
+    /* Same value with 0x vs 0X, and across MODULE prefixes. */
+    bc = compile_capturing_stderr(
+        "MODULE A @BUF 0x900000 ;\n"
+        "MODULE B @BUF 0X900000 ;\n"
+        "1\n", &len);
+    assert(bc != NULL);
+    assert(strstr(stderr_capture, "Warning: address 0x900000") != NULL);
+    assert(strstr(stderr_capture, "A::BUF") != NULL);
+    assert(strstr(stderr_capture, "B::BUF") != NULL);
+    free(bc);
+
+    printf("  duplicate addr const warning: OK\n");
+}
+
+// -----------------------------------------------------------------------------
 // main
 // -----------------------------------------------------------------------------
 int main(void) {
@@ -1366,6 +1683,14 @@ int main(void) {
     test_regression_question_takes_one_quot();
     test_fields_directive();
     test_yield_and_explicit_halt();
+    test_emit_inc_dec_negate();
+    test_shift_and_operator_aliases();
+    test_nested_quotations_and_comments();
+    test_string_escapes();
+    test_leading_dot_skips_module_prefix();
+    test_include_file_and_dedup();
+    test_custom_base_and_dictionary();
+    test_duplicate_addr_const_warning();
 
     printf("\n=== ALL COMPILER TESTS PASSED ===\n\n");
     return 0;

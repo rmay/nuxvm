@@ -42,12 +42,17 @@ IMPORT SF
 @CLR_CARET  0xCC0000 ;
 @CLR_SEL    0xCCDDFF ;
 
-( --- Memory layout --- )
+( --- Memory layout ---
+  PASTE_BUF used to be 0xA00000, flush against lib/mem.lux's heap band
+  (MM_LUX_HEAP_BASE, include/memory_map.h) -- moved into the App
+  Bulk-Buffer band (MM_APP_BULK_BUFFER_BASE..MM_APP_BULK_BUFFER_END,
+  0x900000..0xA00000) alongside FONT_DATA, clear of mem.lux. See
+  docs/memory-map.md. )
 @FILE_BUF       0x800000 ;
 @FILE_BUF_MAX   0x100000 ;
 @FONT_DATA      0x900000 ;
 @FONT_BYTES     8448 ;
-@PASTE_BUF      0xA00000 ;
+@PASTE_BUF      0x903000 ;
 @PASTE_MAX      0x10000 ;
 
 ( --- State --- )
@@ -78,7 +83,13 @@ IMPORT SF
 @line-count       0x910070 ;
 @mouse-held       0x910074 ;
 @needs-redraw     0x910078 ;
-@LINE_STARTS      0xA10000 ;
+( Was 0xA10000, inside lib/mem.lux's heap band -- moved to sit right after
+  PASTE_BUF in the App Bulk-Buffer band. NOTE: worst case (every line
+  blank) this needs up to 4 bytes * FILE_BUF_MAX entries, which exceeds
+  the band -- pre-existing headroom assumption, unchanged by this move:
+  Quill never includes lib/mem.lux, so overrunning into its heap band is
+  harmless in practice, just not formally bounded. )
+@LINE_STARTS      0x913000 ;
 
 ( --- Font width --- )
 @char-w ( -- w ) char-w-val LOADI ;

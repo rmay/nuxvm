@@ -2,12 +2,13 @@
 #define FLUXIO_CODEGEN_H
 
 #include "fluxio_ast.h"
+#include "memory_map.h"
 #include <stdint.h>
 #include <stddef.h>
 
 /* Low RAM base for the globals segment. Always below device/MMIO space
  * (0x10000) and outside every program image, so writes never fault. */
-#define FX_GLOBALS_BASE 0x1000
+#define FX_GLOBALS_BASE MM_FX_GLOBALS_BASE
 
 /* Compiles a parsed program into a raw NUX bytecode blob loaded at
  * base_addr. Returns NULL and prints a diagnostic to stderr on any

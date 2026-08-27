@@ -1,4 +1,5 @@
-( UI Widget Library — Buttons, Checkboxes, Sliders, Scrollbars, Menu bar )
+( UI Widget Library — Buttons, Checkboxes, Sliders, Scrollbars, Menu bar,
+  labels, group boxes, and labeled lists )
 
 INCLUDE "lib/draw.lux"
 INCLUDE "lib/time.lux"
@@ -38,6 +39,7 @@ MODULE UI
 @MI_CHECK     1 ;
 @MI_RADIO     2 ;
 @MI_SEP       3 ;
+( Shared with APP::modal-f: one cell, "is a modal dialog open". )
 @APP_MODAL   0x8C004C ;
 
 ( --- Hit Testing --- )
@@ -1657,8 +1659,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 @SBAR_DRAG 0x8E0F4C ;
 @SBAR_MAXN 8 ;
 
-@MB_N      0x8E0F50 ;
-@MN_N      0x8E0F50 ;
+@MN_N      0x8E0F50 ; ( number of menus on the bar )
 @MI_N      0x8E0F54 ;
 @MB_CUR    0x8E0F58 ;
 @MB_ACTIVE 0x8E0F5C ;
@@ -1676,6 +1677,28 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 @CH_W       8 ;
 @CH_H      12 ;
 @CH_TEXT   16 ;
+
+( Labeled list — group-box chrome plus a selectable item column.
+  Layout of the first five fields matches CH_ so list-draw can reuse
+  groupbox-draw. MM_APP_SMALL_STATE: slab at 0x8E5000, strings at 0x8E5100. )
+@LS_N      0x8E0F84 ;
+@LS_SLAB   0x8E5000 ;
+@LS_POOL   0x8E5100 ;
+@LS_MAX    4 ;
+@LS_ITEM_MAX 32 ;
+@LS_ITEM_LEN 64 ;
+@LS_SIZE   44 ;
+@LS_X       0 ;
+@LS_Y       4 ;
+@LS_W       8 ;
+@LS_H      12 ;
+@LS_TEXT   16 ;
+@LS_COUNT  20 ;
+@LS_SEL    24 ;
+@LS_ITEMH  28 ;
+@LS_LASTT  32 ;
+@LS_LASTI  36 ;
+@LS_ACTIVE 40 ;
 @MN_SLAB   0x8E2A00 ;
 @MI_SLAB   0x8E2C00 ;
 @MN_MAX    8 ;
@@ -1716,7 +1739,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     0 SBAR_N STOREI
     0 SBAR_DRAG STOREI
     0 COMP_N STOREI
-    0 MB_N STOREI
+    0 MN_N STOREI
     0 MI_N STOREI
     -1 MB_CUR STOREI
     -1 MB_ACTIVE STOREI
@@ -1725,6 +1748,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     0 MB_HAS STOREI
     0 MB_LOCAL STOREI
     0 CH_N STOREI
+    0 LS_N STOREI
 ;
 
 @uinnew ( -- ) new ;
@@ -1758,6 +1782,33 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
         1
     ] ?:
 ;
+
+( Fluxio can't build Lux quotations to pass as UI::item/button-init
+  handlers -- but every widget already posts through the poll/post queue
+  above regardless of whether a handler is registered (handler = 0 is a
+  legal "no quotation" value, see item-add/handle). So a Fluxio caller
+  just passes 0 for every handler param and drains events itself via
+  this fixed-arity single-value wrapper around poll, instead of
+  registering a callback. Docs/quill_fluxio.md Phase B6. )
+@UI_POLL_NAME 0x8E0F78 ;
+@UI_POLL_EV   0x8E0F7C ;
+@UI_POLL_VAL  0x8E0F80 ;
+
+@poll-next ( -- ready? )
+    poll
+    dup 0 = [
+    ] [
+        drop
+        UI_POLL_VAL STOREI
+        UI_POLL_EV STOREI
+        UI_POLL_NAME STOREI
+        1
+    ] ?:
+;
+
+@poll-name ( -- ptr ) UI_POLL_NAME LOADI ;
+@poll-ev   ( -- n )   UI_POLL_EV LOADI ;
+@poll-val  ( -- n )   UI_POLL_VAL LOADI ;
 
 @comp-at ( i -- row ) C_SIZE * COMP_TAB + ;
 
@@ -2528,17 +2579,27 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     6 unframe!
 ;
 
-( Labeled FrameRect. (x,y,w,h) is the frame; title sits on the top edge. )
-@groupbox-draw { fd addr -- }
-    fd addr CH_X + LOADI addr CH_Y + LOADI addr CH_W + LOADI addr CH_H + LOADI CLR_BORDER DRAW::frame-rect
+( Title band on the top edge: punch is Chicago-tall so descenders
+  are not clipped. fill/textc choose active (invert) vs inactive. )
+@gb-title { fd addr fill textc -- }
     addr CH_TEXT + LOADI dup 0 > [
         { ptr }
             ptr DRAW::str-w 8 + { tw }
-                fd addr CH_X + LOADI 6 + addr CH_Y + LOADI 5 - tw 10 CLR_BG DRAW::paint-rect
-                fd addr CH_X + LOADI 10 + addr CH_Y + LOADI 6 - ptr CLR_TEXT 1 DRAW::draw-str
+                DRAW::char-h { th }
+                    addr CH_Y + LOADI th 2 / - { ty }
+                        fd addr CH_X + LOADI 6 + ty 1 - tw th 2 + fill DRAW::paint-rect
+                        fd addr CH_X + LOADI 10 + ty ptr textc 1 DRAW::draw-str
+                    }
+                }
             }
         }
     ] [ drop ] ?:
+;
+
+( Labeled FrameRect. (x,y,w,h) is the frame; title sits on the top edge. )
+@groupbox-draw { fd addr -- }
+    fd addr CH_X + LOADI addr CH_Y + LOADI addr CH_W + LOADI addr CH_H + LOADI CLR_BORDER DRAW::frame-rect
+    fd addr CLR_BG CLR_TEXT gb-title
 ;
 
 @label-draw ( fd addr -- )
@@ -2571,6 +2632,267 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
         CH_N LOADI 1 + CH_N STOREI
     ] ?
     3 unframe!
+;
+
+( ===== Labeled list (group box + items) ===== )
+
+@ls-at ( i -- rec ) LS_SIZE * LS_SLAB + ;
+
+@ls-idx ( addr -- i )
+    LS_SLAB - LS_SIZE /
+;
+
+@ls-slot ( addr i -- ptr )
+    2 frame! ( 0:i 1:addr )
+    1 local@ ls-idx LS_ITEM_MAX * 0 local@ + LS_ITEM_LEN * LS_POOL +
+    2 unframe!
+;
+
+@ls-copy ( src dest n -- )
+    3 frame! ( 0:n 1:dest 2:src )
+    0
+    [ dup 0 local@ 1 - < OVER 2 local@ + load-byte 0 > AND ]
+    [
+        dup 2 local@ + load-byte
+        OVER 1 local@ + store-byte
+        1 +
+    ] |:
+    0 SWAP 1 local@ + store-byte
+    3 unframe!
+;
+
+@ls-init ( addr x y w h text -- )
+    6 frame! ( 0:text 1:h 2:w 3:y 4:x 5:addr )
+    4 local@ 5 local@ LS_X + STOREI
+    3 local@ 5 local@ LS_Y + STOREI
+    2 local@ 5 local@ LS_W + STOREI
+    1 local@ 5 local@ LS_H + STOREI
+    0 local@ 5 local@ LS_TEXT + STOREI
+    0        5 local@ LS_COUNT + STOREI
+    -1       5 local@ LS_SEL + STOREI
+    18       5 local@ LS_ITEMH + STOREI
+    0        5 local@ LS_LASTT + STOREI
+    -1       5 local@ LS_LASTI + STOREI
+    0        5 local@ LS_ACTIVE + STOREI
+    6 unframe!
+;
+
+@ls-set-active ( addr -- )
+    1 frame! ( 0:addr )
+    0
+    [ dup LS_N LOADI < ]
+    [
+        dup ls-at
+        dup 0 local@ = [
+            1 SWAP LS_ACTIVE + STOREI
+        ] [
+            0 SWAP LS_ACTIVE + STOREI
+        ] ?:
+        1 +
+    ] |:
+    drop
+    1 unframe!
+;
+
+@ls-inner-hit ( addr mx my -- idx|-1 )
+    3 frame! ( 0:my 1:mx 2:addr )
+    1 local@ 0 local@
+    2 local@ LS_X + LOADI 8 +
+    2 local@ LS_Y + LOADI 10 +
+    2 local@ LS_W + LOADI 16 -
+    2 local@ LS_H + LOADI 16 -
+    in-rect? [
+        0 local@ 2 local@ LS_Y + LOADI 10 + - 2 local@ LS_ITEMH + LOADI /
+        dup 0 < [
+            drop -1
+        ] [
+            dup 2 local@ LS_COUNT + LOADI >= [
+                drop -1
+            ] [
+                dup 2 local@ LS_H + LOADI 16 - 2 local@ LS_ITEMH + LOADI / >= [
+                    drop -1
+                ] ?
+            ] ?:
+        ] ?:
+    ] [
+        -1
+    ] ?:
+    3 unframe!
+;
+
+@list-draw { fd addr -- }
+    fd addr groupbox-draw
+    addr LS_ACTIVE + LOADI [
+        fd addr CLR_BORDER CLR_BG gb-title
+    ] ?
+    addr LS_COUNT + LOADI 0 = [
+        fd addr LS_X + LOADI 10 + addr LS_Y + LOADI 12 + T"(none)" CLR_TEXT 1 DRAW::draw-str
+    ] [
+        addr LS_ITEMH + LOADI { ih }
+            addr LS_H + LOADI 16 - ih / { vis }
+                0 { i }
+                    [ i addr LS_COUNT + LOADI < i vis < AND ]
+                    [
+                        i addr LS_SEL + LOADI = [
+                            addr LS_ACTIVE + LOADI [
+                                fd addr LS_X + LOADI 8 + addr LS_Y + LOADI 10 + i ih * + addr LS_W + LOADI 16 - ih CLR_PRESS DRAW::paint-rect
+                            ] [
+                                fd addr LS_X + LOADI 8 + addr LS_Y + LOADI 10 + i ih * + addr LS_W + LOADI 16 - ih CLR_BORDER DRAW::frame-rect
+                            ] ?:
+                        ] ?
+                        fd
+                        addr LS_X + LOADI 10 +
+                        addr LS_Y + LOADI 12 + i ih * +
+                        addr i ls-slot
+                        i addr LS_SEL + LOADI = addr LS_ACTIVE + LOADI AND [ CLR_BG ] [ CLR_TEXT ] ?:
+                        1 DRAW::draw-str
+                        i 1 + i!
+                    ] |:
+                }
+            }
+        }
+    ] ?:
+;
+
+( text is the header and the identity. handler ( idx -- ) on click. )
+@list ( text x y w h handler -- )
+    6 frame! ( 0:handler 1:h 2:w 3:y 4:x 5:text )
+    LS_N LOADI LS_MAX < COMP_N LOADI COMP_MAX < AND [
+        LS_SLAB LS_N LOADI LS_SIZE * +
+        dup 4 local@ 3 local@ 2 local@ 1 local@ 5 local@ ls-init
+        LS_N LOADI 0 = [ dup ls-set-active ] ?
+        5 local@ SWAP K_LIST SWAP 0 local@ SWAP 0 0 comp-put
+        LS_N LOADI 1 + LS_N STOREI
+    ] ?
+    6 unframe!
+;
+
+@list-row ( name -- addr|0 )
+    comp-find dup 0 = [
+    ] [
+        dup C_KIND + LOADI K_LIST = [
+            C_PAY + LOADI
+        ] [
+            drop 0
+        ] ?:
+    ] ?:
+;
+
+@list-clear ( name -- )
+    list-row dup 0 = [
+        drop
+    ] [
+        0 OVER LS_COUNT + STOREI
+        -1 SWAP LS_SEL + STOREI
+    ] ?:
+;
+
+@list-add ( name item -- )
+    2 frame! ( 0:item 1:name )
+    1 local@ list-row dup 0 = [
+        drop
+    ] [
+        dup LS_COUNT + LOADI LS_ITEM_MAX < [
+            dup dup LS_COUNT + LOADI ls-slot
+            0 local@ SWAP LS_ITEM_LEN ls-copy
+            LS_COUNT + dup LOADI 1 + SWAP STOREI
+        ] [
+            drop
+        ] ?:
+    ] ?:
+    2 unframe!
+;
+
+@list-count ( name -- n )
+    list-row dup 0 = [
+        drop 0
+    ] [
+        LS_COUNT + LOADI
+    ] ?:
+;
+
+@list-sel@ ( name -- idx )
+    list-row dup 0 = [
+        drop -1
+    ] [
+        LS_SEL + LOADI
+    ] ?:
+;
+
+@list-sel! ( name idx -- )
+    2 frame! ( 0:idx 1:name )
+    1 local@ list-row dup 0 = [
+        drop
+    ] [
+        0 local@ OVER LS_COUNT + LOADI >= [
+            -1 SWAP LS_SEL + STOREI
+        ] [
+            0 local@ SWAP LS_SEL + STOREI
+        ] ?:
+    ] ?:
+    2 unframe!
+;
+
+@list-item@ ( name idx -- ptr )
+    2 frame! ( 0:idx 1:name )
+    1 local@ list-row dup 0 = [
+        drop 0
+    ] [
+        0 local@ OVER LS_COUNT + LOADI >= [
+            drop 0
+        ] [
+            0 local@ 0 < [
+                drop 0
+            ] [
+                0 local@ ls-slot
+            ] ?:
+        ] ?:
+    ] ?:
+    2 unframe!
+;
+
+@list-active ( name -- )
+    list-row dup 0 = [
+        drop
+    ] [
+        ls-set-active
+    ] ?:
+;
+
+@list-feed-down { mpkt -- hit? }
+    0 { hit }
+        0 { i }
+            [ i COMP_N LOADI < hit 0 = AND ]
+            [
+                i comp-at
+                dup C_KIND + LOADI K_LIST = [
+                    C_PAY + LOADI { addr }
+                        mpkt EVENT::mouse-x
+                        mpkt EVENT::mouse-y
+                        addr LS_X + LOADI
+                        addr LS_Y + LOADI
+                        addr LS_W + LOADI
+                        addr LS_H + LOADI
+                        in-rect? [
+                            addr ls-set-active
+                            addr mpkt EVENT::mouse-x mpkt EVENT::mouse-y ls-inner-hit
+                            dup -1 > [
+                                dup addr LS_SEL + STOREI
+                                i comp-at C_TEXT + LOADI SWAP EV_PRESS SWAP post
+                            ] [
+                                drop
+                            ] ?:
+                            1 hit!
+                        ] ?
+                    }
+                ] [
+                    drop
+                ] ?:
+                i 1 + i!
+            ] |:
+        }
+        hit
+    }
 ;
 
 @cb-add ( name x y size label -- )
@@ -2644,11 +2966,14 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
         dup K_GROUPBOX = [
             drop groupbox-draw
         ] [
+        dup K_LIST = [
+            drop list-draw
+        ] [
         dup K_LABEL = [
             drop label-draw
         ] [
             drop drop drop
-        ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+        ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
         1 +
     ] |:
     drop
@@ -2980,6 +3305,8 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
             ] ?:
         ] [
         0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+            0 local@ list-feed-down 1 local!
+            1 local@ 0 = [
             0
             [ dup COMP_N LOADI < ] [
                 dup comp-at
@@ -3007,6 +3334,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
                 ] ?:
             ] |:
             drop
+            ] ?
             1 local@ 0 = [
                 0
                 [ dup COMP_N LOADI < ] [
