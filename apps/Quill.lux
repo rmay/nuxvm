@@ -1,4 +1,15 @@
-( --- Quill: minimal Plan9-style text editor (Refactored) --- )
+( --- Quill: Plan9-style text editor ---
+  Menus and user-visible behavior match apps/fluxio/Quill.fx (the product
+  spec): File > New/Open/Save/Quit, Edit > Cut/Copy/Paste/Select All,
+  View > Toggle Hex, File > New's unsaved-changes confirm, hex nibble
+  editing, hollow blue hex caret + ASCII companion, pixel-width wrap,
+  hex click-to-byte via per-glyph widths, short-row hex ASCII alignment,
+  status-bar basename.
+
+  Lux-native input stays (Fluxio lacks a modifier builtin, so fx uses
+  Tab/Home/Esc placeholders instead): Cmd/Ctrl+C/X/V/S/A, Shift-extend,
+  Tab indent, Home/End/Page, Cloister Esc overlay (APP::loop). 1MB
+  chunked I/O and manuscript.quill as the startup document also stay. )
 
 INCLUDE "lib/app.lux"
 INCLUDE "lib/core.lux"
@@ -40,7 +51,19 @@ IMPORT SF
 @CLR_FRAME  0xAAAAAA ;
 @CLR_TEXT   0x000000 ;
 @CLR_CARET  0xCC0000 ;
+@CLR_HEX_CARET 0x0000FF ;
 @CLR_SEL    0xCCDDFF ;
+
+@CONFIRM_PANEL_W 260 ;
+@CONFIRM_PANEL_H 170 ;
+@CONFIRM_BTN_W   180 ;
+@CONFIRM_BTN_H   30 ;
+@CONFIRM_BTN_GAP 10 ;
+@CLR_CONFIRM_DIM    0x000000 ;
+@CLR_CONFIRM_PANEL  0x303030 ;
+@CLR_CONFIRM_BORDER 0xAAAAAA ;
+@CLR_CONFIRM_TEXT   0xFFFFFF ;
+@CLR_CONFIRM_BTN    0x505050 ;
 
 ( --- Memory layout ---
   PASTE_BUF used to be 0xA00000, flush against lib/mem.lux's heap band
@@ -68,6 +91,9 @@ IMPORT SF
 @frame-count      0x910048 ;
 @char-w-val       0x910054 ;
 @hex-mode         0x910058 ;
+@hex-nibble       0x910084 ;
+@confirm-new-open 0x910088 ;
+@prev-cursor      0x91008C ;
 @scroll-y         0x91005C ;
 @HEX_LINE_BUF     0x910100 ;
 @sb-bar           0x910200 ;
@@ -117,42 +143,49 @@ IMPORT SF
     2 unframe!
 ;
 
-( --- Line cache --- )
+( --- Line cache ---
+  Pixel-width wrap, same algorithm as Quill.fx rebuild_lines: wrap at the
+  last space on the line when one exists past the line start, otherwise
+  hard-wrap at the overflowing character. First glyph on a line always
+  consumes even if it is wider than the pane. )
 @rebuild-lines ( -- )
-    0 0 0 0 0 5 frame! ( 0:idx 1:row 2:col 3:line-start 4:last-space )
+    0 0 0 0 0 5 frame! ( 0:idx 1:row 2:col-x 3:line-start 4:last-space )
     0 LINE_STARTS STOREI
     1 1 local!
+    PANE_X 2 local!
     -1 4 local!
     [ 0 local@ file-len LOADI < ] [
         FILE_BUF 0 local@ + load-byte
         dup 10 = [
             drop
-            0 2 local!
+            PANE_X 2 local!
             0 local@ 1 + 3 local!
             -1 4 local!
             3 local@ 1 local@ 4 * LINE_STARTS + STOREI
             1 local@ 1 + 1 local!
+            0 local@ 1 + 0 local!
         ] [
-            dup 32 = [ 0 local@ 4 local! ] ?
-            drop
-            2 local@ 1 + 2 local!
-            2 local@ COLUMNS >= [
+            dup ch-advance
+            2 local@ OVER + PANE_X PANE_W + >
+            2 local@ PANE_X > AND [
+                drop drop
                 4 local@ 3 local@ > [
                     4 local@ 1 + 3 local!
-                    3 local@ 1 local@ 4 * LINE_STARTS + STOREI
-                    1 local@ 1 + 1 local!
-                    0 local@ 4 local@ - 2 local!
-                    -1 4 local!
                 ] [
-                    0 2 local!
-                    0 local@ 1 + 3 local!
-                    -1 4 local!
-                    3 local@ 1 local@ 4 * LINE_STARTS + STOREI
-                    1 local@ 1 + 1 local!
+                    0 local@ 3 local!
                 ] ?:
-            ] ?
+                3 local@ 1 local@ 4 * LINE_STARTS + STOREI
+                1 local@ 1 + 1 local!
+                PANE_X 2 local!
+                -1 4 local!
+                3 local@ 0 local!
+            ] [
+                swap dup 32 = [ 0 local@ 4 local! ] ?
+                drop
+                2 local@ + 2 local!
+                0 local@ 1 + 0 local!
+            ] ?:
         ] ?:
-        0 local@ 1 + 0 local!
     ] |:
     1 local@ line-count STOREI
     5 unframe!
@@ -432,14 +465,76 @@ IMPORT SF
     4 unframe!
 ;
 
+@hex-byte-at ( idx -- b )
+    dup file-len LOADI < [ FILE_BUF + load-byte ] [ drop 0 ] ?:
+;
+
+@hex-ascii-ch ( b -- ch )
+    dup 32 < [ drop 46 ] [
+        dup 126 > [ drop 46 ] ?
+    ] ?:
+;
+
+@nibble-to-hex ( n -- ch ) dup 10 < [ 48 + ] [ 10 - 65 + ] ?: ;
+
+@hex-col-x ( row-addr col -- x )
+    PANE_X 0 4 frame! ( 0:c 1:x 2:col 3:row-addr )
+    1 local@ 3 local@ 12 SHR 15 AND nibble-to-hex ch-advance + 1 local!
+    1 local@ 3 local@ 8 SHR 15 AND nibble-to-hex ch-advance + 1 local!
+    1 local@ 3 local@ 4 SHR 15 AND nibble-to-hex ch-advance + 1 local!
+    1 local@ 3 local@ 15 AND nibble-to-hex ch-advance + 1 local!
+    1 local@ 32 ch-advance + 1 local!
+    1 local@ 32 ch-advance + 1 local!
+    [ 0 local@ 2 local@ < ] [
+        3 local@ 0 local@ + hex-byte-at
+        dup 4 SHR 15 AND nibble-to-hex ch-advance 1 local@ + 1 local!
+        15 AND nibble-to-hex ch-advance 1 local@ + 1 local!
+        32 ch-advance 1 local@ + 1 local!
+        0 local@ 1 + 0 local!
+    ] |:
+    1 local@
+    4 unframe!
+;
+
+@hex-ascii-col-x ( row-addr col -- x )
+    0 3 frame! ( 0:c 1:col 2:row-addr )
+    2 local@ 16 hex-col-x
+    32 ch-advance 2 * +
+    [ 0 local@ 1 local@ < ] [
+        2 local@ 0 local@ + hex-byte-at hex-ascii-ch ch-advance +
+        0 local@ 1 + 0 local!
+    ] |:
+    3 unframe!
+;
+
+@hex-find-click-index ( mx my -- idx )
+    0 0 0 0 6 frame! ( 0:done 1:result-col 2:col 3:row-addr 4:my 5:mx )
+    15 1 local!
+    4 local@ PANE_Y - 0 MAX LINE_H /
+    dup 0 < [ drop 0 ] ?
+    dup VISIBLE_LINES 1 - > [ drop VISIBLE_LINES 1 - 0 MAX ] ?
+    scroll-y LOADI + 16 *
+    dup file-len LOADI > [ drop file-len LOADI 16 / 16 * ] ?
+    3 local!
+    [ 2 local@ 16 < 0 local@ 0 = AND ] [
+        3 local@ 2 local@ 1 + hex-col-x 5 local@ > [
+            2 local@ 1 local!
+            1 0 local!
+        ] ?
+        2 local@ 1 + 2 local!
+    ] |:
+    3 local@ 1 local@ +
+    dup file-len LOADI > [ drop file-len LOADI ] ?
+    6 unframe!
+;
+
 @find-index-by-xy ( tx ty -- idx )
-    PANE_Y - 0 MAX LINE_H / scroll-y LOADI +
-    dup line-count LOADI >= [
-        drop drop file-len LOADI
+    hex-mode LOADI 1 = [
+        hex-find-click-index
     ] [
-        hex-mode LOADI 1 = [
-            swap PANE_X - 0 MAX char-w 2 / + char-w /
-            idx-from-rc
+        PANE_Y - 0 MAX LINE_H / scroll-y LOADI +
+        dup line-count LOADI >= [
+            drop drop file-len LOADI
         ] [
             swap PANE_X - 0 MAX
             click-idx
@@ -513,7 +608,10 @@ IMPORT SF
     dup EVENT::MOD_CMD AND [
         file-len LOADI swap move-sel
     ] [
-        cursor LOADI rc-from-idx drop COLUMNS idx-from-rc
+        cursor LOADI rc-from-idx drop line-end-at
+        dup 0 > [
+            dup 1 - FILE_BUF + load-byte 10 = [ 1 - ] ?
+        ] ?
         swap move-sel
     ] ?:
 ;
@@ -575,9 +673,59 @@ IMPORT SF
 ;
 
 ( --- Hex Helpers --- )
-@nibble-to-hex ( n -- ch ) dup 10 < [ 48 + ] [ 10 - 65 + ] ?: ;
 @byte-to-hex ( b ptr -- ) 2 frame! 1 local@ 4 SHR 15 AND nibble-to-hex 0 local@ store-byte 1 local@ 15 AND nibble-to-hex 0 local@ 1 + store-byte 2 unframe! ;
 @addr-to-hex ( a ptr -- ) 2 frame! 1 local@ 12 SHR 15 AND nibble-to-hex 0 local@ store-byte 1 local@ 8 SHR 15 AND nibble-to-hex 0 local@ 1 + store-byte 1 local@ 4 SHR 15 AND nibble-to-hex 0 local@ 2 + store-byte 1 local@ 15 AND nibble-to-hex 0 local@ 3 + store-byte 2 unframe! ;
+
+@hex-digit-value ( key -- n )
+    dup 48 >= OVER 57 <= AND [ 48 - ] [
+    dup 65 >= OVER 70 <= AND [ 65 - 10 + ] [
+    dup 97 >= OVER 102 <= AND [ 97 - 10 + ] [
+    drop -1
+    ] ?: ] ?: ] ?:
+;
+
+@edit-hex-nibble ( digit -- )
+    FILE_BUF cursor LOADI + load-byte
+    hex-nibble LOADI 0 = [
+        15 AND swap 4 LSHIFT OR
+    ] [
+        240 AND OR
+    ] ?:
+    FILE_BUF cursor LOADI + store-byte
+    1 dirty STOREI
+    hex-nibble LOADI 0 = [
+        1 hex-nibble STOREI
+    ] [
+        0 hex-nibble STOREI
+        cursor LOADI 1 + file-len LOADI < [
+            cursor LOADI 1 + cursor STOREI
+        ] ?
+    ] ?:
+    rebuild-lines
+;
+
+@render-hex-row ( addr -- )
+    0 2 frame! ( 0:i 1:addr )
+    0 [ dup 72 < ] [ dup 32 HEX_LINE_BUF rot + store-byte 1 + ] |: drop
+    1 local@ HEX_LINE_BUF addr-to-hex
+    [ 0 local@ 16 < ] [
+        1 local@ 0 local@ + hex-byte-at
+        dup 4 SHR 15 AND nibble-to-hex HEX_LINE_BUF 6 + 0 local@ 3 * + store-byte
+        dup 15 AND nibble-to-hex HEX_LINE_BUF 6 + 0 local@ 3 * + 1 + store-byte
+        hex-ascii-ch HEX_LINE_BUF 56 + 0 local@ + store-byte
+        0 local@ 1 + 0 local!
+    ] |:
+    2 unframe!
+;
+
+@draw-rect-outline ( x y w h color -- )
+    5 frame! ( 0:color 1:h 2:w 3:y 4:x )
+    APP::draw-fd 4 local@ 3 local@ 2 local@ 1 0 local@ DRAW::fill-rect
+    APP::draw-fd 4 local@ 3 local@ 1 local@ + 1 - 2 local@ 1 0 local@ DRAW::fill-rect
+    APP::draw-fd 4 local@ 3 local@ 1 1 local@ 0 local@ DRAW::fill-rect
+    APP::draw-fd 4 local@ 2 local@ + 1 - 3 local@ 1 1 local@ 0 local@ DRAW::fill-rect
+    5 unframe!
+;
 
 ( --- Rendering --- )
 
@@ -623,34 +771,50 @@ IMPORT SF
     ] ?
 ;
 
+@draw-hex-caret ( -- )
+    cursor LOADI 16 / scroll-y LOADI - ( rel_r )
+    dup 0 >= OVER VISIBLE_LINES < AND [
+        LINE_H * PANE_Y +
+        cursor LOADI 16 / 16 *
+        cursor LOADI 16 MOD
+        cursor LOADI hex-byte-at
+        4 frame! ( 0:b 1:col 2:row-addr 3:y )
+        2 local@ 1 local@ hex-col-x
+        0 local@ 4 SHR 15 AND nibble-to-hex
+        hex-nibble LOADI [
+            ch-advance +
+            0 local@ 15 AND nibble-to-hex
+        ] ?
+        ( x nibble-ch )
+        dup ch-advance
+        ( x nibble-ch w )
+        swap drop
+        ( x w )
+        3 local@ swap CARET_H CLR_HEX_CARET draw-rect-outline
+        2 local@ 1 local@ hex-ascii-col-x
+        0 local@ hex-ascii-ch ch-advance
+        3 local@ swap CARET_H CLR_HEX_CARET draw-rect-outline
+        4 unframe!
+    ] [ drop ] ?:
+;
+
 @layout-and-render ( -- )
     hex-mode LOADI 1 = [
         scroll-y LOADI 16 * ( start_idx )
         [ dup file-len LOADI <= ] [
             dup 16 / scroll-y LOADI - ( rel_r )
             dup 0 >= OVER VISIBLE_LINES < AND [
-                OVER 0 3 frame! ( 0:i 1:idx 2:rel_r )
-                0 [ dup 72 < ] [ dup 32 HEX_LINE_BUF rot + store-byte 1 + ] |: drop
-                1 local@ HEX_LINE_BUF addr-to-hex
-                [ 0 local@ 16 < 1 local@ 0 local@ + file-len LOADI <= AND ] [
-                    FILE_BUF 1 local@ 0 local@ + + load-byte
-                    dup 4 SHR 15 AND dup 10 < [ 48 + ] [ 10 - 65 + ] ?: HEX_LINE_BUF 6 + 0 local@ 3 * + store-byte
-                    dup 15 AND dup 10 < [ 48 + ] [ 10 - 65 + ] ?: HEX_LINE_BUF 6 + 0 local@ 3 * + 1 + store-byte
-                    dup 32 >= OVER 126 <= AND [ ] [ drop 46 ] ?: HEX_LINE_BUF 56 + 0 local@ + store-byte
-                    0 local@ 1 + 0 local!
-                ] |:
-                APP::draw-fd PANE_X 2 local@ LINE_H * PANE_Y + HEX_LINE_BUF 72 CLR_TEXT FONT_SIZE DRAW::draw-string
-                3 unframe!
+                OVER swap 2 frame! ( 0:rel_r 1:idx )
+                1 local@ render-hex-row
+                APP::draw-fd PANE_X 0 local@ LINE_H * PANE_Y + HEX_LINE_BUF 72 CLR_TEXT FONT_SIZE DRAW::draw-string
+                2 unframe!
             ] [
                 VISIBLE_LINES >= [ drop file-len LOADI 1 + ] [ drop ] ?:
             ] ?:
             16 +
         ] |:
-        drop ( start_idx )
-        cursor LOADI rc-from-idx swap scroll-y LOADI - ( c rel_r )
-        dup 0 >= OVER VISIBLE_LINES < AND [
-            LINE_H * PANE_Y + swap char-w * PANE_X + swap draw-caret
-        ] [ drop drop ] ?:
+        drop
+        draw-hex-caret
     ] [
         0 0 0 0 4 frame! ( 0:r 1:start 2:end 3:draw-end )
         scroll-y LOADI 0 MAX 0 local!
@@ -686,11 +850,24 @@ IMPORT SF
     ] ?:
 ;
 
+@path-basename ( -- ptr )
+    current-path-buf dup
+    [ dup load-byte ] [
+        dup load-byte 47 = [
+            1 + swap drop dup
+        ] [ 1 + ] ?:
+    ] |:
+    drop
+;
+
 @draw-status-line ( -- )
     APP::draw-fd 0 PANE_Y PANE_H + WIN_W STATUS_H 0xEEEEEE DRAW::fill-rect
     APP::draw-fd 0 PANE_Y PANE_H + WIN_W 1 CLR_FRAME DRAW::draw-rect
 
-    current-path-buf STATUS_BUF STR::strcpy
+    path-basename STATUS_BUF STR::strcpy
+    STATUS_BUF STR::strlen 40 > [
+        0 STATUS_BUF 40 + store-byte
+    ] ?
     dirty LOADI [
         T" *" STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
     ] ?
@@ -701,6 +878,106 @@ IMPORT SF
     0 local@ STATUS_BUF STATUS_BUF STR::strlen + STR::int-to-str
     2 unframe!
     APP::draw-fd 4 PANE_Y PANE_H + 5 + STATUS_BUF CLR_TEXT FONT_SIZE DRAW::draw-str
+;
+
+@save-file ( -- )
+    file-fd LOADI 0 >= [ file-fd LOADI VFS::close drop -1 file-fd STOREI ] ?
+    @current-path-buf make-vfs-path
+    dup 2 VFS::open-mode
+    dup 0 < [
+        drop 6 VFS::open-mode
+    ] [ swap drop ] ?:
+    dup 0 >= [
+        file-fd STOREI
+        file-len LOADI total-size STOREI
+    ] [ drop ] ?:
+    save-current-chunk
+    0 dirty STOREI
+    1 needs-redraw STOREI
+;
+
+( --- File > New confirm dialog --- )
+
+@confirm-panel-x ( -- x ) WIN_W CONFIRM_PANEL_W - 2 / ;
+@confirm-panel-y ( -- y ) WIN_H CONFIRM_PANEL_H - 2 / ;
+@confirm-btn-x ( -- x ) confirm-panel-x CONFIRM_PANEL_W CONFIRM_BTN_W - 2 / + ;
+@confirm-btn-y ( i -- y ) confirm-panel-y 46 + swap CONFIRM_BTN_H CONFIRM_BTN_GAP + * + ;
+
+@confirm-hit-btn ( i px py -- flag )
+    3 frame! ( 0:py 1:px 2:i )
+    1 local@ confirm-btn-x < [ 0 ] [
+    1 local@ confirm-btn-x CONFIRM_BTN_W + >= [ 0 ] [
+    0 local@ 2 local@ confirm-btn-y < [ 0 ] [
+    0 local@ 2 local@ confirm-btn-y CONFIRM_BTN_H + >= [ 0 ] [
+    1
+    ] ?: ] ?: ] ?: ] ?:
+    3 unframe!
+;
+
+@new-document ( -- )
+    file-fd LOADI 0 >= [ file-fd LOADI VFS::close drop -1 file-fd STOREI ] ?
+    0 file-len STOREI 0 cursor STOREI -1 anchor STOREI
+    0 file-offset STOREI 0 total-size STOREI 0 orig-chunk-len STOREI
+    0 dirty STOREI 0 hex-nibble STOREI 0 scroll-y STOREI
+    T"new.quill" @current-path-buf STR::strcpy
+    rebuild-lines
+    1 needs-redraw STOREI
+;
+
+@confirm-new-mouse ( mpkt -- )
+    1 frame! ( 0:mpkt )
+    0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+        0 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
+            save-file
+            0 confirm-new-open STOREI
+            0 APP::modal!
+            new-document
+        ] [
+            1 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
+                0 confirm-new-open STOREI
+                0 APP::modal!
+                new-document
+            ] [
+                2 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
+                    0 confirm-new-open STOREI
+                    0 APP::modal!
+                    1 needs-redraw STOREI
+                ] ?
+            ] ?:
+        ] ?:
+    ] ?
+    1 unframe!
+;
+
+@confirm-new-kbd ( kpkt -- )
+    dup EVENT::kbd-type EVENT::KEY_DOWN = [
+        dup EVENT::kbd-key EVENT::KEY_ESC = [
+            0 confirm-new-open STOREI
+            0 APP::modal!
+            1 needs-redraw STOREI
+        ] ?
+    ] ?
+    drop
+;
+
+@confirm-new-draw ( -- )
+    confirm-new-open LOADI [
+        APP::draw-fd 0 0 WIN_W WIN_H CLR_CONFIRM_DIM DRAW::fill-rect
+        confirm-panel-x confirm-panel-y confirm-btn-x 3 frame! ( 0:bx 1:py 2:px )
+        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
+        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_H + 1 - CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ CONFIRM_PANEL_W + 1 - 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ 26 + 1 local@ 16 + T"Save changes?" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        APP::draw-fd 0 local@ 0 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
+        APP::draw-fd 0 local@ 68 + 0 confirm-btn-y 9 + T"Save" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        APP::draw-fd 0 local@ 1 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
+        APP::draw-fd 0 local@ 34 + 1 confirm-btn-y 9 + T"Don't Save" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        APP::draw-fd 0 local@ 2 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
+        APP::draw-fd 0 local@ 52 + 2 confirm-btn-y 9 + T"Cancel" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        3 unframe!
+    ] ?
 ;
 
 @refresh-text-pane ( -- )
@@ -714,6 +991,8 @@ IMPORT SF
     draw-selection layout-and-render
     draw-status-line
     UI::draw
+    SF::open? [ SF::draw ] ?
+    confirm-new-draw
     0 needs-redraw STOREI
 ;
 
@@ -727,6 +1006,9 @@ IMPORT SF
 ( --- Interaction --- )
 
 @on-mouse ( mpkt -- )
+    confirm-new-open LOADI [
+        confirm-new-mouse
+    ] [
     SF::open? [
         SF::mouse
     ] [
@@ -750,12 +1032,18 @@ IMPORT SF
                 dup EVENT::mouse-y PANE_Y >=
                 OVER EVENT::mouse-y PANE_Y PANE_H + < AND [
                     dup EVENT::mouse-type EVENT::MOUSE_DOWN = [
-                        dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy
-                        dup cursor STOREI
-                        anchor STOREI
-                        check-lazy-load
+                        hex-mode LOADI [
+                            dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy cursor STOREI
+                            0 hex-nibble STOREI
+                            check-lazy-load
+                        ] [
+                            dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy
+                            dup cursor STOREI
+                            anchor STOREI
+                            check-lazy-load
+                        ] ?:
                     ] ?
-                    dup EVENT::mouse-type EVENT::MOUSE_MOVE = mouse-held LOADI 1 = AND [
+                    dup EVENT::mouse-type EVENT::MOUSE_MOVE = mouse-held LOADI 1 = AND hex-mode LOADI 0 = AND [
                         dup EVENT::mouse-x OVER EVENT::mouse-y find-index-by-xy cursor STOREI
                         check-lazy-load
                     ] ?
@@ -774,6 +1062,7 @@ IMPORT SF
         3 unframe!
         drop
     ] ?:
+    ] ?:
 ;
 
 @handle-cmd ( key -- )
@@ -788,11 +1077,15 @@ IMPORT SF
 ;
 
 @on-kbd ( kpkt -- )
+    confirm-new-open LOADI [
+        confirm-new-kbd
+    ] [
     SF::open? [
         SF::kbd
     ] [
         dup EVENT::kbd-type EVENT::KEY_DOWN = [
             1 needs-redraw STOREI
+            cursor LOADI prev-cursor STOREI
             dup EVENT::kbd-key EVENT::KEY_ESC = [
                 UI::escape drop
                 drop
@@ -800,7 +1093,7 @@ IMPORT SF
             dup EVENT::kbd-mods
             over EVENT::kbd-key
             2 frame! ( 0:key 1:mods )
-            1 local@ EVENT::MOD_CMD EVENT::MOD_CTRL OR AND
+            1 local@ EVENT::MOD_CMD EVENT::MOD_CTRL OR AND 0 = 0 =
             0 local@ 32 OR dup 97 >= SWAP 122 <= AND AND [
                 0 local@ handle-cmd
             ] [
@@ -837,9 +1130,16 @@ IMPORT SF
                 0 local@ EVENT::KEY_END = [
                     1 local@ go-end
                 ] [
-                0 local@ STR::printable? [
-                    0 local@ type-char
-                ] ?
+                0 local@ hex-digit-value dup 0 >= hex-mode LOADI AND [
+                    cursor LOADI file-len LOADI < [
+                        edit-hex-nibble
+                    ] [ drop ] ?:
+                ] [
+                    drop
+                    0 local@ STR::printable? [
+                        0 local@ type-char
+                    ] ?
+                ] ?:
                 ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
             ] ?:
             0 local@ EVENT::KEY_UP_ARROW =
@@ -850,11 +1150,13 @@ IMPORT SF
                 cursor LOADI rc-from-idx swap drop target-col STOREI
             ] ?
             2 unframe!
+            cursor LOADI prev-cursor LOADI = 0 = [ 0 hex-nibble STOREI ] ?
             check-lazy-load
             ensure-visible
             sync-bar
             ] ?:
         ] ? drop
+    ] ?:
     ] ?:
 ;
 
@@ -885,34 +1187,20 @@ IMPORT SF
     ] ?:
 ;
 
-@save-file ( -- )
-    file-fd LOADI 0 < [
-        @current-path-buf make-vfs-path 2 VFS::open-mode ( fd )
-        dup 0 >= [
-            file-fd STOREI
-            file-len LOADI total-size STOREI
-            file-len LOADI orig-chunk-len STOREI
-        ] [ drop ] ?:
-    ] ?
-    save-current-chunk
-    0 dirty STOREI
-    1 needs-redraw STOREI
-;
-
 @on-pick ( path -- )
     1 frame! ( 0:path )
     file-fd LOADI 0 >= [ file-fd LOADI VFS::close drop ] ?
     0 local@
     dup load-byte 47 = [ 1 + ] ?
     @current-path-buf STR::strcpy
-    @current-path-buf make-vfs-path 0 VFS::open-mode file-fd STOREI
+    @current-path-buf make-vfs-path 2 VFS::open-mode file-fd STOREI
     file-fd LOADI 0 >= [
         file-fd LOADI VFS::stat total-size STOREI
         0 file-offset STOREI
         file-fd LOADI FILE_BUF CHUNK_SIZE VFS::read
         dup file-len STOREI
         dup orig-chunk-len STOREI
-        0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI
+        0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI 0 hex-nibble STOREI
         rebuild-lines
     ] [
         0 total-size STOREI 0 file-len STOREI 0 orig-chunk-len STOREI -1 file-fd STOREI
@@ -924,15 +1212,17 @@ IMPORT SF
 
 @on-cancel ( -- ) 1 needs-redraw STOREI ;
 
-@menu-load ( -- ) SF::show ;
+@menu-open ( -- ) SF::show ;
 
 ( --- Menus --- )
 @menu-new ( -- )
-    file-fd LOADI 0 >= [ file-fd LOADI VFS::close drop -1 file-fd STOREI ] ?
-    0 file-len STOREI 0 cursor STOREI -1 anchor STOREI 0 file-offset STOREI 0 total-size STOREI 0 orig-chunk-len STOREI
-    T"new.quill" @current-path-buf STR::strcpy
-    rebuild-lines
-    1 needs-redraw STOREI
+    dirty LOADI [
+        1 confirm-new-open STOREI
+        1 APP::modal!
+        1 needs-redraw STOREI
+    ] [
+        new-document
+    ] ?:
 ;
 @menu-quit ( -- ) HALT ;
 @menu-cut ( -- )
@@ -940,13 +1230,18 @@ IMPORT SF
         sel-active? [ snarf-selection delete-selection 1 needs-redraw STOREI ] ?
     ] ?:
 ;
-@menu-select-all ( -- ) select-all 1 needs-redraw STOREI ;
-
-
+@menu-copy ( -- )
+    hex-mode LOADI [ ] [ snarf-selection ] ?:
+;
+@menu-select-all ( -- )
+    hex-mode LOADI [ ] [ select-all 1 needs-redraw STOREI ] ?:
+;
 
 @toggle-hex ( val -- )
     hex-mode STOREI
+    0 hex-nibble STOREI
     -1 anchor STOREI
+    T"Toggle Hex" hex-mode LOADI UI::item-set
     1 needs-redraw STOREI
     cursor LOADI rc-from-idx swap drop target-col STOREI
 ;
@@ -957,8 +1252,9 @@ IMPORT SF
         refresh
     ] [
         UI::draw
+        SF::open? [ SF::draw ] ?
+        confirm-new-draw
     ] ?:
-    SF::open? [ SF::draw ] ?
 ;
 
 ( --- Main --- )
@@ -966,8 +1262,6 @@ IMPORT SF
 @start
     T"Quill" APP::init
     APP::draw-fd 2 DRAW::set-font APP::draw-fd FONT_SIZE DRAW::set-font-size
-    ( Hard stop: wrap to a new line at 80 columns. )
-    80 COLUMNS-VAL STOREI
     T"/sys/font/widths" VFS::open dup 0 >= [ dup FONT_DATA 256 VFS::read drop VFS::close drop ] [ drop ] ?:
     ( Advance at FONT_SIZE. Font 2 uses size/16. )
     FONT_DATA 65 + load-byte FONT_SIZE * 16 / char-w-val STOREI
@@ -977,18 +1271,17 @@ IMPORT SF
     WIN_W UI::menubar
     T"File" UI::menu
     T"New"  [ drop menu-new ]  UI::item
+    T"Open" [ drop menu-open ] UI::item
     T"Save" [ drop save-file ] UI::item
-    T"Load" [ drop menu-load ] UI::item
-    UI::sep
     T"Quit" [ drop menu-quit ] UI::item
     T"Edit" UI::menu
     T"Cut"        [ drop menu-cut ]        UI::item
-    T"Snarf"      [ drop snarf-selection ] UI::item
+    T"Copy"       [ drop menu-copy ]       UI::item
     T"Paste"      [ drop paste-snarf ]     UI::item
     T"Select All" [ drop menu-select-all ] UI::item
     T"View" UI::menu
-    T"Hex" [ toggle-hex ] UI::check-item
-    T"Hex" 0 UI::item-set
+    T"Toggle Hex" [ toggle-hex ] UI::check-item
+    T"Toggle Hex" 0 UI::item-set
     T"V" sb-x PANE_Y SB_W PANE_H 0 0 0 [ on-scroll ] UI::vscroll
     T"V" UI::comp-find UI::C_PAY + LOADI sb-bar STOREI
     VISIBLE_LINES sb-bar LOADI UI::BAR_PAGE + STOREI
@@ -996,7 +1289,7 @@ IMPORT SF
     [ on-cancel ] SF::on-cancel!
     
     T"manuscript.quill" @current-path-buf STR::strcpy
-    @current-path-buf make-vfs-path 0 VFS::open-mode file-fd STOREI
+    @current-path-buf make-vfs-path 2 VFS::open-mode file-fd STOREI
     file-fd LOADI 0 >= [
         file-fd LOADI VFS::stat total-size STOREI
         0 file-offset STOREI
@@ -1008,7 +1301,7 @@ IMPORT SF
         0 total-size STOREI 0 file-len STOREI 0 orig-chunk-len STOREI -1 file-fd STOREI
         rebuild-lines
     ] ?:
-    0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI 0 drag STOREI 0 mouse-held STOREI
+    0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI 0 drag STOREI 0 mouse-held STOREI 0 hex-nibble STOREI 0 confirm-new-open STOREI
     1 needs-redraw STOREI
     
     [ on-mouse ] APP::on-mouse!

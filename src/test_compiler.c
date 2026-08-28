@@ -1,6 +1,8 @@
 #include "compiler.h"
 #include "vm.h"
 #include "opcodes.h"
+#include "machine.h"
+#include "vfs.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1627,6 +1629,600 @@ static void test_duplicate_addr_const_warning(void) {
     printf("  duplicate addr const warning: OK\n");
 }
 
+/* -----------------------------------------------------------------------
+ * Quill.lux host-driven tests (menus/features aligned to Quill.fx).
+ * Builds via `make apps/Quill.bin` so this cannot drift from the real
+ * Makefile rule. Seeds manuscript.quill (lux's startup document), not
+ * quill_scratch.txt. Quit is File > Quit -- Esc is Cloister's overlay.
+ * ----------------------------------------------------------------------- */
+
+static int quill_lux_pump(Machine* m, int n) {
+    int frames = 0;
+    while (!m->cpu->halted && frames < n) {
+        machine_tick(m);
+        frames++;
+    }
+    return frames;
+}
+
+static Machine* quill_lux_machine(void) {
+    FILE* probe = fopen("./bin/luxc", "rb");
+    if (!probe) {
+        printf("  (skipped: ./bin/luxc not built yet -- run from repo root after `make`)\n");
+        return NULL;
+    }
+    fclose(probe);
+    probe = fopen("apps/Quill.lux", "rb");
+    if (!probe) {
+        printf("  (skipped: apps/Quill.lux not found -- run from repo root)\n");
+        return NULL;
+    }
+    fclose(probe);
+    assert(system("make apps/Quill.bin >/tmp/nuxvm_test_quill_lux_build.log 2>&1") == 0);
+
+    FILE* bf = fopen("apps/Quill.bin", "rb");
+    assert(bf != NULL);
+    fseek(bf, 0, SEEK_END);
+    long blen = ftell(bf);
+    fseek(bf, 0, SEEK_SET);
+    uint8_t* bc = malloc((size_t) blen);
+    assert(fread(bc, 1, (size_t) blen, bf) == (size_t) blen);
+    fclose(bf);
+
+    Machine* m = machine_create(bc, (uint32_t) blen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
+    free(bc);
+    assert(m != NULL);
+    system_set_resolution(m->system, 960, 720);
+    return m;
+}
+
+static void quill_lux_bind(Machine* m, int32_t* mc, int32_t* kc) {
+    *mc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t mp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(*mc >= 100 && mp >= 100);
+    assert(vfs_bind(m->system, mp, "/dev/mouse") == 0);
+    vfs_close(m->system, mp);
+
+    *kc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t kp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(*kc >= 100 && kp >= 100);
+    assert(vfs_bind(m->system, kp, "/dev/kbd") == 0);
+    vfs_close(m->system, kp);
+}
+
+static void quill_lux_click(Machine* m, int32_t mc, int x, int y) {
+    uint8_t down[8] = {
+        3, 1,
+        (uint8_t) (x & 0xFF), (uint8_t) ((x >> 8) & 0xFF),
+        (uint8_t) (y & 0xFF), (uint8_t) ((y >> 8) & 0xFF),
+        0, 0
+    };
+    uint8_t up[8] = { 4, 1, down[2], down[3], down[4], down[5], 0, 0 };
+    assert(vfs_write(m->system, mc, down, 8) == 8);
+    quill_lux_pump(m, 4);
+    assert(vfs_write(m->system, mc, up, 8) == 8);
+    quill_lux_pump(m, 4);
+}
+
+static void quill_lux_key(Machine* m, int32_t kc, int key, int mods) {
+    uint8_t kpkt[8] = {
+        0, 0,
+        (uint8_t) (key & 0xFF), (uint8_t) ((key >> 8) & 0xFF),
+        (uint8_t) (mods & 0xFF), (uint8_t) ((mods >> 8) & 0xFF),
+        0, 0
+    };
+    assert(vfs_write(m->system, kc, kpkt, 8) == 8);
+    quill_lux_pump(m, 4);
+}
+
+/* File title at x=20,y=10. Items: New=29, Open=47, Save=65, Quit=83. */
+static void quill_lux_file_item(Machine* m, int32_t mc, int row) {
+    quill_lux_click(m, mc, 20, 10);
+    quill_lux_click(m, mc, 20, 20 + row * 18 + 9);
+}
+
+static void quill_lux_view_toggle_hex(Machine* m, int32_t mc) {
+    quill_lux_click(m, mc, 120, 10);
+    quill_lux_click(m, mc, 120, 29);
+}
+
+static char* quill_lux_backup_file(const char* path, size_t* out_len) {
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        *out_len = 0;
+        return NULL;
+    }
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char* buf = malloc((size_t) n + 1);
+    assert(buf != NULL);
+    assert(fread(buf, 1, (size_t) n, f) == (size_t) n);
+    fclose(f);
+    *out_len = (size_t) n;
+    return buf;
+}
+
+static void quill_lux_restore_file(const char* path, char* buf, size_t n) {
+    if (!buf) {
+        remove(path);
+        return;
+    }
+    FILE* f = fopen(path, "wb");
+    assert(f != NULL);
+    assert(fwrite(buf, 1, n, f) == n);
+    fclose(f);
+    free(buf);
+}
+
+static void quill_lux_seed(const char* content, int len) {
+    FILE* f = fopen("manuscript.quill", "wb");
+    assert(f != NULL);
+    assert(fwrite(content, 1, (size_t) len, f) == (size_t) len);
+    fclose(f);
+}
+
+static void quill_lux_read_file(const char* vfs_path, uint8_t* got, int cap, int* n) {
+    System* check = system_create();
+    assert(check != NULL);
+    int32_t rfd = vfs_open(check, vfs_path, 0);
+    assert(rfd >= 0);
+    *n = vfs_read(check, rfd, got, cap);
+    vfs_close(check, rfd);
+    system_free(check);
+}
+
+static int quill_lux_blue_pixels(Machine* m, int x0, int x1, int y0, int y1) {
+    int sw = m->system->screen_width;
+    uint8_t* fb = m->system->screen_pixels;
+    int count = 0;
+    for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+            uint8_t* p = fb + (size_t) y * (size_t) sw * 4 + (size_t) x * 4;
+            if (p[3] > 0xB0 && p[1] < 0x40 && p[2] < 0x40) {
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
+static int quill_lux_hex_row_ascii_x(Machine* m, int y0, int y1) {
+    int sw = m->system->screen_width;
+    uint8_t* fb = m->system->screen_pixels;
+    int last_ink = -1;
+    int best_gap = 0;
+    int best_gap_end = -1;
+    for (int x = 0; x < 500; x++) {
+        int ink = 0;
+        for (int y = y0; y < y1; y++) {
+            uint8_t* p = fb + (size_t) y * (size_t) sw * 4 + (size_t) x * 4;
+            if (p[1] < 0x80 && p[2] < 0x80 && p[3] < 0x80) {
+                ink = 1;
+                break;
+            }
+        }
+        if (ink && last_ink >= 0 && (x - last_ink) > best_gap) {
+            best_gap = x - last_ink;
+            best_gap_end = x;
+        }
+        if (ink) {
+            last_ink = x;
+        }
+    }
+    return best_gap_end;
+}
+
+static int quill_lux_dark_panel_ink(Machine* m) {
+    /* Confirm dialog at 960x720: panel x=[350,610) y=[275,445). */
+    int sw = m->system->screen_width;
+    uint8_t* fb = m->system->screen_pixels;
+    int ink = 0;
+    for (int y = 280; y < 310; y++) {
+        for (int x = 360; x < 500; x++) {
+            uint8_t* p = fb + (size_t) y * (size_t) sw * 4 + (size_t) x * 4;
+            if (p[1] < 0x40 && p[2] < 0x40 && p[3] < 0x40) {
+                ink++;
+            }
+        }
+    }
+    return ink;
+}
+
+static void test_quill_lux_file_new_without_changes_skips_confirm(void) {
+    printf("Testing apps/Quill.lux: File > New with a clean buffer starts a fresh document with no confirm dialog...\n");
+    Machine* probe = quill_lux_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
+    size_t new_backup_len = 0;
+    char* new_backup = quill_lux_backup_file("new.quill", &new_backup_len);
+    quill_lux_seed("Original\n", 9);
+    remove("new.quill");
+
+    Machine* m = quill_lux_machine();
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 8);
+    assert(!m->cpu->halted);
+
+    quill_lux_file_item(m, mc, 0); /* New */
+    assert(quill_lux_dark_panel_ink(m) == 0); /* no confirm */
+    quill_lux_key(m, kc, 'Q', 0);
+    quill_lux_file_item(m, mc, 2); /* Save */
+    quill_lux_file_item(m, mc, 3); /* Quit */
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    uint8_t got[16] = { 0 };
+    int n = 0;
+    quill_lux_read_file("/sys/file/new.quill", got, sizeof(got), &n);
+    assert(n == 1);
+    assert(got[0] == 'Q');
+
+    uint8_t orig[16] = { 0 };
+    quill_lux_read_file("/sys/file/manuscript.quill", orig, sizeof(orig), &n);
+    assert(n == 9);
+    assert(memcmp(orig, "Original\n", 9) == 0);
+
+    quill_lux_restore_file("manuscript.quill", backup, backup_len);
+    quill_lux_restore_file("new.quill", new_backup, new_backup_len);
+}
+
+static void test_quill_lux_file_new_dirty_confirm_dialog_buttons(void) {
+    printf("Testing apps/Quill.lux: File > New with unsaved changes prompts, and each dialog button behaves correctly...\n");
+    Machine* probe = quill_lux_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
+    size_t new_backup_len = 0;
+    char* new_backup = quill_lux_backup_file("new.quill", &new_backup_len);
+
+    /* Save */
+    {
+        quill_lux_seed("Hi\n", 3);
+        remove("new.quill");
+        Machine* m = quill_lux_machine();
+        assert(m != NULL);
+        int32_t mc, kc;
+        quill_lux_bind(m, &mc, &kc);
+        quill_lux_pump(m, 8);
+        quill_lux_key(m, kc, '#', 0);
+        quill_lux_file_item(m, mc, 0);
+        assert(quill_lux_dark_panel_ink(m) > 0);
+        quill_lux_click(m, mc, 480, 336); /* Save button */
+        quill_lux_file_item(m, mc, 3);
+        vfs_close(m->system, mc);
+        vfs_close(m->system, kc);
+        assert(m->cpu->halted);
+        machine_free(m);
+
+        uint8_t got[16] = { 0 };
+        int n = 0;
+        quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+        assert(n == 4);
+        assert(memcmp(got, "#Hi\n", 4) == 0);
+    }
+
+    /* Don't Save */
+    {
+        quill_lux_seed("Hi\n", 3);
+        remove("new.quill");
+        Machine* m = quill_lux_machine();
+        assert(m != NULL);
+        int32_t mc, kc;
+        quill_lux_bind(m, &mc, &kc);
+        quill_lux_pump(m, 8);
+        quill_lux_key(m, kc, '#', 0);
+        quill_lux_file_item(m, mc, 0);
+        quill_lux_click(m, mc, 480, 376); /* Don't Save */
+        quill_lux_key(m, kc, 'Q', 0);
+        quill_lux_file_item(m, mc, 2); /* Save new.quill */
+        quill_lux_file_item(m, mc, 3);
+        vfs_close(m->system, mc);
+        vfs_close(m->system, kc);
+        assert(m->cpu->halted);
+        machine_free(m);
+
+        uint8_t got[16] = { 0 };
+        int n = 0;
+        quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+        assert(n == 3);
+        assert(memcmp(got, "Hi\n", 3) == 0);
+        quill_lux_read_file("/sys/file/new.quill", got, sizeof(got), &n);
+        assert(n == 1);
+        assert(got[0] == 'Q');
+    }
+
+    /* Cancel */
+    {
+        quill_lux_seed("Hi\n", 3);
+        remove("new.quill");
+        Machine* m = quill_lux_machine();
+        assert(m != NULL);
+        int32_t mc, kc;
+        quill_lux_bind(m, &mc, &kc);
+        quill_lux_pump(m, 8);
+        quill_lux_key(m, kc, '#', 0);
+        quill_lux_file_item(m, mc, 0);
+        quill_lux_click(m, mc, 480, 416); /* Cancel */
+        assert(quill_lux_dark_panel_ink(m) == 0);
+        quill_lux_file_item(m, mc, 2); /* Save current (dirtied manuscript) */
+        quill_lux_file_item(m, mc, 3);
+        vfs_close(m->system, mc);
+        vfs_close(m->system, kc);
+        assert(m->cpu->halted);
+        machine_free(m);
+
+        uint8_t got[16] = { 0 };
+        int n = 0;
+        quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+        assert(n == 4);
+        assert(memcmp(got, "#Hi\n", 4) == 0);
+    }
+
+    quill_lux_restore_file("manuscript.quill", backup, backup_len);
+    quill_lux_restore_file("new.quill", new_backup, new_backup_len);
+}
+
+static void test_quill_lux_hex_nibble_edit(void) {
+    printf("Testing apps/Quill.lux: hex mode nibble editing writes into the buffer...\n");
+    Machine* probe = quill_lux_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
+    const char* content = "Hello, Quill!";
+    quill_lux_seed(content, (int) strlen(content));
+
+    Machine* m = quill_lux_machine();
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 8);
+    quill_lux_view_toggle_hex(m, mc);
+    quill_lux_key(m, kc, '4', 0);
+    quill_lux_key(m, kc, '1', 0);
+    quill_lux_file_item(m, mc, 2); /* Save */
+    quill_lux_file_item(m, mc, 3);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    uint8_t got[32] = { 0 };
+    int n = 0;
+    quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+    assert(n == (int) strlen(content));
+    assert(got[0] == 'A');
+    assert(memcmp(got + 1, content + 1, strlen(content) - 1) == 0);
+
+    quill_lux_restore_file("manuscript.quill", backup, backup_len);
+}
+
+static void test_quill_lux_hex_caret_is_hollow_blue_box(void) {
+    printf("Testing apps/Quill.lux: hex mode caret renders as a hollow blue box...\n");
+    Machine* probe = quill_lux_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
+    quill_lux_seed("Hello, Quill!", 13);
+
+    Machine* m = quill_lux_machine();
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 8);
+    assert(quill_lux_blue_pixels(m, 0, 500, 40, 60) == 0);
+
+    quill_lux_view_toggle_hex(m, mc);
+
+    int sw = m->system->screen_width;
+    uint8_t* fb = m->system->screen_pixels;
+    int minx = 99999, maxx = -1, miny = 99999, maxy = -1;
+    for (int y = 40; y < 60; y++) {
+        for (int x = 0; x < 300; x++) {
+            uint8_t* p = fb + (size_t) y * (size_t) sw * 4 + (size_t) x * 4;
+            if (p[3] > 0xB0 && p[1] < 0x40 && p[2] < 0x40) {
+                if (x < minx) minx = x;
+                if (x > maxx) maxx = x;
+                if (y < miny) miny = y;
+                if (y > maxy) maxy = y;
+            }
+        }
+    }
+    assert(maxx >= minx);
+    int box_area = (maxx - minx + 1) * (maxy - miny + 1);
+    int blue_count = quill_lux_blue_pixels(m, minx, maxx + 1, miny, maxy + 1);
+    assert(blue_count * 2 < box_area);
+
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    quill_lux_restore_file("manuscript.quill", backup, backup_len);
+}
+
+static void test_quill_lux_hex_ascii_column_aligns_on_short_row(void) {
+    printf("Testing apps/Quill.lux: hex mode ASCII column stays aligned on a short last row...\n");
+    Machine* probe = quill_lux_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
+    const char* content = "Line One\nLine Two\nLine Three\nskip\nLINE FOUR";
+    quill_lux_seed(content, (int) strlen(content));
+
+    Machine* m = quill_lux_machine();
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 8);
+    quill_lux_view_toggle_hex(m, mc);
+
+    int ascii_x_row0 = quill_lux_hex_row_ascii_x(m, 40, 60);
+    int ascii_x_row1 = quill_lux_hex_row_ascii_x(m, 60, 80);
+    int ascii_x_row2 = quill_lux_hex_row_ascii_x(m, 80, 100);
+    assert(ascii_x_row0 > 0 && ascii_x_row1 > 0 && ascii_x_row2 > 0);
+    int diff01 = ascii_x_row2 - ascii_x_row0;
+    if (diff01 < 0) diff01 = -diff01;
+    int diff12 = ascii_x_row2 - ascii_x_row1;
+    if (diff12 < 0) diff12 = -diff12;
+    assert(diff01 <= 10);
+    assert(diff12 <= 10);
+
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    quill_lux_restore_file("manuscript.quill", backup, backup_len);
+}
+
+static void test_quill_lux_wraps_long_word_without_fault(void) {
+    printf("Testing apps/Quill.lux: word-wrap handles an overlong word without faulting...\n");
+    Machine* probe = quill_lux_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
+    char content[300];
+    memset(content, 'A', sizeof(content));
+    int content_len = (int) sizeof(content);
+    quill_lux_seed(content, content_len);
+
+    Machine* m = quill_lux_machine();
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 20);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 16, 670); /* bottom of the text pane, past wrapped lines -> file_len */
+    quill_lux_key(m, kc, 'Z', 0);
+    quill_lux_file_item(m, mc, 2);
+    quill_lux_file_item(m, mc, 3);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    uint8_t got[512] = { 0 };
+    int n = 0;
+    quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+    assert(n == content_len + 1);
+    assert(got[content_len] == 'Z');
+
+    quill_lux_restore_file("manuscript.quill", backup, backup_len);
+}
+
+static void test_quill_lux_edit_copy_paste(void) {
+    printf("Testing apps/Quill.lux: Edit > Copy then Edit > Paste round-trips a selection through /sys/snarf...\n");
+    Machine* probe = quill_lux_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
+    const char* content = "AB\nCD\nEF\n";
+    quill_lux_seed(content, (int) strlen(content));
+
+    Machine* m = quill_lux_machine();
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 8);
+
+    uint8_t sel_down[8] = { 3, 1, 16, 0, 45, 0, 0, 0 };
+    uint8_t sel_move[8] = { 2, 0, 16, 0, 65, 0, 0, 0 };
+    uint8_t sel_up[8] = { 4, 1, 16, 0, 65, 0, 0, 0 };
+    assert(vfs_write(m->system, mc, sel_down, 8) == 8);
+    quill_lux_pump(m, 4);
+    assert(vfs_write(m->system, mc, sel_move, 8) == 8);
+    quill_lux_pump(m, 4);
+    assert(vfs_write(m->system, mc, sel_up, 8) == 8);
+    quill_lux_pump(m, 4);
+
+    quill_lux_click(m, mc, 70, 10); /* Edit */
+    quill_lux_click(m, mc, 70, 47); /* Copy */
+    quill_lux_click(m, mc, 16, 85); /* start of EF */
+    quill_lux_click(m, mc, 70, 10);
+    quill_lux_click(m, mc, 70, 65); /* Paste */
+    quill_lux_file_item(m, mc, 2);
+    quill_lux_file_item(m, mc, 3);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    uint8_t got[32] = { 0 };
+    int n = 0;
+    quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+    assert(n == 12);
+    assert(memcmp(got, "AB\nCD\nAB\nEF\n", 12) == 0);
+
+    quill_lux_restore_file("manuscript.quill", backup, backup_len);
+}
+
+static void test_quill_lux_cmd_s_saves_and_esc_does_not_quit(void) {
+    printf("Testing apps/Quill.lux: Cmd+S still saves; Esc does not halt...\n");
+    Machine* probe = quill_lux_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
+
+    /* Esc raises the Cloister overlay and must not HALT. */
+    {
+        quill_lux_seed("Hi\n", 3);
+        Machine* m = quill_lux_machine();
+        assert(m != NULL);
+        int32_t mc, kc;
+        quill_lux_bind(m, &mc, &kc);
+        quill_lux_pump(m, 8);
+        quill_lux_key(m, kc, 27, 0);
+        assert(!m->cpu->halted);
+        vfs_close(m->system, mc);
+        vfs_close(m->system, kc);
+        machine_free(m);
+    }
+
+    /* Cmd+S still saves (lux-native shortcut, not fx's Tab placeholder). */
+    {
+        quill_lux_seed("Hi\n", 3);
+        Machine* m = quill_lux_machine();
+        assert(m != NULL);
+        int32_t mc, kc;
+        quill_lux_bind(m, &mc, &kc);
+        quill_lux_pump(m, 8);
+        quill_lux_key(m, kc, '#', 0);
+        quill_lux_key(m, kc, 's', 8);
+        quill_lux_file_item(m, mc, 3);
+        vfs_close(m->system, mc);
+        vfs_close(m->system, kc);
+        assert(m->cpu->halted);
+        machine_free(m);
+
+        uint8_t got[16] = { 0 };
+        int n = 0;
+        quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+        assert(n == 4);
+        assert(memcmp(got, "#Hi\n", 4) == 0);
+    }
+
+    quill_lux_restore_file("manuscript.quill", backup, backup_len);
+}
+
 // -----------------------------------------------------------------------------
 // main
 // -----------------------------------------------------------------------------
@@ -1691,6 +2287,15 @@ int main(void) {
     test_include_file_and_dedup();
     test_custom_base_and_dictionary();
     test_duplicate_addr_const_warning();
+
+    test_quill_lux_file_new_without_changes_skips_confirm();
+    test_quill_lux_file_new_dirty_confirm_dialog_buttons();
+    test_quill_lux_hex_nibble_edit();
+    test_quill_lux_hex_caret_is_hollow_blue_box();
+    test_quill_lux_hex_ascii_column_aligns_on_short_row();
+    test_quill_lux_wraps_long_word_without_fault();
+    test_quill_lux_edit_copy_paste();
+    test_quill_lux_cmd_s_saves_and_esc_does_not_quit();
 
     printf("\n=== ALL COMPILER TESTS PASSED ===\n\n");
     return 0;
