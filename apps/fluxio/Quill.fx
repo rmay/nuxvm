@@ -1,31 +1,42 @@
-/* Quill (Fluxio port, v9 -- word-wrap + mouse selection + hex view +
- * scrollbar (text and hex mode both) + status bar + viewport auto-follow +
- * menu bar) -- docs/quill_fluxio.md Phase C.
+/* Quill (Fluxio port, v13 -- word-wrap + mouse selection + hex view with
+ * nibble editing + scrollbar (text and hex mode both) + status bar +
+ * viewport auto-follow + menu bar with a live hex-mode checkbox + a real
+ * File > Open... file picker + an Edit menu (Cut/Copy/Paste/Select All)
+ * + File > New with an unsaved-changes confirm dialog) --
+ * docs/quill_fluxio.md Phase C.
  *
- * Port of apps/Quill.lux's core edit loop: open a file, display it with
- * word-wrap, move the cursor (keyboard or mouse click), select text by
- * dragging, insert/delete characters, save, view it as hex, scroll with
- * a real scrollbar (which follows the cursor on its own past the edge of
- * the pane), see filename/dirty/row:col in a status bar, and use a real
- * File/View menu bar (feeds/draws/fires in both text and hex mode) --
- * all via extern bindings into the Phase B linked UI library
- * (lib/uisf.bin) instead of being pure self-contained Fluxio. Still NOT
- * at feature parity -- the file picker (same linked library) comes
- * next. Known simplifications vs Quill.lux, to be closed in a later
+ * Port of apps/Quill.lux's core edit loop: open a file (the fixed
+ * scratch path at startup, or any file picked via File > Open...),
+ * display it with word-wrap, move the cursor (keyboard or mouse click),
+ * select text by dragging, cut/copy/paste it through the same /sys/snarf
+ * clipboard file apps/Quill.lux uses, insert/delete characters, save,
+ * start a fresh document via File > New (prompting to save first if
+ * there are unsaved changes -- apps/Quill.lux's own menu-new never
+ * prompts at all, so this is new behavior, not parity work), view and
+ * edit it as hex, scroll with a real scrollbar (which follows the
+ * cursor on its own past the edge of the pane), see filename/dirty/
+ * row:col in a status bar, and use a real File/Edit/View menu bar
+ * (feeds/draws/fires in both text and hex mode, with a checkmark
+ * tracking the current mode) -- all via extern bindings into the Phase B
+ * linked UI library (lib/uisf.bin) instead of being pure self-contained
+ * Fluxio. Known simplifications vs Quill.lux, to be closed in a later
  * pass:
- *   - Fixed file path (no file picker yet) -- /sys/file/quill_scratch.txt.
  *   - No shift-to-extend-selection from the keyboard -- Fluxio has no
  *     keyboard-modifier accessor builtin today, so selection is
  *     mouse-drag only (click sets the anchor, drag extends, release
  *     keeps it). Arrow keys collapse an active selection instead.
- *   - Hex mode still has no nibble editing (unlike Quill.lux's hex-mode
- *     editing) -- the cursor can only move via arrow keys or a mouse
- *     click, not edit bytes in place. It does now scroll (the shared
- *     sb_bar scrollbar is re-ranged in 16-byte-row units) and support
- *     click-to-position (hex_find_click_index), same as text mode.
- *   - The menu only has File > Save/Quit and View > Toggle Hex --
- *     there's no Edit menu (cut/copy/paste aren't implemented at all
- *     yet) and no keyboard shortcuts shown or bound for any item.
+ *   - Hex-mode editing is nibble-only, overwrite-in-place (type a hex
+ *     digit to set the nibble under the cursor, auto-advancing after the
+ *     low nibble) -- it can't insert/delete bytes or extend the file,
+ *     unlike Quill.lux's text-mode editing. Cut/Copy/Paste are text-mode
+ *     only for the same reason (there's no selection concept in hex
+ *     mode to act on).
+ *   - Cut/Copy/Paste/Select All are menu-only, no keyboard shortcuts --
+ *     same reason Save/Toggle Hex use Tab/Home placeholders instead of
+ *     real Ctrl+X/C/V: Fluxio has no keyboard-modifier accessor builtin,
+ *     and unlike Tab/Home, 'x'/'c'/'v' are ordinary typable characters
+ *     that can't be repurposed as bare-key shortcuts without breaking
+ *     normal typing.
  *   - Save is still also bound to Tab, and hex-mode-toggle to Home, as
  *     the pre-menu placeholders -- kept since Fluxio still has no
  *     keyboard-modifier builtin for a real Ctrl+S.
@@ -57,31 +68,75 @@ extern int ui_sbar_set_val(int addr, int val) = 0x700043;                       
 extern void ui_menubar(int w) = 0x700011;                                           /* index 1 */
 extern void ui_menu(int title) = 0x700016;                                          /* index 2 */
 extern void ui_item(int text, int handler) = 0x70001B;                              /* index 3 */
+extern void ui_check_item(int text, int handler) = 0x700020;                       /* index 4 */
+extern void ui_item_set(int name, int val) = 0x7000AC;                             /* index 32 */
 extern void ui_feed(int mpkt) = 0x700048;                                           /* index 12 */
 extern void ui_draw() = 0x70004D;                                                   /* index 13 */
 extern int ui_menu_open() = 0x700057;                                               /* index 15 */
 extern int ui_poll_next() = 0x70005C;                                               /* index 16 */
 extern int ui_poll_name() = 0x700061;                                               /* index 17 */
 extern void draw_use(int fd) = 0x7000A7;                                            /* index 31 */
+extern void sf_show() = 0x700075;                                                   /* index 21 */
+extern int sf_is_open() = 0x70007F;                                                 /* index 23 */
+extern void sf_mouse(int mpkt) = 0x700089;                                          /* index 25 */
+extern void sf_kbd(int kpkt) = 0x70008E;                                            /* index 26 */
+extern void sf_draw() = 0x700093;                                                   /* index 27 */
+extern int sf_picked() = 0x700098;                                                  /* index 28 */
+extern int sf_cancelled() = 0x70009D;                                               /* index 29 */
+extern void sf_clear_result() = 0x7000A2;                                           /* index 30 */
+extern int sf_path_copy(int dest, int max) = 0x7000B1;                              /* index 33 */
+extern void app_win_set(int w, int h) = 0x7000B6;                                   /* index 34 */
 
 byte file_buf[65536];
 byte font_widths[256];
 byte hex_line_buf[72];
-byte scratch_path[32] = "/sys/file/quill_scratch.txt";
+byte scratch_path[300] = "/sys/file/quill_scratch.txt";
+int scratch_path_len = 28;
+byte sf_raw_path[256];
+byte vfs_file_prefix[12] = "/sys/file";
+byte sf_kpkt[8];
 byte sb_bar[56];
-byte status_label[20] = "quill_scratch.txt";
+byte status_label[64] = "quill_scratch.txt";
+int status_label_len = 17;
 byte status_buf[64];
 byte ui_mpkt[8];
 byte menu_file_label[8] = "File";
+byte menu_new_label[8] = "New";
+byte menu_open_label[8] = "Open";
 byte menu_save_label[8] = "Save";
 byte menu_quit_label[8] = "Quit";
 byte menu_view_label[8] = "View";
 byte menu_hex_label[16] = "Toggle Hex";
+byte menu_edit_label[8] = "Edit";
+byte menu_cut_label[8] = "Cut";
+byte menu_copy_label[8] = "Copy";
+byte menu_paste_label[8] = "Paste";
+byte menu_selectall_label[16] = "Select All";
+byte paste_buf[65536];
+byte new_doc_name[12] = "/new.quill";
+
+/* File > New's "unsaved changes?" confirm dialog -- a small self-
+ * contained overlay (fill_rect/draw_str only, no linked-library extern
+ * needed) in the same style as the panel/button look, distinct from the
+ * SF file-picker modal (lib/sf.lux) which is a separate, linked-library
+ * dialog for a different purpose. */
+int confirm_new_open;
+int confirm_panel_w = 260;
+int confirm_panel_h = 170;
+int confirm_btn_w = 180;
+int confirm_btn_h = 30;
+int confirm_btn_gap = 10;
+int clr_confirm_dim = 0x000000;
+int clr_confirm_panel = 0x303030;
+int clr_confirm_border = 0xAAAAAA;
+int clr_confirm_text = 0xFFFFFF;
+int clr_confirm_btn = 0x505050;
 int file_len;
 int cursor;
 int anchor = -1;
 int mouse_held;
 int hex_mode;
+int hex_nibble;
 int last_cursor = -1;
 int dirty;
 int sb_dragging;
@@ -105,6 +160,7 @@ int status_h = 24;
 int clr_bg = 0xFFFFFF;
 int clr_text = 0x000000;
 int clr_caret = 0xCC0000;
+int clr_hex_caret = 0x0000FF;
 int clr_sel = 0xCCDDFF;
 int clr_frame = 0xAAAAAA;
 int clr_status_bg = 0xEEEEEE;
@@ -307,6 +363,15 @@ int update_scrollbar_geometry() {
  * it won't line up with anything meaningful across the switch, but
  * clamping is a reasonable fallback and avoids always snapping to the
  * top.
+ *
+ * Also syncs the View > Toggle Hex menu item's checkmark via
+ * UI::item-set, explicitly, rather than relying on UI::menu's own
+ * auto-toggle-on-click behavior for check-items: this function is called
+ * from two places (the menu click itself, and the Home-key shortcut), and
+ * only the menu's own internal click handling would auto-flip the
+ * checkmark -- the Home-key path wouldn't touch it at all, leaving the
+ * checkbox showing the wrong state as soon as someone used the shortcut
+ * instead of the menu.
  */
 int toggle_hex_mode() {
     if (hex_mode) {
@@ -314,9 +379,11 @@ int toggle_hex_mode() {
     } else {
         hex_mode = 1;
     }
+    hex_nibble = 0;
     anchor = -1;
     mouse_held = 0;
     update_scrollbar_geometry();
+    ui_item_set(menu_hex_label, hex_mode);
     return 0;
 }
 
@@ -473,6 +540,146 @@ int delete_char() {
 }
 
 /**
+ * True (1) if a non-empty selection is active (anchor set and different
+ * from cursor) -- same "has_sel" test main()'s keyboard handler computes
+ * inline for Backspace/typing, factored out here for the Edit menu's
+ * Cut/Copy actions below.
+ */
+int has_selection() {
+    if (anchor < 0) {
+        return 0;
+    }
+    if (anchor == cursor) {
+        return 0;
+    }
+    return 1;
+}
+
+/**
+ * Writes the active selection's bytes to the /sys/snarf clipboard file
+ * -- the same mechanism apps/Quill.lux's snarf-selection uses, so Cut/
+ * Copy here interoperate with it. Doesn't touch the buffer: Copy calls
+ * this alone, Cut calls this then delete_selection(). A no-op if there's
+ * no selection or the clipboard can't be opened.
+ */
+int copy_selection() {
+    if (!has_selection()) {
+        return 0;
+    }
+    int lo = anchor;
+    int hi = cursor;
+    if (lo > hi) {
+        int t = lo;
+        lo = hi;
+        hi = t;
+    }
+    int sfd = vfs_open("/sys/snarf");
+    if (sfd < 0) {
+        return 0;
+    }
+    vfs_write(sfd, file_buf + lo, hi - lo);
+    vfs_close(sfd);
+    return 0;
+}
+
+/**
+ * Inserts `n` bytes from `src` at the cursor and advances it, if there's
+ * room -- the multi-byte counterpart to insert_char(), used by
+ * paste_snarf(). A no-op (matching apps/Quill.lux's type-bytes) rather
+ * than a truncated partial insert if it wouldn't fit.
+ */
+int insert_bytes(byte src[], int n) {
+    if (file_len + n > 65536) {
+        return 0;
+    }
+    shift_right(cursor, n);
+    int i = 0;
+    while (i < n) {
+        file_buf[cursor + i] = src[i];
+        i = i + 1;
+    }
+    file_len = file_len + n;
+    cursor = cursor + n;
+    dirty = 1;
+    rebuild_lines();
+    return 0;
+}
+
+/**
+ * Reads the /sys/snarf clipboard file and inserts it at the cursor,
+ * replacing the active selection first if there is one (same as typing
+ * a character over a selection) -- text mode only, matching
+ * apps/Quill.lux's paste-snarf (there's no selection concept in hex mode
+ * to replace). A no-op if the clipboard is empty, unreadable, or the
+ * paste wouldn't fit.
+ */
+int paste_snarf() {
+    if (hex_mode) {
+        return 0;
+    }
+    int sfd = vfs_open("/sys/snarf");
+    if (sfd < 0) {
+        return 0;
+    }
+    int n = vfs_read(sfd, paste_buf, 65536);
+    vfs_close(sfd);
+    if (n <= 0) {
+        return 0;
+    }
+    if (has_selection()) {
+        delete_selection();
+    }
+    insert_bytes(paste_buf, n);
+    return 0;
+}
+
+/**
+ * Selects the entire buffer (anchor at 0, cursor at file_len) -- same as
+ * apps/Quill.lux's select-all. A no-op on an empty buffer.
+ */
+int select_all() {
+    if (file_len > 0) {
+        anchor = 0;
+        cursor = file_len;
+    }
+    return 0;
+}
+
+/**
+ * Edits one nibble of the byte at `cursor` in place (hex mode only;
+ * caller has already checked cursor < file_len -- there's no byte there
+ * to edit at end-of-file, and this doesn't grow the buffer). `hex_nibble`
+ * selects which half: 0 is the high nibble (edited first), 1 the low.
+ * After the high nibble, hex_nibble advances to the low nibble of the
+ * same byte; after the low nibble, it wraps back to 0 and the cursor
+ * advances to the next byte (unless already on the last one, where it
+ * just stays put so the same byte can keep being edited) -- the usual
+ * "two keystrokes per byte, auto-advance" hex-editor typing rhythm.
+ * rebuild_lines() keeps the word-wrap cache from going stale for when
+ * the user flips back to text mode after editing bytes here.
+ */
+int edit_hex_nibble(int digit) {
+    int b = file_buf[cursor];
+    if (hex_nibble == 0) {
+        b = (b & 0x0F) | (digit << 4);
+    } else {
+        b = (b & 0xF0) | digit;
+    }
+    file_buf[cursor] = b;
+    dirty = 1;
+    if (hex_nibble == 0) {
+        hex_nibble = 1;
+    } else {
+        hex_nibble = 0;
+        if (cursor + 1 < file_len) {
+            cursor = cursor + 1;
+        }
+    }
+    rebuild_lines();
+    return 0;
+}
+
+/**
  * Loads /sys/font/widths into font_widths (silently leaves it zeroed --
  * every advance falls back to the 6px default -- if the pseudo-file is
  * ever missing, rather than failing the whole program over cosmetics).
@@ -494,9 +701,9 @@ int load_font_widths() {
  * way" today, so this is the two-step workaround.
  */
 int load_file() {
-    int fd = vfs_open_buf(scratch_path, 28, 2);
+    int fd = vfs_open_buf(scratch_path, scratch_path_len, 2);
     if (fd < 0) {
-        fd = vfs_open_buf(scratch_path, 28, 6);
+        fd = vfs_open_buf(scratch_path, scratch_path_len, 6);
         file_len = 0;
         cursor = 0;
         dirty = 0;
@@ -521,13 +728,214 @@ int load_file() {
  * Writes file_buf back to the scratch file (truncating to file_len).
  */
 int save_file() {
-    int fd = vfs_open_buf(scratch_path, 28, 6);
+    int fd = vfs_open_buf(scratch_path, scratch_path_len, 6);
     if (fd < 0) {
         return 0;
     }
     vfs_write(fd, file_buf, file_len);
     vfs_close(fd);
     dirty = 0;
+    return 0;
+}
+
+/**
+ * Recomputes status_label (the filename shown in the status bar) from
+ * scratch_path's current content -- the part after the last '/', so a
+ * picked file deep in a directory still shows a short name instead of
+ * its whole path. Capped well under status_buf's 64-byte capacity, which
+ * also has to fit the " *" dirty marker and the row:col digits appended
+ * after it (draw_status_line).
+ */
+int update_status_label_from_path() {
+    int start = 0;
+    int i = 0;
+    while (i < scratch_path_len) {
+        if (scratch_path[i] == 47) {
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    int len = scratch_path_len - start;
+    if (len > 40) {
+        len = 40;
+    }
+    int j = 0;
+    while (j < len) {
+        status_label[j] = scratch_path[start + j];
+        j = j + 1;
+    }
+    status_label_len = len;
+    return 0;
+}
+
+/**
+ * Loads the file the SF picker just chose: copies its picked path (a
+ * virtual path relative to the picker's own root, e.g. "/notes.txt" or
+ * "/sub/notes.txt" -- see lib/sf.lux's choose-file) into sf_raw_path via
+ * SF::path-copy (the only way to read it: Fluxio can't peek an arbitrary
+ * Lux-side pointer directly, see path-copy's own doc comment in
+ * lib/sf.lux), prefixes it with "/sys/file" to get a real VFS path (the
+ * same prefix apps/Quill.lux's make-vfs-path applies), and reuses
+ * load_file() to actually open it -- same as the fixed-path startup load,
+ * just against a scratch_path that now points somewhere else.
+ */
+int open_picked_file() {
+    int raw_len = sf_path_copy(sf_raw_path, 255);
+    int i = 0;
+    while (i < 9) {
+        scratch_path[i] = vfs_file_prefix[i];
+        i = i + 1;
+    }
+    i = 0;
+    while (i < raw_len) {
+        scratch_path[9 + i] = sf_raw_path[i];
+        i = i + 1;
+    }
+    scratch_path_len = 9 + raw_len;
+    update_status_label_from_path();
+    load_file();
+    return 0;
+}
+
+/**
+ * File > New: discards the in-memory buffer and starts a fresh, empty
+ * "new.quill" document -- same reset apps/Quill.lux's menu-new does (it
+ * doesn't touch hex_mode either, so New in hex mode just clears the
+ * buffer and stays in hex mode). There's no file fd to close first --
+ * unlike Quill.lux, load_file()/save_file() here open and close the
+ * scratch file each time rather than keeping one open across the whole
+ * run, so "closing the current doc" is just resetting this state.
+ * Callers are responsible for saving first if that's wanted (see
+ * confirm_new_mouse() below, which is the only caller once there's
+ * something to lose) -- this function always discards unconditionally.
+ */
+int new_document() {
+    int i = 0;
+    while (i < 9) {
+        scratch_path[i] = vfs_file_prefix[i];
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 10) {
+        scratch_path[9 + i] = new_doc_name[i];
+        i = i + 1;
+    }
+    scratch_path_len = 19;
+    file_len = 0;
+    cursor = 0;
+    anchor = -1;
+    dirty = 0;
+    last_cursor = -1;
+    update_status_label_from_path();
+    rebuild_lines();
+    update_scrollbar_geometry();
+    return 0;
+}
+
+/**
+ * File > New's confirm dialog: "Save changes?" (only opened when
+ * `dirty` is set -- see the ui_poll_next() dispatch in main()). A no-op
+ * discard-free File > New skips this whole dialog entirely.
+ */
+
+/** internal: left edge of the centered confirm panel */
+int confirm_panel_x() {
+    return (canvas_w - confirm_panel_w) / 2;
+}
+
+/** internal: top edge of the centered confirm panel */
+int confirm_panel_y() {
+    return (canvas_h - confirm_panel_h) / 2;
+}
+
+/** internal: left edge of all three stacked buttons (they share a common center) */
+int confirm_btn_x() {
+    return confirm_panel_x() + (confirm_panel_w - confirm_btn_w) / 2;
+}
+
+/** internal: top edge of button `i` (0 = Save, 1 = Don't Save, 2 = Cancel) */
+int confirm_btn_y(int i) {
+    return confirm_panel_y() + 46 + i * (confirm_btn_h + confirm_btn_gap);
+}
+
+/** internal: true (1) if (px, py) falls within button `i`'s rect */
+int confirm_hit_btn(int i, int px, int py) {
+    int bx = confirm_btn_x();
+    int by = confirm_btn_y(i);
+    if (px < bx) { return 0; }
+    if (px >= bx + confirm_btn_w) { return 0; }
+    if (py < by) { return 0; }
+    if (py >= by + confirm_btn_h) { return 0; }
+    return 1;
+}
+
+/**
+ * Feeds one mouse event through the confirm dialog. Always consumed
+ * (returns 1) while open -- same "modal owns all input" precedence as
+ * the SF file picker (sf_is_open() in main()). Save writes the current
+ * document first, then both Save and Don't Save discard it via
+ * new_document(); Cancel just closes the dialog, leaving the current
+ * document untouched.
+ */
+int confirm_new_mouse(int mtype, int mbutton, int mx, int my) {
+    if (mtype == 3) {
+        if (confirm_hit_btn(0, mx, my)) {
+            save_file();
+            confirm_new_open = 0;
+            new_document();
+        } else {
+            if (confirm_hit_btn(1, mx, my)) {
+                confirm_new_open = 0;
+                new_document();
+            } else {
+                if (confirm_hit_btn(2, mx, my)) {
+                    confirm_new_open = 0;
+                }
+            }
+        }
+    }
+    return 1;
+}
+
+/**
+ * Feeds one keydown code through the confirm dialog. Esc cancels (same
+ * as the SF picker's own Esc-cancels behavior); every other key is
+ * still consumed while open, same reasoning as escape_menu.fx's
+ * escmenu_key().
+ */
+int confirm_new_kbd(int key) {
+    if (key == 27) {
+        confirm_new_open = 0;
+    }
+    return 1;
+}
+
+/**
+ * Draws the confirm dialog if open (no-op otherwise). Called last, after
+ * everything else including ui_draw()/sf_draw(), so it sits on top.
+ */
+int confirm_new_draw(int fd) {
+    if (!confirm_new_open) {
+        return 0;
+    }
+    fill_rect(fd, 0, 0, canvas_w, canvas_h, clr_confirm_dim);
+
+    int px = confirm_panel_x();
+    int py = confirm_panel_y();
+    fill_rect(fd, px, py, confirm_panel_w, confirm_panel_h, clr_confirm_panel);
+    fill_rect(fd, px, py, confirm_panel_w, 1, clr_confirm_border);
+    fill_rect(fd, px, py + confirm_panel_h - 1, confirm_panel_w, 1, clr_confirm_border);
+    fill_rect(fd, px, py, 1, confirm_panel_h, clr_confirm_border);
+    fill_rect(fd, px + confirm_panel_w - 1, py, 1, confirm_panel_h, clr_confirm_border);
+    draw_str(fd, px + 26, py + 16, clr_confirm_text, 16, "Save changes?");
+
+    int bx = confirm_btn_x();
+    fill_rect(fd, bx, confirm_btn_y(0), confirm_btn_w, confirm_btn_h, clr_confirm_btn);
+    draw_str(fd, bx + 68, confirm_btn_y(0) + 9, clr_confirm_text, 16, "Save");
+    fill_rect(fd, bx, confirm_btn_y(1), confirm_btn_w, confirm_btn_h, clr_confirm_btn);
+    draw_str(fd, bx + 34, confirm_btn_y(1) + 9, clr_confirm_text, 16, "Don't Save");
+    fill_rect(fd, bx, confirm_btn_y(2), confirm_btn_w, confirm_btn_h, clr_confirm_btn);
+    draw_str(fd, bx + 52, confirm_btn_y(2) + 9, clr_confirm_text, 16, "Cancel");
     return 0;
 }
 
@@ -607,7 +1015,7 @@ int draw_status_line(int fd) {
     fill_rect(fd, 0, y, canvas_w, status_h, clr_status_bg);
     fill_rect(fd, 0, y, canvas_w, 1, clr_frame);
 
-    int pos = status_copy(0, status_label, 17);
+    int pos = status_copy(0, status_label, status_label_len);
     if (dirty) {
         status_buf[pos] = 32;
         pos = pos + 1;
@@ -741,6 +1149,30 @@ int nibble_to_hex(int n) {
 }
 
 /**
+ * Value of a hex-digit key ('0'-'9', 'A'-'F', 'a'-'f'), or -1 if `key`
+ * isn't one -- used to gate hex-mode nibble editing so any other keypress
+ * (arrows, Tab, Esc, ...) passes through untouched.
+ */
+int hex_digit_value(int key) {
+    if (key >= 48) {
+        if (key <= 57) {
+            return key - 48;
+        }
+    }
+    if (key >= 65) {
+        if (key <= 70) {
+            return key - 65 + 10;
+        }
+    }
+    if (key >= 97) {
+        if (key <= 102) {
+            return key - 97 + 10;
+        }
+    }
+    return -1;
+}
+
+/**
  * Renders one hex-dump row into hex_line_buf: a 4-digit address, 16
  * space-separated hex byte pairs, then the same bytes' printable ASCII
  * (or '.' for anything outside 32..126). Same 72-column layout as
@@ -820,6 +1252,54 @@ int hex_col_x(int row_addr, int col) {
 }
 
 /**
+ * Pixel x of the `col`-th ASCII character (0-15) within its row --
+ * continues past hex_col_x(row_addr, 16) by the same 2-space gap
+ * render_hex_row leaves before the ASCII column (buffer indices 54-55),
+ * then walks each preceding ASCII character's own real advance (its
+ * printable glyph, or '.' for anything outside 32..126 -- same mapping
+ * render_hex_row uses) so it lines up with what's actually drawn there.
+ * Used to draw a companion caret in the ASCII column that follows the
+ * hex-mode cursor, so it's visible which ASCII character the byte under
+ * the hex caret corresponds to.
+ */
+int hex_ascii_col_x(int row_addr, int col) {
+    int x = hex_col_x(row_addr, 16);
+    x = x + ch_advance(32) * 2;
+    int c = 0;
+    while (c < col) {
+        int idx = row_addr + c;
+        int b = 0;
+        if (idx < file_len) {
+            b = file_buf[idx];
+        }
+        int ch = b;
+        if (ch < 32) {
+            ch = 46;
+        } else {
+            if (ch > 126) {
+                ch = 46;
+            }
+        }
+        x = x + ch_advance(ch);
+        c = c + 1;
+    }
+    return x;
+}
+
+/**
+ * Draws a 1px hollow rectangle outline -- Fluxio/the VM only expose a
+ * filled fill_rect builtin, so a hollow box is four thin fill_rect calls
+ * along its edges rather than one call.
+ */
+int draw_rect_outline(int fd, int x, int y, int w, int h, int color) {
+    fill_rect(fd, x, y, w, 1, color);
+    fill_rect(fd, x, y + h - 1, w, 1, color);
+    fill_rect(fd, x, y, 1, h, color);
+    fill_rect(fd, x + w - 1, y, 1, h, color);
+    return 0;
+}
+
+/**
  * Draws the buffer as a hex dump, 16 bytes per row, and the caret at the
  * cursor's row/column -- scrolled per the shared `sb_bar` (re-ranged to
  * row units by update_scrollbar_geometry/toggle_hex_mode). Rows scrolled
@@ -854,8 +1334,36 @@ int draw_hex_buffer(int fd) {
         if (caret_screen_row < vis) {
             int caret_col = cursor % 16;
             int caret_x = hex_col_x(caret_row * 16, caret_col);
+            int b = 0;
+            if (cursor < file_len) {
+                b = file_buf[cursor];
+            }
+            int high_ch = nibble_to_hex((b >> 4) & 15);
+            int nibble_ch = high_ch;
+            if (hex_nibble) {
+                caret_x = caret_x + ch_advance(high_ch);
+                nibble_ch = nibble_to_hex(b & 15);
+            }
             int caret_y = pane_y + caret_screen_row * line_h;
-            fill_rect(fd, caret_x, caret_y, 2, caret_h, clr_caret);
+            /* Hollow blue rectangle, not the solid red bar text mode
+             * uses -- distinguishes "selecting a nibble" from "inserting
+             * between characters", and its width hugs the actual digit
+             * glyph rather than a fixed 2px. */
+            draw_rect_outline(fd, caret_x, caret_y, ch_advance(nibble_ch), caret_h, clr_hex_caret);
+
+            /* Companion box in the ASCII column, same row, following the
+             * same byte -- so it's visible which ASCII character the
+             * byte under the hex caret corresponds to. */
+            int ascii_ch = b;
+            if (ascii_ch < 32) {
+                ascii_ch = 46;
+            } else {
+                if (ascii_ch > 126) {
+                    ascii_ch = 46;
+                }
+            }
+            int ascii_x = hex_ascii_col_x(caret_row * 16, caret_col);
+            draw_rect_outline(fd, ascii_x, caret_y, ch_advance(ascii_ch), caret_h, clr_hex_caret);
         }
     }
     return 0;
@@ -918,6 +1426,11 @@ int main() {
     int size = canvas_size(fd);
     canvas_w = size >> 16;
     canvas_h = size & 0xFFFF;
+    /* SF::show centers its dialog on APP::width/height, but Quill.fx
+     * bypasses APP::init/loop entirely (its own self-contained loop), so
+     * those globals would otherwise stay 0 -- see APP::win-set!'s own
+     * doc comment (lib/app.lux). */
+    app_win_set(canvas_w, canvas_h);
 
     /* UI::draw's own menu-bar rendering (mb-draw-bar/mb-draw-drop) draws
      * through DRAW::fd (lib/draw.lux), a Lux-side global set only by
@@ -930,10 +1443,17 @@ int main() {
     ui_new();
     ui_menubar(canvas_w);
     ui_menu(menu_file_label);
+    ui_item(menu_new_label, 0);
+    ui_item(menu_open_label, 0);
     ui_item(menu_save_label, 0);
     ui_item(menu_quit_label, 0);
+    ui_menu(menu_edit_label);
+    ui_item(menu_cut_label, 0);
+    ui_item(menu_copy_label, 0);
+    ui_item(menu_paste_label, 0);
+    ui_item(menu_selectall_label, 0);
     ui_menu(menu_view_label);
-    ui_item(menu_hex_label, 0);
+    ui_check_item(menu_hex_label, 0);
 
     load_file();
 
@@ -945,8 +1465,21 @@ int main() {
          * block (and the draw call further down) on `!hex_mode` meant
          * switching to hex mode made the menu bar vanish and stop
          * responding entirely, since nothing fed it events or drew it. */
+        /* Drains every queued mouse event this frame, not just one --
+         * poll_mouse() pops a single event per call (src/vfs.c), but the
+         * host can enqueue several MOUSEMOTION events per ~13ms frame
+         * (a fast mouse/trackpad easily outpaces a 60-75Hz app loop). An
+         * `if` here (the original shape) only drained one event/frame,
+         * so the 64-slot queue (SYS_INPUT_QUEUE_SZ, include/system.h)
+         * backed up during any real mouse movement -- hover highlighting
+         * and click response would visibly lag behind the real cursor by
+         * however many frames it took to catch up, then "catch up all at
+         * once" the moment the mouse stopped moving. Reported by the user
+         * as menu-open/click/close all feeling delayed by roughly a
+         * second. A `while` drains the backlog to zero every frame
+         * instead of growing it. */
         int had_mouse = poll_mouse(mfd);
-        if (had_mouse) {
+        while (had_mouse) {
             int mtype = mouse_type();
             int mx = mouse_x();
             int my = mouse_y();
@@ -967,73 +1500,162 @@ int main() {
             ui_mpkt[5] = (my >> 8) & 0xFF;
             ui_mpkt[6] = 0;
             ui_mpkt[7] = 0;
-            int menu_was_open = ui_menu_open();
-            ui_feed(ui_mpkt);
-            int menu_now_open = ui_menu_open();
 
-            if (menu_was_open) {
+            /* File > New's confirm dialog is the highest-precedence modal
+             * of all -- while it's open, not even the file picker or the
+             * menu bar's own UI::feed sees this event, same reasoning as
+             * the SF picker's own precedence over the menu bar below. */
+            if (confirm_new_open) {
+                confirm_new_mouse(mtype, mouse_button(), mx, my);
             } else {
-                if (menu_now_open) {
+            /* The file picker is modal (Quill.lux's SF::show calls
+             * APP::modal!): while it's open, every mouse event goes to it
+             * alone, not even through the menu bar's own UI::feed, same
+             * as a real modal dialog blocking input to what's under it. */
+            if (sf_is_open()) {
+                sf_mouse(ui_mpkt);
+            } else {
+                int menu_was_open = ui_menu_open();
+                ui_feed(ui_mpkt);
+                int menu_now_open = ui_menu_open();
+
+                if (menu_was_open) {
                 } else {
-                    if (mtype == 3) {
-                        if (ui_in_rect(mx, my, sb_x, sb_y, sb_w, sb_h)) {
-                            ui_sbar_press(sb_bar, mx, my);
-                            sb_dragging = 1;
-                        } else {
-                            if (hex_mode) {
-                                cursor = hex_find_click_index(mx, my);
-                            } else {
-                                int idx = find_click_index(mx, my);
-                                cursor = idx;
-                                anchor = idx;
-                                mouse_held = 1;
-                            }
-                        }
+                    if (menu_now_open) {
                     } else {
-                        if (mtype == 2) {
-                            if (sb_dragging) {
-                                ui_sbar_drag(sb_bar, mx, my);
+                        if (mtype == 3) {
+                            if (ui_in_rect(mx, my, sb_x, sb_y, sb_w, sb_h)) {
+                                ui_sbar_press(sb_bar, mx, my);
+                                sb_dragging = 1;
                             } else {
-                                if (!hex_mode) {
-                                    if (mouse_held) {
-                                        cursor = find_click_index(mx, my);
+                                if (hex_mode) {
+                                    cursor = hex_find_click_index(mx, my);
+                                    hex_nibble = 0;
+                                } else {
+                                    int idx = find_click_index(mx, my);
+                                    cursor = idx;
+                                    anchor = idx;
+                                    mouse_held = 1;
+                                }
+                            }
+                        } else {
+                            if (mtype == 2) {
+                                if (sb_dragging) {
+                                    ui_sbar_drag(sb_bar, mx, my);
+                                } else {
+                                    if (!hex_mode) {
+                                        if (mouse_held) {
+                                            cursor = find_click_index(mx, my);
+                                        }
                                     }
                                 }
-                            }
-                        } else {
-                            if (mtype == 4) {
-                                if (sb_dragging) {
-                                    ui_sbar_release(sb_bar);
-                                    sb_dragging = 0;
+                            } else {
+                                if (mtype == 4) {
+                                    if (sb_dragging) {
+                                        ui_sbar_release(sb_bar);
+                                        sb_dragging = 0;
+                                    }
+                                    mouse_held = 0;
                                 }
-                                mouse_held = 0;
                             }
                         }
                     }
                 }
             }
+            }
+            had_mouse = poll_mouse(mfd);
         }
 
         if (ui_poll_next()) {
             int fired = ui_poll_name();
-            if (fired == menu_save_label) {
-                save_file();
-            } else {
-                if (fired == menu_quit_label) {
-                    vfs_close(fd);
-                    vfs_close(kfd);
-                    vfs_close(mfd);
-                    return 0;
+            if (fired == menu_new_label) {
+                if (dirty) {
+                    confirm_new_open = 1;
                 } else {
-                    if (fired == menu_hex_label) {
-                        toggle_hex_mode();
+                    new_document();
+                }
+            } else {
+            if (fired == menu_open_label) {
+                sf_show();
+            } else {
+                if (fired == menu_save_label) {
+                    save_file();
+                } else {
+                    if (fired == menu_quit_label) {
+                        vfs_close(fd);
+                        vfs_close(kfd);
+                        vfs_close(mfd);
+                        return 0;
+                    } else {
+                        if (fired == menu_hex_label) {
+                            toggle_hex_mode();
+                        } else {
+                            if (fired == menu_cut_label) {
+                                if (!hex_mode) {
+                                    copy_selection();
+                                    delete_selection();
+                                }
+                            } else {
+                                if (fired == menu_copy_label) {
+                                    if (!hex_mode) {
+                                        copy_selection();
+                                    }
+                                } else {
+                                    if (fired == menu_paste_label) {
+                                        paste_snarf();
+                                    } else {
+                                        if (fired == menu_selectall_label) {
+                                            if (!hex_mode) {
+                                                select_all();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
+            }
         }
 
+        if (sf_picked()) {
+            open_picked_file();
+            sf_clear_result();
+        } else {
+            if (sf_cancelled()) {
+                sf_clear_result();
+            }
+        }
+
+        /* Same backlog fix as the mouse loop above -- drains every
+         * queued keydown this frame instead of just one, so fast typing
+         * can't fall behind. */
         int had_kbd = poll_kbd(kfd);
-        if (had_kbd) {
+        while (had_kbd) {
+            if (confirm_new_open) {
+                /* Same highest-precedence-modal reasoning as the mouse
+                 * path above. */
+                if (kbd_type() == 0) {
+                    confirm_new_kbd(kbd_key());
+                }
+            } else {
+            if (sf_is_open()) {
+                /* Same modal precedence as the mouse path above -- while
+                 * the picker is open, it owns the keyboard too (Esc
+                 * cancels the dialog there, it doesn't fall through to
+                 * Quill's own quit handling below). */
+                sf_kpkt[0] = kbd_type();
+                sf_kpkt[1] = 0;
+                int sf_key = kbd_key();
+                sf_kpkt[2] = sf_key & 0xFF;
+                sf_kpkt[3] = (sf_key >> 8) & 0xFF;
+                sf_kpkt[4] = 0;
+                sf_kpkt[5] = 0;
+                sf_kpkt[6] = 0;
+                sf_kpkt[7] = 0;
+                sf_kbd(sf_kpkt);
+            } else {
             if (kbd_type() == 0) {
                 int key = kbd_key();
                 if (key == 23) {
@@ -1053,10 +1675,33 @@ int main() {
                                     if (cursor > 0) {
                                         cursor = cursor - 1;
                                     }
+                                    hex_nibble = 0;
                                 } else {
                                     if (key == 20) {
                                         if (cursor < file_len) {
                                             cursor = cursor + 1;
+                                        }
+                                        hex_nibble = 0;
+                                    } else {
+                                        if (key == 17) {
+                                            if (cursor - 16 >= 0) {
+                                                cursor = cursor - 16;
+                                            }
+                                            hex_nibble = 0;
+                                        } else {
+                                            if (key == 18) {
+                                                if (cursor + 16 <= file_len) {
+                                                    cursor = cursor + 16;
+                                                }
+                                                hex_nibble = 0;
+                                            } else {
+                                                int digit = hex_digit_value(key);
+                                                if (digit >= 0) {
+                                                    if (cursor < file_len) {
+                                                        edit_hex_nibble(digit);
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1125,6 +1770,9 @@ int main() {
                     }
                 }
             }
+            }
+            }
+            had_kbd = poll_kbd(kfd);
         }
 
         if (cursor != last_cursor) {
@@ -1141,6 +1789,10 @@ int main() {
         }
         draw_status_line(fd);
         ui_draw();
+        if (sf_is_open()) {
+            sf_draw();
+        }
+        confirm_new_draw(fd);
         end_frame(fd);
         yield();
     }

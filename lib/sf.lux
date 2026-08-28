@@ -10,7 +10,11 @@
   SF::path       ( -- ptr )      last chosen path
   SF::mouse      ( mpkt -- )
   SF::kbd        ( kpkt -- )
-  SF::draw       ( -- ) )
+  SF::draw       ( -- )
+  SF::picked?    ( -- f )
+  SF::cancelled? ( -- f )
+  SF::clear-result! ( -- )
+  SF::path-copy  ( dest max -- len )   copies the picked path into dest )
 
 INCLUDE "lib/app.lux"
 INCLUDE "lib/ui.lux"
@@ -88,6 +92,26 @@ IMPORT TIME
 @picked?    ( -- f ) picked LOADI ;
 @cancelled? ( -- f ) cancld LOADI ;
 @clear-result! ( -- ) 0 picked STOREI 0 cancld STOREI ;
+
+( Fluxio has no builtin to peek an arbitrary byte at a runtime address or
+  to strlen a foreign pointer (Phase A1/A2's byte[] support only covers
+  Fluxio's own declared arrays), so it can't read `result` -- a raw Lux
+  C-string pointer -- directly. path-copy does the read on the Lux side
+  instead: copies up to `max` bytes of the picked path into a Fluxio-
+  owned `dest` buffer and returns the actual length copied, mirroring
+  the same "Lux does the string work, Fluxio just gets bytes+length"
+  split already used for menu item text via UI's own byte[]-decay
+  convention. Docs/quill_fluxio.md Phase C (file picker). )
+@path-copy ( dest max -- len )
+    0
+    3 frame! ( 0:len 1:max 2:dest )
+    result STR::strlen
+    dup 1 local@ > [ drop 1 local@ ] ?
+    0 local!
+    result 2 local@ 0 local@ UI::xcopy drop
+    0 local@
+    3 unframe!
+;
 
 @lx ( -- x ) dlg-x LOADI 16 + ;
 @ly ( -- y ) dlg-y LOADI 56 + ;

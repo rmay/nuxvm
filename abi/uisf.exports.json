@@ -30,5 +30,8 @@
   "SF::picked?",
   "SF::cancelled?",
   "SF::clear-result!",
-  "DRAW::use"
+  "DRAW::use",
+  "UI::item-set",
+  "SF::path-copy",
+  "APP::win-set!"
 ]

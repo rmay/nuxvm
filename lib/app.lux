@@ -43,6 +43,16 @@ IMPORT UI
 @under-shell? ( -- f ) nfd LOADI ;
 @width    ( -- w )  win-w LOADI ;
 @height   ( -- h )  win-h LOADI ;
+
+( A caller that bypasses APP::init/loop entirely -- e.g. Fluxio's own
+  self-contained event loop, docs/quill_fluxio.md Phase C -- never runs
+  open-devices/sync-canvas, so win-w/win-h stay 0. That breaks anything
+  that centers on APP::width/height (SF::show's dialog placement), so
+  such a caller needs to set them directly instead. )
+@win-set! ( w h -- )
+    win-h STOREI
+    win-w STOREI
+;
 @dirty!   ( -- )    1 dirty-f STOREI ;
 @dirty?   ( -- f )  dirty-f LOADI ;
 @dirty-off ( -- )   0 dirty-f STOREI ;
