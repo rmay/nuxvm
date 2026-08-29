@@ -1532,6 +1532,7 @@ IMPORT BITMAP
 
 @start
     T"Easel" APP::init
+    APP::draw-fd DRAW::batch-begin
     APP::draw-fd FONT_SIZE DRAW::set-font-size
     UI::new
     WIN_W UI::menubar
