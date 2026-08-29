@@ -3462,6 +3462,60 @@ static void test_easel_lasso_move(void) {
     quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
+static void test_easel_copy_paste(void) {
+    printf("Testing apps/Easel.lux: marquee-select, Copy, Paste...\n");
+    Machine* probe = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    /* Pencil paints one pixel at screen (100,50) -> canvas (20,30). */
+    quill_lux_click(m, mc, 100, 50);
+    quill_lux_pump(m, 20);
+
+    /* Marquee tool, then drag out screen (90,40)-(115,65) -> canvas
+     * (10,20)-(35,45): a 26x26 rect with the ink pixel at local (10,10). */
+    quill_lux_click(m, mc, 60, 36);
+    quill_lux_pump(m, 20);
+    lux_drag(m, mc, 90, 40, 115, 65);
+    quill_lux_pump(m, 20);
+
+    quill_lux_key(m, kc, 'c', 8); /* Cmd+C: Copy */
+    quill_lux_pump(m, 20);
+    quill_lux_key(m, kc, 'v', 8); /* Cmd+V: Paste */
+    quill_lux_pump(m, 20);
+
+    quill_lux_key(m, kc, 's', 8); /* Cmd+S */
+    int n = pump_until_file(m, "untitled.eas", 24968, 2000);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+
+    assert(n == 24968);
+    uint8_t body[25000];
+    n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
+    assert(n == 24968);
+
+    /* Original pixel untouched by Copy. */
+    assert(easel_bit_set(body, n, 20, 30) == 1);
+    /* Paste centers the 26x26 clipboard rect: ox=(480-26)/2=227,
+     * oy=(416-26)/2=195; the ink pixel at local (10,10) lands at
+     * (237,205). */
+    assert(easel_bit_set(body, n, 237, 205) == 1);
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
 // -----------------------------------------------------------------------------
 // main
 // -----------------------------------------------------------------------------
@@ -3557,6 +3611,7 @@ int main(void) {
     test_easel_paint_save();
     test_easel_marquee_move();
     test_easel_lasso_move();
+    test_easel_copy_paste();
 
     printf("\n=== ALL COMPILER TESTS PASSED ===\n\n");
     return 0;

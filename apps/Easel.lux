@@ -184,6 +184,9 @@ IMPORT TIME
 @PATTERNS      0x990300 ; ( 38 * 8 bytes, one row per byte -- see init-pats )
 @BRUSHES       0x990500 ; ( 32 * 32 bytes, 16x16 1bpp masks, 2 bytes/row -- see init-brushes )
 @SEL_MASK      0x991000 ; ( BITMAP::PAGE_BYTES page: lasso's filled-interior selection mask )
+@SNARF_BUF     0x9A0000 ; ( EASS clipboard payload; max real selection is ~24968 bytes, well
+                            under SYS_SNARF_MAX (include/system.h) for the current canvas size )
+@SNARF_CAP     0x8000 ;
 
 ( --- Small state (MM_APP_SMALL_STATE) --- )
 @tool              0x8A0000 ;
@@ -1613,6 +1616,152 @@ IMPORT TIME
     ] ?
 ;
 
+( --- Selection: clipboard via /sys/snarf (Step 5, part 3) --- )
+
+@snarf-w ( -- w ) sel-x1 LOADI sel-x0 LOADI - 1 + ;
+@snarf-h ( -- h ) sel-y1 LOADI sel-y0 LOADI - 1 + ;
+@snarf-rb ( -- rb ) snarf-w 7 + 8 / ;
+
+@write-snarf-magic { d w h -- }
+    69 d store-byte
+    65 d 1 + store-byte
+    83 d 2 + store-byte
+    83 d 3 + store-byte
+    w d 4 + DRAW::store-word-le
+    h d 6 + DRAW::store-word-le
+;
+
+( Packs the active selection's rect out of CANVAS into SNARF_BUF as "EASS"
+  (magic, w/h u16 LE, then packed rows -- mirrors the EAS1 file format's
+  layout). Pixels sel-px-active? says aren't part of the selection (only
+  possible for a lasso) pack as 0, so a paste reproduces the traced shape,
+  not its whole bounding box. )
+@snarf-pack ( -- len )
+    SNARF_BUF snarf-w snarf-h write-snarf-magic
+    SNARF_BUF 8 + { d }
+        0 { ry }
+            [ ry snarf-h < ]
+            [
+                0 { bx }
+                    [ bx snarf-rb < ]
+                    [
+                        0 { b }
+                            0 { bit }
+                                [ bit 8 < ]
+                                [
+                                    bx 8 * bit + { cx }
+                                        cx snarf-w < [
+                                            sel-x0 LOADI cx + sel-y0 LOADI ry + sel-px-active?
+                                            sel-x0 LOADI cx + sel-y0 LOADI ry + pix@ AND [
+                                                b 128 bit RSHIFT OR b!
+                                            ] ?
+                                        ] ?
+                                    }
+                                    bit 1 + bit!
+                                ] |:
+                            }
+                            b d store-byte
+                            d 1 + d!
+                        }
+                        bx 1 + bx!
+                    ] |:
+                }
+                ry 1 + ry!
+            ] |:
+        }
+    }
+    8 snarf-rb snarf-h * +
+;
+
+@snarf-copy ( -- )
+    sel-active LOADI [
+        snarf-pack { len }
+            T"/sys/snarf" VFS::open dup 0 >= [
+                dup SNARF_BUF len VFS::write drop
+                VFS::close drop
+            ] [ drop ] ?:
+        }
+    ] ?
+;
+
+@menu-copy ( val -- ) drop snarf-copy ;
+
+@do-cut ( -- )
+    sel-active LOADI [
+        snapshot
+        snarf-copy
+        sel-x0 LOADI sel-y0 LOADI sel-x1 LOADI sel-y1 LOADI fill-rect-white
+        0 sel-active STOREI
+        0 sel-mask-active STOREI
+        mark-dirty
+    ] ?
+;
+
+@menu-cut ( val -- ) drop do-cut ;
+
+@snarf-magic-ok? ( -- f )
+    SNARF_BUF load-byte 69 =
+    SNARF_BUF 1 + load-byte 65 = AND
+    SNARF_BUF 2 + load-byte 83 = AND
+    SNARF_BUF 3 + load-byte 83 = AND
+;
+
+@snarf-in-w ( -- w ) SNARF_BUF 4 + DRAW::load-word-le ;
+@snarf-in-h ( -- h ) SNARF_BUF 6 + DRAW::load-word-le ;
+@snarf-in-cw ( -- cw ) snarf-in-w CANVAS_W MIN ;
+@snarf-in-ch ( -- ch ) snarf-in-h CANVAS_H MIN ;
+@snarf-in-ox ( -- ox ) CANVAS_W snarf-in-cw - 2 / ;
+@snarf-in-oy ( -- oy ) CANVAS_H snarf-in-ch - 2 / ;
+@snarf-in-rb ( -- rb ) snarf-in-w 7 + 8 / ;
+
+@snarf-in-bit { cx ry -- bit }
+    SNARF_BUF 8 + ry snarf-in-rb * + cx 8 / + load-byte
+    128 cx 8 MOD RSHIFT AND 0 = [ 0 ] [ 1 ] ?:
+;
+
+( Unpacks SNARF_BUF's EASS payload into CANVAS centered in the canvas
+  (clamped to canvas bounds if the pasted content is larger), and marks the
+  pasted rect as a fresh mask-gated selection so it can be dragged into
+  place immediately, same as a just-finished lasso. )
+@snarf-unpack ( -- )
+    snapshot
+    sel-mask-clear
+    0 { ry }
+        [ ry snarf-in-ch < ]
+        [
+            0 { cx }
+                [ cx snarf-in-cw < ]
+                [
+                    cx ry snarf-in-bit snarf-in-ox cx + snarf-in-oy ry + pix!
+                    SEL_MASK snarf-in-ox cx + snarf-in-oy ry + 1 BITMAP::set
+                    cx 1 + cx!
+                ] |:
+            }
+            ry 1 + ry!
+        ] |:
+    }
+    snarf-in-ox sel-x0 STOREI
+    snarf-in-oy sel-y0 STOREI
+    snarf-in-ox snarf-in-cw + 1 - sel-x1 STOREI
+    snarf-in-oy snarf-in-ch + 1 - sel-y1 STOREI
+    1 sel-active STOREI
+    1 sel-mask-active STOREI
+    mark-dirty
+;
+
+@snarf-paste ( -- )
+    T"/sys/snarf" VFS::open dup 0 >= [
+        dup SNARF_BUF SNARF_CAP VFS::read { n }
+            VFS::close drop
+            n 8 >= snarf-magic-ok? AND [
+                snarf-unpack
+            ] ?
+        }
+    ] [ drop ] ?:
+;
+
+@menu-paste ( val -- ) drop snarf-paste ;
+
 @clip-can { x y -- x' y' }
     x 0 MAX CANVAS_W 1 - MIN
     y 0 MAX CANVAS_H 1 - MIN
@@ -2773,8 +2922,11 @@ IMPORT TIME
         ] ?:
     ] [
     dup 122 = [ drop do-undo ] [
+    dup 120 = [ drop do-cut ] [
+    dup 99 = [ drop snarf-copy ] [
+    dup 118 = [ drop snarf-paste ] [
         drop
-    ] ?: ] ?: ] ?: ] ?:
+    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
     2 unframe!
 ;
 
@@ -2867,6 +3019,10 @@ IMPORT TIME
     T"Quit" [ drop menu-quit ] UI::item
     T"Edit" UI::menu
     T"Undo"   [ menu-undo ]   UI::item
+    UI::sep
+    T"Cut"    [ menu-cut ]    UI::item
+    T"Copy"   [ menu-copy ]   UI::item
+    T"Paste"  [ menu-paste ]  UI::item
     UI::sep
     T"Invert" [ menu-invert ] UI::item
     T"Clear"  [ menu-clear ]  UI::item
