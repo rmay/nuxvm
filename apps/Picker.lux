@@ -36,7 +36,7 @@ IMPORT VFS
         ] [
             str n sn - + suf STR::streq
         ] ?:
-    }
+    UNGIRD
 ;
 
 @skip-name? { name -- f }
@@ -88,7 +88,7 @@ IMPORT VFS
             ] ?:
             p next-tok p!
         ] |:
-    }
+    UNGIRD
 ;
 
 @fill-lists ( -- )
@@ -282,7 +282,7 @@ IMPORT VFS
                 name UI::list-sel@
                 dup 0 > [ 1 - ] [ drop 0 ] ?:
                 name SWAP UI::list-sel!
-            }
+            UNGIRD
         ] [
         dup EVENT::KEY_DOWN_ARROW = [
             drop drop
@@ -294,8 +294,8 @@ IMPORT VFS
                         dup n >= [ drop n 1 - ] ?
                         name SWAP UI::list-sel!
                     ] ?:
-                }
-            }
+                UNGIRD
+            UNGIRD
         ] [
         dup EVENT::KEY_LEFT_ARROW = [
             drop drop

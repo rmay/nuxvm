@@ -72,13 +72,13 @@ IMPORT SF
 @sprite-frame-slot ( sidx fi -- slot )
     { sidx fi }
         sidx sprite-flist-addr fi 4 * + LOADI
-    }
+    UNGIRD
 ;
 
 @sprite-set-frame-slot ( sidx fi slot -- )
     { sidx fi slot }
         slot sidx sprite-flist-addr fi 4 * + STOREI
-    }
+    UNGIRD
 ;
 
 ( --- Frame pixel access (byte-addressed RGB, row-major) --- )
@@ -86,7 +86,7 @@ IMPORT SF
 @frame-pixel-addr ( slot-addr px py -- addr )
     { slot-addr px py }
         py doc-size LOADI * px + 3 * slot-addr +
-    }
+    UNGIRD
 ;
 
 @color-r ( c -- r ) 16 RSHIFT 255 AND ;
@@ -153,23 +153,23 @@ IMPORT SF
 
 @blank-slot ( slot -- )
     SLOT_BYTES * FRAME_BANK +
-    { addr }
+    GIRD addr
         0
-        { py }
+        GIRD py
             [ py doc-size LOADI < ]
             [
                 0
-                { px }
+                GIRD px
                     [ px doc-size LOADI < ]
                     [
                         addr px py KEY_COLOR color-r KEY_COLOR color-g KEY_COLOR color-b frame-pixel!
                         px 1 + px!
                     ] |:
-                }
+                UNGIRD
                 py 1 + py!
             ] |:
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @copy-slot ( src-slot dst-slot -- )
@@ -177,37 +177,37 @@ IMPORT SF
         src SLOT_BYTES * FRAME_BANK + { sa }
             dst SLOT_BYTES * FRAME_BANK + { da }
                 0
-                { i }
+                GIRD i
                     [ i SLOT_BYTES < ]
                     [
                         sa i + load-byte da i + store-byte
                         i 1 + i!
                     ] |:
-                }
-            }
-        }
-    }
+                UNGIRD
+            UNGIRD
+        UNGIRD
+    UNGIRD
 ;
 
 @name-sprite ( sidx -- )
-    { sidx }
+    GIRD sidx
         T"Sprite" sidx sprite-name STR::strcpy
         sprite-counter LOADI NBUF STR::int-to-str
         NBUF sidx sprite-name strcat
         sprite-counter LOADI 1 + sprite-counter STOREI
-    }
+    UNGIRD
 ;
 
 @new-sprite ( -- )
     doc-nsprites LOADI MAX_SPRITES >= [
     ] [
         alloc-slot
-        { slot }
+        GIRD slot
             slot 0 < [
             ] [
                 slot blank-slot
                 doc-nsprites LOADI
-                { sidx }
+                GIRD sidx
                     sidx name-sprite
                     1 sidx sprite-count-addr STOREI
                     8 sidx sprite-speed-addr STOREI
@@ -216,70 +216,70 @@ IMPORT SF
                     sidx cur-sprite STOREI
                     0 cur-frame STOREI
                     1 file-dirty STOREI
-                }
+                UNGIRD
             ] ?:
-        }
+        UNGIRD
     ] ?
 ;
 
 @shift-sprite-down ( sidx -- )
-    { sidx }
+    GIRD sidx
         sidx sprite-rec { dst }
             sidx 1 + sprite-rec { src }
                 0
-                { i }
+                GIRD i
                     [ i SPRITE_REC_BYTES < ]
                     [
                         src i + load-byte dst i + store-byte
                         i 1 + i!
                     ] |:
-                }
-            }
-        }
-    }
+                UNGIRD
+            UNGIRD
+        UNGIRD
+    UNGIRD
 ;
 
 @delete-sprite ( sidx -- )
-    { sidx }
+    GIRD sidx
         doc-nsprites LOADI 1 - { last }
             sidx
-            { i }
+            GIRD i
                 [ i last < ]
                 [
                     i shift-sprite-down
                     i 1 + i!
                 ] |:
-            }
-        }
+            UNGIRD
+        UNGIRD
         doc-nsprites LOADI 1 - doc-nsprites STOREI
         cur-sprite LOADI doc-nsprites LOADI >= [
             doc-nsprites LOADI 1 - 0 MAX cur-sprite STOREI
         ] ?
         0 cur-frame STOREI
         1 file-dirty STOREI
-    }
+    UNGIRD
 ;
 
 @sprite-add-frame ( sidx -- )
-    { sidx }
+    GIRD sidx
         sidx sprite-count MAX_FRAMES_PER_SPRITE >= [
         ] [
             alloc-slot
-            { slot }
+            GIRD slot
                 slot 0 < [
                 ] [
                     slot blank-slot
                     sidx sprite-count
-                    { fi }
+                    GIRD fi
                         sidx fi slot sprite-set-frame-slot
                         sidx sprite-count-addr LOADI 1 + sidx sprite-count-addr STOREI
                         fi cur-frame STOREI
                         1 file-dirty STOREI
-                    }
+                    UNGIRD
                 ] ?:
-            }
+            UNGIRD
         ] ?
-    }
+    UNGIRD
 ;
 
 @sprite-insert-frame-after ( sidx fi slot -- )
@@ -287,21 +287,21 @@ IMPORT SF
         fi 1 + { ins }
             sidx sprite-count { cnt }
                 cnt
-                { i }
+                GIRD i
                     [ i ins > ]
                     [
                         sidx i 1 - sprite-frame-slot
-                        { v }
+                        GIRD v
                             sidx i v sprite-set-frame-slot
-                        }
+                        UNGIRD
                         i 1 - i!
                     ] |:
-                }
-            }
+                UNGIRD
+            UNGIRD
             sidx ins slot sprite-set-frame-slot
             sidx sprite-count-addr LOADI 1 + sidx sprite-count-addr STOREI
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @sprite-duplicate-frame ( sidx fi -- )
@@ -309,7 +309,7 @@ IMPORT SF
         sidx sprite-count MAX_FRAMES_PER_SPRITE >= [
         ] [
             alloc-slot
-            { newslot }
+            GIRD newslot
                 newslot 0 < [
                 ] [
                     sidx fi sprite-frame-slot newslot copy-slot
@@ -317,9 +317,9 @@ IMPORT SF
                     fi 1 + cur-frame STOREI
                     1 file-dirty STOREI
                 ] ?:
-            }
+            UNGIRD
         ] ?:
-    }
+    UNGIRD
 ;
 
 @sprite-delete-frame ( sidx fi -- )
@@ -328,37 +328,37 @@ IMPORT SF
         ] [
             sidx sprite-count { cnt }
                 fi
-                { i }
+                GIRD i
                     [ i cnt 1 - < ]
                     [
                         sidx i 1 + sprite-frame-slot
-                        { v }
+                        GIRD v
                             sidx i v sprite-set-frame-slot
-                        }
+                        UNGIRD
                         i 1 + i!
                     ] |:
-                }
-            }
+                UNGIRD
+            UNGIRD
             sidx sprite-count-addr LOADI 1 - sidx sprite-count-addr STOREI
             cur-frame LOADI sidx sprite-count-addr LOADI >= [
                 sidx sprite-count-addr LOADI 1 - 0 MAX cur-frame STOREI
             ] ?
             1 file-dirty STOREI
         ] ?:
-    }
+    UNGIRD
 ;
 
 ( --- Per-frame pixel ops --- )
 
 @flip-h ( -- )
     cur-frame-addr
-    { addr }
+    GIRD addr
         0
-        { py }
+        GIRD py
             [ py doc-size LOADI < ]
             [
                 0
-                { px }
+                GIRD px
                     [ px doc-size LOADI 2 / < ]
                     [
                         doc-size LOADI 1 - px - { mx }
@@ -368,29 +368,29 @@ IMPORT SF
                                 { r2 g2 b2 }
                                     addr px py r2 g2 b2 frame-pixel!
                                     addr mx py r g b frame-pixel!
-                                }
-                            }
-                        }
+                                UNGIRD
+                            UNGIRD
+                        UNGIRD
                         px 1 + px!
                     ] |:
-                }
+                UNGIRD
                 py 1 + py!
             ] |:
-        }
-    }
+        UNGIRD
+    UNGIRD
     1 file-dirty STOREI
 ;
 
 @flip-v ( -- )
     cur-frame-addr
-    { addr }
+    GIRD addr
         0
-        { py }
+        GIRD py
             [ py doc-size LOADI 2 / < ]
             [
                 doc-size LOADI 1 - py - { my }
                     0
-                    { px }
+                    GIRD px
                         [ px doc-size LOADI < ]
                         [
                             addr px py frame-pixel@
@@ -399,38 +399,38 @@ IMPORT SF
                                 { r2 g2 b2 }
                                     addr px py r2 g2 b2 frame-pixel!
                                     addr px my r g b frame-pixel!
-                                }
-                            }
+                                UNGIRD
+                            UNGIRD
                         px 1 + px!
                     ] |:
-                }
-                }
+                UNGIRD
+                UNGIRD
                 py 1 + py!
             ] |:
-        }
-    }
+        UNGIRD
+    UNGIRD
     1 file-dirty STOREI
 ;
 
 @fill-frame ( -- )
     cur-frame-addr
-    { addr }
+    GIRD addr
         0
-        { py }
+        GIRD py
             [ py doc-size LOADI < ]
             [
                 0
-                { px }
+                GIRD px
                     [ px doc-size LOADI < ]
                     [
                         addr px py cur-color LOADI color-r cur-color LOADI color-g cur-color LOADI color-b frame-pixel!
                         px 1 + px!
                     ] |:
-                }
+                UNGIRD
                 py 1 + py!
             ] |:
-        }
-    }
+        UNGIRD
+    UNGIRD
     1 file-dirty STOREI
 ;
 
@@ -445,13 +445,13 @@ IMPORT SF
             frame-pixel!
             1 file-dirty STOREI
         ] ?
-    }
+    UNGIRD
 ;
 
 ( --- Document lifecycle --- )
 
 @new-doc ( size -- )
-    { size }
+    GIRD size
         size doc-size STOREI
         0 doc-nsprites STOREI
         0 cur-sprite STOREI
@@ -462,7 +462,7 @@ IMPORT SF
         0 PATH store-byte
         0 file-dirty STOREI
         new-sprite
-    }
+    UNGIRD
 ;
 
 @menu-new-8  ( val -- ) drop 8  new-doc ;
@@ -482,7 +482,7 @@ IMPORT SF
 @do-save ( -- )
     PATH make-vfs-path 6 VFS::open-mode
     dup 0 >= [
-        { fd }
+        GIRD fd
             T"CSF1" HDR STR::strcpy
             doc-size LOADI HDR 4 + DRAW::store-word-le
             doc-nsprites LOADI HDR 6 + DRAW::store-word-le
@@ -493,16 +493,16 @@ IMPORT SF
             fd SPRITE_TAB MAX_SPRITES SPRITE_REC_BYTES * VFS::write drop
             fd VFS::close drop
             0 file-dirty STOREI
-        }
+        UNGIRD
     ] [ drop ] ?:
 ;
 
 @load-file ( -- )
     PATH make-vfs-path 0 VFS::open-mode
     dup 0 >= [
-        { fd }
+        GIRD fd
             fd HDR 12 VFS::read
-            { n }
+            GIRD n
                 n 12 < [
                     fd VFS::close drop
                 ] [
@@ -525,8 +525,8 @@ IMPORT SF
                         fd VFS::close drop
                     ] ?:
                 ] ?:
-            }
-        }
+            UNGIRD
+        UNGIRD
     ] [ drop ] ?:
 ;
 
@@ -552,7 +552,7 @@ IMPORT SF
 ( --- Sprite-name text input (modal, keyboard-only) --- )
 
 @begin-name-edit ( mode -- )
-    { mode }
+    GIRD mode
         mode name-edit-mode STOREI
         mode 0 = [
             0 EDIT_BUF store-byte
@@ -561,7 +561,7 @@ IMPORT SF
         ] ?:
         EDIT_BUF STR::strlen edit-len STOREI
         1 editing-name STOREI
-    }
+    UNGIRD
 ;
 @begin-new-sprite-name ( -- ) 0 begin-name-edit ;
 @begin-rename-sprite   ( -- ) 1 begin-name-edit ;
@@ -578,13 +578,13 @@ IMPORT SF
 @cancel-name-edit ( -- ) 0 editing-name STOREI ;
 
 @name-edit-add ( ch -- )
-    { ch }
+    GIRD ch
         edit-len LOADI 15 < [
             ch EDIT_BUF edit-len LOADI + store-byte
             0 EDIT_BUF edit-len LOADI 1 + + store-byte
             edit-len LOADI 1 + edit-len STOREI
         ] ?
-    }
+    UNGIRD
 ;
 
 @name-edit-backspace ( -- )
@@ -626,12 +626,12 @@ IMPORT SF
 ;
 
 @speed-adjust ( d -- )
-    { d }
+    GIRD d
         cur-sprite LOADI sprite-speed-addr
-        { a }
+        GIRD a
             a LOADI d + 1 MAX 30 MIN a STOREI
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @on-frame-tick ( -- )
@@ -658,15 +658,15 @@ IMPORT SF
 @PAL_COLS 4 ;
 
 @swatch-rect ( idx -- x y w h )
-    { idx }
+    GIRD idx
         idx PAL_COLS MOD { c }
             idx PAL_COLS / { r }
                 PAL_X c SWATCH SWATCH_GAP + * +
                 PAL_Y r SWATCH SWATCH_GAP + * +
                 SWATCH SWATCH
-            }
-        }
-    }
+            UNGIRD
+        UNGIRD
+    UNGIRD
 ;
 
 @trans-y ( -- y ) PAL_Y 4 SWATCH SWATCH_GAP + * + 8 + ;
@@ -676,11 +676,11 @@ IMPORT SF
 @ACT_H 22 ;
 @ACT_GAP 6 ;
 @act-rect ( idx -- x y w h )
-    { idx }
+    GIRD idx
         PAL_X
         act-y idx ACT_H ACT_GAP + * +
         trans-w ACT_H
-    }
+    UNGIRD
 ;
 
 @SPR_X 484 ;
@@ -688,7 +688,7 @@ IMPORT SF
 @SPR_W 140 ;
 @SPR_ROW_H 22 ;
 @spr-row-rect ( idx -- x y w h )
-    { idx } SPR_X SPR_Y idx SPR_ROW_H * + SPR_W SPR_ROW_H }
+    GIRD idx SPR_X SPR_Y idx SPR_ROW_H * + SPR_W SPR_ROW_H UNGIRD
 ;
 @spr-btn-y ( -- y ) SPR_Y MAX_SPRITES SPR_ROW_H * + 10 + ;
 @spr-new-rect ( -- x y w h ) SPR_X spr-btn-y 44 22 ;
@@ -700,19 +700,19 @@ IMPORT SF
 @STRIP_CELL_PAD 8 ;
 @strip-cell-w ( -- w ) doc-size LOADI STRIP_CELL_PAD + ;
 @strip-cell-rect ( fi -- x y w h )
-    { fi } STRIP_X fi strip-cell-w * + strip-y strip-cell-w strip-cell-w }
+    GIRD fi STRIP_X fi strip-cell-w * + strip-y strip-cell-w strip-cell-w UNGIRD
 ;
 
 @strip-btn-y ( -- y ) strip-y strip-cell-w + 12 + ;
 @fbtn-rect ( idx -- x y w h )
-    { idx } STRIP_X idx 60 * + strip-btn-y 54 22 }
+    GIRD idx STRIP_X idx 60 * + strip-btn-y 54 22 UNGIRD
 ;
 
 @in-rect? ( mx my x y w h -- f )
     { mx my x y w h }
         mx x >= mx x w + < AND
         my y >= AND my y h + < AND
-    }
+    UNGIRD
 ;
 
 ( --- Drawing --- )
@@ -722,7 +722,7 @@ IMPORT SF
         APP::draw-fd x y w h 0xE0E0E0 DRAW::fill-rect
         APP::draw-fd x y w h 0x000000 DRAW::draw-rect
         APP::draw-fd x 6 + y h 2 / 6 - + label 0x000000 1 DRAW::draw-str
-    }
+    UNGIRD
 ;
 
 @draw-editor ( -- )
@@ -730,36 +730,36 @@ IMPORT SF
     show-frame-addr zoom
     { addr z }
         0
-        { py }
+        GIRD py
             [ py doc-size LOADI < ]
             [
                 0
-                { px }
+                GIRD px
                     [ px doc-size LOADI < ]
                     [
                         addr px py frame-pixel@
                         { r g b }
                             r 16 LSHIFT g 8 LSHIFT OR b OR
-                            { c }
+                            GIRD c
                                 c KEY_COLOR = [
                                     APP::draw-fd EDITOR_X px z * + EDITOR_Y py z * + z z 0xC0C0C0 0 DRAW::fill-pat
                                 ] [
                                     APP::draw-fd EDITOR_X px z * + EDITOR_Y py z * + z z c DRAW::fill-rect
                                 ] ?:
-                            }
-                        }
+                            UNGIRD
+                        UNGIRD
                         px 1 + px!
                     ] |:
-                }
+                UNGIRD
                 py 1 + py!
             ] |:
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @draw-palette ( -- )
     0
-    { i }
+    GIRD i
         [ i 16 < ]
         [
             i swatch-rect
@@ -768,10 +768,10 @@ IMPORT SF
                 i palette-color cur-color LOADI = [
                     APP::draw-fd x 1 - y 1 - w 2 + h 2 + 0x000000 DRAW::draw-rect
                 ] ?
-            }
+            UNGIRD
             i 1 + i!
         ] |:
-    }
+    UNGIRD
     APP::draw-fd PAL_X trans-y trans-w SWATCH 0x808080 0 DRAW::fill-pat
     cur-color LOADI KEY_COLOR = [
         APP::draw-fd PAL_X 1 - trans-y 1 - trans-w 2 + SWATCH 2 + 0x000000 DRAW::draw-rect
@@ -787,21 +787,21 @@ IMPORT SF
 
 @draw-sprite-list ( -- )
     0
-    { i }
+    GIRD i
         [ i doc-nsprites LOADI < ]
         [
             i spr-row-rect
             { x y w h }
                 i cur-sprite LOADI = [ 0xD0D0FF ] [ 0xFFFFFF ] ?:
-                { bg }
+                GIRD bg
                     APP::draw-fd x y w h bg DRAW::fill-rect
                     APP::draw-fd x y w h 0x000000 DRAW::draw-rect
                     APP::draw-fd x 4 + y 4 + i sprite-name 0x000000 1 DRAW::draw-str
-                }
-            }
+                UNGIRD
+            UNGIRD
             i 1 + i!
         ] |:
-    }
+    UNGIRD
     spr-new-rect T"+New" draw-btn
     spr-ren-rect T"Rename" draw-btn
     spr-del-rect T"Delete" draw-btn
@@ -809,7 +809,7 @@ IMPORT SF
 
 @draw-strip ( -- )
     0
-    { i }
+    GIRD i
         [ i cur-sprite LOADI sprite-count < ]
         [
             i strip-cell-rect
@@ -828,10 +828,10 @@ IMPORT SF
                 ] [
                     APP::draw-fd x y w h 0x000000 DRAW::draw-rect
                 ] ?:
-            }
+            UNGIRD
             i 1 + i!
         ] |:
-    }
+    UNGIRD
     0 fbtn-rect T"+Add" draw-btn
     1 fbtn-rect T"Dup"  draw-btn
     2 fbtn-rect T"Del"  draw-btn
@@ -872,10 +872,10 @@ IMPORT SF
             mx my mouse-cell
             { px py valid }
                 valid [ px py paint-px ] ?
-            }
+            UNGIRD
         ] ?
         0
-        { i }
+        GIRD i
             [ i 16 < ]
             [
                 i swatch-rect
@@ -883,10 +883,10 @@ IMPORT SF
                     mx my x y w h in-rect? [
                         i palette-color cur-color STOREI
                     ] ?
-                }
+                UNGIRD
                 i 1 + i!
             ] |:
-        }
+        UNGIRD
         mx my PAL_X trans-y trans-w SWATCH in-rect? [
             KEY_COLOR cur-color STOREI
         ] ?
@@ -895,7 +895,7 @@ IMPORT SF
         mx my 2 act-rect in-rect? [ fill-frame ] ?
         mx my 3 act-rect in-rect? [ clear-frame ] ?
         0
-        { i }
+        GIRD i
             [ i doc-nsprites LOADI < ]
             [
                 i spr-row-rect
@@ -904,10 +904,10 @@ IMPORT SF
                         i cur-sprite STOREI
                         0 cur-frame STOREI
                     ] ?
-                }
+                UNGIRD
                 i 1 + i!
             ] |:
-        }
+        UNGIRD
         mx my spr-new-rect in-rect? [ begin-new-sprite-name ] ?
         mx my spr-ren-rect in-rect? [ begin-rename-sprite ] ?
         mx my spr-del-rect in-rect? doc-nsprites LOADI 1 > AND [
@@ -915,7 +915,7 @@ IMPORT SF
             place-confirm
         ] ?
         0
-        { i }
+        GIRD i
             [ i cur-sprite LOADI sprite-count < ]
             [
                 i strip-cell-rect
@@ -923,17 +923,17 @@ IMPORT SF
                     mx my x y w h in-rect? [
                         i cur-frame STOREI
                     ] ?
-                }
+                UNGIRD
                 i 1 + i!
             ] |:
-        }
+        UNGIRD
         mx my 0 fbtn-rect in-rect? [ cur-sprite LOADI sprite-add-frame ] ?
         mx my 1 fbtn-rect in-rect? [ cur-sprite LOADI cur-frame LOADI sprite-duplicate-frame ] ?
         mx my 2 fbtn-rect in-rect? [ cur-sprite LOADI cur-frame LOADI sprite-delete-frame ] ?
         mx my 3 fbtn-rect in-rect? [ toggle-play ] ?
         mx my 4 fbtn-rect in-rect? [ -1 speed-adjust ] ?
         mx my 5 fbtn-rect in-rect? [ 1 speed-adjust ] ?
-    }
+    UNGIRD
 ;
 
 @mouse-cell ( mx my -- px py valid? )
@@ -953,7 +953,7 @@ IMPORT SF
 ( --- Events --- )
 
 @on-mouse ( mpkt -- )
-    { mpkt }
+    GIRD mpkt
         confirm-kind LOADI 0 > [
             mpkt UI::overlay-feed
             UI::overlay-handle
@@ -961,7 +961,7 @@ IMPORT SF
             editing-name LOADI [
             ] [
                 UI::menu-open?
-                { was }
+                GIRD was
                     mpkt UI::feed
                     was UI::menu-open? OR [
                     ] [
@@ -973,21 +973,21 @@ IMPORT SF
                                 mpkt EVENT::mouse-x mpkt EVENT::mouse-y mouse-cell
                                 { px py valid }
                                     valid [ px py paint-px ] ?
-                                }
+                                UNGIRD
                             ] ?
                         ] ?
                         mpkt EVENT::mouse-type EVENT::MOUSE_UP = [
                             0 drag STOREI
                         ] ?
                     ] ?
-                }
+                UNGIRD
             ] ?:
         ] ?:
-    }
+    UNGIRD
 ;
 
 @on-kbd ( kpkt -- )
-    { kpkt }
+    GIRD kpkt
         confirm-kind LOADI 0 > [
             kpkt EVENT::kbd-type EVENT::KEY_DOWN = [
                 kpkt EVENT::kbd-key EVENT::KEY_ESC = [ do-confirm-no ] ?
@@ -997,16 +997,16 @@ IMPORT SF
             editing-name LOADI [
                 kpkt EVENT::kbd-type EVENT::KEY_DOWN = [
                     kpkt EVENT::kbd-key
-                    { key }
+                    GIRD key
                         key EVENT::KEY_ESC = [ cancel-name-edit ] ?
                         key EVENT::KEY_ENTER = [ commit-name-edit ] ?
                         key EVENT::KEY_BACKSPACE = [ name-edit-backspace ] ?
                         key STR::printable? [ key name-edit-add ] ?
-                    }
+                    UNGIRD
                 ] ?
             ] ?
         ] ?:
-    }
+    UNGIRD
 ;
 
 @on-frame ( -- )

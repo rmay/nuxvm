@@ -1161,7 +1161,7 @@ static void test_named_locals(void) {
     VM* vm;
     int32_t v;
 
-    bc = must_compile("100 200 { a b } a b + }", &len);
+    bc = must_compile("100 200 { a b } a b + UNGIRD", &len);
     vm = run_and_capture(bc, len, false);
     assert(vm_pop(vm, &v) && v == 300);
     check_stack_count(vm, 0);
@@ -1174,13 +1174,13 @@ static void test_named_locals(void) {
     vm_free(vm);
     free(bc);
 
-    bc = must_compile("5 { n } n 1 + n! n }", &len);
+    bc = must_compile("5 { n } n 1 + n! n UNGIRD", &len);
     vm = run_and_capture(bc, len, false);
     assert(vm_pop(vm, &v) && v == 6);
     vm_free(vm);
     free(bc);
 
-    bc = must_compile("10 20 { a b } 3 { c } a c + } }", &len);
+    bc = must_compile("10 20 { a b } 3 { c } a c + UNGIRD UNGIRD", &len);
     vm = run_and_capture(bc, len, false);
     assert(vm_pop(vm, &v) && v == 13);
     vm_free(vm);
@@ -1191,6 +1191,17 @@ static void test_named_locals(void) {
     assert(strstr(stderr_capture, "Unclosed local frame") != NULL);
 
     bc = compile_capturing_stderr("}", &len);
+    assert(bc == NULL);
+    assert(strstr(stderr_capture, "Unexpected }") != NULL);
+
+    /* The old bare-} close (as opposed to the { }-opening use of } to end
+       the name list) is rejected: only UNGIRD may close a frame body. */
+    bc = compile_capturing_stderr("100 200 { a b } a b + }", &len);
+    assert(bc == NULL);
+    assert(strstr(stderr_capture, "Unexpected }") != NULL);
+    assert(strstr(stderr_capture, "UNGIRD") != NULL);
+
+    bc = compile_capturing_stderr("5 { n } n 1 + n! n }", &len);
     assert(bc == NULL);
     assert(strstr(stderr_capture, "Unexpected }") != NULL);
 
@@ -1253,12 +1264,10 @@ static void test_gird_ungird(void) {
     assert(bc == NULL);
     assert(strstr(stderr_capture, "Expected local name after GIRD") != NULL);
 
-    /* } still ungirds (compat); UNGIRD also closes { names }. */
-    bc = must_compile("5 GIRD n n }", &len);
-    vm = run_and_capture(bc, len, false);
-    assert(vm_pop(vm, &v) && v == 5);
-    vm_free(vm);
-    free(bc);
+    /* } no longer closes a frame body; only UNGIRD does. */
+    bc = compile_capturing_stderr("5 GIRD n n }", &len);
+    assert(bc == NULL);
+    assert(strstr(stderr_capture, "Unexpected }") != NULL);
 
     bc = must_compile("5 { n } n UNGIRD", &len);
     vm = run_and_capture(bc, len, false);
@@ -3516,6 +3525,207 @@ static void test_easel_copy_paste(void) {
     quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
+/* Shared setup for the Step 6 transform tests below: boots Easel, paints one
+ * pixel at screen (95,43) -> canvas (15,23), then marquees canvas
+ * (10,20)-(60,35) (screen (90,40)-(140,55), w=51 h=16) around it. Caller
+ * sends the transform's shortcut, saves, and checks the result. */
+static Machine* easel_transform_setup(int32_t* mc, int32_t* kc) {
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    quill_lux_bind(m, mc, kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, *mc, 95, 43); /* pencil paints canvas (15,23) */
+    quill_lux_pump(m, 20);
+
+    quill_lux_click(m, *mc, 60, 36); /* Marquee tool */
+    quill_lux_pump(m, 20);
+    lux_drag(m, *mc, 90, 40, 140, 55); /* canvas (10,20)-(60,35) */
+    quill_lux_pump(m, 20);
+
+    return m;
+}
+
+static int easel_save_and_read(Machine* m, int32_t mc, int32_t kc, uint8_t* body, int cap) {
+    quill_lux_key(m, kc, 's', 8); /* Cmd+S */
+    int n = pump_until_file(m, "untitled.eas", 24968, 2000);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    assert(n == 24968);
+    n = lux_file_read("/sys/file/untitled.eas", body, cap);
+    assert(n == 24968);
+    return n;
+}
+
+static void test_easel_debug_paint_only(void) {
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    quill_lux_click(m, mc, 95, 43);
+    quill_lux_pump(m, 20);
+    uint8_t body[25000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+    fprintf(stderr, "DEBUG paint-only: (15,23)=%d\n", easel_bit_set(body, n, 15, 23));
+    int cnt = 0;
+    for (int i = 8; i < n; i++) if (body[i]) cnt++;
+    fprintf(stderr, "DEBUG paint-only: nonzero bytes=%d\n", cnt);
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
+static void test_easel_debug_paint_select(void) {
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+    int32_t mc, kc;
+    Machine* m = easel_transform_setup(&mc, &kc);
+    uint8_t body[25000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+    fprintf(stderr, "DEBUG paint-select: (15,23)=%d\n", easel_bit_set(body, n, 15, 23));
+    int cnt = 0;
+    for (int i = 8; i < n; i++) if (body[i]) cnt++;
+    fprintf(stderr, "DEBUG paint-select: nonzero bytes=%d\n", cnt);
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
+static void test_easel_flip_h(void) {
+    printf("Testing apps/Easel.lux: Flip Horizontal transforms the selection...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    int32_t mc, kc;
+    Machine* m = easel_transform_setup(&mc, &kc);
+    quill_lux_key(m, kc, 'h', 8); /* Cmd+H: Flip Horizontal */
+    quill_lux_pump(m, 20);
+
+    uint8_t body[25000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    fprintf(stderr, "DEBUG flip-h: (15,23)=%d (55,23)=%d\n",
+            easel_bit_set(body, n, 15, 23), easel_bit_set(body, n, 55, 23));
+    for (int yy = 18; yy <= 37; yy++) {
+        fprintf(stderr, "row %2d: ", yy);
+        for (int xx = 8; xx <= 62; xx++) {
+            fprintf(stderr, "%d", easel_bit_set(body, n, xx, yy) > 0 ? 1 : 0);
+        }
+        fprintf(stderr, "\n");
+    }
+
+    assert(easel_bit_set(body, n, 15, 23) == 0);   /* source now blank */
+    assert(easel_bit_set(body, n, 55, 23) == 1);   /* x0+x1-x = 10+60-15 */
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
+static void test_easel_flip_v(void) {
+    printf("Testing apps/Easel.lux: Flip Vertical transforms the selection...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    int32_t mc, kc;
+    Machine* m = easel_transform_setup(&mc, &kc);
+    quill_lux_key(m, kc, 'j', 8); /* Cmd+J: Flip Vertical */
+    quill_lux_pump(m, 20);
+
+    uint8_t body[25000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    assert(easel_bit_set(body, n, 15, 23) == 0);   /* source now blank */
+    assert(easel_bit_set(body, n, 15, 32) == 1);   /* y0+y1-y = 20+35-23 */
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
+static void test_easel_rotate90(void) {
+    printf("Testing apps/Easel.lux: Rotate 90 transforms the selection...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    int32_t mc, kc;
+    Machine* m = easel_transform_setup(&mc, &kc);
+    quill_lux_key(m, kc, 'r', 8); /* Cmd+R: Rotate 90 */
+    quill_lux_pump(m, 20);
+
+    uint8_t body[25000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    assert(easel_bit_set(body, n, 15, 23) == 0);   /* source now blank */
+    /* dx = x0+(y1-y) = 10+(35-23) = 22, dy = y0+(x-x0) = 20+(15-10) = 25 */
+    assert(easel_bit_set(body, n, 22, 25) == 1);
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
+static void test_easel_fill(void) {
+    printf("Testing apps/Easel.lux: Fill paints the whole selection...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    int32_t mc, kc;
+    Machine* m = easel_transform_setup(&mc, &kc);
+    quill_lux_key(m, kc, 'f', 8); /* Cmd+F: Fill (pattern 1 = solid black) */
+    quill_lux_pump(m, 20);
+
+    uint8_t body[25000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    /* (12,22) was never painted -- Fill must have set it, not just the
+     * one original pixel, to prove the whole rect got covered. */
+    assert(easel_bit_set(body, n, 12, 22) == 1);
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
+static void test_easel_trace_edges(void) {
+    printf("Testing apps/Easel.lux: Trace Edges keeps boundary, clears interior...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    /* Rect Filled tool (index 11): cell center (60,196). */
+    quill_lux_click(m, mc, 60, 196);
+    quill_lux_pump(m, 20);
+    /* Drag out canvas (20,20)-(30,30) -> screen (100,40)-(110,50): an
+     * 11x11 solid black square (default pattern 1). */
+    lux_drag(m, mc, 100, 40, 110, 50);
+    quill_lux_pump(m, 20);
+
+    /* Marquee canvas (15,15)-(35,35) -> screen (95,35)-(115,55), enclosing
+     * the square with margin. */
+    quill_lux_click(m, mc, 60, 36); /* Marquee tool */
+    quill_lux_pump(m, 20);
+    lux_drag(m, mc, 95, 35, 115, 55);
+    quill_lux_pump(m, 20);
+
+    quill_lux_key(m, kc, 'g', 8); /* Cmd+G: Trace Edges */
+    quill_lux_pump(m, 20);
+
+    uint8_t body[25000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    assert(easel_bit_set(body, n, 25, 25) == 0);   /* square's interior, cleared */
+    assert(easel_bit_set(body, n, 20, 25) == 1);   /* square's left edge, kept */
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
 // -----------------------------------------------------------------------------
 // main
 // -----------------------------------------------------------------------------
@@ -3612,6 +3822,13 @@ int main(void) {
     test_easel_marquee_move();
     test_easel_lasso_move();
     test_easel_copy_paste();
+    test_easel_debug_paint_only();
+    test_easel_debug_paint_select();
+    test_easel_flip_h();
+    test_easel_flip_v();
+    test_easel_rotate90();
+    test_easel_fill();
+    test_easel_trace_edges();
 
     printf("\n=== ALL COMPILER TESTS PASSED ===\n\n");
     return 0;

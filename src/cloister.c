@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <ctype.h>
 #include <math.h>
 
 #include "machine.h"
@@ -11,9 +12,93 @@
 #include "dialog.h"
 #include "system.h"
 
-#define WIN_WIDTH 960
-#define WIN_HEIGHT 720
+#define DEFAULT_WIN_WIDTH 960
+#define DEFAULT_WIN_HEIGHT 720
 #define PICKER_PATH "apps/Picker.lux"
+
+// Window size is resolved per app: a --width/--height CLI flag wins outright
+// (and stays fixed for the whole session); otherwise an app that declares its
+// own "@WIN_W <n> ;" / "@WIN_H <n> ;" constants (see apps/Easel.lux etc.) gets
+// a window sized to fit its own layout instead of the one-size-fits-all
+// default below, which apps that don't declare these keep.
+static int g_win_w = DEFAULT_WIN_WIDTH;
+static int g_win_h = DEFAULT_WIN_HEIGHT;
+static bool g_cli_w_set = false;
+static bool g_cli_h_set = false;
+static int g_cli_w = DEFAULT_WIN_WIDTH;
+static int g_cli_h = DEFAULT_WIN_HEIGHT;
+
+// Scans a .lux source file's text for top-level "@WIN_W <int> ;" and
+// "@WIN_H <int> ;" constant declarations (compiled .bin files carry no such
+// metadata, so this is read straight from source before compiling). Matches
+// on a word boundary so "@WIN_WIDTH" etc. can't be mistaken for "@WIN_W".
+// Apps are normally launched by their compiled .bin (see the doc comments at
+// the top of apps/*.lux), so a ".bin" path is redirected to its sibling
+// ".lux" source (same directory, same basename) when one exists.
+static bool scan_lux_win_size(const char* path, int* out_w, int* out_h) {
+    size_t path_len = strlen(path);
+    char lux_path[1024];
+    const char* src_path;
+    if (path_len >= 4 && strcmp(path + path_len - 4, ".lux") == 0) {
+        src_path = path;
+    } else if (path_len >= 4 && strcmp(path + path_len - 4, ".bin") == 0 &&
+               path_len - 4 < sizeof(lux_path) - 4) {
+        memcpy(lux_path, path, path_len - 4);
+        strcpy(lux_path + path_len - 4, ".lux");
+        src_path = lux_path;
+    } else {
+        return false;
+    }
+
+    FILE* f = fopen(src_path, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (fsize <= 0) { fclose(f); return false; }
+    char* buf = malloc((size_t)fsize + 1);
+    if (!buf) { fclose(f); return false; }
+    size_t nread = fread(buf, 1, (size_t)fsize, f);
+    fclose(f);
+    buf[nread] = '\0';
+
+    int found_w = 0, found_h = 0;
+    const char* p = buf;
+    while ((p = strstr(p, "@WIN_")) != NULL) {
+        const char* tag = p + 5;
+        int is_w = strncmp(tag, "W", 1) == 0 && !isalnum((unsigned char)tag[1]) && tag[1] != '_';
+        int is_h = strncmp(tag, "H", 1) == 0 && !isalnum((unsigned char)tag[1]) && tag[1] != '_';
+        if (is_w || is_h) {
+            const char* num = tag + 1;
+            while (*num && isspace((unsigned char)*num)) num++;
+            char* end;
+            long v = strtol(num, &end, 10);
+            if (end != num && v >= 100 && v <= 4000) {
+                if (is_w) { found_w = (int)v; }
+                else { found_h = (int)v; }
+            }
+        }
+        p += 5;
+    }
+    free(buf);
+
+    if (found_w > 0 && found_h > 0) {
+        *out_w = found_w;
+        *out_h = found_h;
+        return true;
+    }
+    return false;
+}
+
+// Resolves the window size to use for launching `path`: a locked CLI
+// override wins per-dimension, otherwise the app's own @WIN_W/@WIN_H (if
+// declared), otherwise the shared default.
+static void resolve_win_size(const char* path, int* out_w, int* out_h) {
+    int scanned_w = 0, scanned_h = 0;
+    bool scanned = scan_lux_win_size(path, &scanned_w, &scanned_h);
+    *out_w = g_cli_w_set ? g_cli_w : (scanned ? scanned_w : DEFAULT_WIN_WIDTH);
+    *out_h = g_cli_h_set ? g_cli_h : (scanned ? scanned_h : DEFAULT_WIN_HEIGHT);
+}
 
 // Frame timing diagnostics: set NUXVM_FRAME_DEBUG=1 to log per-phase
 // frame time (event poll / VM tick / render+present) once a second.
@@ -178,7 +263,7 @@ static void cloister_open_dialog(void* ctx) {
 }
 
 static bool load_app(const char* path, uint8_t** program_out, Machine** machine_out,
-                     SDL_Window* win) {
+                     SDL_Window* win, int win_w, int win_h) {
     FILE* f = fopen(path, "rb");
     if (!f) {
         fprintf(stderr, "Could not open %s\n", path);
@@ -233,7 +318,7 @@ static bool load_app(const char* path, uint8_t** program_out, Machine** machine_
     }
 
     if (machine->system) {
-        system_set_resolution(machine->system, WIN_WIDTH, WIN_HEIGHT);
+        system_set_resolution(machine->system, win_w, win_h);
         machine->system->play_sound = cloister_play_sound;
         machine->system->set_window_title = cloister_set_title;
         machine->system->title_ctx = win;
@@ -247,6 +332,24 @@ static bool load_app(const char* path, uint8_t** program_out, Machine** machine_
     *machine_out = machine;
     *program_out = program;
     return true;
+}
+
+// Loads `path`, resizing the OS window/texture first if its resolved size
+// (CLI override, else its own @WIN_W/@WIN_H, else the default) differs from
+// the currently open window -- used both for the initial launch and for
+// in-session app switches (Picker -> app, app -> Picker, app -> app).
+static bool switch_to_app(const char* path, SDL_Window* win, SDL_Renderer* ren, SDL_Texture** tex,
+                          uint8_t** program_out, Machine** machine_out) {
+    int new_w, new_h;
+    resolve_win_size(path, &new_w, &new_h);
+    if (new_w != g_win_w || new_h != g_win_h) {
+        g_win_w = new_w;
+        g_win_h = new_h;
+        SDL_SetWindowSize(win, g_win_w, g_win_h);
+        SDL_DestroyTexture(*tex);
+        *tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, g_win_w, g_win_h);
+    }
+    return load_app(path, program_out, machine_out, win, g_win_w, g_win_h);
 }
 
 static bool launch_path_ok(const char* p) {
@@ -271,12 +374,30 @@ static void eject_rom(Machine** machine, uint8_t** program, SDL_Window* win) {
 }
 
 int main(int argc, char** argv) {
+    // Parse the optional ROM path plus --width/--height overrides. Order is
+    // not significant: `cloister apps/Easel.bin --width 800` and
+    // `cloister --width 800 apps/Easel.bin` both work.
+    const char* app_path = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--width") == 0 && i + 1 < argc) {
+            g_cli_w = atoi(argv[++i]);
+            g_cli_w_set = true;
+        } else if (strcmp(argv[i], "--height") == 0 && i + 1 < argc) {
+            g_cli_h = atoi(argv[++i]);
+            g_cli_h_set = true;
+        } else if (!app_path) {
+            app_path = argv[i];
+        }
+    }
+    bool from_argv = app_path != NULL;
+    resolve_win_size(from_argv ? app_path : PICKER_PATH, &g_win_w, &g_win_h);
+
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
         fprintf(stderr, "SDL_Init Error: %s\n", SDL_GetError());
         return 1;
     }
 
-    SDL_Window* win = SDL_CreateWindow("Cloister", 100, 100, WIN_WIDTH, WIN_HEIGHT, SDL_WINDOW_SHOWN);
+    SDL_Window* win = SDL_CreateWindow("Cloister", 100, 100, g_win_w, g_win_h, SDL_WINDOW_SHOWN);
     if (!win) {
         fprintf(stderr, "SDL_CreateWindow Error: %s\n", SDL_GetError());
         SDL_Quit();
@@ -292,7 +413,7 @@ int main(int argc, char** argv) {
     Uint32 renderer_flags = SDL_RENDERER_ACCELERATED;
     if (getenv("NUXVM_VSYNC")) renderer_flags |= SDL_RENDERER_PRESENTVSYNC;
     SDL_Renderer* ren = SDL_CreateRenderer(win, -1, renderer_flags);
-    SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, WIN_WIDTH, WIN_HEIGHT);
+    SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, g_win_w, g_win_h);
 
     SDL_AudioSpec want, have;
     SDL_zero(want);
@@ -306,15 +427,14 @@ int main(int argc, char** argv) {
 
     Machine* machine = NULL;
     uint8_t* program = NULL;
-    bool from_argv = argc > 1;
     bool running_rom = false;
     bool is_picker = false;
 
     if (from_argv) {
-        if (!load_app(argv[1], &program, &machine, win)) return 1;
+        if (!load_app(app_path, &program, &machine, win, g_win_w, g_win_h)) return 1;
         running_rom = true;
     } else {
-        if (!load_app(PICKER_PATH, &program, &machine, win)) return 1;
+        if (!load_app(PICKER_PATH, &program, &machine, win, g_win_w, g_win_h)) return 1;
         running_rom = true;
         is_picker = true;
     }
@@ -409,14 +529,14 @@ int main(int argc, char** argv) {
                 running_rom = false;
                 is_picker = false;
 
-                if (launch_path_ok(launch) && load_app(launch, &program, &machine, win)) {
+                if (launch_path_ok(launch) && switch_to_app(launch, win, ren, &tex, &program, &machine)) {
                     running_rom = true;
                 } else if (from_argv) {
                     quit = true;
                 } else if (was_picker && !launch[0]) {
                     quit = true;
                 } else {
-                    if (load_app(PICKER_PATH, &program, &machine, win)) {
+                    if (switch_to_app(PICKER_PATH, win, ren, &tex, &program, &machine)) {
                         running_rom = true;
                         is_picker = true;
                     } else {
@@ -458,8 +578,8 @@ int main(int argc, char** argv) {
             if (g_dialog.active) dialog_draw(&g_dialog);
             int w = machine->system->screen_width;
             int h = machine->system->screen_height;
-            if (w > WIN_WIDTH) w = WIN_WIDTH;
-            if (h > WIN_HEIGHT) h = WIN_HEIGHT;
+            if (w > g_win_w) w = g_win_w;
+            if (h > g_win_h) h = g_win_h;
             int src_stride = machine->system->screen_width;
             int dst_stride = pitch / 4;
             // screen_pixels is [A,R,G,B] per pixel; the ABGR8888 texture wants the

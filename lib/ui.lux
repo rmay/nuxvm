@@ -2583,16 +2583,16 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
   are not clipped. fill/textc choose active (invert) vs inactive. )
 @gb-title { fd addr fill textc -- }
     addr CH_TEXT + LOADI dup 0 > [
-        { ptr }
+        GIRD ptr
             ptr DRAW::str-w 8 + { tw }
                 DRAW::char-h { th }
                     addr CH_Y + LOADI th 2 / - { ty }
                         fd addr CH_X + LOADI 6 + ty 1 - tw th 2 + fill DRAW::paint-rect
                         fd addr CH_X + LOADI 10 + ty ptr textc 1 DRAW::draw-str
-                    }
-                }
-            }
-        }
+                    UNGIRD
+                UNGIRD
+            UNGIRD
+        UNGIRD
     ] [ drop ] ?:
 ;
 
@@ -2748,9 +2748,9 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
                         1 DRAW::draw-str
                         i 1 + i!
                     ] |:
-                }
-            }
-        }
+                UNGIRD
+            UNGIRD
+        UNGIRD
     ] ?:
 ;
 
@@ -2884,15 +2884,15 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
                             ] ?:
                             1 hit!
                         ] ?
-                    }
+                    UNGIRD
                 ] [
                     drop
                 ] ?:
                 i 1 + i!
             ] |:
-        }
+        UNGIRD
         hit
-    }
+    UNGIRD
 ;
 
 @cb-add ( name x y size label -- )
@@ -3490,7 +3490,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
         256 MEM::allot { p buf }
             p ctl CTL.payload!
             p 0 0 100 20 buf 255 text-init
-        }
+        UNGIRD
     ] [
         drop
         0 ctl CTL.payload!
@@ -3499,7 +3499,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 
 @create { name kind -- ctl }
     CTL.SIZE MEM::allot
-    { ctl }
+    GIRD ctl
         name ctl CTL.name!
         kind ctl CTL.kind!
         F_VISIBLE ctl CTL.flags!
@@ -3520,7 +3520,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
         ctl CS_HEAD STOREI
         ctl payload-init
         ctl
-    }
+    UNGIRD
 ;
 
 @ctl-button   { name -- ctl } name K_BUTTON   create ;
@@ -3694,7 +3694,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     7 7 CLR_BORDER DRAW::frame-rect
     ctl CTL.label@ 0 > [
         ctl CTL.label@ strlen DRAW::char-w * 16 +
-        { tw }
+        GIRD tw
             DRAW::fd
             ctl CTL.minx@ ctl CTL.maxx@ + tw - 2 /
             ctl CTL.miny@ 3 +
@@ -3703,7 +3703,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
             ctl CTL.minx@ ctl CTL.maxx@ + tw - 2 / 8 +
             ctl CTL.miny@ 3 +
             ctl CTL.label@ CLR_TEXT 1 DRAW::draw-str
-        }
+        UNGIRD
     ] ?
 ;
 

@@ -757,7 +757,8 @@ static bool compile_token(Compiler* c, Token t) {
             return compile_local_frame_start(c);
         }
         if (strcmp(t.value, "}") == 0) {
-            return compile_local_frame_end(c, t.line, "}");
+            fprintf(stderr, "Unexpected } at line %d (use UNGIRD to close a frame)\n", t.line);
+            return false;
         }
         if (strcasecmp(t.value, "GIRD") == 0) {
             return compile_gird(c, t.line);

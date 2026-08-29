@@ -8,6 +8,10 @@ INCLUDE "lib/event.lux"
 MODULE CALC
 VERSION 400000
 
+( 20px margin around the 220x280 calculator body drawn in draw-ui/start below )
+@WIN_W 260 ;
+@WIN_H 320 ;
+
 IMPORT APP
 IMPORT UI
 IMPORT VFS

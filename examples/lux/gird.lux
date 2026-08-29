@@ -1,6 +1,9 @@
 ( gird.lux — named locals: GIRD / UNGIRD
   ./bin/nux examples/lux/gird.lux )
 
+( GIRD name — pops the value currently on top of the stack and binds it to name 
+for the rest of the enclosing scope, until the matching UNGIRD. It's lexical scoping for names. )
+
 ( One name. GIRD binds TOS; UNGIRD pops the frame. )
 5 GIRD n
     n n * .

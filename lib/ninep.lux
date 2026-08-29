@@ -79,59 +79,59 @@ IMPORT STR
         1 conn conn-nextfid!
         MSIZE conn conn-msize!
         0 conn conn-iounit!
-    }
+    UNGIRD
 ;
 
 ( --- Byte-safe wire primitives (any address, no 4-byte-alignment need) --- )
 
 @load-int-le ( addr -- val )
-    { addr }
+    GIRD addr
         addr load-byte
         addr 1 + load-byte 8 LSHIFT OR
         addr 2 + load-byte 16 LSHIFT OR
         addr 3 + load-byte 24 LSHIFT OR
-    }
+    UNGIRD
 ;
 
 @put-u8 ( val -- )
-    { val }
+    GIRD val
         val BUF WPOS LOADI + store-byte
         WPOS LOADI 1 + WPOS STOREI
-    }
+    UNGIRD
 ;
 @put-u16 ( val -- )
-    { val }
+    GIRD val
         val BUF WPOS LOADI + DRAW::store-word-le
         WPOS LOADI 2 + WPOS STOREI
-    }
+    UNGIRD
 ;
 @put-u32 ( val -- )
-    { val }
+    GIRD val
         val BUF WPOS LOADI + DRAW::store-int-le
         WPOS LOADI 4 + WPOS STOREI
-    }
+    UNGIRD
 ;
 @put-bytes ( ptr len -- )
     { ptr len }
         0
-        { i }
+        GIRD i
             [ i len < ]
             [
                 ptr i + load-byte BUF WPOS LOADI i + + store-byte
                 i 1 + i!
             ] |:
-        }
+        UNGIRD
         WPOS LOADI len + WPOS STOREI
-    }
+    UNGIRD
 ;
 @put-str ( ptr -- )
-    { ptr }
+    GIRD ptr
         ptr STR::strlen
-        { n }
+        GIRD n
             n put-u16
             ptr n put-bytes
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 @put-qid ( qtype qvers qpath -- )
     { qtype qvers qpath }
@@ -139,7 +139,7 @@ IMPORT STR
         qvers put-u32
         qpath put-u32
         0 put-u32
-    }
+    UNGIRD
 ;
 
 @get-u8 ( -- val )
@@ -157,22 +157,22 @@ IMPORT STR
 @get-bytes ( dest len -- )
     { dest len }
         0
-        { i }
+        GIRD i
             [ i len < ]
             [
                 BUF RPOS LOADI i + + load-byte dest i + store-byte
                 i 1 + i!
             ] |:
-        }
+        UNGIRD
         RPOS LOADI len + RPOS STOREI
-    }
+    UNGIRD
 ;
 @get-str ( dest -- )
     get-u16
     { dest n }
         dest n get-bytes
         0 dest n + store-byte
-    }
+    UNGIRD
 ;
 @get-qid ( -- qtype qvers qpath )
     get-u8
@@ -184,22 +184,22 @@ IMPORT STR
 ( --- Message framing --- )
 
 @msg-begin ( type -- )
-    { type }
+    GIRD type
         0 WPOS STOREI
         0 put-u32
         type put-u8
         TAG put-u16
-    }
+    UNGIRD
 ;
 
 @msg-end ( fd -- )
-    { fd }
+    GIRD fd
         WPOS LOADI
-        { total }
+        GIRD total
             total BUF DRAW::store-int-le
             fd BUF total VFS::write drop
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 ( Blocks (cooperatively yielding) until a message arrives on fd, then
@@ -210,30 +210,30 @@ IMPORT STR
         drop
         7 RPOS STOREI
         BUF 4 + load-byte
-        { got }
+        GIRD got
             got RERROR = [
                 0
             ] [
                 got expect =
             ] ?:
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 ( --- Client --- )
 
 @version ( conn -- ok? )
-    { conn }
+    GIRD conn
         TVERSION msg-begin
         conn conn-msize@ put-u32
         T"9P2000" put-str
         conn conn-fd@ msg-end
         conn conn-fd@ RVERSION recv
-        { ok }
+        GIRD ok
             ok [ get-u32 conn conn-msize! ] ?
             ok
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @attach ( conn uname-ptr aname-ptr -- ok? )
@@ -245,14 +245,14 @@ IMPORT STR
         aname put-str
         conn conn-fd@ msg-end
         conn conn-fd@ RATTACH recv
-    }
+    UNGIRD
 ;
 
 ( Single-element walk only: flat one-level namespace. )
 @walk ( conn name-ptr -- fid )
     { conn name }
         conn conn-nextfid@
-        { newfid }
+        GIRD newfid
             TWALK msg-begin
             0 put-u32
             newfid put-u32
@@ -260,7 +260,7 @@ IMPORT STR
             name put-str
             conn conn-fd@ msg-end
             conn conn-fd@ RWALK recv
-            { ok }
+            GIRD ok
                 ok [
                     get-u16 1 = [
                         newfid 1 + conn conn-nextfid!
@@ -271,9 +271,9 @@ IMPORT STR
                 ] [
                     -1
                 ] ?:
-            }
-        }
-    }
+            UNGIRD
+        UNGIRD
+    UNGIRD
 ;
 
 @open ( conn fid mode -- ok? )
@@ -283,14 +283,14 @@ IMPORT STR
         mode put-u8
         conn conn-fd@ msg-end
         conn conn-fd@ ROPEN recv
-        { ok }
+        GIRD ok
             ok [
                 get-qid drop drop drop
                 get-u32 conn conn-iounit!
             ] ?
             ok
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @read ( conn fid offset count dest -- n )
@@ -302,18 +302,18 @@ IMPORT STR
         count put-u32
         conn conn-fd@ msg-end
         conn conn-fd@ RREAD recv
-        { ok }
+        GIRD ok
             ok [
                 get-u32
-                { n }
+                GIRD n
                     dest n get-bytes
                     n
-                }
+                UNGIRD
             ] [
                 0
             ] ?:
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @write ( conn fid offset src count -- n )
@@ -326,10 +326,10 @@ IMPORT STR
         src count put-bytes
         conn conn-fd@ msg-end
         conn conn-fd@ RWRITE recv
-        { ok }
+        GIRD ok
             ok [ get-u32 ] [ 0 ] ?:
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @clunk ( conn fid -- )
@@ -338,7 +338,7 @@ IMPORT STR
         fid put-u32
         conn conn-fd@ msg-end
         conn conn-fd@ RCLUNK recv drop
-    }
+    UNGIRD
 ;
 
 ( --- Server: named buffer-backed files + a small fid table --- )
@@ -356,7 +356,7 @@ IMPORT STR
 @serve-file ( name-ptr buf-ptr capacity -- )
     { name buf cap }
         SRV_NFILES LOADI
-        { idx }
+        GIRD idx
             idx MAXFILES < [
                 name idx srv-file-name STR::strcpy
                 buf idx srv-file-buf-addr STOREI
@@ -364,16 +364,16 @@ IMPORT STR
                 0 idx srv-file-len-addr STOREI
                 SRV_NFILES LOADI 1 + SRV_NFILES STOREI
             ] ?
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @find-file-by-name ( name-ptr -- idx )
-    { name }
+    GIRD name
         -1 SRV_NFILES LOADI
         { found n }
             0
-            { i }
+            GIRD i
                 [ i n < ]
                 [
                     i srv-file-name name STR::streq [
@@ -381,10 +381,10 @@ IMPORT STR
                     ] ?
                     i 1 + i!
                 ] |:
-            }
+            UNGIRD
             found
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @srv-fid-rec       ( slot -- addr ) 8 * SRV_FIDS + ;
@@ -393,19 +393,19 @@ IMPORT STR
 
 @serve-fids-init ( -- )
     0
-    { i }
+    GIRD i
         [ i MAXFIDS < ]
         [
             -1 i srv-fid-num-addr STOREI
             i 1 + i!
         ] |:
-    }
+    UNGIRD
 ;
 
 @srv-fid-alloc ( fid file-idx -- )
     { fid fidx }
         0
-        { i }
+        GIRD i
             [ i MAXFIDS < ]
             [
                 i srv-fid-num-addr LOADI -1 = [
@@ -415,16 +415,16 @@ IMPORT STR
                 ] ?
                 i 1 + i!
             ] |:
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @srv-fid-find ( fid -- slot )
-    { fid }
+    GIRD fid
         -1
-        { found }
+        GIRD found
             0
-            { i }
+            GIRD i
                 [ i MAXFIDS < ]
                 [
                     i srv-fid-num-addr LOADI fid = [
@@ -432,51 +432,51 @@ IMPORT STR
                     ] ?
                     i 1 + i!
                 ] |:
-            }
+            UNGIRD
             found
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @srv-fid-free ( fid -- )
     srv-fid-find
-    { slot }
+    GIRD slot
         slot 0 >= [
             -1 slot srv-fid-num-addr STOREI
         ] ?
-    }
+    UNGIRD
 ;
 
 @handle-version ( fd -- )
-    { fd }
+    GIRD fd
         get-u32 drop
         RVERSION msg-begin
         MSIZE put-u32
         T"9P2000" put-str
         fd msg-end
-    }
+    UNGIRD
 ;
 
 @handle-attach ( fd -- )
-    { fd }
+    GIRD fd
         get-u32
-        { fid }
+        GIRD fid
             get-u32 drop
             fid -1 srv-fid-alloc
             RATTACH msg-begin
             QTDIR 0 0 put-qid
             fd msg-end
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @handle-walk ( fd -- )
-    { fd }
+    GIRD fd
         get-u32 drop
         get-u32
-        { newfid }
+        GIRD newfid
             get-u16
-            { nwname }
+            GIRD nwname
                 nwname 0 = [
                     RWALK msg-begin
                     0 put-u16
@@ -484,7 +484,7 @@ IMPORT STR
                 ] [
                     NAMEBUF get-str
                     NAMEBUF find-file-by-name
-                    { fidx }
+                    GIRD fidx
                         fidx 0 >= [
                             newfid fidx srv-fid-alloc
                             RWALK msg-begin
@@ -496,135 +496,135 @@ IMPORT STR
                             T"no such file" put-str
                             fd msg-end
                         ] ?:
-                    }
+                    UNGIRD
                 ] ?:
-            }
-        }
-    }
+            UNGIRD
+        UNGIRD
+    UNGIRD
 ;
 
 @handle-open ( fd -- )
-    { fd }
+    GIRD fd
         get-u32
-        { fid }
+        GIRD fid
             get-u8 drop
             fid srv-fid-find
-            { slot }
+            GIRD slot
                 slot 0 >= [
                     slot srv-fid-file-addr LOADI
-                    { fidx }
+                    GIRD fidx
                         ROPEN msg-begin
                         fidx 0 >= [ QTFILE ] [ QTDIR ] ?: 0 fidx 1 + put-qid
                         MSIZE put-u32
                         fd msg-end
-                    }
+                    UNGIRD
                 ] [
                     RERROR msg-begin
                     T"unknown fid" put-str
                     fd msg-end
                 ] ?:
-            }
-        }
-    }
+            UNGIRD
+        UNGIRD
+    UNGIRD
 ;
 
 @handle-read ( fd -- )
-    { fd }
+    GIRD fd
         get-u32
-        { fid }
+        GIRD fid
             get-u32
-            { offset }
+            GIRD offset
                 get-u32 drop
                 get-u32
-                { count }
+                GIRD count
                     fid srv-fid-find
-                    { slot }
+                    GIRD slot
                         slot 0 >= slot srv-fid-file-addr LOADI 0 >= AND [
                             slot srv-fid-file-addr LOADI
-                            { fidx }
+                            GIRD fidx
                                 fidx srv-file-len-addr LOADI
-                                { len }
+                                GIRD len
                                     offset len < [ len offset - count MIN ] [ 0 ] ?:
-                                    { n }
+                                    GIRD n
                                         RREAD msg-begin
                                         n put-u32
                                         fidx srv-file-buf-addr LOADI offset + n put-bytes
                                         fd msg-end
-                                    }
-                                }
-                            }
+                                    UNGIRD
+                                UNGIRD
+                            UNGIRD
                         ] [
                             RERROR msg-begin
                             T"bad fid" put-str
                             fd msg-end
                         ] ?:
-                    }
-                }
-            }
-        }
-    }
+                    UNGIRD
+                UNGIRD
+            UNGIRD
+        UNGIRD
+    UNGIRD
 ;
 
 @handle-write ( fd -- )
-    { fd }
+    GIRD fd
         get-u32
-        { fid }
+        GIRD fid
             get-u32
-            { offset }
+            GIRD offset
                 get-u32 drop
                 get-u32
-                { count }
+                GIRD count
                     fid srv-fid-find
-                    { slot }
+                    GIRD slot
                         slot 0 >= slot srv-fid-file-addr LOADI 0 >= AND [
                             slot srv-fid-file-addr LOADI
-                            { fidx }
+                            GIRD fidx
                                 fidx srv-file-cap-addr LOADI
-                                { cap }
+                                GIRD cap
                                     offset cap < [ cap offset - count MIN ] [ 0 ] ?:
-                                    { n }
+                                    GIRD n
                                         fidx srv-file-buf-addr LOADI offset + n get-bytes
                                         offset n + fidx srv-file-len-addr LOADI MAX
                                         fidx srv-file-len-addr STOREI
                                         RWRITE msg-begin
                                         n put-u32
                                         fd msg-end
-                                    }
-                                }
-                            }
+                                    UNGIRD
+                                UNGIRD
+                            UNGIRD
                         ] [
                             RERROR msg-begin
                             T"bad fid" put-str
                             fd msg-end
                         ] ?:
-                    }
-                }
-            }
-        }
-    }
+                    UNGIRD
+                UNGIRD
+            UNGIRD
+        UNGIRD
+    UNGIRD
 ;
 
 @handle-clunk ( fd -- )
-    { fd }
+    GIRD fd
         get-u32
-        { fid }
+        GIRD fid
             fid srv-fid-free
             RCLUNK msg-begin
             fd msg-end
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 ( Non-blocking: services at most one pending request on fd, if any. Call
   once per tick (e.g. from @on-frame) for each fd a server listens on. )
 @serve-pump ( fd -- )
-    { fd }
+    GIRD fd
         fd BUF MSIZE VFS::read
-        { n }
+        GIRD n
             n 7 >= [
                 7 RPOS STOREI
                 BUF 4 + load-byte
-                { type }
+                GIRD type
                     type TVERSION = [ fd handle-version ] ?
                     type TATTACH = [ fd handle-attach ] ?
                     type TWALK = [ fd handle-walk ] ?
@@ -632,8 +632,8 @@ IMPORT STR
                     type TREAD = [ fd handle-read ] ?
                     type TWRITE = [ fd handle-write ] ?
                     type TCLUNK = [ fd handle-clunk ] ?
-                }
+                UNGIRD
             ] ?
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;

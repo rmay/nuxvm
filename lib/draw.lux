@@ -32,7 +32,7 @@ MODULE DRAW
             src i + load-byte dst i + store-byte
             i 1 + i!
         ] |:
-    }
+    UNGIRD
 ;
 
 @batch-on? ( -- f )
@@ -324,7 +324,7 @@ MODULE DRAW
                 px 1 + px!
             ] |:
             xoff 0 < [ 0 0 ] [ xoff spanw ] ?:
-        }
+        UNGIRD
     ] ?:
 ;
 
@@ -338,11 +338,11 @@ MODULE DRAW
                 dup 0 > [
                     { xoff spanw }
                         fd x xoff + y py + spanw 1 color fill-rect
-                    }
+                    UNGIRD
                 ] [ drop drop ] ?:
                 py 1 + py!
             ] |:
-        }
+        UNGIRD
     ] ?:
 ;
 
@@ -367,19 +367,19 @@ MODULE DRAW
                                     lw 0 > [
                                         fd x ox + y py + lw 1 color fill-rect
                                     ] ?
-                                }
+                                UNGIRD
                                 ox osw + 1 ix + iw + - { rw }
                                     rw 0 > [
                                         fd x 1 + ix + iw + y py + rw 1 color fill-rect
                                     ] ?
-                                }
+                                UNGIRD
                             ] ?:
-                        }
+                        UNGIRD
                     ] ?:
-                }
+                UNGIRD
                 py 1 + py!
             ] |:
-        }
+        UNGIRD
     ] ?:
 ;
 
@@ -426,7 +426,7 @@ MODULE DRAW
                     { xoff spanw }
                         xoff
                         w ow - spanw +
-                    }
+                    UNGIRD
                 ] ?:
             ] [
                 py h oh - >= [
@@ -435,7 +435,7 @@ MODULE DRAW
                         { xoff spanw }
                             xoff
                             w ow - spanw +
-                        }
+                        UNGIRD
                     ] ?:
                 ] [
                     0 w
@@ -461,11 +461,11 @@ MODULE DRAW
                         dup 0 > [
                             { xoff spanw }
                                 fd x xoff + y py + spanw 1 color fill-rect
-                            }
+                            UNGIRD
                         ] [ drop drop ] ?:
                         py 1 + py!
                     ] |:
-                }
+                UNGIRD
             ] ?:
         ] ?:
     ] ?:
@@ -493,19 +493,19 @@ MODULE DRAW
                                         lw 0 > [
                                             fd x ox + y py + lw 1 color fill-rect
                                         ] ?
-                                    }
+                                    UNGIRD
                                     ox osw + 1 ix + iw + - { rw }
                                         rw 0 > [
                                             fd x 1 + ix + iw + y py + rw 1 color fill-rect
                                         ] ?
-                                    }
+                                    UNGIRD
                                 ] ?:
-                            }
+                            UNGIRD
                         ] ?:
-                    }
+                    UNGIRD
                     py 1 + py!
                 ] |:
-            }
+            UNGIRD
         ] ?:
     ] ?:
 ;
@@ -530,11 +530,11 @@ MODULE DRAW
                         err adx + err!
                         y0 sy + y0!
                     ] ?
-                }
+                UNGIRD
                 fd x0 y0 color pix
             ] |:
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 ( System 6 checkbox X: 2px diagonals inset 1 from an s×s box. )
@@ -546,7 +546,7 @@ MODULE DRAW
             fd x s + 2 - i - y i + 2 2 color fill-rect
             i 1 + i!
         ] |:
-    }
+    UNGIRD
 ;
 
 ( X on edge (xa,ya)–(xb,yb) at scanline y. )
@@ -576,8 +576,8 @@ MODULE DRAW
         x0 x1 MIN x2 MIN { xl }
             x0 x1 MAX x2 MAX xl - 1 + { xw }
                 xw 0 > [ fd xl y0 xw color hline ] ?
-            }
-        }
+            UNGIRD
+        UNGIRD
     ] [
         y0 { y }
             [ y y2 <= ]
@@ -591,11 +591,11 @@ MODULE DRAW
                 OVER OVER MIN { xl }
                     MAX xl - ABS 1 + { xw }
                         xw 0 > [ fd xl y xw color hline ] ?
-                    }
-                }
+                    UNGIRD
+                UNGIRD
                 y 1 + y!
             ] |:
-        }
+        UNGIRD
     ] ?:
 ;
 
@@ -606,10 +606,10 @@ MODULE DRAW
         [
             2 w i - MIN { dw }
                 dw 0 > [ fd x i + y dw color hline ] ?
-            }
+            UNGIRD
             i 4 + i!
         ] |:
-    }
+    UNGIRD
 ;
 
 ( System 6 menu checkmark, origin at the item's mark box. )
@@ -643,11 +643,11 @@ MODULE DRAW
         7 ST_CW STOREI
         16 ST_CH STOREI
         T"/sys/font/widths" VFS::open dup 0 >= [
-            { wfd }
+            GIRD wfd
                 wfd WIDTHS 256 VFS::read drop
                 wfd VFS::close drop
                 WIDTHS 77 + load-byte dup 0 > [ ST_CW STOREI ] [ drop ] ?:
-            }
+            UNGIRD
         ] [ drop ] ?:
         1 ST_READY STOREI
     ] ?

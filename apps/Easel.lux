@@ -1,10 +1,12 @@
 ( Easel: a MacPaint clone in progress -- see easel_plan.md for the full plan.
-  File > New/Open/Save/Save As | Quit, Edit > Undo / Invert / Clear,
-  Goodies > Grid / FatBits / Edit Pattern / Brush Shape. 20-tool palette (12
-  wired so far), 38 pattern slots (all filled in), 32 preset brush shapes
-  (double-click the Brush tool, or Goodies > Brush Shape...), pen-width
-  strip driving line/rect/roundrect/oval outline thickness. Canvas is
-  480x416, 1-bit, in a 560x492 window (geometry sized to the tools, not a
+  File > New/Open/Save/Save As | Quit, Edit > Undo / Cut / Copy / Paste /
+  Invert / Clear / Fill / Trace Edges / Flip H / Flip V / Rotate 90,
+  Goodies > Grid / FatBits / Edit Pattern / Brush Shape. 20-tool palette (14
+  wired so far, including Marquee/Lasso selection), 38 pattern slots (all
+  filled in), 32 preset brush shapes (double-click the Brush tool, or
+  Goodies > Brush Shape...), pen-width strip driving line/rect/roundrect/
+  oval outline thickness. Canvas is 480x416, 1-bit, in a 560x492 window
+  (geometry sized to the tools, not a
   fixed window size). Save is EAS1.
   ./bin/cloister apps/Easel.bin )
 
@@ -340,7 +342,7 @@ IMPORT TIME
             bit x k + y pix!
             k 1 + k!
         ] |:
-    }
+    UNGIRD
 ;
 
 ( Delegates to BITMAP::hspan-pat (word-at-a-time, no per-pixel pix! bounds
@@ -364,8 +366,8 @@ IMPORT TIME
         col 8 < [ a load-byte ] [ a 1 + load-byte ] ?: { byte }
             byte 128 col 8 MOD RSHIFT AND
             0 = [ 0 ] [ 1 ] ?:
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @brush-set-bit { bi col row v -- }
@@ -378,9 +380,9 @@ IMPORT TIME
                     byte 128 col 8 MOD RSHIFT OR
                 ] ?:
                 ba store-byte
-            }
-        }
-    }
+            UNGIRD
+        UNGIRD
+    UNGIRD
 ;
 
 @brush-clear { bi -- }
@@ -391,7 +393,7 @@ IMPORT TIME
             bi row brush-addr 1 + 0 store-byte
             row 1 + row!
         ] |:
-    }
+    UNGIRD
 ;
 
 @circle-mask { bi r -- }
@@ -406,14 +408,14 @@ IMPORT TIME
                             dx dx * dy dy * + r r * <= [
                                 bi col row 1 brush-set-bit
                             ] ?
-                        }
-                    }
+                        UNGIRD
+                    UNGIRD
                     col 1 + col!
                 ] |:
-            }
+            UNGIRD
             row 1 + row!
         ] |:
-    }
+    UNGIRD
 ;
 
 @ring-mask { bi r -- }
@@ -429,15 +431,15 @@ IMPORT TIME
                                 d2 r r * <= d2 r 1 - r 1 - * > AND [
                                     bi col row 1 brush-set-bit
                                 ] ?
-                            }
-                        }
-                    }
+                            UNGIRD
+                        UNGIRD
+                    UNGIRD
                     col 1 + col!
                 ] |:
-            }
+            UNGIRD
             row 1 + row!
         ] |:
-    }
+    UNGIRD
 ;
 
 @square-mask { bi half -- }
@@ -452,10 +454,10 @@ IMPORT TIME
                     ] ?
                     col 1 + col!
                 ] |:
-            }
+            UNGIRD
             row 1 + row!
         ] |:
-    }
+    UNGIRD
 ;
 
 @cross-mask { bi half thick -- }
@@ -471,14 +473,14 @@ IMPORT TIME
                             ady half <= adx thick <= AND OR [
                                 bi col row 1 brush-set-bit
                             ] ?
-                        }
-                    }
+                        UNGIRD
+                    UNGIRD
                     col 1 + col!
                 ] |:
-            }
+            UNGIRD
             row 1 + row!
         ] |:
-    }
+    UNGIRD
 ;
 
 @diag-mask { bi w -- }
@@ -493,10 +495,10 @@ IMPORT TIME
                     ] ?
                     col 1 + col!
                 ] |:
-            }
+            UNGIRD
             row 1 + row!
         ] |:
-    }
+    UNGIRD
 ;
 
 @adiag-mask { bi w -- }
@@ -511,10 +513,10 @@ IMPORT TIME
                     ] ?
                     col 1 + col!
                 ] |:
-            }
+            UNGIRD
             row 1 + row!
         ] |:
-    }
+    UNGIRD
 ;
 
 ( 0-7 circles growing r=1..8, 8-15 squares growing half=0..7, 16-19 NW-SE
@@ -528,7 +530,7 @@ IMPORT TIME
             bi brush-clear
             bi 1 + bi!
         ] |:
-    }
+    UNGIRD
     0  1 circle-mask   1  2 circle-mask   2  3 circle-mask   3  4 circle-mask
     4  5 circle-mask   5  6 circle-mask   6  7 circle-mask   7  8 circle-mask
     8  0 square-mask   9  1 square-mask  10  2 square-mask  11  3 square-mask
@@ -551,10 +553,10 @@ IMPORT TIME
                     ] ?
                     col 1 + col!
                 ] |:
-            }
+            UNGIRD
             row 1 + row!
         ] |:
-    }
+    UNGIRD
 ;
 
 @erase-at { cx cy -- }
@@ -567,10 +569,10 @@ IMPORT TIME
                     0 cx dx + cy dy + pix!
                     dx 1 + dx!
                 ] |:
-            }
+            UNGIRD
             dy 1 + dy!
         ] |:
-    }
+    UNGIRD
 ;
 
 @rnd ( -- n )
@@ -587,11 +589,11 @@ IMPORT TIME
                     dx dx * dy dy * + 144 < [
                         cx dx + cy dy + plot-pat
                     ] ?
-                }
-            }
+                UNGIRD
+            UNGIRD
             i 1 + i!
         ] |:
-    }
+    UNGIRD
 ;
 
 @plot-at { x y -- }
@@ -625,11 +627,11 @@ IMPORT TIME
                         err adx + err!
                         y0 sy + y0!
                     ] ?
-                }
+                UNGIRD
                 x0 y0 plot-at
             ] |:
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @canon-xy { x0 y0 x1 y1 -- minx miny maxx maxy }
@@ -645,7 +647,7 @@ IMPORT TIME
                 1 x maxy pix!
                 x 1 + x!
             ] |:
-        }
+        UNGIRD
         miny { y }
             [ y maxy <= ]
             [
@@ -653,8 +655,8 @@ IMPORT TIME
                 1 maxx y pix!
                 y 1 + y!
             ] |:
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @fill-rect-pat { x0 y0 x1 y1 -- }
@@ -665,8 +667,8 @@ IMPORT TIME
                 minx y maxx minx - 1 + hspan-pat
                 y 1 + y!
             ] |:
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @fill-oval-pat { x y w h -- }
@@ -679,11 +681,11 @@ IMPORT TIME
                 dup 0 > [
                     { xoff spanw }
                         x xoff + y py + spanw hspan-pat
-                    }
+                    UNGIRD
                 ] [ drop drop ] ?:
                 py 1 + py!
             ] |:
-        }
+        UNGIRD
     ] ?:
 ;
 
@@ -700,11 +702,11 @@ IMPORT TIME
                 dup 0 > [
                     { xoff spanw }
                         x xoff + y py + spanw hspan-black
-                    }
+                    UNGIRD
                 ] [ drop drop ] ?:
                 py 1 + py!
             ] |:
-        }
+        UNGIRD
     ] [
         0 { py }
             [ py h < ]
@@ -720,19 +722,19 @@ IMPORT TIME
                                     lw 0 > [
                                         x ox + y py + lw hspan-black
                                     ] ?
-                                }
+                                UNGIRD
                                 ox osw + 1 ix + iw + - { rw }
                                     rw 0 > [
                                         x 1 + ix + iw + y py + rw hspan-black
                                     ] ?
-                                }
+                                UNGIRD
                             ] ?:
-                        }
+                        UNGIRD
                     ] ?:
-                }
+                UNGIRD
                 py 1 + py!
             ] |:
-        }
+        UNGIRD
     ] ?:
 ;
 
@@ -745,7 +747,7 @@ IMPORT TIME
             1 x y k + pix!
             k 1 + k!
         ] |:
-    }
+    UNGIRD
 ;
 
 ( Thickens a 1px black horizontal span into w rows, growing downward from y. )
@@ -756,7 +758,7 @@ IMPORT TIME
             x y r + n hspan-black
             r 1 + r!
         ] |:
-    }
+    UNGIRD
 ;
 
 ( Thickens a 1px black vertical span into w columns, growing rightward from x. )
@@ -767,7 +769,7 @@ IMPORT TIME
             x r + y n vspan-black
             r 1 + r!
         ] |:
-    }
+    UNGIRD
 ;
 
 ( w x w black square centered at (x,y); w<=1 is a single pixel. )
@@ -784,10 +786,10 @@ IMPORT TIME
                             sx sy dy + w hspan-black
                             dy 1 + dy!
                         ] |:
-                    }
-                }
-            }
-        }
+                    UNGIRD
+                UNGIRD
+            UNGIRD
+        UNGIRD
     ] ?:
 ;
 
@@ -818,11 +820,11 @@ IMPORT TIME
                             err adx + err!
                             y0 sy + y0!
                         ] ?
-                    }
+                    UNGIRD
                     x0 y0 w plot-black-w
                 ] |:
-            }
-        }
+            UNGIRD
+        UNGIRD
     ] ?:
 ;
 
@@ -841,10 +843,10 @@ IMPORT TIME
                         minx half - maxy half - fullw w hspan-black-w
                         minx half - miny half - fullh w vspan-black-w
                         maxx half - miny half - fullh w vspan-black-w
-                    }
-                }
-            }
-        }
+                    UNGIRD
+                UNGIRD
+            UNGIRD
+        UNGIRD
     ] ?:
 ;
 
@@ -866,14 +868,14 @@ IMPORT TIME
                                     ow 1 >= oh 1 >= AND [
                                         ox oy ow oh frame-oval-pix
                                     ] ?
-                                }
-                            }
-                        }
-                    }
+                                UNGIRD
+                            UNGIRD
+                        UNGIRD
+                    UNGIRD
                     i 1 + i!
                 ] |:
-            }
-        }
+            UNGIRD
+        UNGIRD
     ] ?:
 ;
 
@@ -899,24 +901,24 @@ IMPORT TIME
                                 spanw 0 > [
                                     minx xoff + miny py + w xoff 2 * - hspan-pat
                                 ] ?
-                            }
+                            UNGIRD
                         ] [
                             py h r - >= [
                                 d d py d + h - DRAW::oval-span { xoff spanw }
                                     spanw 0 > [
                                         minx xoff + miny py + w xoff 2 * - hspan-pat
                                     ] ?
-                                }
+                                UNGIRD
                             ] [
                                 minx miny py + w hspan-pat
                             ] ?:
                         ] ?:
                         py 1 + py!
                     ] |:
-                }
-            }
-        }
-    }
+                UNGIRD
+            UNGIRD
+        UNGIRD
+    UNGIRD
 ;
 
 @frame-roundrect-pix { x0 y0 x1 y1 -- }
@@ -940,13 +942,13 @@ IMPORT TIME
                                 1 minx xoff + maxy py - pix!
                                 1 maxx xoff - maxy py - pix!
                             ] ?
-                        }
+                        UNGIRD
                         py 1 + py!
                     ] |:
-                }
-            }
-        }
-    }
+                UNGIRD
+            UNGIRD
+        UNGIRD
+    UNGIRD
 ;
 
 ( Thick roundrect outline: same nested-ring approach as frame-oval-pix-w,
@@ -966,14 +968,14 @@ IMPORT TIME
                                     nx1 nx0 > ny1 ny0 > AND [
                                         nx0 ny0 nx1 ny1 frame-roundrect-pix
                                     ] ?
-                                }
-                            }
-                        }
-                    }
+                                UNGIRD
+                            UNGIRD
+                        UNGIRD
+                    UNGIRD
                     i 1 + i!
                 ] |:
-            }
-        }
+            UNGIRD
+        UNGIRD
     ] ?:
 ;
 
@@ -984,7 +986,7 @@ IMPORT TIME
         STK stk-n LOADI 8 * + { a }
             x a STOREI
             y a 4 + STOREI
-        }
+        UNGIRD
         stk-n LOADI 1 + stk-n STOREI
     ] [
         drop drop
@@ -1014,8 +1016,8 @@ IMPORT TIME
                     ] ?:
                     i 1 + i!
                 ] |:
-            }
-        }
+            UNGIRD
+        UNGIRD
     ] ?:
 ;
 
@@ -1031,10 +1033,10 @@ IMPORT TIME
                     ] ?
                     x 1 + x!
                 ] |:
-            }
+            UNGIRD
             y 1 + y!
         ] |:
-    }
+    UNGIRD
 ;
 
 @flood-from { sx sy -- }
@@ -1068,7 +1070,7 @@ IMPORT TIME
                 ] |:
                 apply-pat-over-twos
             ] ?:
-        }
+        UNGIRD
     ] ?:
 ;
 
@@ -1088,9 +1090,27 @@ IMPORT TIME
     ] ?
 ;
 
+( Whole-page invert stays the fast word-wise XOR; a selection needs
+  per-pixel since it's not page-aligned. )
 @do-invert ( -- )
     snapshot
-    CANVAS BITMAP::invert
+    sel-active LOADI [
+        sel-y0 LOADI { y }
+            [ y sel-y1 LOADI <= ]
+            [
+                sel-x0 LOADI { x }
+                    [ x sel-x1 LOADI <= ]
+                    [
+                        x y pix@ 0 = [ 1 ] [ 0 ] ?: x y pix!
+                        x 1 + x!
+                    ] |:
+                UNGIRD
+                y 1 + y!
+            ] |:
+        UNGIRD
+    ] [
+        CANVAS BITMAP::invert
+    ] ?:
     mark-dirty
 ;
 
@@ -1102,8 +1122,8 @@ IMPORT TIME
                 0 minx y maxx minx - 1 + hspan-bit
                 y 1 + y!
             ] |:
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 ( Edit > Clear only wipes the marquee selection's rect (and drops it) when
@@ -1118,6 +1138,209 @@ IMPORT TIME
         CANVAS clear-buf
     ] ?:
     mark-dirty
+;
+
+( --- Step 6: Fill / Trace Edges / Flip / Rotate, on the selection rect
+  when active, else the whole page. Unlike sel-lift/sel-drop these ignore
+  sel-mask-active -- a lasso's transform target is its bounding box, not
+  just the traced shape, matching MacPaint's own behavior. )
+
+@op-x0 ( -- x ) sel-active LOADI [ sel-x0 LOADI ] [ 0 ] ?: ;
+@op-y0 ( -- y ) sel-active LOADI [ sel-y0 LOADI ] [ 0 ] ?: ;
+@op-x1 ( -- x ) sel-active LOADI [ sel-x1 LOADI ] [ CANVAS_W 1 - ] ?: ;
+@op-y1 ( -- y ) sel-active LOADI [ sel-y1 LOADI ] [ CANVAS_H 1 - ] ?: ;
+
+@do-fill ( -- )
+    snapshot
+    op-y0 { y }
+        [ y op-y1 <= ]
+        [
+            op-x0 { x }
+                [ x op-x1 <= ]
+                [
+                    x y pat-bit x y pix!
+                    x 1 + x!
+                ] |:
+            UNGIRD
+            y 1 + y!
+        ] |:
+    UNGIRD
+    mark-dirty
+;
+
+( A black pixel survives only if one of its 4-neighbors is white or off
+  the target rect (off-rect/off-canvas both read as blank -- TMP's page is
+  calloc-zeroed and wider/taller than CANVAS, so an out-of-rect BITMAP::get
+  either lands on real blank canvas margin or harmlessly stale-but-still-
+  OR-dominated page memory; never a fault, see the addr arithmetic in
+  BITMAP::addr). Everything else turns white. )
+@do-trace-edges ( -- )
+    snapshot
+    op-x0 { x0 }
+        op-x1 { x1 }
+            op-y0 { y0 }
+                op-y1 { y1 }
+                    y0 { y }
+                        [ y y1 <= ]
+                        [
+                            x0 { x }
+                                [ x x1 <= ]
+                                [
+                                    CANVAS x y BITMAP::get TMP x y BITMAP::set
+                                    x 1 + x!
+                                ] |:
+                            UNGIRD
+                            y 1 + y!
+                        ] |:
+                    UNGIRD
+                    y0 { y }
+                        [ y y1 <= ]
+                        [
+                            x0 { x }
+                                [ x x1 <= ]
+                                [
+                                    TMP x y BITMAP::get 0 > [
+                                        x 1 - x0 < TMP x 1 - y BITMAP::get 0 = OR
+                                        x 1 + x1 > TMP x 1 + y BITMAP::get 0 = OR OR
+                                        y 1 - y0 < TMP x y 1 - BITMAP::get 0 = OR OR
+                                        y 1 + y1 > TMP x y 1 + BITMAP::get 0 = OR OR
+                                        [ 1 x y pix! ] [ 0 x y pix! ] ?:
+                                    ] [
+                                        0 x y pix!
+                                    ] ?:
+                                    x 1 + x!
+                                ] |:
+                            UNGIRD
+                            y 1 + y!
+                        ] |:
+                    UNGIRD
+                UNGIRD
+            UNGIRD
+        UNGIRD
+    UNGIRD
+    mark-dirty
+;
+
+@do-flip-h ( -- )
+    snapshot
+    op-x0 { x0 }
+        op-x1 { x1 }
+            op-y0 { y }
+                [ y op-y1 <= ]
+                [
+                    x0 { x }
+                        [ x x1 <= ]
+                        [
+                            CANVAS x y BITMAP::get TMP x y BITMAP::set
+                            x 1 + x!
+                        ] |:
+                    UNGIRD
+                    x0 { x }
+                        [ x x1 <= ]
+                        [
+                            TMP x0 x1 + x - y BITMAP::get x y pix!
+                            x 1 + x!
+                        ] |:
+                    UNGIRD
+                    y 1 + y!
+                ] |:
+            UNGIRD
+        UNGIRD
+    UNGIRD
+    mark-dirty
+;
+
+@do-flip-v ( -- )
+    snapshot
+    op-x0 { x0 }
+        op-x1 { x1 }
+            op-y0 { y0 }
+                op-y1 { y1 }
+                    y0 { y }
+                        [ y y1 <= ]
+                        [
+                            x0 { x }
+                                [ x x1 <= ]
+                                [
+                                    CANVAS x y BITMAP::get TMP x y BITMAP::set
+                                    x 1 + x!
+                                ] |:
+                            UNGIRD
+                            y 1 + y!
+                        ] |:
+                    UNGIRD
+                    y0 { y }
+                        [ y y1 <= ]
+                        [
+                            x0 { x }
+                                [ x x1 <= ]
+                                [
+                                    TMP x y0 y1 + y - BITMAP::get x y pix!
+                                    x 1 + x!
+                                ] |:
+                            UNGIRD
+                            y 1 + y!
+                        ] |:
+                    UNGIRD
+                UNGIRD
+            UNGIRD
+        UNGIRD
+    UNGIRD
+    mark-dirty
+;
+
+( Rotate needs a selection (a whole-canvas rotate can't fit CANVAS_W and
+  CANVAS_H swapped into this app's fixed-size canvas) -- a no-op otherwise.
+  Keeps the rect's top-left corner fixed and swaps w/h; old (x,y) maps to
+  new (ox0+oy1-y, oy0+x-ox0). The old rect is blanked first (not just
+  overwritten) since a non-square rect leaves leftover cells the rotated
+  content never touches. )
+@do-rotate90 ( -- )
+    sel-active LOADI [
+        snapshot
+        sel-x0 LOADI sel-y0 LOADI sel-x1 LOADI sel-y1 LOADI { ox0 oy0 ox1 oy1 }
+            oy0 { y }
+                [ y oy1 <= ]
+                [
+                    ox0 { x }
+                        [ x ox1 <= ]
+                        [
+                            CANVAS x y BITMAP::get TMP x y BITMAP::set
+                            x 1 + x!
+                        ] |:
+                    UNGIRD
+                    y 1 + y!
+                ] |:
+            UNGIRD
+            ox0 oy0 ox1 oy1 fill-rect-white
+            oy0 { y }
+                [ y oy1 <= ]
+                [
+                    ox0 { x }
+                        [ x ox1 <= ]
+                        [
+                            TMP x y BITMAP::get
+                            ox0 oy1 y - +
+                            oy0 x ox0 - +
+                            { bit dx dy }
+                                dx 0 >= dx CANVAS_W < AND dy 0 >= AND dy CANVAS_H < AND [
+                                    bit dx dy pix!
+                                ] ?
+                            UNGIRD
+                            x 1 + x!
+                        ] |:
+                    UNGIRD
+                    y 1 + y!
+                ] |:
+            UNGIRD
+            ox0 sel-x0 STOREI
+            oy0 sel-y0 STOREI
+            ox0 oy1 oy0 - + CANVAS_W 1 - MIN sel-x1 STOREI
+            oy0 ox1 ox0 - + CANVAS_H 1 - MIN sel-y1 STOREI
+        UNGIRD
+        0 sel-mask-active STOREI
+        mark-dirty
+    ] ?
 ;
 
 ( --- Patterns --- )
@@ -1209,20 +1432,20 @@ IMPORT TIME
                             adx ady MAX { m }
                                 dx 0 < [ x0 m - ] [ x0 m + ] ?:
                                 dy 0 < [ y0 m - ] [ y0 m + ] ?:
-                            }
+                            UNGIRD
                         ] ?:
                     ] ?:
-                }
-            }
-        }
-    }
+                UNGIRD
+            UNGIRD
+        UNGIRD
+    UNGIRD
 ;
 
 @constrain-square { x0 y0 x1 y1 -- x1 y1 }
     x1 x0 - ABS y1 y0 - ABS MAX { s }
         x1 x0 < [ x0 s - ] [ x0 s + ] ?:
         y1 y0 < [ y0 s - ] [ y0 s + ] ?:
-    }
+    UNGIRD
 ;
 
 @apply-shift { x0 y0 x1 y1 ty -- x1 y1 }
@@ -1275,7 +1498,7 @@ IMPORT TIME
         mx x >= mx x PAL_CELL_W + < AND
         my y >= AND
         my y PAL_CELL_H + < AND
-    }
+    UNGIRD
 ;
 
 @hit-tool { mx my -- idx }
@@ -1286,9 +1509,9 @@ IMPORT TIME
                 mx my i in-tool? [ i found! ] ?
                 i 1 + i!
             ] |:
-        }
+        UNGIRD
         found
-    }
+    UNGIRD
 ;
 
 @scr>can { mx my -- cx cy }
@@ -1341,15 +1564,15 @@ IMPORT TIME
                     x y sel-px-active? [
                         CANVAS x y BITMAP::get { bit }
                             TMP x y bit BITMAP::set
-                        }
+                        UNGIRD
                         0 x y pix!
                     ] ?
                     x 1 + x!
                 ] |:
-            }
+            UNGIRD
             y 1 + y!
         ] |:
-    }
+    UNGIRD
 ;
 
 ( Writes TMP's lifted rect back into CANVAS translated by move-dx/move-dy
@@ -1374,16 +1597,16 @@ IMPORT TIME
                                     nx 0 >= nx CANVAS_W < AND ny 0 >= AND ny CANVAS_H < AND [
                                         bit nx ny pix!
                                     ] ?
-                                }
-                            }
-                        }
+                                UNGIRD
+                            UNGIRD
+                        UNGIRD
                     ] ?
                     x 1 + x!
                 ] |:
-            }
+            UNGIRD
             y 1 + y!
         ] |:
-    }
+    UNGIRD
     sel-x0 LOADI move-dx LOADI + sel-x0 STOREI
     sel-x1 LOADI move-dx LOADI + sel-x1 STOREI
     sel-y0 LOADI move-dy LOADI + sel-y0 STOREI
@@ -1413,7 +1636,7 @@ IMPORT TIME
                     ] ?
                     x 1 + x!
                 ] |:
-            }
+            UNGIRD
             sy0 { y }
                 [ y sy1 <= ]
                 [
@@ -1423,9 +1646,9 @@ IMPORT TIME
                     ] ?
                     y 1 + y!
                 ] |:
-            }
-        }
-    }
+            UNGIRD
+        UNGIRD
+    UNGIRD
 ;
 
 ( Purely a screen-space overlay -- CANVAS keeps the vacated rect blank for
@@ -1451,16 +1674,16 @@ IMPORT TIME
                                         bit 0 = [ CLR_WHITE ] [ CLR_FG ] ?:
                                         DRAW::pix
                                     ] ?
-                                }
-                            }
-                        }
+                                UNGIRD
+                            UNGIRD
+                        UNGIRD
                     ] ?
                     x 1 + x!
                 ] |:
-            }
+            UNGIRD
             y 1 + y!
         ] |:
-    }
+    UNGIRD
 ;
 
 ( --- Selection: lasso (Step 5) --- )
@@ -1493,11 +1716,11 @@ IMPORT TIME
                         err adx + err!
                         y0 sy + y0!
                     ] ?
-                }
+                UNGIRD
                 x0 y0 lasso-plot
             ] |:
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 ( On mouse-up: scanline-fill the traced outline's interior (even-odd rule,
@@ -1523,15 +1746,15 @@ IMPORT TIME
                                     SEL_MASK x y 1 BITMAP::set
                                 ] ?
                                 cur prev!
-                            }
+                            UNGIRD
                             x 1 + x!
                         ] |:
-                    }
-                }
-            }
+                    UNGIRD
+                UNGIRD
+            UNGIRD
             y 1 + y!
         ] |:
-    }
+    UNGIRD
     0 { found }
         CANVAS_W { minx }
             -1 { maxx }
@@ -1552,10 +1775,10 @@ IMPORT TIME
                                         ] ?
                                         x2 1 + x2!
                                     ] |:
-                                }
+                                UNGIRD
                                 y2 1 + y2!
                             ] |:
-                        }
+                        UNGIRD
                         found 0 = [
                             lasso-minx LOADI sel-x0 STOREI
                             lasso-miny LOADI sel-y0 STOREI
@@ -1567,11 +1790,11 @@ IMPORT TIME
                             maxx sel-x1 STOREI
                             maxy sel-y1 STOREI
                         ] ?:
-                    }
-                }
-            }
-        }
-    }
+                    UNGIRD
+                UNGIRD
+            UNGIRD
+        UNGIRD
+    UNGIRD
     1 sel-active STOREI
     1 sel-mask-active STOREI
 ;
@@ -1586,14 +1809,14 @@ IMPORT TIME
                     SEL_MASK x y BITMAP::get 0 > [
                         x y can>scr { sx sy }
                             APP::draw-fd sx sy CLR_FG DRAW::pix
-                        }
+                        UNGIRD
                     ] ?
                     x 1 + x!
                 ] |:
-            }
+            UNGIRD
             y 1 + y!
         ] |:
-    }
+    UNGIRD
 ;
 
 ( FatBits isn't wired up to selection coordinates yet, so the overlay is
@@ -1656,20 +1879,20 @@ IMPORT TIME
                                                 b 128 bit RSHIFT OR b!
                                             ] ?
                                         ] ?
-                                    }
+                                    UNGIRD
                                     bit 1 + bit!
                                 ] |:
-                            }
+                            UNGIRD
                             b d store-byte
                             d 1 + d!
-                        }
+                        UNGIRD
                         bx 1 + bx!
                     ] |:
-                }
+                UNGIRD
                 ry 1 + ry!
             ] |:
-        }
-    }
+        UNGIRD
+    UNGIRD
     8 snarf-rb snarf-h * +
 ;
 
@@ -1680,7 +1903,7 @@ IMPORT TIME
                 dup SNARF_BUF len VFS::write drop
                 VFS::close drop
             ] [ drop ] ?:
-        }
+        UNGIRD
     ] ?
 ;
 
@@ -1736,10 +1959,10 @@ IMPORT TIME
                     SEL_MASK snarf-in-ox cx + snarf-in-oy ry + 1 BITMAP::set
                     cx 1 + cx!
                 ] |:
-            }
+            UNGIRD
             ry 1 + ry!
         ] |:
-    }
+    UNGIRD
     snarf-in-ox sel-x0 STOREI
     snarf-in-oy sel-y0 STOREI
     snarf-in-ox snarf-in-cw + 1 - sel-x1 STOREI
@@ -1756,7 +1979,7 @@ IMPORT TIME
             n 8 >= snarf-magic-ok? AND [
                 snarf-unpack
             ] ?
-        }
+        UNGIRD
     ] [ drop ] ?:
 ;
 
@@ -1796,17 +2019,17 @@ IMPORT TIME
                                     ] ?
                                     bit 1 + bit!
                                 ] |:
-                            }
+                            UNGIRD
                             b d store-byte
                             d 1 + d!
-                        }
+                        UNGIRD
                         bx 1 + bx!
                     ] |:
-                }
+                UNGIRD
                 y 1 + y!
             ] |:
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @unpack-bits ( -- )
@@ -1827,16 +2050,16 @@ IMPORT TIME
                                     ] ?
                                     bit 1 + bit!
                                 ] |:
-                            }
+                            UNGIRD
                             s 1 + s!
-                        }
+                        UNGIRD
                         bx 1 + bx!
                     ] |:
-                }
+                UNGIRD
                 y 1 + y!
             ] |:
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @magic-ok? ( -- f )
@@ -1881,7 +2104,7 @@ IMPORT TIME
                     0 move-dy STOREI
                 ] ?
             ] ?:
-        }
+        UNGIRD
         sync-title
     ] [ drop ] ?:
     APP::dirty!
@@ -2002,13 +2225,13 @@ IMPORT TIME
                                 EPAT_GRID_X col EPAT_CELL * +
                                 EPAT_GRID_Y row EPAT_CELL * +
                                 EPAT_CELL 1 - EPAT_CELL 1 - cc DRAW::fill-rect
-                        }
+                        UNGIRD
                         col 1 + col!
                     ] |:
-                }
+                UNGIRD
                 row 1 + row!
             ] |:
-        }
+        UNGIRD
         APP::draw-fd EPAT_GRID_X EPAT_GRID_Y EPAT_GRID EPAT_GRID CLR_CONFIRM_BORDER DRAW::frame-rect
         APP::draw-fd EPAT_OK_X EPAT_BTN_Y EPAT_BTN_W EPAT_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
         APP::draw-fd EPAT_OK_X 24 + EPAT_BTN_Y 6 + T"OK" CLR_CONFIRM_TEXT 16 DRAW::draw-str
@@ -2043,8 +2266,8 @@ IMPORT TIME
                         APP::dirty!
                     ] ?
                 ] ?:
-            }
-        }
+            UNGIRD
+        UNGIRD
     ] ?
 ;
 
@@ -2100,14 +2323,14 @@ IMPORT TIME
                                     ] ?
                                     col 1 + col!
                                 ] |:
-                            }
+                            UNGIRD
                             row 1 + row!
                         ] |:
-                    }
-                }
+                    UNGIRD
+                UNGIRD
                 bi 1 + bi!
             ] |:
-        }
+        UNGIRD
     ] ?
 ;
 
@@ -2126,8 +2349,8 @@ IMPORT TIME
                     ] [ drop ] ?:
                     APP::dirty!
                 ] ?
-            }
-        }
+            UNGIRD
+        UNGIRD
     ] ?
 ;
 
@@ -2183,6 +2406,11 @@ IMPORT TIME
 @menu-undo ( val -- ) drop do-undo ;
 @menu-invert ( val -- ) drop do-invert ;
 @menu-clear ( val -- ) drop do-clear ;
+@menu-fill ( val -- ) drop do-fill ;
+@menu-trace-edges ( val -- ) drop do-trace-edges ;
+@menu-flip-h ( val -- ) drop do-flip-h ;
+@menu-flip-v ( val -- ) drop do-flip-v ;
+@menu-rotate90 ( val -- ) drop do-rotate90 ;
 @menu-grid ( val -- ) grid-f STOREI APP::dirty! ;
 @menu-fat ( val -- )
     fat-f STOREI
@@ -2266,10 +2494,10 @@ IMPORT TIME
                     APP::draw-fd x y PAL_CELL_W PAL_CELL_H CLR_FG DRAW::frame-rect
                     i x y CLR_FG draw-tool-icon
                 ] ?:
-            }
+            UNGIRD
             i 1 + i!
         ] |:
-    }
+    UNGIRD
 ;
 
 ( 19x2 swatch grid; the always-visible current-pattern preview at x 0..35 is
@@ -2296,12 +2524,12 @@ IMPORT TIME
                             ] ?
                             px 1 + px!
                         ] |:
-                    }
+                    UNGIRD
                     py 1 + py!
                 ] |:
-            }
-        }
-    }
+            UNGIRD
+        UNGIRD
+    UNGIRD
 ;
 
 ( Always-visible preview of the selected pattern, at the pattern strip's
@@ -2322,10 +2550,10 @@ IMPORT TIME
                     ] ?
                     px 1 + px!
                 ] |:
-            }
+            UNGIRD
             py 1 + py!
         ] |:
-    }
+    UNGIRD
 ;
 
 ( PATTERNS is static once loaded -- the pixel content of every swatch never
@@ -2342,7 +2570,7 @@ IMPORT TIME
                 i draw-pat-cell
                 i 1 + i!
             ] |:
-        }
+        UNGIRD
     ] [
         last-pat-id LOADI dup -1 > [ draw-pat-cell ] [ drop ] ?:
         pat-id LOADI draw-pat-cell
@@ -2385,13 +2613,13 @@ IMPORT TIME
                             ] [
                                 APP::draw-fd 10 y LW_ROW_H w - 2 / + PAL_W 20 - w lc DRAW::fill-rect
                             ] ?:
-                        }
-                    }
-                }
-            }
+                        UNGIRD
+                    UNGIRD
+                UNGIRD
+            UNGIRD
             i 1 + i!
         ] |:
-    }
+    UNGIRD
 ;
 
 @hit-lw { mx my -- idx }
@@ -2411,10 +2639,10 @@ IMPORT TIME
                         APP::draw-fd CANVAS_X x + CANVAS_Y y + CLR_GRID DRAW::pix
                         y GRID + y!
                     ] |:
-                }
+                UNGIRD
                 x GRID + x!
             ] |:
-        }
+        UNGIRD
     ] ?
 ;
 
@@ -2425,14 +2653,14 @@ IMPORT TIME
             APP::draw-fd CANVAS_X vx FAT_Z * + CANVAS_Y 1 FAT_VH FAT_Z * CLR_GRID DRAW::fill-rect
             vx 1 + vx!
         ] |:
-    }
+    UNGIRD
     0 { vy }
         [ vy FAT_VH < ]
         [
             APP::draw-fd CANVAS_X CANVAS_Y vy FAT_Z * + FAT_VW FAT_Z * 1 CLR_GRID DRAW::fill-rect
             vy 1 + vy!
         ] |:
-    }
+    UNGIRD
 ;
 
 ( Word-at-a-time: an all-white 32-pixel word is skipped in one word@ + compare
@@ -2460,20 +2688,20 @@ IMPORT TIME
                                             [ bit 1 + bit! ] |:
                                             APP::draw-fd CANVAS_X wx 32 * rstart + +
                                                 CANVAS_Y y + bit rstart - 1 CLR_FG DRAW::fill-rect
-                                        }
+                                        UNGIRD
                                     ] [
                                         bit 1 + bit!
                                     ] ?:
                                 ] |:
-                            }
+                            UNGIRD
                         ] ?:
-                    }
+                    UNGIRD
                     wx 1 + wx!
                 ] |:
-            }
+            UNGIRD
             y 1 + y!
         ] |:
-    }
+    UNGIRD
 ;
 
 ( FAT_VW x FAT_VH (64x42) is small and fat-ox is not generally word-aligned,
@@ -2500,7 +2728,7 @@ IMPORT TIME
                 ] |:
             vy 1 + vy!
         ] |:
-    }
+    UNGIRD
 ;
 
 @draw-canvas ( -- )
@@ -2530,10 +2758,10 @@ IMPORT TIME
                         ] [
                             APP::draw-fd x y w h CLR_FG DRAW::frame-rect
                         ] ?:
-                    }
+                    UNGIRD
                 ] ?:
-            }
-        }
+            UNGIRD
+        UNGIRD
     ] ?
 ;
 
@@ -2610,13 +2838,13 @@ IMPORT TIME
                                     shape-filled? [ minx miny maxx maxy fill-rect-pat ] ?
                                     minx miny maxx maxy pen-width LOADI lw-value frame-rect-pix-w
                                 ] ?: ] ?:
-                            }
-                        }
-                    }
+                            UNGIRD
+                        UNGIRD
+                    UNGIRD
                 ] ?:
-            }
-        }
-    }
+            UNGIRD
+        UNGIRD
+    UNGIRD
     mark-dirty
 ;
 
@@ -2731,7 +2959,7 @@ IMPORT TIME
             DRAG_SHAPE drag STOREI
             APP::dirty!
         ] ? ] ?: ] ?: ] ?: ] ?:
-    }
+    UNGIRD
 ;
 
 @page-drag { mx my -- }
@@ -2768,7 +2996,7 @@ IMPORT TIME
             cy lasso-maxy LOADI MAX lasso-maxy STOREI
             APP::dirty!
         ] ?
-    }
+    UNGIRD
 ;
 
 ( -1 for a click inside the current-pattern preview box (x < PAT_CUR_W) --
@@ -2781,8 +3009,8 @@ IMPORT TIME
         mx PAT_CUR_W - PAT_CELL_W / 0 MAX PAT_COLS 1 - MIN { col }
             my PAT_Y - PAT_CELL_H / 0 MAX PAT_ROWS 1 - MIN { row }
                 row PAT_COLS * col +
-            }
-        }
+            UNGIRD
+        UNGIRD
     ] ?:
 ;
 
@@ -2811,7 +3039,7 @@ IMPORT TIME
                                 1 APP::modal!
                             ] ?
                             now br-last-time STOREI
-                        }
+                        UNGIRD
                     ] ?
                     t br-last-idx STOREI
                     APP::dirty!
@@ -2828,12 +3056,12 @@ IMPORT TIME
                                     1 APP::modal!
                                 ] ?
                                 now epat-last-time STOREI
-                            }
+                            UNGIRD
                             pi epat-last-idx STOREI
                             pi pat-id STOREI
                             APP::dirty!
                         ] ?
-                    }
+                    UNGIRD
                 ] [
                     mx my hit-lw { li }
                         li 0 >= [
@@ -2844,10 +3072,10 @@ IMPORT TIME
                                 mx my page-down
                             ] ?
                         ] ?:
-                    }
+                    UNGIRD
                 ] ?:
             ] ?:
-        }
+        UNGIRD
     ] ?
     mpkt EVENT::mouse-type EVENT::MOUSE_MOVE = mouse-held LOADI AND [
         mx my page-drag
@@ -2891,7 +3119,7 @@ IMPORT TIME
             ] [
                 handle-page-mouse
             ] ?:
-        }
+        UNGIRD
     ] ?:
     ] ?:
     ] ?:
@@ -2925,8 +3153,13 @@ IMPORT TIME
     dup 120 = [ drop do-cut ] [
     dup 99 = [ drop snarf-copy ] [
     dup 118 = [ drop snarf-paste ] [
+    dup 102 = [ drop do-fill ] [
+    dup 103 = [ drop do-trace-edges ] [
+    dup 104 = [ drop do-flip-h ] [
+    dup 106 = [ drop do-flip-v ] [
+    dup 114 = [ drop do-rotate90 ] [
         drop
-    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
     2 unframe!
 ;
 
@@ -3026,6 +3259,12 @@ IMPORT TIME
     UI::sep
     T"Invert" [ menu-invert ] UI::item
     T"Clear"  [ menu-clear ]  UI::item
+    UI::sep
+    T"Fill"         [ menu-fill ]        UI::item
+    T"Trace Edges"  [ menu-trace-edges ] UI::item
+    T"Flip Horizontal" [ menu-flip-h ]   UI::item
+    T"Flip Vertical"   [ menu-flip-v ]   UI::item
+    T"Rotate 90"    [ menu-rotate90 ]    UI::item
     T"Goodies" UI::menu
     T"Grid"    [ menu-grid ]    UI::check-item
     T"FatBits" [ menu-fat ]     UI::check-item
