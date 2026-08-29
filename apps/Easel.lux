@@ -1,7 +1,9 @@
-( Easel: MacPaint-simple pixel painting.
+( Easel: a MacPaint clone in progress -- see easel_plan.md for the full plan.
   File > New/Open/Save/Save As | Quit, Edit > Undo / Invert / Clear,
-  Goodies > Grid / FatBits / Filled. Eight tools, 16 patterns.
-  Canvas is 512x342, 1-bit. Save is EAS1. ./bin/cloister apps/Easel.bin )
+  Goodies > Grid / FatBits. 20-tool palette (10 wired so far), 38 pattern
+  slots (16 real patterns so far), pen-width strip (not yet consumed by
+  drawing). Canvas is 440x280, 1-bit, in a 512x342 window. Save is EAS1.
+  ./bin/cloister apps/Easel.bin )
 
 INCLUDE "lib/app.lux"
 INCLUDE "lib/core.lux"
@@ -24,41 +26,71 @@ IMPORT SF
 IMPORT GEOM
 IMPORT BITMAP
 
-( --- Geometry --- )
-@WIN_W         600 ;
-@WIN_H         448 ;
-@BAR_H          20 ;
-@STATUS_H       24 ;
+( --- Geometry: authentic MacPaint 512x342, sized for the full 20-tool /
+  38-pattern layout up front (see easel_plan.md's target layout) rather than
+  the old 600x448 / 8-tool sketch, so later steps fill in behavior against
+  final geometry instead of resizing again. )
+@WIN_W         512 ;
+@WIN_H         342 ;
+@BAR_H          20 ; ( menu bar height )
 @PAL_X           0 ;
 @PAL_W          72 ;
-@CANVAS_X       80 ;
-@CANVAS_Y       36 ;
-@CANVAS_W      512 ;
-@CANVAS_H      342 ;
-@CANVAS_WORDS   16 ; ( CANVAS_W / 32 -- exact for now; partial-word edges land with Step 9's resize )
-@STATUS_Y      424 ;
+@PAL_Y          BAR_H ;
+@PAL_CELL_W     36 ;
+@PAL_CELL_H     22 ;
+@TOOLS          20 ; ( 2 cols x 10 rows )
+@LW_Y          240 ; ( PAL_Y + 10*PAL_CELL_H )
+@LW_ROWS         6 ;
+@LW_ROW_H       10 ; ( 60 / LW_ROWS )
+@CANVAS_X       72 ; ( PAL_W )
+@CANVAS_Y       BAR_H ;
+@CANVAS_W      440 ;
+@CANVAS_H      280 ;
+@CANVAS_WORDS   14 ; ( CANVAS_W / 32 = 13.75 -- not exact; see draw-canvas-1x's tail-word note )
 @FONT_SIZE      16 ;
-@GRID           8 ;
-@TOOLS           8 ;
-@PAT_N          16 ;
-@PAT_Y         390 ;
-@PAT_H          24 ;
-@PAT_CELL       22 ;
+@GRID            8 ;
+@PAT_Y         300 ; ( CANVAS_Y + CANVAS_H )
+@PAT_CUR_W      36 ; ( current-pattern preview box, x 0..35 )
+@PAT_COLS       19 ;
+@PAT_ROWS        2 ;
+@PAT_CELL_W     25 ;
+@PAT_CELL_H     20 ;
+@PAT_N          38 ; ( PAT_COLS * PAT_ROWS )
 @FAT_Z           8 ;
-@FAT_VW         64 ;
-@FAT_VH         42 ;
+@FAT_VW         55 ; ( CANVAS_W / FAT_Z, per Step 8's "8x zoom of a 55x35 window" )
+@FAT_VH         35 ; ( CANVAS_H / FAT_Z )
 @STK_MAX      4096 ;
-@ROW_BYTES      64 ;
-@PACK_BYTES  21896 ;
+@ROW_BYTES      55 ; ( CANVAS_W / 8, for the EAS1 pack; CANVAS_W is a multiple of 8 )
+@PACK_BYTES  15408 ; ( 8-byte header + ROW_BYTES * CANVAS_H )
 
-@TOOL_PENCIL     0 ;
-@TOOL_ERASER     1 ;
-@TOOL_BRUSH      2 ;
-@TOOL_FILL       3 ;
-@TOOL_LINE       4 ;
-@TOOL_RECT       5 ;
-@TOOL_OVAL       6 ;
-@TOOL_SPRAY      7 ;
+( Authentic MacPaint tool order, row-major in the 2x10 palette (see
+  easel_plan.md's target layout list). Only PENCIL/ERASER/BRUSH/FILL/LINE/
+  SPRAY/RECT/RECT_FILLED/OVAL/OVAL_FILLED have real behavior so far -- the
+  rest (LASSO/MARQUEE/HAND/TEXT/ROUNDRECT*/FREEFORM*/POLYGON*) are visible,
+  correctly positioned, and inert, pending Steps 5/7/8 and the rest of
+  Step 4's shape work. RECT_FILLED/OVAL_FILLED are their own tool slots, not
+  a filled-f toggle -- see shape-filled? below -- since MacPaint puts filled
+  variants on their own palette buttons rather than a Goodies checkbox. )
+@TOOL_LASSO             0 ;
+@TOOL_MARQUEE            1 ;
+@TOOL_HAND               2 ;
+@TOOL_TEXT               3 ;
+@TOOL_FILL               4 ;
+@TOOL_SPRAY              5 ;
+@TOOL_BRUSH              6 ;
+@TOOL_PENCIL             7 ;
+@TOOL_LINE               8 ;
+@TOOL_ERASER             9 ;
+@TOOL_RECT              10 ;
+@TOOL_RECT_FILLED       11 ;
+@TOOL_ROUNDRECT         12 ;
+@TOOL_ROUNDRECT_FILLED  13 ;
+@TOOL_OVAL              14 ;
+@TOOL_OVAL_FILLED       15 ;
+@TOOL_FREEFORM          16 ;
+@TOOL_FREEFORM_FILLED   17 ;
+@TOOL_POLYGON           18 ;
+@TOOL_POLYGON_FILLED    19 ;
 
 @DRAG_NONE       0 ;
 @DRAG_PAINT      1 ;
@@ -105,8 +137,7 @@ IMPORT BITMAP
 @STK           0x987000 ;
 @PATH          0x990000 ;
 @VFS_PATH      0x990100 ;
-@STATUS_BUF    0x990200 ;
-@PATTERNS      0x990300 ;
+@PATTERNS      0x990300 ; ( 38 * 8 bytes, one row per byte -- see init-pats )
 
 ( --- Small state (MM_APP_SMALL_STATE) --- )
 @tool              0x8A0000 ;
@@ -117,7 +148,7 @@ IMPORT BITMAP
 @confirm-new-open  0x8A0014 ;
 @grid-f            0x8A0018 ;
 @fat-f             0x8A001C ;
-@filled-f          0x8A0020 ;
+( 0x8A0020 formerly filled-f -- removed, see shape-filled? )
 @undo-ok           0x8A0024 ;
 @plot-mode         0x8A0028 ;
 @last-cx           0x8A002C ;
@@ -135,6 +166,7 @@ IMPORT BITMAP
 @save-as           0x8A005C ;
 @last-pat-id       0x8A0060 ; ( previously drawn pattern selection, -1 = none yet )
 @damage            0x8A0064 ; ( bitmask of DIRTY_* below: what changed since the last draw )
+@pen-width         0x8A0068 ; ( index into LW_VALUES, not yet consumed by any stroke/outline drawing )
 
 ( Explicit damage bits, replacing the old single pat-full flag (whose narrow
   meaning -- "must draw-patterns redraw all swatches" -- was the exact bug: a
@@ -604,6 +636,10 @@ IMPORT BITMAP
     13 0x81 0x42 0x24 0x18 0x18 0x24 0x42 0x81 set-pat
     14 0x02 0x04 0x08 0x10 0x20 0x40 0x80 0x00 set-pat
     15 0xAA 0x00 0x55 0x00 0xAA 0x00 0x55 0x00 set-pat
+    ( Patterns 16..37 are placeholder slots for the strip's new 19x2 capacity
+      (up from 16) -- left unset, which VM memory's calloc zero-init makes a
+      blank/white pattern, not garbage. Real designs (and the Goodies > Edit
+      Pattern editor to create them) are follow-up Step 4 work. )
     1 pat-id STOREI
 ;
 
@@ -671,22 +707,24 @@ IMPORT BITMAP
     my CANVAS_Y CANVAS_H + < AND
 ;
 
+( Pattern strip is now the full window width (current-pattern box + the
+  19x2 swatch grid), not just the column above the tool palette. )
 @in-pat? { mx my -- f }
-    mx CANVAS_X >= my PAT_Y >= AND
-    mx CANVAS_X PAT_N PAT_CELL * + < AND
-    my PAT_Y PAT_H + < AND
+    mx PAL_X >= my PAT_Y >= AND
+    mx WIN_W < AND
+    my WIN_H < AND
 ;
 
 @tool-xy { i -- x y }
-    4 i 2 MOD 34 * +
-    CANVAS_Y 4 + i 2 / 40 * +
+    PAL_X i 2 MOD PAL_CELL_W * +
+    PAL_Y i 2 / PAL_CELL_H * +
 ;
 
 @in-tool? { mx my i -- f }
     i tool-xy { x y }
-        mx x >= mx x 32 + < AND
+        mx x >= mx x PAL_CELL_W + < AND
         my y >= AND
-        my y 36 + < AND
+        my y PAL_CELL_H + < AND
     }
 ;
 
@@ -975,71 +1013,69 @@ IMPORT BITMAP
     clamp-fat
     APP::dirty!
 ;
-@menu-filled ( val -- ) filled-f STOREI APP::dirty! ;
 
 ( --- Draw --- )
 
-@tool-name ( -- ptr )
-    tool LOADI
-    dup TOOL_PENCIL = [ drop T"Pencil" ] [
-    dup TOOL_ERASER = [ drop T"Eraser" ] [
-    dup TOOL_BRUSH = [ drop T"Brush" ] [
-    dup TOOL_FILL = [ drop T"Fill" ] [
-    dup TOOL_LINE = [ drop T"Line" ] [
-    dup TOOL_RECT = [ drop T"Rect" ] [
-    dup TOOL_OVAL = [ drop T"Oval" ] [
-        drop T"Spray"
-    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
-;
-
+( Tools with real behavior get a proper icon; the ten not yet implemented
+  (Steps 5/7/8 and the rest of Step 4) get their index number so the
+  palette is legible without pretending they work. )
 @draw-tool-icon { i x y color -- }
     i TOOL_PENCIL = [
-        APP::draw-fd x 6 + y 22 + x 22 + y 8 + color DRAW::line
-        APP::draw-fd x 20 + y 6 + 4 4 color DRAW::fill-rect
+        APP::draw-fd x 7 + y 17 + x 18 + y 6 + color DRAW::line
+        APP::draw-fd x 16 + y 4 + 4 4 color DRAW::fill-rect
     ] [
     i TOOL_ERASER = [
-        APP::draw-fd x 8 + y 10 + 16 14 color DRAW::fill-rect
-        APP::draw-fd x 8 + y 10 + 16 14 CLR_FG DRAW::frame-rect
+        APP::draw-fd x 7 + y 6 + 14 10 color DRAW::fill-rect
+        APP::draw-fd x 7 + y 6 + 14 10 CLR_FG DRAW::frame-rect
     ] [
     i TOOL_BRUSH = [
-        APP::draw-fd x 8 + y 8 + 16 16 color DRAW::paint-oval
-        APP::draw-fd x 14 + y 20 + 4 6 color DRAW::fill-rect
+        APP::draw-fd x 6 + y 5 + 12 12 color DRAW::paint-oval
+        APP::draw-fd x 11 + y 14 + 3 4 color DRAW::fill-rect
     ] [
     i TOOL_FILL = [
-        APP::draw-fd x 8 + y 8 + x 24 + y 8 + x 16 + y 22 + color DRAW::paint-tri
+        APP::draw-fd x 6 + y 5 + x 18 + y 5 + x 12 + y 16 + color DRAW::paint-tri
     ] [
     i TOOL_LINE = [
-        APP::draw-fd x 6 + y 22 + x 22 + y 8 + color DRAW::line
+        APP::draw-fd x 6 + y 16 + x 18 + y 5 + color DRAW::line
     ] [
     i TOOL_RECT = [
-        APP::draw-fd x 6 + y 8 + 20 18 color DRAW::frame-rect
+        APP::draw-fd x 5 + y 4 + 15 13 color DRAW::frame-rect
+    ] [
+    i TOOL_RECT_FILLED = [
+        APP::draw-fd x 5 + y 4 + 15 13 color DRAW::paint-rect
     ] [
     i TOOL_OVAL = [
-        APP::draw-fd x 6 + y 8 + 20 18 color DRAW::frame-oval
+        APP::draw-fd x 5 + y 4 + 15 13 color DRAW::frame-oval
     ] [
-        APP::draw-fd x 10 + y 10 + color DRAW::pix
+    i TOOL_OVAL_FILLED = [
+        APP::draw-fd x 5 + y 4 + 15 13 color DRAW::paint-oval
+    ] [
+    i TOOL_SPRAY = [
+        APP::draw-fd x 8 + y 6 + color DRAW::pix
+        APP::draw-fd x 13 + y 4 + color DRAW::pix
+        APP::draw-fd x 11 + y 10 + color DRAW::pix
         APP::draw-fd x 16 + y 8 + color DRAW::pix
-        APP::draw-fd x 14 + y 14 + color DRAW::pix
-        APP::draw-fd x 20 + y 12 + color DRAW::pix
-        APP::draw-fd x 12 + y 18 + color DRAW::pix
-        APP::draw-fd x 18 + y 20 + color DRAW::pix
-        APP::draw-fd x 22 + y 16 + color DRAW::pix
-    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+        APP::draw-fd x 9 + y 14 + color DRAW::pix
+        APP::draw-fd x 14 + y 15 + color DRAW::pix
+        APP::draw-fd x 17 + y 12 + color DRAW::pix
+    ] [
+        APP::draw-fd x 12 + y 5 + i color 0 DRAW::draw-int
+    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
 ;
 
 @draw-palette ( -- )
-    APP::draw-fd PAL_X BAR_H PAL_W WIN_H BAR_H - STATUS_H - CLR_PAL DRAW::fill-rect
-    APP::draw-fd PAL_W 1 - BAR_H 1 WIN_H BAR_H - STATUS_H - CLR_FRAME DRAW::fill-rect
+    APP::draw-fd PAL_X PAL_Y PAL_W LW_Y PAL_Y - CLR_PAL DRAW::fill-rect
+    APP::draw-fd PAL_W 1 - PAL_Y 1 LW_Y PAL_Y - CLR_FRAME DRAW::fill-rect
     0 { i }
         [ i TOOLS < ]
         [
             i tool-xy { x y }
                 i tool LOADI = [
-                    APP::draw-fd x y 32 36 CLR_FG DRAW::fill-rect
+                    APP::draw-fd x y PAL_CELL_W PAL_CELL_H CLR_FG DRAW::fill-rect
                     i x y CLR_WHITE draw-tool-icon
                 ] [
-                    APP::draw-fd x y 32 36 CLR_WHITE DRAW::fill-rect
-                    APP::draw-fd x y 32 36 CLR_FG DRAW::frame-rect
+                    APP::draw-fd x y PAL_CELL_W PAL_CELL_H CLR_WHITE DRAW::fill-rect
+                    APP::draw-fd x y PAL_CELL_W PAL_CELL_H CLR_FG DRAW::frame-rect
                     i x y CLR_FG draw-tool-icon
                 ] ?:
             }
@@ -1048,15 +1084,17 @@ IMPORT BITMAP
     }
 ;
 
+( 19x2 swatch grid; the always-visible current-pattern preview at x 0..35 is
+  drawn separately by draw-current-pat. )
 @draw-pat-cell { i -- }
-    CANVAS_X i PAT_CELL * + { x }
-        PAT_Y { y }
+    PAT_CUR_W i PAT_COLS MOD PAT_CELL_W * + { x }
+        PAT_Y i PAT_COLS / PAT_CELL_H * + { y }
             i pat-id LOADI = [
-                APP::draw-fd x y 20 20 CLR_FG DRAW::fill-rect
-                APP::draw-fd x 2 + y 2 + 16 16 CLR_WHITE DRAW::fill-rect
+                APP::draw-fd x y PAT_CELL_W PAT_CELL_H CLR_FG DRAW::fill-rect
+                APP::draw-fd x 2 + y 2 + PAT_CELL_W 4 - PAT_CELL_H 4 - CLR_WHITE DRAW::fill-rect
             ] [
-                APP::draw-fd x y 20 20 CLR_FG DRAW::frame-rect
-                APP::draw-fd x 1 + y 1 + 18 18 CLR_WHITE DRAW::fill-rect
+                APP::draw-fd x y PAT_CELL_W PAT_CELL_H CLR_FG DRAW::frame-rect
+                APP::draw-fd x 1 + y 1 + PAT_CELL_W 2 - PAT_CELL_H 2 - CLR_WHITE DRAW::fill-rect
             ] ?:
             0 { py }
                 [ py 16 < ]
@@ -1075,6 +1113,30 @@ IMPORT BITMAP
                 ] |:
             }
         }
+    }
+;
+
+( Always-visible preview of the selected pattern, at the pattern strip's
+  left edge (x 0..PAT_CUR_W-1) -- separate from the 19x2 swatch grid, which
+  only shows a selection outline on its own cell. )
+@draw-current-pat ( -- )
+    APP::draw-fd 0 PAT_Y PAT_CUR_W WIN_H PAT_Y - CLR_WHITE DRAW::fill-rect
+    APP::draw-fd 0 PAT_Y PAT_CUR_W WIN_H PAT_Y - CLR_FG DRAW::frame-rect
+    0 { py }
+        [ py 32 < ]
+        [
+            0 { px }
+                [ px 32 < ]
+                [
+                    PATTERNS pat-id LOADI 8 * + py 7 AND + load-byte
+                    128 px 7 AND RSHIFT AND [
+                        APP::draw-fd 2 px + PAT_Y 2 + py + CLR_FG DRAW::pix
+                    ] ?
+                    px 1 + px!
+                ] |:
+            }
+            py 1 + py!
+        ] |:
     }
 ;
 
@@ -1097,22 +1159,57 @@ IMPORT BITMAP
         last-pat-id LOADI dup -1 > [ draw-pat-cell ] [ drop ] ?:
         pat-id LOADI draw-pat-cell
     ] ?:
+    draw-current-pat
     pat-id LOADI last-pat-id STOREI
 ;
 
-@draw-status ( -- )
-    APP::draw-fd 0 STATUS_Y WIN_W STATUS_H CLR_HDR DRAW::fill-rect
-    APP::draw-fd 0 STATUS_Y WIN_W 1 CLR_FRAME DRAW::fill-rect
-    path-basename STATUS_BUF STR::strcpy
-    file-dirty LOADI [
-        T" *" STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
-    ] ?
-    T"  " STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
-    tool-name STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
-    fat-f LOADI [
-        T"  FatBits" STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
-    ] ?
-    APP::draw-fd 8 STATUS_Y 6 + STATUS_BUF CLR_FG FONT_SIZE DRAW::draw-str
+( No in-window status bar (Step 9): filename/dirty state lives in the window
+  title via sync-title, already wired to every file-dirty change. )
+
+( LW_VALUES: none (dotted line, drawn as a thin hint-colored bar), then
+  1/2/3/4/8 px. Not yet consumed by any stroke/outline drawing -- pen-width
+  is stored and selectable, but line/shape rendering is still always 1px;
+  wiring it in is the rest of Step 4. )
+@lw-value { i -- w }
+    i 0 = [ 0 ] [
+    i 1 = [ 1 ] [
+    i 2 = [ 2 ] [
+    i 3 = [ 3 ] [
+    i 4 = [ 4 ] [
+        8
+    ] ?: ] ?: ] ?: ] ?: ] ?:
+;
+
+@draw-linewidths ( -- )
+    APP::draw-fd PAL_X LW_Y PAL_W LW_ROWS LW_ROW_H * CLR_PAL DRAW::fill-rect
+    0 { i }
+        [ i LW_ROWS < ]
+        [
+            LW_Y i LW_ROW_H * + { y }
+                i pen-width LOADI = { sel }
+                    sel [
+                        APP::draw-fd PAL_X y PAL_W LW_ROW_H CLR_FG DRAW::fill-rect
+                    ] ?
+                    sel [ CLR_WHITE ] [ CLR_FG ] ?: { lc }
+                        i lw-value { w }
+                            w 0 = [
+                                APP::draw-fd 10 y LW_ROW_H 2 / + PAL_W 20 - 1 lc DRAW::fill-rect
+                            ] [
+                                APP::draw-fd 10 y LW_ROW_H w - 2 / + PAL_W 20 - w lc DRAW::fill-rect
+                            ] ?:
+                        }
+                    }
+                }
+            }
+            i 1 + i!
+        ] |:
+    }
+;
+
+@hit-lw { mx my -- idx }
+    mx PAL_X >= mx PAL_W < AND my LW_Y >= AND my PAT_Y < AND [
+        my LW_Y - LW_ROW_H / 0 MAX LW_ROWS 1 - MIN
+    ] [ -1 ] ?:
 ;
 
 @draw-grid-dots ( -- )
@@ -1154,6 +1251,8 @@ IMPORT BITMAP
   instead of 32 pixel tests. CANVAS_W is exactly CANVAS_WORDS*32 for now, so
   every word is fully in-bounds -- no edge masking needed here (unlike
   BITMAP::hspan, which does need it for arbitrary spans). )
+( CANVAS_W (440) is not a multiple of 32, so the last word of a row only
+  covers CANVAS_W - wx*32 real columns; bitlim clamps the scan to that. )
 @draw-canvas-1x ( -- )
     0 { y }
         [ y CANVAS_H < ]
@@ -1162,24 +1261,26 @@ IMPORT BITMAP
                 [ wx CANVAS_WORDS < ]
                 [
                     CANVAS wx y BITMAP::word@ { w }
-                        w 0 = [
-                        ] [
-                            0 { bit }
-                                [ bit 32 < ]
-                                [
-                                    w 31 bit - RSHIFT 1 AND [
-                                        bit { rstart }
-                                            [ bit 32 < w 31 bit - RSHIFT 1 AND AND ]
-                                            [ bit 1 + bit! ] |:
-                                            APP::draw-fd CANVAS_X wx 32 * rstart + +
-                                                CANVAS_Y y + bit rstart - 1 CLR_FG DRAW::fill-rect
-                                        }
-                                    ] [
-                                        bit 1 + bit!
-                                    ] ?:
-                                ] |:
-                            }
-                        ] ?:
+                        32 CANVAS_W wx 32 * - MIN { bitlim }
+                            w 0 = [
+                            ] [
+                                0 { bit }
+                                    [ bit bitlim < ]
+                                    [
+                                        w 31 bit - RSHIFT 1 AND [
+                                            bit { rstart }
+                                                [ bit bitlim < w 31 bit - RSHIFT 1 AND AND ]
+                                                [ bit 1 + bit! ] |:
+                                                APP::draw-fd CANVAS_X wx 32 * rstart + +
+                                                    CANVAS_Y y + bit rstart - 1 CLR_FG DRAW::fill-rect
+                                            }
+                                        ] [
+                                            bit 1 + bit!
+                                        ] ?:
+                                    ] |:
+                                }
+                            ] ?:
+                        }
                     }
                     wx 1 + wx!
                 ] |:
@@ -1261,8 +1362,8 @@ IMPORT BITMAP
     draw-canvas
     draw-rubber
     draw-palette
+    draw-linewidths
     draw-patterns
-    draw-status
     UI::draw
     SF::open? [ SF::draw ] ?
     confirm-new-draw
@@ -1279,6 +1380,19 @@ IMPORT BITMAP
 
 ( --- Paint a finished shape into the bitmap --- )
 
+( RECT_FILLED/OVAL_FILLED are their own palette buttons (see the TOOL_*
+  block at the top) rather than a separate filled-f toggle -- `tool` alone
+  says both the shape and whether it's filled. )
+@shape-is-oval? ( -- f )
+    tool LOADI TOOL_OVAL =
+    tool LOADI TOOL_OVAL_FILLED = OR
+;
+
+@shape-filled? ( -- f )
+    tool LOADI TOOL_RECT_FILLED =
+    tool LOADI TOOL_OVAL_FILLED = OR
+;
+
 @commit-shape ( -- )
     shape-x0 LOADI shape-y0 LOADI shape-x1 LOADI shape-y1 LOADI
     tool LOADI apply-shift { x1 y1 }
@@ -1291,11 +1405,11 @@ IMPORT BITMAP
                     x0 y0 x1 y1 canon-xy { minx miny maxx maxy }
                         maxx minx - 1 + { w }
                             maxy miny - 1 + { h }
-                                tool LOADI TOOL_OVAL = [
-                                    filled-f LOADI [ minx miny w h fill-oval-pat ] ?
+                                shape-is-oval? [
+                                    shape-filled? [ minx miny w h fill-oval-pat ] ?
                                     minx miny w h frame-oval-pix
                                 ] [
-                                    filled-f LOADI [ minx miny maxx maxy fill-rect-pat ] ?
+                                    shape-filled? [ minx miny maxx maxy fill-rect-pat ] ?
                                     minx miny maxx maxy frame-rect-pix
                                 ] ?:
                             }
@@ -1331,7 +1445,20 @@ IMPORT BITMAP
 @shape-tool? ( -- f )
     tool LOADI TOOL_LINE =
     tool LOADI TOOL_RECT = OR
+    tool LOADI TOOL_RECT_FILLED = OR
     tool LOADI TOOL_OVAL = OR
+    tool LOADI TOOL_OVAL_FILLED = OR
+;
+
+( Gates hit-tool's palette clicks: LASSO/MARQUEE/HAND/TEXT/ROUNDRECT*/
+  FREEFORM*/POLYGON* are visible in the palette but not wired to anything
+  yet, so clicking them is a no-op rather than leaving `tool` pointing at a
+  slot nothing else recognizes. )
+@tool-implemented? { t -- f }
+    t TOOL_FILL = t TOOL_SPRAY = OR t TOOL_BRUSH = OR t TOOL_PENCIL = OR
+    t TOOL_LINE = OR t TOOL_ERASER = OR
+    t TOOL_RECT = OR t TOOL_RECT_FILLED = OR
+    t TOOL_OVAL = OR t TOOL_OVAL_FILLED = OR
 ;
 
 @page-down { mx my -- }
@@ -1379,9 +1506,19 @@ IMPORT BITMAP
     }
 ;
 
-@hit-pat { mx -- idx }
-    mx CANVAS_X - PAT_CELL /
-    0 MAX PAT_N 1 - MIN
+( -1 for a click inside the current-pattern preview box (x < PAT_CUR_W) --
+  that box doesn't pick a swatch; a future Edit Pattern double-click will
+  live there instead (Step 4). )
+@hit-pat { mx my -- idx }
+    mx PAT_CUR_W < [
+        -1
+    ] [
+        mx PAT_CUR_W - PAT_CELL_W / 0 MAX PAT_COLS 1 - MIN { col }
+            my PAT_Y - PAT_CELL_H / 0 MAX PAT_ROWS 1 - MIN { row }
+                row PAT_COLS * col +
+            }
+        }
+    ] ?:
 ;
 
 @handle-page-mouse { mpkt -- }
@@ -1395,17 +1532,30 @@ IMPORT BITMAP
         1 mouse-held STOREI
         mx my hit-tool { t }
             t 0 >= [
-                t tool STOREI
-                DRAG_NONE drag STOREI
-                APP::dirty!
+                t tool-implemented? [
+                    t tool STOREI
+                    DRAG_NONE drag STOREI
+                    APP::dirty!
+                ] ?
             ] [
                 mx my in-pat? [
-                    mx hit-pat pat-id STOREI
-                    APP::dirty!
+                    mx my hit-pat { pi }
+                        pi 0 >= [
+                            pi pat-id STOREI
+                            APP::dirty!
+                        ] ?
+                    }
                 ] [
-                    mx my in-page? [
-                        mx my page-down
-                    ] ?
+                    mx my hit-lw { li }
+                        li 0 >= [
+                            li pen-width STOREI
+                            APP::dirty!
+                        ] [
+                            mx my in-page? [
+                                mx my page-down
+                            ] ?
+                        ] ?:
+                    }
                 ] ?:
             ] ?:
         }
@@ -1550,16 +1700,14 @@ IMPORT BITMAP
     T"Goodies" UI::menu
     T"Grid"    [ menu-grid ]    UI::check-item
     T"FatBits" [ menu-fat ]     UI::check-item
-    T"Filled"  [ menu-filled ]  UI::check-item
     T"Grid" 0 UI::item-set
     T"FatBits" 0 UI::item-set
-    T"Filled" 0 UI::item-set
     [ on-pick ] SF::on-ok!
     [ on-cancel ] SF::on-cancel!
     init-pats
     0 grid-f STOREI
     0 fat-f STOREI
-    0 filled-f STOREI
+    0 pen-width STOREI
     -1 last-pat-id STOREI
     DIRTY_ALL damage!
     new-document
