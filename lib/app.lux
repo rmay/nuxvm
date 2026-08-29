@@ -28,6 +28,9 @@ IMPORT UI
 @win-w    0x8C0040 ;
 @win-h    0x8C0044 ;
 @dirty-f  0x8C0048 ;
+@text-font-id  0x8C0080 ;
+@text-font-grp 0x8C0084 ;
+@v-font        0x8C0088 ;
 ( Alias of UI::APP_MODAL — same cell, not a second reservation. )
 @modal-f  ( -- addr ) UI::APP_MODAL ;
 
@@ -120,6 +123,7 @@ IMPORT UI
 ;
 
 @draw-esc-popup ( -- )
+    dfd LOADI DRAW::CHICAGO DRAW::set-font
     win-w LOADI 200 - 2 /
     win-h LOADI 160 - 2 /
     2 frame! ( 0:y 1:x )
@@ -215,11 +219,49 @@ IMPORT UI
     ] ?
 ;
 
+@text-font ( -- id ) text-font-id LOADI ;
+
+@font-hook! ( xt -- ) v-font STOREI ;
+
+@use-text-font ( -- )
+    dfd LOADI text-font-id LOADI DRAW::set-font
+;
+
+@apply-text-font ( id -- )
+    1 frame!
+    0 local@ text-font-id STOREI
+    T"Chicago" 0 UI::item-set
+    T"Geneva"  0 UI::item-set
+    T"Monaco"  0 UI::item-set
+    0 local@ DRAW::CHICAGO = [ T"Chicago" 1 UI::item-set ] ?
+    0 local@ DRAW::GENEVA  = [ T"Geneva"  1 UI::item-set ] ?
+    0 local@ DRAW::MONACO  = [ T"Monaco"  1 UI::item-set ] ?
+    v-font LOADI dup 0 > [ 0 local@ SWAP CALLSTACK ] [ drop ] ?:
+    dirty!
+    1 unframe!
+;
+
+@font-chicago ( val -- ) drop DRAW::CHICAGO apply-text-font ;
+@font-geneva  ( val -- ) drop DRAW::GENEVA  apply-text-font ;
+@font-monaco  ( val -- ) drop DRAW::MONACO  apply-text-font ;
+
+( Document face only. Menus and buttons stay Chicago. )
+@font-menu ( -- )
+    T"font" text-font-grp STOREI
+    T"Font" UI::menu
+    T"Chicago" text-font-grp LOADI [ font-chicago ] UI::radio-item
+    T"Geneva"  text-font-grp LOADI [ font-geneva ]  UI::radio-item
+    T"Monaco"  text-font-grp LOADI [ font-monaco ]  UI::radio-item
+    DRAW::CHICAGO apply-text-font
+;
+
 @init ( title-ptr -- )
     VFS::set-window-title
     open-devices
     dfd LOADI DRAW::use
-    dfd LOADI 0 DRAW::set-font
+    DRAW::CHICAGO text-font-id STOREI
+    0 v-font STOREI
+    dfd LOADI DRAW::CHICAGO DRAW::set-font
     0 modal-f STOREI
     dirty!
 ;
@@ -227,6 +269,7 @@ IMPORT UI
 @loop ( -- )
     [ 1 ] [
         dfd LOADI DRAW::begin-frame
+        dfd LOADI DRAW::CHICAGO DRAW::set-font
         sync-canvas
 
         ( 1. Handle Mouse — drain the queue so a drag sees every move )

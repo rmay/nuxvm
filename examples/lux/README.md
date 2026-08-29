@@ -26,6 +26,7 @@ Module demos need an explicit compile (they write a sibling `.bin`):
 ## What's Included
 
 - `hello.lux` — hello-world via `EMIT` (`./bin/nux examples/lux/hello.lux`)
+- `gird.lux` — named locals with `GIRD` / `UNGIRD` (`./bin/nux examples/lux/gird.lux`)
 - `modules/module_basic.lux` — defining and calling words inside a `MODULE`
 - `modules/module_imports.lux` — `IMPORT ... AS ...` aliasing between modules
 - `modules/module_isolation.lux` — namespace isolation between modules

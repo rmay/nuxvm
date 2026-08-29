@@ -227,11 +227,22 @@ static bool lookup_local(Compiler* c, const char* name, int32_t* out_offset) {
     return false;
 }
 
-static bool compile_local_frame_start(Compiler* c) {
+static bool open_named_frame(Compiler* c, char names[COMPILER_MAX_LOCAL_NAMES][COMPILER_MAX_LOCAL_NAME], int count) {
     if (c->local_depth >= COMPILER_MAX_LOCAL_FRAMES) {
         fprintf(stderr, "Too many nested local frames\n");
         return false;
     }
+    memcpy(c->local_frames[c->local_depth].names, names,
+           sizeof(c->local_frames[c->local_depth].names));
+    c->local_frames[c->local_depth].count = count;
+    emit_byte(c, OP_PUSH);
+    emit_int32(c, count);
+    emit_byte(c, OP_FRAME);
+    c->local_depth++;
+    return true;
+}
+
+static bool compile_local_frame_start(Compiler* c) {
     int count = 0;
     char names[COMPILER_MAX_LOCAL_NAMES][COMPILER_MAX_LOCAL_NAME];
     bool skipping_doc = false;
@@ -273,18 +284,31 @@ static bool compile_local_frame_start(Compiler* c) {
         return false;
     }
 
-    memcpy(c->local_frames[c->local_depth].names, names, sizeof(names));
-    c->local_frames[c->local_depth].count = count;
-    emit_byte(c, OP_PUSH);
-    emit_int32(c, count);
-    emit_byte(c, OP_FRAME);
-    c->local_depth++;
-    return true;
+    return open_named_frame(c, names, count);
 }
 
-static bool compile_local_frame_end(Compiler* c, int line) {
+/* GIRD name — bind TOS as a one-slot named frame. UNGIRD pops it. */
+static bool compile_gird(Compiler* c, int line) {
+    Token name = peek(c);
+    if (name.type != TOKEN_WORD || !name.value ||
+        strcmp(name.value, "}") == 0 || strcmp(name.value, "{") == 0 ||
+        strcmp(name.value, "--") == 0 ||
+        strcasecmp(name.value, "GIRD") == 0 ||
+        strcasecmp(name.value, "UNGIRD") == 0) {
+        fprintf(stderr, "Expected local name after GIRD at line %d\n", line);
+        return false;
+    }
+    advance(c);
+    char names[COMPILER_MAX_LOCAL_NAMES][COMPILER_MAX_LOCAL_NAME];
+    memset(names, 0, sizeof(names));
+    strncpy(names[0], name.value, COMPILER_MAX_LOCAL_NAME - 1);
+    names[0][COMPILER_MAX_LOCAL_NAME - 1] = '\0';
+    return open_named_frame(c, names, 1);
+}
+
+static bool compile_local_frame_end(Compiler* c, int line, const char* tok) {
     if (c->local_depth <= 0) {
-        fprintf(stderr, "Unexpected } at line %d\n", line);
+        fprintf(stderr, "Unexpected %s at line %d\n", tok, line);
         return false;
     }
     c->local_depth--;
@@ -296,7 +320,7 @@ static bool compile_local_frame_end(Compiler* c, int line) {
 
 static void emit_unframe_all(Compiler* c) {
     while (c->local_depth > 0) {
-        compile_local_frame_end(c, 0);
+        compile_local_frame_end(c, 0, "UNGIRD");
     }
 }
 
@@ -456,7 +480,7 @@ static void compile_quotation_end(Compiler* c) {
     int idx = c->active_quot_idx;
     if (idx >= 0 && idx < (int)c->quot_count) {
         while (c->local_depth > c->quotations[idx].saved_local_depth) {
-            compile_local_frame_end(c, 0);
+            compile_local_frame_end(c, 0, "UNGIRD");
         }
     }
     emit_byte(c, OP_RET);
@@ -733,7 +757,13 @@ static bool compile_token(Compiler* c, Token t) {
             return compile_local_frame_start(c);
         }
         if (strcmp(t.value, "}") == 0) {
-            return compile_local_frame_end(c, t.line);
+            return compile_local_frame_end(c, t.line, "}");
+        }
+        if (strcasecmp(t.value, "GIRD") == 0) {
+            return compile_gird(c, t.line);
+        }
+        if (strcasecmp(t.value, "UNGIRD") == 0) {
+            return compile_local_frame_end(c, t.line, "UNGIRD");
         }
 
         int32_t local_off;

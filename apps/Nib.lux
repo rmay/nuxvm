@@ -1,0 +1,1689 @@
+( Nib: MacDraw-simple object drawing.
+  File > New/Open/Save/Save As | Quit, Edit > Cut/Copy/Paste/Duplicate/Clear,
+  Arrange > Bring to Front / Send to Back, Pen, Fill, View > Grid / Snap.
+  Six tools: arrow, line, rect, roundrect, oval, text. Save is NIB 1.
+  ./bin/cloister apps/Nib.bin )
+
+INCLUDE "lib/app.lux"
+INCLUDE "lib/core.lux"
+INCLUDE "lib/str.lux"
+INCLUDE "lib/ui.lux"
+INCLUDE "lib/sf.lux"
+INCLUDE "lib/geom.lux"
+
+MODULE MAIN
+
+IMPORT APP
+IMPORT VFS
+IMPORT DRAW
+IMPORT EVENT
+IMPORT STR
+IMPORT UI
+IMPORT SF
+IMPORT GEOM
+
+( --- Geometry --- )
+@WIN_W         960 ;
+@WIN_H         720 ;
+@BAR_H          20 ;
+@STATUS_H       24 ;
+@PAL_W          40 ;
+@PAL_X           0 ;
+@PAGE_X         40 ;
+@PAGE_Y         20 ;
+@PAGE_W        920 ;
+@PAGE_H        676 ;
+@STATUS_Y      696 ;
+@FONT_SIZE      16 ;
+@GRID           8 ;
+@MAX_OBJS      256 ;
+@OBJ_SIZE       32 ;
+@TEXT_MAX       63 ;
+@TEXT_POOL_SZ  16384 ;
+@HSZ             6 ;
+@TOOLS           6 ;
+
+@TYPE_FREE       0 ;
+@TYPE_LINE       1 ;
+@TYPE_RECT       2 ;
+@TYPE_RRECT      3 ;
+@TYPE_OVAL       4 ;
+@TYPE_TEXT       5 ;
+
+@FILL_NONE       0 ;
+@FILL_WHITE      1 ;
+@FILL_BLACK      2 ;
+
+@TOOL_ARROW      0 ;
+@TOOL_LINE       1 ;
+@TOOL_RECT       2 ;
+@TOOL_RRECT      3 ;
+@TOOL_OVAL       4 ;
+@TOOL_TEXT       5 ;
+
+@DRAG_NONE       0 ;
+@DRAG_CREATE     1 ;
+@DRAG_MOVE       2 ;
+@DRAG_HANDLE     3 ;
+
+@O_TYPE          0 ;
+@O_FILL          1 ;
+@O_PEN           2 ;
+@O_FLAGS         3 ;
+@O_X0            4 ;
+@O_Y0            8 ;
+@O_X1           12 ;
+@O_Y1           16 ;
+@O_TOFF         20 ;
+@O_TLEN         24 ;
+
+@CLR_BG        0xFFFFFF ;
+@CLR_FG        0x000000 ;
+@CLR_PAGE      0xFFFFFF ;
+@CLR_PAL       0xDDDDDD ;
+@CLR_GRID      0xEEEEEE ;
+@CLR_HDR       0xEEEEEE ;
+@CLR_FRAME     0x000000 ;
+@CLR_HINT      0x444444 ;
+@CLR_SEL       0x000000 ;
+@CLR_WHITE     0xFFFFFF ;
+@CLR_HANDLE    0xFFFFFF ;
+
+@CONFIRM_PANEL_W 260 ;
+@CONFIRM_PANEL_H 170 ;
+@CONFIRM_BTN_W   180 ;
+@CONFIRM_BTN_H    30 ;
+@CONFIRM_BTN_GAP  10 ;
+@CLR_CONFIRM_DIM    0x000000 ;
+@CLR_CONFIRM_PANEL  0x303030 ;
+@CLR_CONFIRM_BORDER 0xAAAAAA ;
+@CLR_CONFIRM_TEXT   0xFFFFFF ;
+@CLR_CONFIRM_BTN    0x505050 ;
+
+( --- Bulk buffers (MM_APP_BULK_BUFFER 0x900000..0xA00000) --- )
+@POOL          0x900000 ;
+@TEXT_POOL     0x902000 ;
+@PATH          0x906000 ;
+@VFS_PATH      0x906100 ;
+@STATUS_BUF    0x906200 ;
+@LINE_BUF      0x906300 ;
+@NUM_BUF       0x906500 ;
+@KIND_BUF      0x906520 ;
+@EDIT_BUF      0x906540 ;
+@FILE_BUF      0x907000 ;
+@FILE_MAX      0x10000 ;
+@SNARF_BUF     0x917000 ;
+@SNARF_MAX     0x4000 ;
+@TMP_OBJ       0x91B000 ;
+
+( --- Small state (MM_APP_SMALL_STATE) --- )
+@tool              0x8A0000 ;
+@sel               0x8A0004 ;
+@drag              0x8A0008 ;
+@mouse-held        0x8A000C ;
+@file-dirty        0x8A0010 ;
+@confirm-new-open  0x8A0014 ;
+@cur-pen           0x8A0018 ;
+@cur-fill          0x8A001C ;
+@grid-f            0x8A0020 ;
+@snap-f            0x8A0024 ;
+@used-n            0x8A0028 ;
+@text-here         0x8A002C ;
+@editing           0x8A0030 ;
+@edit-len          0x8A0034 ;
+@edit-new          0x8A0038 ;
+@handle-id         0x8A003C ;
+@drag-x0           0x8A0040 ;
+@drag-y0           0x8A0044 ;
+@last-mx           0x8A0048 ;
+@last-my           0x8A004C ;
+@shift-mod         0x8A0050 ;
+@pen-grp           0x8A0054 ;
+@fill-grp          0x8A0058 ;
+@p-x0              0x8A005C ;
+@p-y0              0x8A0060 ;
+@p-x1              0x8A0064 ;
+@p-y1              0x8A0068 ;
+@p-fill            0x8A006C ;
+@p-pen             0x8A0070 ;
+@save-as           0x8A0074 ;
+
+( --- Path / dirty --- )
+
+@make-vfs-path ( path-ptr -- vfs-path-ptr )
+    dup load-byte 47 = [ 1 + ] ?
+    T"/sys/file/" VFS_PATH STR::strcpy
+    VFS_PATH T"/sys/file/" STR::strlen + STR::strcpy
+    VFS_PATH
+;
+
+@mark-dirty ( -- )
+    1 file-dirty STOREI
+    APP::dirty!
+    sync-title
+;
+
+@path-basename ( -- ptr )
+    PATH dup
+    [ dup load-byte ] [
+        dup load-byte 47 = [
+            1 + swap drop dup
+        ] [ 1 + ] ?:
+    ] |:
+    drop
+;
+
+@sync-title ( -- )
+    file-dirty LOADI [ T"Nib *" ] [ T"Nib" ] ?:
+    VFS::set-window-title
+;
+
+( --- Object pool --- )
+
+@obj-at ( i -- addr ) OBJ_SIZE * POOL + ;
+
+@copy32 { src dest -- }
+    0 { k }
+    [ k 8 < ]
+    [
+        src k 4 * + LOADI dest k 4 * + STOREI
+        k 1 + k!
+    ] |:
+;
+
+@obj-swap { i j -- }
+    i obj-at TMP_OBJ copy32
+    j obj-at i obj-at copy32
+    TMP_OBJ j obj-at copy32
+;
+
+@clear-pool ( -- )
+    0 used-n STOREI
+    0 text-here STOREI
+    -1 sel STOREI
+;
+
+@obj-alloc ( -- idx )
+    used-n LOADI MAX_OBJS < [
+        used-n LOADI
+        used-n LOADI 1 + used-n STOREI
+        dup obj-at { a }
+        0 a store-byte
+        0 a O_FILL + store-byte
+        1 a O_PEN + store-byte
+        0 a O_FLAGS + store-byte
+        0 a O_X0 + STOREI
+        0 a O_Y0 + STOREI
+        0 a O_X1 + STOREI
+        0 a O_Y1 + STOREI
+        0 a O_TOFF + STOREI
+        0 a O_TLEN + STOREI
+    ] [
+        -1
+    ] ?:
+;
+
+@obj-delete { i -- }
+    i 0 < [ ] [
+        i used-n LOADI < [
+            i used-n LOADI 1 - < [
+                used-n LOADI 1 - i obj-swap
+            ] ?
+            used-n LOADI 1 - used-n STOREI
+            -1 sel STOREI
+            mark-dirty
+        ] ?
+    ] ?:
+;
+
+@text-alloc { n -- off }
+    n 0 < [ 0 n! ] ?
+    text-here LOADI n + 1 + TEXT_POOL_SZ > [
+        -1
+    ] [
+        text-here LOADI
+        text-here LOADI n + 1 + text-here STOREI
+    ] ?:
+;
+
+@obj-text { i -- ptr }
+    i obj-at O_TOFF + LOADI TEXT_POOL +
+;
+
+@set-text { i src -- }
+    src STR::strlen TEXT_MAX MIN { n }
+    n text-alloc { off }
+    off 0 < [ ] [
+        off i obj-at O_TOFF + STOREI
+        n i obj-at O_TLEN + STOREI
+        0 { k }
+        [ k n < ]
+        [
+            src k + load-byte TEXT_POOL off + k + store-byte
+            k 1 + k!
+        ] |:
+        0 TEXT_POOL off + n + store-byte
+        i refresh-text-box
+    ] ?:
+;
+
+@refresh-text-box { i -- }
+    i obj-at { a }
+    a load-byte TYPE_TEXT = [
+        APP::use-text-font
+        a O_X0 + LOADI
+        a O_TOFF + LOADI TEXT_POOL + DRAW::str-w +
+        a O_X0 + LOADI 8 + MAX
+        a O_X1 + STOREI
+        a O_Y0 + LOADI DRAW::char-h + a O_Y1 + STOREI
+        APP::draw-fd DRAW::CHICAGO DRAW::set-font
+    ] ?
+;
+
+@reflow-text ( -- )
+    0 { i }
+    [ i used-n LOADI < ]
+    [
+        i refresh-text-box
+        i 1 + i!
+    ] |:
+;
+
+@obj-box { i -- minx miny maxx maxy }
+    i obj-at { a }
+    a O_X0 + LOADI a O_Y0 + LOADI a O_X1 + LOADI a O_Y1 + LOADI
+    GEOM::rect-canon
+;
+
+( --- Snap / constrain --- )
+
+@snap-n { n -- n' }
+    snap-f LOADI [
+        n 0 < [
+            0 n - GRID / GRID * NEGATE
+        ] [
+            n GRID / GRID *
+        ] ?:
+    ] [ n ] ?:
+;
+
+@constrain-line { x0 y0 x1 y1 -- x1 y1 }
+    x1 x0 - { dx }
+    y1 y0 - { dy }
+    dx ABS { adx }
+    dy ABS { ady }
+    adx ady 2 * > [
+        x1 y0
+    ] [
+        ady adx 2 * > [
+            x0 y1
+        ] [
+            adx ady MAX { m }
+            dx 0 < [ x0 m - ] [ x0 m + ] ?:
+            dy 0 < [ y0 m - ] [ y0 m + ] ?:
+        ] ?:
+    ] ?:
+;
+
+@constrain-square { x0 y0 x1 y1 -- x1 y1 }
+    x1 x0 - ABS y1 y0 - ABS MAX { s }
+    x1 x0 < [ x0 s - ] [ x0 s + ] ?:
+    y1 y0 < [ y0 s - ] [ y0 s + ] ?:
+;
+
+@apply-shift { x0 y0 x1 y1 ty -- x1 y1 }
+    shift-mod LOADI [
+        ty TYPE_LINE = [
+            x0 y0 x1 y1 constrain-line
+        ] [
+            x0 y0 x1 y1 constrain-square
+        ] ?:
+    ] [
+        x1 y1
+    ] ?:
+;
+
+@canon-closed { i -- }
+    i obj-at { a }
+    a load-byte dup TYPE_LINE = SWAP TYPE_TEXT = OR [
+    ] [
+        a O_X0 + LOADI a O_Y0 + LOADI a O_X1 + LOADI a O_Y1 + LOADI
+        GEOM::rect-canon
+        a O_Y1 + STOREI
+        a O_X1 + STOREI
+        a O_Y0 + STOREI
+        a O_X0 + STOREI
+    ] ?:
+;
+
+( --- Hit testing --- )
+
+@in-page? { mx my -- f }
+    mx PAGE_X >= my PAGE_Y >= AND
+    mx PAGE_X PAGE_W + < AND
+    my PAGE_Y PAGE_H + < AND
+;
+
+@tool-y ( i -- y ) PAGE_Y 4 + SWAP 32 * + ;
+
+@in-tool? { mx my i -- f }
+    mx 4 >= mx 36 < AND
+    my i tool-y >= AND
+    my i tool-y 28 + < AND
+;
+
+@hit-tool { mx my -- idx }
+    -1 { found }
+    0 { i }
+    [ i TOOLS < found 0 < AND ]
+    [
+        mx my i in-tool? [ i found! ] ?
+        i 1 + i!
+    ] |:
+    found
+;
+
+@near-line? { x y x0 y0 x1 y1 -- f }
+    x0 x1 MIN 4 - { minx }
+    x0 x1 MAX 4 + { maxx }
+    y0 y1 MIN 4 - { miny }
+    y0 y1 MAX 4 + { maxy }
+    x minx >= x maxx < AND y miny >= AND y maxy < AND [
+        y1 y0 - x x0 - * x1 x0 - y y0 - * - ABS
+        x1 x0 - ABS y1 y0 - ABS + 1 + 4 *
+        <=
+    ] [ 0 ] ?:
+;
+
+@in-handle? { mx my hx hy -- f }
+    mx hx 3 - >=
+    mx hx 4 + < AND
+    my hy 3 - >= AND
+    my hy 4 + < AND
+;
+
+@obj-hits? { mx my i -- f }
+    i obj-at { a }
+    a load-byte TYPE_LINE = [
+        mx my a O_X0 + LOADI a O_Y0 + LOADI a O_X1 + LOADI a O_Y1 + LOADI near-line?
+    ] [
+        i obj-box { minx miny maxx maxy }
+        maxx minx - 2 < [ minx 2 - minx! maxx 2 + maxx! ] ?
+        maxy miny - 2 < [ miny 2 - miny! maxy 2 + maxy! ] ?
+        mx my minx miny maxx maxy GEOM::pt-in-rect?
+    ] ?:
+;
+
+@hit-obj { mx my -- idx }
+    used-n LOADI 1 - { i }
+    -1 { found }
+    [ i 0 >= found 0 < AND ]
+    [
+        mx my i obj-hits? [ i found! ] ?
+        i 1 - i!
+    ] |:
+    found
+;
+
+@handle-xy { i hid -- hx hy }
+    i obj-at load-byte TYPE_LINE = [
+        hid 0 = [
+            i obj-at O_X0 + LOADI i obj-at O_Y0 + LOADI
+        ] [
+            i obj-at O_X1 + LOADI i obj-at O_Y1 + LOADI
+        ] ?:
+    ] [
+        i obj-box { minx miny maxx maxy }
+        maxx 1 - { x1 }
+        maxy 1 - { y1 }
+        minx x1 + 2 / { mx }
+        miny y1 + 2 / { my }
+        hid 0 = [ minx miny ] [
+        hid 1 = [ mx miny ] [
+        hid 2 = [ x1 miny ] [
+        hid 3 = [ x1 my ] [
+        hid 4 = [ x1 y1 ] [
+        hid 5 = [ mx y1 ] [
+        hid 6 = [ minx y1 ] [
+            minx my
+        ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+    ] ?:
+;
+
+@hit-handles { mx my i -- hid }
+    i 0 < [ -1 ] [
+        i obj-at load-byte TYPE_TEXT = [
+            -1
+        ] [
+            i obj-at load-byte TYPE_LINE = [ 2 ] [ 8 ] ?: { n }
+            -1 { found }
+            0 { h }
+            [ h n < found 0 < AND ]
+            [
+                i h handle-xy { hx hy }
+                mx my hx hy in-handle? [ h found! ] ?
+                h 1 + h!
+            ] |:
+            found
+        ] ?:
+    ] ?:
+;
+
+( --- Draw --- )
+
+@frame-shape { x y w h ty color -- }
+    w 1 < h 1 < OR [
+    ] [
+        ty TYPE_OVAL = [
+            APP::draw-fd x y w h color DRAW::frame-oval
+        ] [
+            ty TYPE_RRECT = [
+                APP::draw-fd x y w h 6 6 color DRAW::frame-rrect
+            ] [
+                APP::draw-fd x y w h color DRAW::frame-rect
+            ] ?:
+        ] ?:
+    ] ?:
+;
+
+@paint-shape { x y w h ty color -- }
+    w 1 < h 1 < OR [
+    ] [
+        ty TYPE_OVAL = [
+            APP::draw-fd x y w h color DRAW::paint-oval
+        ] [
+            ty TYPE_RRECT = [
+                APP::draw-fd x y w h 6 6 color DRAW::paint-rrect
+            ] [
+                APP::draw-fd x y w h color DRAW::fill-rect
+            ] ?:
+        ] ?:
+    ] ?:
+;
+
+@stroke-shape { x y w h ty pen -- }
+    0 { k }
+    [ k pen < ]
+    [
+        w k 2 * - { ww }
+        h k 2 * - { hh }
+        ww 0 > hh 0 > AND [
+            x k + y k + ww hh ty CLR_FG frame-shape
+        ] ?
+        k 1 + k!
+    ] |:
+;
+
+@stroke-line { x0 y0 x1 y1 pen -- }
+    0 { k }
+    [ k pen < ]
+    [
+        APP::draw-fd x0 k + y0 x1 k + y1 CLR_FG DRAW::line
+        k 0 > [
+            APP::draw-fd x0 y0 k + x1 y1 k + CLR_FG DRAW::line
+        ] ?
+        k 1 + k!
+    ] |:
+;
+
+@draw-obj { i -- }
+    i obj-at { a }
+    a load-byte { ty }
+    ty TYPE_FREE = [
+    ] [
+        ty TYPE_LINE = [
+            a O_X0 + LOADI a O_Y0 + LOADI a O_X1 + LOADI a O_Y1 + LOADI
+            a O_PEN + load-byte stroke-line
+        ] [
+            ty TYPE_TEXT = [
+                APP::use-text-font
+                editing LOADI i sel LOADI = AND [
+                    APP::draw-fd a O_X0 + LOADI a O_Y0 + LOADI EDIT_BUF CLR_FG FONT_SIZE DRAW::draw-str
+                ] [
+                    APP::draw-fd a O_X0 + LOADI a O_Y0 + LOADI a O_TOFF + LOADI TEXT_POOL + CLR_FG FONT_SIZE DRAW::draw-str
+                ] ?:
+                APP::draw-fd DRAW::CHICAGO DRAW::set-font
+            ] [
+                i obj-box GEOM::rect>xywh { x y w h }
+                a O_FILL + load-byte FILL_WHITE = [
+                    x y w h ty CLR_WHITE paint-shape
+                ] ?
+                a O_FILL + load-byte FILL_BLACK = [
+                    x y w h ty CLR_FG paint-shape
+                ] ?
+                x y w h ty a O_PEN + load-byte stroke-shape
+            ] ?:
+        ] ?:
+    ] ?:
+;
+
+@draw-handle { hx hy -- }
+    APP::draw-fd hx 2 - hy 2 - HSZ HSZ CLR_SEL DRAW::fill-rect
+    APP::draw-fd hx 1 - hy 1 - HSZ 2 - HSZ 2 - CLR_HANDLE DRAW::fill-rect
+;
+
+@draw-sel ( -- )
+    sel LOADI 0 < [ ] [
+        sel LOADI obj-at load-byte TYPE_TEXT = [
+            sel LOADI obj-box GEOM::rect>xywh { x y w h }
+            APP::draw-fd x 1 - y 1 - w 2 + h 2 + CLR_SEL DRAW::draw-rect
+            editing LOADI [
+                APP::use-text-font
+                sel LOADI obj-at O_X0 + LOADI EDIT_BUF DRAW::str-w +
+                sel LOADI obj-at O_Y0 + LOADI
+                APP::draw-fd ROT ROT 1 DRAW::char-h CLR_FG DRAW::fill-rect
+                APP::draw-fd DRAW::CHICAGO DRAW::set-font
+            ] ?
+        ] [
+            sel LOADI obj-at load-byte TYPE_LINE = [ 2 ] [ 8 ] ?: { n }
+            0 { h }
+            [ h n < ]
+            [
+                sel LOADI h handle-xy draw-handle
+                h 1 + h!
+            ] |:
+        ] ?:
+    ] ?:
+;
+
+@draw-grid ( -- )
+    grid-f LOADI [
+        PAGE_X { x }
+        [ x PAGE_X PAGE_W + < ]
+        [
+            APP::draw-fd x PAGE_Y 1 PAGE_H CLR_GRID DRAW::fill-rect
+            x GRID + x!
+        ] |:
+        PAGE_Y { y }
+        [ y PAGE_Y PAGE_H + < ]
+        [
+            APP::draw-fd PAGE_X y PAGE_W 1 CLR_GRID DRAW::fill-rect
+            y GRID + y!
+        ] |:
+    ] ?
+;
+
+@draw-tool-icon { i x y color -- }
+    i TOOL_ARROW = [
+        APP::draw-fd x 6 + y 4 + x 6 + y 22 + x 20 + y 16 + color DRAW::paint-tri
+    ] [
+    i TOOL_LINE = [
+        APP::draw-fd x 6 + y 22 + x 22 + y 6 + color DRAW::line
+    ] [
+    i TOOL_RECT = [
+        APP::draw-fd x 6 + y 6 + 20 16 color DRAW::frame-rect
+    ] [
+    i TOOL_RRECT = [
+        APP::draw-fd x 6 + y 6 + 20 16 6 6 color DRAW::frame-rrect
+    ] [
+    i TOOL_OVAL = [
+        APP::draw-fd x 6 + y 6 + 20 16 color DRAW::frame-oval
+    ] [
+        APP::draw-fd x 10 + y 8 + 65 color FONT_SIZE DRAW::draw-char
+    ] ?: ] ?: ] ?: ] ?: ] ?:
+;
+
+@draw-palette ( -- )
+    APP::draw-fd PAL_X PAGE_Y PAL_W PAGE_H CLR_PAL DRAW::fill-rect
+    APP::draw-fd PAGE_X 1 - PAGE_Y 1 PAGE_H CLR_FRAME DRAW::fill-rect
+    0 { i }
+    [ i TOOLS < ]
+    [
+        4 i tool-y { x y }
+        i tool LOADI = [
+            APP::draw-fd x y 32 28 CLR_FG DRAW::fill-rect
+            i x y CLR_WHITE draw-tool-icon
+        ] [
+            APP::draw-fd x y 32 28 CLR_WHITE DRAW::fill-rect
+            APP::draw-fd x y 32 28 CLR_FG DRAW::frame-rect
+            i x y CLR_FG draw-tool-icon
+        ] ?:
+        i 1 + i!
+    ] |:
+;
+
+@draw-status ( -- )
+    APP::draw-fd 0 STATUS_Y WIN_W STATUS_H CLR_HDR DRAW::fill-rect
+    APP::draw-fd 0 STATUS_Y WIN_W 1 CLR_FRAME DRAW::fill-rect
+    path-basename STATUS_BUF STR::strcpy
+    file-dirty LOADI [
+        T" *" STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
+    ] ?
+    APP::draw-fd 8 STATUS_Y 6 + STATUS_BUF CLR_FG FONT_SIZE DRAW::draw-str
+;
+
+@confirm-panel-x ( -- x ) WIN_W CONFIRM_PANEL_W - 2 / ;
+@confirm-panel-y ( -- y ) WIN_H CONFIRM_PANEL_H - 2 / ;
+@confirm-btn-x ( -- x ) confirm-panel-x CONFIRM_PANEL_W CONFIRM_BTN_W - 2 / + ;
+@confirm-btn-y ( i -- y ) confirm-panel-y 46 + swap CONFIRM_BTN_H CONFIRM_BTN_GAP + * + ;
+
+@confirm-hit-btn ( i px py -- flag )
+    3 frame! ( 0:py 1:px 2:i )
+    1 local@ confirm-btn-x < [ 0 ] [
+    1 local@ confirm-btn-x CONFIRM_BTN_W + >= [ 0 ] [
+    0 local@ 2 local@ confirm-btn-y < [ 0 ] [
+    0 local@ 2 local@ confirm-btn-y CONFIRM_BTN_H + >= [ 0 ] [
+    1
+    ] ?: ] ?: ] ?: ] ?:
+    3 unframe!
+;
+
+@confirm-new-draw ( -- )
+    confirm-new-open LOADI [
+        APP::draw-fd 0 0 WIN_W WIN_H CLR_CONFIRM_DIM DRAW::fill-rect
+        confirm-panel-x confirm-panel-y confirm-btn-x 3 frame! ( 0:bx 1:py 2:px )
+        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
+        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_H + 1 - CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ CONFIRM_PANEL_W + 1 - 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ 26 + 1 local@ 16 + T"Save changes?" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        APP::draw-fd 0 local@ 0 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
+        APP::draw-fd 0 local@ 68 + 0 confirm-btn-y 9 + T"Save" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        APP::draw-fd 0 local@ 1 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
+        APP::draw-fd 0 local@ 34 + 1 confirm-btn-y 9 + T"Don't Save" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        APP::draw-fd 0 local@ 2 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
+        APP::draw-fd 0 local@ 52 + 2 confirm-btn-y 9 + T"Cancel" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        3 unframe!
+    ] ?
+;
+
+@draw-all ( -- )
+    APP::draw-fd 0 0 WIN_W WIN_H CLR_BG DRAW::fill-rect
+    draw-grid
+    0 { i }
+    [ i used-n LOADI < ]
+    [
+        i draw-obj
+        i 1 + i!
+    ] |:
+    draw-sel
+    draw-palette
+    draw-status
+    UI::draw
+    SF::open? [ SF::draw ] ?
+    confirm-new-draw
+;
+
+( --- Pen / fill radios --- )
+
+@sync-pen-ui ( -- )
+    T"1 pt" 0 UI::item-set
+    T"2 pt" 0 UI::item-set
+    T"3 pt" 0 UI::item-set
+    cur-pen LOADI 1 = [ T"1 pt" 1 UI::item-set ] ?
+    cur-pen LOADI 2 = [ T"2 pt" 1 UI::item-set ] ?
+    cur-pen LOADI 3 = [ T"3 pt" 1 UI::item-set ] ?
+;
+
+@sync-fill-ui ( -- )
+    T"None" 0 UI::item-set
+    T"White" 0 UI::item-set
+    T"Black" 0 UI::item-set
+    cur-fill LOADI FILL_NONE = [ T"None" 1 UI::item-set ] ?
+    cur-fill LOADI FILL_WHITE = [ T"White" 1 UI::item-set ] ?
+    cur-fill LOADI FILL_BLACK = [ T"Black" 1 UI::item-set ] ?
+;
+
+@sync-from-sel ( -- )
+    sel LOADI 0 >= [
+        sel LOADI obj-at O_PEN + load-byte cur-pen STOREI
+        sel LOADI obj-at O_FILL + load-byte cur-fill STOREI
+        sync-pen-ui
+        sync-fill-ui
+    ] ?
+;
+
+@set-pen { n -- }
+    n cur-pen STOREI
+    sel LOADI 0 >= [
+        n sel LOADI obj-at O_PEN + store-byte
+        mark-dirty
+    ] ?
+    sync-pen-ui
+    APP::dirty!
+;
+
+@set-fill { n -- }
+    n cur-fill STOREI
+    sel LOADI 0 >= [
+        n sel LOADI obj-at O_FILL + store-byte
+        mark-dirty
+    ] ?
+    sync-fill-ui
+    APP::dirty!
+;
+
+( --- Text edit --- )
+
+@end-edit-flags ( -- )
+    0 editing STOREI
+    0 edit-new STOREI
+    confirm-new-open LOADI SF::open? OR 0 = [ 0 APP::modal! ] ?
+;
+
+@commit-edit ( -- )
+    editing LOADI [
+        0 EDIT_BUF edit-len LOADI + store-byte
+        edit-len LOADI 0 = [
+            sel LOADI obj-delete
+        ] [
+            sel LOADI EDIT_BUF set-text
+            mark-dirty
+        ] ?:
+        end-edit-flags
+        APP::dirty!
+    ] ?
+;
+
+@cancel-edit ( -- )
+    editing LOADI [
+        edit-new LOADI [
+            sel LOADI obj-delete
+        ] ?
+        end-edit-flags
+        APP::dirty!
+    ] ?
+;
+
+@sync-edit-box ( -- )
+    sel LOADI 0 < [ ] [
+        sel LOADI obj-at load-byte TYPE_TEXT = [
+            APP::use-text-font
+            sel LOADI obj-at { a }
+            a O_X0 + LOADI EDIT_BUF DRAW::str-w +
+            a O_X0 + LOADI 8 + MAX
+            a O_X1 + STOREI
+            a O_Y0 + LOADI DRAW::char-h + a O_Y1 + STOREI
+            APP::draw-fd DRAW::CHICAGO DRAW::set-font
+        ] ?
+    ] ?:
+;
+
+@begin-edit { i new -- }
+    commit-edit
+    i sel STOREI
+    new edit-new STOREI
+    1 editing STOREI
+    1 APP::modal!
+    new [
+        0 EDIT_BUF store-byte
+        0 edit-len STOREI
+    ] [
+        i obj-text EDIT_BUF STR::strcpy
+        EDIT_BUF STR::strlen edit-len STOREI
+    ] ?:
+    sync-edit-box
+    APP::dirty!
+;
+
+@edit-add { ch -- }
+    edit-len LOADI TEXT_MAX < [
+        ch EDIT_BUF edit-len LOADI + store-byte
+        edit-len LOADI 1 + edit-len STOREI
+        0 EDIT_BUF edit-len LOADI + store-byte
+        sync-edit-box
+        APP::dirty!
+    ] [ drop ] ?:
+;
+
+@edit-backspace ( -- )
+    edit-len LOADI 0 > [
+        edit-len LOADI 1 - edit-len STOREI
+        0 EDIT_BUF edit-len LOADI + store-byte
+        sync-edit-box
+        APP::dirty!
+    ] ?
+;
+
+( --- Create / mutate --- )
+
+@place-text { mx my -- }
+    obj-alloc { i }
+    i 0 < [ ] [
+        i obj-at { a }
+        TYPE_TEXT a store-byte
+        cur-fill LOADI a O_FILL + store-byte
+        cur-pen LOADI a O_PEN + store-byte
+        mx snap-n a O_X0 + STOREI
+        my snap-n a O_Y0 + STOREI
+        mx snap-n 8 + a O_X1 + STOREI
+        my snap-n DRAW::char-h + a O_Y1 + STOREI
+        i 1 begin-edit
+        mark-dirty
+    ] ?:
+;
+
+@begin-create { mx my ty -- }
+    obj-alloc { i }
+    i 0 < [ ] [
+        i sel STOREI
+        i obj-at { a }
+        ty a store-byte
+        cur-fill LOADI a O_FILL + store-byte
+        cur-pen LOADI a O_PEN + store-byte
+        mx snap-n { x }
+        my snap-n { y }
+        x a O_X0 + STOREI
+        y a O_Y0 + STOREI
+        x a O_X1 + STOREI
+        y a O_Y1 + STOREI
+        x drag-x0 STOREI
+        y drag-y0 STOREI
+        DRAG_CREATE drag STOREI
+        mark-dirty
+    ] ?:
+;
+
+@update-create { mx my -- }
+    sel LOADI 0 < [ ] [
+        sel LOADI obj-at { a }
+        drag-x0 LOADI drag-y0 LOADI mx snap-n my snap-n a load-byte apply-shift
+        a O_Y1 + STOREI
+        a O_X1 + STOREI
+        APP::dirty!
+    ] ?:
+;
+
+@finish-create ( -- )
+    sel LOADI 0 < [ ] [
+        sel LOADI obj-at { a }
+        a load-byte TYPE_LINE = [
+            a O_X0 + LOADI a O_X1 + LOADI =
+            a O_Y0 + LOADI a O_Y1 + LOADI = AND [
+                sel LOADI obj-delete
+            ] ?
+        ] [
+            sel LOADI obj-box GEOM::rect>xywh { x y w h }
+            w 2 < h 2 < AND [
+                sel LOADI obj-delete
+            ] [
+                sel LOADI canon-closed
+            ] ?:
+        ] ?:
+    ] ?:
+    DRAG_NONE drag STOREI
+;
+
+@nudge { dx dy -- }
+    sel LOADI 0 < [ ] [
+        sel LOADI obj-at { a }
+        a O_X0 + LOADI dx + a O_X0 + STOREI
+        a O_Y0 + LOADI dy + a O_Y0 + STOREI
+        a O_X1 + LOADI dx + a O_X1 + STOREI
+        a O_Y1 + LOADI dy + a O_Y1 + STOREI
+        mark-dirty
+    ] ?:
+;
+
+@move-sel { dx dy -- }
+    dx 0 = dy 0 = AND [ ] [
+        dx dy nudge
+    ] ?:
+;
+
+@resize-handle { mx my -- }
+    sel LOADI 0 < [ ] [
+        mx snap-n { x }
+        my snap-n { y }
+        sel LOADI obj-at { a }
+        a load-byte TYPE_LINE = [
+            handle-id LOADI 0 = [
+                x a O_X0 + STOREI
+                y a O_Y0 + STOREI
+            ] [
+                x a O_X1 + STOREI
+                y a O_Y1 + STOREI
+            ] ?:
+        ] [
+            handle-id LOADI { h }
+            h 0 = h 6 = OR h 7 = OR [ x a O_X0 + STOREI ] ?
+            h 2 = h 3 = OR h 4 = OR [ x a O_X1 + STOREI ] ?
+            h 0 = h 1 = OR h 2 = OR [ y a O_Y0 + STOREI ] ?
+            h 4 = h 5 = OR h 6 = OR [ y a O_Y1 + STOREI ] ?
+        ] ?:
+        APP::dirty!
+        mark-dirty
+    ] ?:
+;
+
+@bring-front ( -- )
+    sel LOADI 0 < [ ] [
+        sel LOADI used-n LOADI 1 - < [
+            sel LOADI { i }
+            [ i used-n LOADI 1 - < ]
+            [
+                i i 1 + obj-swap
+                i 1 + i!
+            ] |:
+            used-n LOADI 1 - sel STOREI
+            mark-dirty
+        ] ?
+    ] ?:
+;
+
+@send-back ( -- )
+    sel LOADI 0 > [
+        sel LOADI { i }
+        [ i 0 > ]
+        [
+            i i 1 - obj-swap
+            i 1 - i!
+        ] |:
+        0 sel STOREI
+        mark-dirty
+    ] ?
+;
+
+@duplicate-sel ( -- )
+    sel LOADI 0 < [ ] [
+        obj-alloc { j }
+        j 0 < [ ] [
+            sel LOADI obj-at j obj-at copy32
+            j obj-at { a }
+            a O_X0 + LOADI 8 + a O_X0 + STOREI
+            a O_Y0 + LOADI 8 + a O_Y0 + STOREI
+            a O_X1 + LOADI 8 + a O_X1 + STOREI
+            a O_Y1 + LOADI 8 + a O_Y1 + STOREI
+            a load-byte TYPE_TEXT = [
+                j sel LOADI obj-text set-text
+            ] ?
+            j sel STOREI
+            mark-dirty
+        ] ?:
+    ] ?:
+;
+
+( --- File format --- )
+
+@skip-sp { p -- p' }
+    [ p load-byte 32 = p load-byte 9 = OR ]
+    [ p 1 + p! ] |:
+    p
+;
+
+@skip-nl { p -- p' }
+    [ p load-byte 13 = p load-byte 10 = OR ]
+    [ p 1 + p! ] |:
+    p
+;
+
+@skip-line { p -- p' }
+    [ p load-byte 0 > p load-byte 10 = 0 = AND ]
+    [ p 1 + p! ] |:
+    p skip-nl
+;
+
+@read-tok { p dest -- p' }
+    [ p load-byte 32 > ]
+    [
+        p load-byte dest store-byte
+        p 1 + p!
+        dest 1 + dest!
+    ] |:
+    0 dest store-byte
+    p
+;
+
+@parse-int { p -- n p' }
+    p skip-sp p!
+    1 { sign }
+    p load-byte 45 = [
+        -1 sign!
+        p 1 + p!
+    ] ?
+    0 { n }
+    [ p load-byte dup 48 >= SWAP 57 <= AND ]
+    [
+        n 10 * p load-byte 48 - + n!
+        p 1 + p!
+    ] |:
+    n sign * p
+;
+
+@esc-ch { ch d -- d' }
+    ch 92 = [
+        92 d store-byte
+        92 d 1 + store-byte
+        d 2 +
+    ] [
+    ch 10 = [
+        92 d store-byte
+        110 d 1 + store-byte
+        d 2 +
+    ] [
+    ch 13 = [
+        92 d store-byte
+        114 d 1 + store-byte
+        d 2 +
+    ] [
+        ch d store-byte
+        d 1 +
+    ] ?: ] ?: ] ?:
+;
+
+@unescape-to { src dest -- src' }
+    dest TEXT_MAX + { lim }
+    [ src load-byte 0 > src load-byte 10 = 0 = AND src load-byte 13 = 0 = AND dest lim < AND ]
+    [
+        src load-byte 92 = [
+            src 1 + src!
+            src load-byte
+            dup 0 = OVER 10 = OR OVER 13 = OR [
+                drop
+                92 dest store-byte
+                dest 1 + dest!
+            ] [
+                dup 110 = [ drop 10 ] [
+                dup 114 = [ drop 13 ] [
+                dup 92 = [ drop 92 ] [
+                dup 115 = [ drop 32 ] [
+                    drop src load-byte
+                ] ?: ] ?: ] ?: ] ?:
+                dest store-byte
+                dest 1 + dest!
+                src 1 + src!
+            ] ?:
+        ] [
+            src load-byte dest store-byte
+            src 1 + src!
+            dest 1 + dest!
+        ] ?:
+    ] |:
+    0 dest store-byte
+    src
+;
+
+@append-int { n d -- d' }
+    n NUM_BUF STR::int-to-str
+    NUM_BUF d STR::strcpy
+    d NUM_BUF STR::strlen +
+    32 OVER store-byte
+    1 +
+;
+
+@kind-name { ty -- ptr }
+    ty TYPE_LINE = [ T"line" ] [
+    ty TYPE_RECT = [ T"rect" ] [
+    ty TYPE_RRECT = [ T"rrect" ] [
+    ty TYPE_OVAL = [ T"oval" ] [
+        T"text"
+    ] ?: ] ?: ] ?: ] ?:
+;
+
+@kind-type { ptr -- ty }
+    ptr T"line" STR::streq [ TYPE_LINE ] [
+    ptr T"rect" STR::streq [ TYPE_RECT ] [
+    ptr T"rrect" STR::streq [ TYPE_RRECT ] [
+    ptr T"oval" STR::streq [ TYPE_OVAL ] [
+    ptr T"text" STR::streq [ TYPE_TEXT ] [
+        0
+    ] ?: ] ?: ] ?: ] ?: ] ?:
+;
+
+@write-obj { fd i -- }
+    i obj-at { a }
+    a load-byte { ty }
+    ty TYPE_FREE = [
+    ] [
+        ty kind-name LINE_BUF STR::strcpy
+        LINE_BUF STR::strlen LINE_BUF + { d }
+        32 d store-byte
+        d 1 + d!
+        a O_X0 + LOADI d append-int d!
+        a O_Y0 + LOADI d append-int d!
+        a O_X1 + LOADI d append-int d!
+        a O_Y1 + LOADI d append-int d!
+        a O_FILL + load-byte d append-int d!
+        a O_PEN + load-byte d append-int d!
+        ty TYPE_TEXT = [
+            a O_TOFF + LOADI TEXT_POOL + { p }
+            [ p load-byte 0 > ]
+            [
+                p load-byte d esc-ch d!
+                p 1 + p!
+            ] |:
+        ] ?
+        10 d store-byte
+        0 d 1 + store-byte
+        fd LINE_BUF LINE_BUF STR::strlen VFS::write drop
+    ] ?:
+;
+
+@write-all { fd -- }
+    T"NIB 1" LINE_BUF STR::strcpy
+    10 LINE_BUF LINE_BUF STR::strlen + store-byte
+    0 LINE_BUF LINE_BUF STR::strlen + store-byte
+    fd LINE_BUF LINE_BUF STR::strlen VFS::write drop
+    0 { i }
+    [ i used-n LOADI < ]
+    [
+        fd i write-obj
+        i 1 + i!
+    ] |:
+;
+
+@parse-header { p -- p' ok }
+    1 { ok }
+    0 { i }
+    [ i 5 < ]
+    [
+        p i + load-byte T"NIB 1" i + load-byte = 0 = [ 0 ok! ] ?
+        i 1 + i!
+    ] |:
+    p 5 + skip-nl ok
+;
+
+@parse-line { p -- p' }
+    p skip-sp p!
+    p load-byte 0 = p load-byte 10 = OR [
+        p skip-nl
+    ] [
+        p KIND_BUF read-tok p!
+        KIND_BUF kind-type { ty }
+        ty 0 = [
+            p skip-line
+        ] [
+            p parse-int p-x0 STOREI p!
+            p parse-int p-y0 STOREI p!
+            p parse-int p-x1 STOREI p!
+            p parse-int p-y1 STOREI p!
+            p parse-int p-fill STOREI p!
+            p parse-int p-pen STOREI p!
+            obj-alloc { i }
+            i 0 < [
+                p skip-line
+            ] [
+                i obj-at { a }
+                ty a store-byte
+                p-fill LOADI a O_FILL + store-byte
+                p-pen LOADI 1 MAX 3 MIN a O_PEN + store-byte
+                p-x0 LOADI a O_X0 + STOREI
+                p-y0 LOADI a O_Y0 + STOREI
+                p-x1 LOADI a O_X1 + STOREI
+                p-y1 LOADI a O_Y1 + STOREI
+                ty TYPE_TEXT = [
+                    p skip-sp p!
+                    p LINE_BUF unescape-to p!
+                    i LINE_BUF set-text
+                ] ?
+                p skip-line p!
+            ] ?:
+        ] ?:
+    ] ?:
+;
+
+@parse-objects { p -- }
+    [ p load-byte 0 > ]
+    [
+        p parse-line p!
+    ] |:
+;
+
+@parse-file ( -- ok )
+    FILE_BUF parse-header { p ok }
+    ok [
+        clear-pool
+        p parse-objects
+        1
+    ] [ 0 ] ?:
+;
+
+@save-file ( -- )
+    commit-edit
+    PATH make-vfs-path 6 VFS::open-mode
+    dup 0 >= [
+        dup write-all
+        VFS::close drop
+        0 file-dirty STOREI
+        sync-title
+        APP::dirty!
+    ] [ drop ] ?:
+;
+
+@load-path ( path -- )
+    commit-edit
+    dup load-byte 47 = [ 1 + ] ?
+    PATH STR::strcpy
+    PATH make-vfs-path 0 VFS::open-mode
+    dup 0 >= [
+        dup FILE_BUF FILE_MAX 1 - VFS::read { n }
+        n 0 < [ 0 n! ] ?
+        0 FILE_BUF n + store-byte
+        VFS::close drop
+        parse-file [
+            0 file-dirty STOREI
+            -1 sel STOREI
+        ] ?
+        sync-title
+    ] [ drop ] ?:
+    APP::dirty!
+;
+
+@new-document ( -- )
+    cancel-edit
+    clear-pool
+    T"untitled.nib" PATH STR::strcpy
+    0 file-dirty STOREI
+    0 confirm-new-open STOREI
+    0 APP::modal!
+    TOOL_ARROW tool STOREI
+    1 cur-pen STOREI
+    FILL_NONE cur-fill STOREI
+    DRAG_NONE drag STOREI
+    sync-pen-ui
+    sync-fill-ui
+    sync-title
+    APP::dirty!
+;
+
+( --- Snarf --- )
+
+@write-sel-to { fd -- }
+    T"NIB 1" LINE_BUF STR::strcpy
+    10 LINE_BUF LINE_BUF STR::strlen + store-byte
+    0 LINE_BUF LINE_BUF STR::strlen + store-byte
+    fd LINE_BUF LINE_BUF STR::strlen VFS::write drop
+    sel LOADI 0 >= [
+        fd sel LOADI write-obj
+    ] ?
+;
+
+@snarf-sel ( -- )
+    sel LOADI 0 < [ ] [
+        T"/sys/snarf" VFS::open dup 0 >= [
+            dup write-sel-to
+            VFS::close drop
+        ] [ drop ] ?:
+    ] ?:
+;
+
+@paste-snarf ( -- )
+    commit-edit
+    T"/sys/snarf" VFS::open dup 0 >= [
+        dup SNARF_BUF SNARF_MAX 1 - VFS::read { n }
+        VFS::close drop
+        n 0 < [ 0 n! ] ?
+        0 SNARF_BUF n + store-byte
+        SNARF_BUF parse-header { p ok }
+        ok [
+            used-n LOADI { old }
+            p parse-objects
+            old { i }
+            [ i used-n LOADI < ]
+            [
+                i obj-at { a }
+                a O_X0 + LOADI 8 + a O_X0 + STOREI
+                a O_Y0 + LOADI 8 + a O_Y0 + STOREI
+                a O_X1 + LOADI 8 + a O_X1 + STOREI
+                a O_Y1 + LOADI 8 + a O_Y1 + STOREI
+                i 1 + i!
+            ] |:
+            used-n LOADI old > [
+                used-n LOADI 1 - sel STOREI
+                mark-dirty
+            ] ?
+        ] ?
+        APP::dirty!
+    ] [ drop ] ?:
+;
+
+( --- Confirm / menus --- )
+
+@confirm-new-mouse ( mpkt -- )
+    1 frame! ( 0:mpkt )
+    0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+        0 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
+            save-file
+            0 confirm-new-open STOREI
+            0 APP::modal!
+            new-document
+        ] [
+            1 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
+                0 confirm-new-open STOREI
+                0 APP::modal!
+                new-document
+            ] [
+                2 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
+                    0 confirm-new-open STOREI
+                    0 APP::modal!
+                    APP::dirty!
+                ] ?
+            ] ?:
+        ] ?:
+    ] ?
+    1 unframe!
+;
+
+@confirm-new-kbd ( kpkt -- )
+    dup EVENT::kbd-type EVENT::KEY_DOWN = [
+        dup EVENT::kbd-key EVENT::KEY_ESC = [
+            0 confirm-new-open STOREI
+            0 APP::modal!
+            APP::dirty!
+        ] ?
+    ] ?
+    drop
+;
+
+@on-pick ( path -- )
+    save-as LOADI [
+        0 save-as STOREI
+        dup load-byte 47 = [ 1 + ] ?
+        PATH STR::strcpy
+        save-file
+    ] [
+        load-path
+    ] ?:
+;
+@on-cancel ( -- )
+    0 save-as STOREI
+    APP::dirty!
+;
+
+@menu-new ( -- )
+    commit-edit
+    file-dirty LOADI [
+        1 confirm-new-open STOREI
+        1 APP::modal!
+        APP::dirty!
+    ] [
+        new-document
+    ] ?:
+;
+
+@menu-open ( -- ) commit-edit SF::show ;
+@menu-save-as ( -- )
+    commit-edit
+    1 save-as STOREI
+    PATH SF::show-save
+;
+@menu-quit ( -- ) HALT ;
+@menu-cut ( -- ) commit-edit snarf-sel sel LOADI obj-delete APP::dirty! ;
+@menu-copy ( -- ) commit-edit snarf-sel ;
+@menu-paste ( -- ) paste-snarf ;
+@menu-dup ( -- ) commit-edit duplicate-sel ;
+@menu-clear ( -- ) commit-edit sel LOADI obj-delete APP::dirty! ;
+@menu-front ( -- ) commit-edit bring-front ;
+@menu-back ( -- ) commit-edit send-back ;
+@menu-pen-1 ( val -- ) drop 1 set-pen ;
+@menu-pen-2 ( val -- ) drop 2 set-pen ;
+@menu-pen-3 ( val -- ) drop 3 set-pen ;
+@menu-fill-none ( val -- ) drop FILL_NONE set-fill ;
+@menu-fill-white ( val -- ) drop FILL_WHITE set-fill ;
+@menu-fill-black ( val -- ) drop FILL_BLACK set-fill ;
+@menu-grid ( val -- ) grid-f STOREI APP::dirty! ;
+@menu-snap ( val -- ) snap-f STOREI APP::dirty! ;
+
+@on-font ( id -- )
+    drop
+    reflow-text
+    APP::dirty!
+;
+
+( --- Mouse --- )
+
+@page-down { mx my -- }
+    tool LOADI TOOL_TEXT = [
+        mx my hit-obj { idx }
+        idx 0 >= [
+            idx obj-at load-byte TYPE_TEXT = [
+                idx 0 begin-edit
+            ] [
+                idx sel STOREI
+                sync-from-sel
+                APP::dirty!
+            ] ?:
+        ] [
+            mx my place-text
+        ] ?:
+    ] [
+        tool LOADI TOOL_ARROW = [
+            mx my sel LOADI hit-handles { hid }
+            hid 0 >= [
+                hid handle-id STOREI
+                DRAG_HANDLE drag STOREI
+                mx last-mx STOREI
+                my last-my STOREI
+            ] [
+                mx my hit-obj { idx }
+                idx sel STOREI
+                sync-from-sel
+                idx 0 >= [
+                    DRAG_MOVE drag STOREI
+                    mx last-mx STOREI
+                    my last-my STOREI
+                ] ?
+                APP::dirty!
+            ] ?:
+        ] [
+            mx my tool LOADI begin-create
+        ] ?:
+    ] ?:
+;
+
+@handle-page-mouse { mpkt -- }
+    mpkt EVENT::mouse-x { mx }
+    mpkt EVENT::mouse-y { my }
+    mpkt EVENT::mouse-type EVENT::MOUSE_DOWN = [
+        1 mouse-held STOREI
+        mx my hit-tool { t }
+        t 0 >= [
+            commit-edit
+            t tool STOREI
+            DRAG_NONE drag STOREI
+            APP::dirty!
+        ] [
+            mx my in-page? [
+                editing LOADI [
+                    mx my sel LOADI obj-hits? [
+                    ] [
+                        commit-edit
+                        mx my in-page? [ mx my page-down ] ?
+                    ] ?:
+                ] [
+                    mx my page-down
+                ] ?:
+            ] [
+                commit-edit
+            ] ?:
+        ] ?:
+    ] ?
+    mpkt EVENT::mouse-type EVENT::MOUSE_MOVE = mouse-held LOADI AND [
+        drag LOADI DRAG_CREATE = [
+            mx my update-create
+        ] ?
+        drag LOADI DRAG_MOVE = [
+            mx snap-n last-mx LOADI - { dx }
+            my snap-n last-my LOADI - { dy }
+            dx dy move-sel
+            mx snap-n last-mx STOREI
+            my snap-n last-my STOREI
+        ] ?
+        drag LOADI DRAG_HANDLE = [
+            mx my resize-handle
+        ] ?
+    ] ?
+    mpkt EVENT::mouse-type EVENT::MOUSE_UP = [
+        0 mouse-held STOREI
+        drag LOADI DRAG_CREATE = [ finish-create ] ?
+        DRAG_NONE drag STOREI
+        APP::dirty!
+    ] ?
+;
+
+@on-mouse ( mpkt -- )
+    confirm-new-open LOADI [
+        confirm-new-mouse
+    ] [
+    SF::open? [
+        SF::mouse
+    ] [
+        UI::menu-open? { was }
+        dup UI::feed
+        was UI::menu-open? OR [
+            drop
+            APP::dirty!
+        ] [
+            handle-page-mouse
+        ] ?:
+    ] ?:
+    ] ?:
+;
+
+( --- Keyboard --- )
+
+@handle-cmd ( key mods -- )
+    2 frame! ( 0:mods 1:key )
+    1 local@ 32 OR
+    dup 110 = [ drop menu-new ] [
+    dup 111 = [ drop menu-open ] [
+    dup 115 = [
+        drop
+        0 local@ EVENT::MOD_SHIFT AND [
+            menu-save-as
+        ] [
+            save-file
+        ] ?:
+    ] [
+    dup 120 = [ drop menu-cut ] [
+    dup 99 = [ drop menu-copy ] [
+    dup 118 = [ drop menu-paste ] [
+    dup 100 = [ drop menu-dup ] [
+    drop
+    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+    2 unframe!
+;
+
+@on-kbd ( kpkt -- )
+    confirm-new-open LOADI [
+        confirm-new-kbd
+    ] [
+    SF::open? [
+        SF::kbd
+    ] [
+        dup EVENT::kbd-mods EVENT::MOD_SHIFT AND shift-mod STOREI
+        dup EVENT::kbd-type EVENT::KEY_DOWN = [
+            dup EVENT::kbd-key EVENT::KEY_ESC = [
+                editing LOADI [
+                    cancel-edit
+                ] [
+                    UI::escape drop
+                ] ?:
+            ] [
+                dup EVENT::kbd-mods
+                over EVENT::kbd-key
+                2 frame! ( 0:key 1:mods )
+                1 local@ EVENT::MOD_CMD AND 1 local@ EVENT::MOD_CTRL AND OR [
+                    0 local@ 1 local@ handle-cmd
+                ] [
+                    editing LOADI [
+                        0 local@ EVENT::KEY_ENTER = [
+                            commit-edit
+                        ] [
+                        0 local@ EVENT::KEY_BACKSPACE = [
+                            edit-backspace
+                        ] [
+                        0 local@ 127 = [
+                            edit-backspace
+                        ] [
+                            0 local@ STR::printable? [
+                                0 local@ edit-add
+                            ] ?
+                        ] ?: ] ?: ] ?:
+                    ] [
+                        0 local@ EVENT::KEY_BACKSPACE = [
+                            sel LOADI obj-delete APP::dirty!
+                        ] [
+                        0 local@ 127 = [
+                            sel LOADI obj-delete APP::dirty!
+                        ] [
+                        0 local@ EVENT::KEY_LEFT_ARROW = [
+                            shift-mod LOADI [ -8 ] [ -1 ] ?: 0 nudge
+                        ] [
+                        0 local@ EVENT::KEY_RIGHT_ARROW = [
+                            shift-mod LOADI [ 8 ] [ 1 ] ?: 0 nudge
+                        ] [
+                        0 local@ EVENT::KEY_UP_ARROW = [
+                            0 shift-mod LOADI [ -8 ] [ -1 ] ?: nudge
+                        ] [
+                        0 local@ EVENT::KEY_DOWN_ARROW = [
+                            0 shift-mod LOADI [ 8 ] [ 1 ] ?: nudge
+                        ] [
+                        ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+                    ] ?:
+                ] ?:
+                2 unframe!
+            ] ?:
+            APP::dirty!
+        ] ?
+        drop
+    ] ?:
+    ] ?:
+;
+
+@on-frame ( -- )
+    UI::handle
+    APP::dirty? UI::menu-open? OR SF::open? OR confirm-new-open LOADI OR [
+        draw-all
+        APP::dirty-off
+    ] [
+        UI::draw
+        SF::open? [ SF::draw ] ?
+        confirm-new-draw
+    ] ?:
+;
+
+@start
+    T"Nib" APP::init
+    APP::draw-fd FONT_SIZE DRAW::set-font-size
+    UI::new
+    WIN_W UI::menubar
+    T"File" UI::menu
+    T"New"  [ drop menu-new ]  UI::item
+    T"Open" [ drop menu-open ] UI::item
+    T"Save" [ drop save-file ] UI::item
+    T"Save As" [ drop menu-save-as ] UI::item
+    UI::sep
+    T"Quit" [ drop menu-quit ] UI::item
+    T"Edit" UI::menu
+    T"Cut"       [ drop menu-cut ]   UI::item
+    T"Copy"      [ drop menu-copy ]  UI::item
+    T"Paste"     [ drop menu-paste ] UI::item
+    T"Duplicate" [ drop menu-dup ]   UI::item
+    T"Clear"     [ drop menu-clear ] UI::item
+    T"Arrange" UI::menu
+    T"Bring to Front" [ drop menu-front ] UI::item
+    T"Send to Back"   [ drop menu-back ]  UI::item
+    T"pen" pen-grp STOREI
+    T"Pen" UI::menu
+    T"1 pt" pen-grp LOADI [ menu-pen-1 ] UI::radio-item
+    T"2 pt" pen-grp LOADI [ menu-pen-2 ] UI::radio-item
+    T"3 pt" pen-grp LOADI [ menu-pen-3 ] UI::radio-item
+    T"fill" fill-grp STOREI
+    T"Fill" UI::menu
+    T"None"  fill-grp LOADI [ menu-fill-none ]  UI::radio-item
+    T"White" fill-grp LOADI [ menu-fill-white ] UI::radio-item
+    T"Black" fill-grp LOADI [ menu-fill-black ] UI::radio-item
+    T"View" UI::menu
+    T"Grid"        [ menu-grid ] UI::check-item
+    T"Snap to Grid" [ menu-snap ] UI::check-item
+    T"Grid" 0 UI::item-set
+    T"Snap to Grid" 0 UI::item-set
+    [ on-font ] APP::font-hook!
+    APP::font-menu
+    [ on-pick ] SF::on-ok!
+    [ on-cancel ] SF::on-cancel!
+    0 grid-f STOREI
+    0 snap-f STOREI
+    new-document
+    [ on-mouse ] APP::on-mouse!
+    [ on-kbd ] APP::on-kbd!
+    [ on-frame ] APP::on-frame!
+    [ draw-all ] APP::on-resume!
+    APP::dirty!
+    APP::loop
+;
+
+MAIN::start
+HALT

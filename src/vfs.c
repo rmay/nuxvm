@@ -3,7 +3,6 @@
 #include "machine.h"
 #include "compiler.h"
 #include "vm.h"
-#include "chicago.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1073,29 +1072,69 @@ static VFSFile* create_audio_file(System* sys) {
     return file;
 }
 
-static int font_widths_read(VFSFile* file, uint8_t* buf, int len) {
-    long offset = (long)(intptr_t)file->private_data;
-    if (offset >= 256) return 0;
-    long to_copy = 256 - offset;
+typedef struct {
+    const uint8_t* data;
+    int len;
+    long offset;
+} FontBlob;
+
+static int font_blob_read(VFSFile* file, uint8_t* buf, int len) {
+    FontBlob* b = (FontBlob*)file->private_data;
+    if (!b || !b->data || b->offset >= b->len) return 0;
+    long to_copy = b->len - b->offset;
     if (to_copy > len) to_copy = len;
-    memcpy(buf, chicago12x12_cff + offset, (size_t)to_copy);
-    file->private_data = (void*)(intptr_t)(offset + to_copy);
+    memcpy(buf, b->data + b->offset, (size_t)to_copy);
+    b->offset += to_copy;
     return (int)to_copy;
 }
 
-static int font_widths_close(VFSFile* file) {
+static int64_t font_blob_seek(VFSFile* file, int64_t offset) {
+    FontBlob* b = (FontBlob*)file->private_data;
+    if (!b) return -1;
+    if (offset < 0) offset = 0;
+    if (offset > b->len) offset = b->len;
+    b->offset = offset;
+    return b->offset;
+}
+
+static int64_t font_blob_stat(VFSFile* file) {
+    FontBlob* b = (FontBlob*)file->private_data;
+    return b ? b->len : -1;
+}
+
+static int font_blob_close(VFSFile* file) {
+    free(file->private_data);
     free(file);
     return 0;
 }
 
-static VFSFile* create_font_widths_file(void) {
+static VFSFile* create_font_blob_file(const uint8_t* data, int len) {
+    if (!data || len <= 0) return NULL;
     VFSFile* file = (VFSFile*)calloc(1, sizeof(VFSFile));
-    if (!file) return NULL;
-    file->private_data = (void*)0;
-    file->read = font_widths_read;
+    FontBlob* b = (FontBlob*)calloc(1, sizeof(FontBlob));
+    if (!file || !b) {
+        free(file);
+        free(b);
+        return NULL;
+    }
+    b->data = data;
+    b->len = len;
+    file->private_data = b;
+    file->read = font_blob_read;
     file->write = input_write_fail;
-    file->close = font_widths_close;
+    file->close = font_blob_close;
+    file->seek = font_blob_seek;
+    file->stat_size = font_blob_stat;
     return file;
+}
+
+static VFSFile* create_font_widths_file(System* sys) {
+    const uint8_t* data = system_font_data(sys);
+    return create_font_blob_file(data, 256);
+}
+
+static VFSFile* create_named_font_file(int font_id) {
+    return create_font_blob_file(system_font_data_id(font_id), system_font_nbytes_id(font_id));
 }
 
 static VFSFile* create_dummy_file(void) {
@@ -1124,7 +1163,16 @@ static VFSFile* open_path(System* sys, const char* path, int32_t flags) {
         return create_audio_file(sys);
     }
     if (strcmp(path, "/sys/font/widths") == 0) {
-        return create_font_widths_file();
+        return create_font_widths_file(sys);
+    }
+    if (strcmp(path, "/sys/font/chicago") == 0) {
+        return create_named_font_file(FONT_CHICAGO);
+    }
+    if (strcmp(path, "/sys/font/geneva") == 0) {
+        return create_named_font_file(FONT_GENEVA);
+    }
+    if (strcmp(path, "/sys/font/monaco") == 0) {
+        return create_named_font_file(FONT_MONACO);
     }
     if (strcmp(path, "/sys/snarf") == 0) {
         return create_snarf_file(sys);

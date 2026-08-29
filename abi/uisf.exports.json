@@ -33,5 +33,7 @@
   "DRAW::use",
   "UI::item-set",
   "SF::path-copy",
-  "APP::win-set!"
+  "APP::win-set!",
+  "UI::radio-item",
+  "SF::show-save"
 ]

@@ -1,0 +1,34 @@
+( gird.lux — named locals: GIRD / UNGIRD
+  ./bin/nux examples/lux/gird.lux )
+
+( One name. GIRD binds TOS; UNGIRD pops the frame. )
+5 GIRD n
+    n n * .
+UNGIRD
+10 EMIT
+
+( Several names. The } in { a b } only ends the name list. )
+3 4 { a b }
+    a b + .
+UNGIRD
+10 EMIT
+
+( A word: { a b -- sum } binds parameters. ; ungirds. )
+@add { a b -- sum } a b + ;
+3 4 add .
+10 EMIT
+
+( Nested frames. Inner UNGIRD first. )
+10 20 { a b }
+    3 GIRD c
+        a c + .
+    UNGIRD
+UNGIRD
+10 EMIT
+
+( name! writes. )
+5 GIRD n
+    n 1 + n!
+    n .
+UNGIRD
+10 EMIT

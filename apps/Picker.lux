@@ -140,13 +140,131 @@ IMPORT VFS
 @on-fx  ( idx -- ) drop FX T"apps/fluxio/" run-from ;
 @on-quit ( val -- ) drop HALT ;
 
+( --- About Cloister --- )
+
+@about-open 0x8A0004 ;
+
+@ABOUT_W 340 ;
+@ABOUT_H 260 ;
+@OK_W     80 ;
+@OK_H     20 ;
+@TITLE_H  18 ;
+@CLOSE_SZ 11 ;
+
+@about-x ( -- x ) APP::width ABOUT_W - 2 / ;
+@about-y ( -- y ) APP::height ABOUT_H - 2 / ;
+@ok-x    ( -- x ) about-x ABOUT_W OK_W - 2 / + ;
+@ok-y    ( -- y ) about-y ABOUT_H + 36 - ;
+@close-x ( -- x ) about-x 8 + ;
+@close-y ( -- y ) about-y 3 + ;
+
+@about-close ( val -- )
+    drop
+    0 about-open STOREI
+    0 APP::modal!
+    UI::overlay-clear
+;
+
+@about-build ( -- )
+    UI::overlay-clear
+    T"OK" ok-x ok-y OK_W OK_H [ about-close ] UI::overlay-button
+    T"OK" UI::overlay-default
+;
+
+@on-about ( val -- )
+    drop
+    1 about-open STOREI
+    1 APP::modal!
+    about-build
+;
+
+@about-hit-close ( mx my -- f )
+    close-x close-y CLOSE_SZ CLOSE_SZ UI::in-rect?
+;
+
+@about-mouse ( mpkt -- )
+    1 frame! ( 0:mpkt )
+    0 local@ UI::overlay-feed
+    UI::overlay-handle
+    0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+        0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y about-hit-close [
+            0 about-close
+        ] ?
+    ] ?
+    1 unframe!
+;
+
+@about-kbd ( kpkt -- )
+    dup EVENT::kbd-type EVENT::KEY_DOWN = [
+        dup EVENT::kbd-key
+        dup EVENT::KEY_ESC = [
+            drop 0 about-close
+        ] [
+            dup EVENT::KEY_ENTER = [
+                drop 0 about-close
+            ] [
+                drop
+            ] ?:
+        ] ?:
+    ] ?
+    drop
+;
+
+@about-line ( ptr y -- )
+    2 frame! ( 0:y 1:ptr )
+    DRAW::fd about-x 24 + 0 local@ 1 local@ UI::CLR_TEXT 16 DRAW::draw-str
+    2 unframe!
+;
+
+@about-title ( -- )
+    0 1 frame! ( 0:x )
+    T"About Cloister" DRAW::str-w ABOUT_W SWAP - 2 / about-x + 0 local!
+    DRAW::fd 0 local@ about-y 3 + T"About Cloister" DRAW::str-w 12 UI::CLR_BG DRAW::paint-rect
+    DRAW::fd 0 local@ 8 + about-y 3 + T"About Cloister" UI::CLR_TEXT 16 DRAW::draw-str
+    1 unframe!
+;
+
+@about-draw ( -- )
+    about-open LOADI [
+        DRAW::fd DRAW::CHICAGO DRAW::set-font
+        DRAW::fd 0 0 APP::width APP::height UI::CLR_BORDER 0 DRAW::fill-pat
+        DRAW::fd about-x 2 + about-y 2 + ABOUT_W ABOUT_H UI::CLR_BORDER DRAW::paint-rect
+        DRAW::fd about-x about-y ABOUT_W ABOUT_H UI::CLR_BORDER DRAW::paint-rect
+        DRAW::fd about-x 1 + about-y 1 + ABOUT_W 2 - ABOUT_H 2 - UI::CLR_BG DRAW::paint-rect
+        DRAW::fd about-x 1 + about-y 1 + ABOUT_W 2 - TITLE_H 2 - UI::CLR_BG DRAW::paint-rect
+        DRAW::fd about-x 1 + about-y 1 + ABOUT_W 2 - TITLE_H 2 - UI::CLR_BORDER 1 DRAW::fill-pat
+        DRAW::fd about-x about-y TITLE_H + 1 - ABOUT_W 1 UI::CLR_BORDER DRAW::paint-rect
+        DRAW::fd close-x close-y CLOSE_SZ CLOSE_SZ UI::CLR_BG DRAW::paint-rect
+        DRAW::fd close-x close-y CLOSE_SZ CLOSE_SZ UI::CLR_BORDER DRAW::frame-rect
+        DRAW::fd close-x 2 + close-y 2 + 7 7 UI::CLR_BORDER DRAW::frame-rect
+        about-title
+        T"Cloister"                    about-y 40 + about-line
+        T"A single-app fantasy machine" about-y 62 + about-line
+        T"NUX virtual machine"         about-y 88 + about-line
+        T"Lux and Fluxio guest programs" about-y 106 + about-line
+        T"Plan 9 files, System 6 look" about-y 124 + about-line
+        T"This isn't the future promised, but we persist." about-y 154 + about-line
+        T"Authors: Russell May and AI Agents" about-y 172 + about-line
+        UI::overlay-draw
+    ] ?
+;
+
 @focused ( -- name )
     focus LOADI [ FX ] [ LUX ] ?:
 ;
 
-@on-mouse ( mpkt -- ) UI::feed ;
+@on-mouse ( mpkt -- )
+    about-open LOADI [
+        about-mouse
+    ] [
+        UI::feed
+    ] ?:
+;
 
 @on-kbd ( kpkt -- )
+    about-open LOADI [
+        about-kbd
+    ] [
     dup EVENT::kbd-type EVENT::KEY_DOWN = [
         dup EVENT::kbd-key
         dup EVENT::KEY_ESC = [
@@ -193,12 +311,14 @@ IMPORT VFS
     ] [
         drop
     ] ?:
+    ] ?:
 ;
 
 @on-frame ( -- )
     UI::handle
     DRAW::fd 0 0 APP::width APP::height UI::CLR_DESK DRAW::paint-rect
     UI::draw
+    about-draw
 ;
 
 @start
@@ -206,6 +326,8 @@ IMPORT VFS
     UI::new
     APP::width UI::menubar
     T"Cloister" UI::menu
+    T"About Cloister" [ on-about ] UI::item
+    UI::sep
     T"Quit" [ on-quit ] UI::item
     T"Select a program    Enter or click to run" 40 36 UI::label
     LUX 40 64 430 600 [ on-lux ] UI::list

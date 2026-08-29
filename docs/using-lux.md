@@ -167,9 +167,13 @@ lux> @double dup + ;
 Defined word
 lux> 21 double .
 42
+lux> 5 GIRD n n n * UNGIRD .
+25
 lux> .s
   Stack: []
 ```
+
+`GIRD` names the top of the stack; `UNGIRD` takes the name off. Inside a word, `;` ungirds for you. See [`lux_tutorial.md`](lux_tutorial.md#named-locals) and `examples/lux/gird.lux`.
 
 ### Boot files
 

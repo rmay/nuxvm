@@ -325,7 +325,7 @@ static void test_draw_default_scale_from_font_size(void) {
 static void test_draw_small_scale_multiplier(void) {
     printf("Testing draw scale=1 multiplier path...\n");
     System* sys = make_test_screen(200, 64);
-    sys->font_id = 2;
+    sys->font_id = FONT_CHICAGO;
 
     int advance = system_measure_char(sys, 'x', 1);
     unsigned char* data = chicago12x12_cff;
@@ -335,6 +335,97 @@ static void test_draw_small_scale_multiplier(void) {
 
     free_test_screen(sys);
     printf("  scale=1 multiplier: OK\n");
+}
+
+static void test_system_fonts(void) {
+    printf("Testing Geneva/Monaco system fonts...\n");
+    System* sys = make_test_screen(200, 64);
+    assert(system_font_nbytes_id(FONT_CHICAGO) == CFF_LEN_UF2);
+    assert(system_font_nbytes_id(FONT_GENEVA) == CFF_LEN_UF2);
+    assert(system_font_nbytes_id(FONT_MONACO) == CFF_LEN_UF2);
+    assert(system_font_data_id(FONT_GENEVA) != NULL);
+    assert(system_font_data_id(FONT_MONACO) != NULL);
+
+    sys->font_id = FONT_MONACO;
+    int a0 = system_measure_char(sys, '0', 16);
+    int aM = system_measure_char(sys, 'M', 16);
+    int ai = system_measure_char(sys, 'i', 16);
+    int aW = system_measure_char(sys, 'W', 16);
+    assert(a0 == 10);
+    assert(a0 == aM);
+    assert(ai == aW);
+    assert(a0 == ai);
+
+    sys->font_id = FONT_GENEVA;
+    int gA = system_measure_char(sys, 'A', 16);
+    int gi = system_measure_char(sys, 'i', 16);
+    assert(gA > gi);
+    assert(gA >= 6);
+    assert(gA <= 14);
+
+    uint8_t widths[256];
+    int32_t fd = vfs_open(sys, "/sys/font/widths", 0);
+    assert(fd >= 100);
+    assert(vfs_read(sys, fd, widths, 256) == 256);
+    vfs_close(sys, fd);
+    assert(memcmp(widths, system_font_data_id(FONT_GENEVA), 256) == 0);
+
+    sys->font_id = FONT_CHICAGO;
+    fd = vfs_open(sys, "/sys/font/widths", 0);
+    assert(fd >= 100);
+    assert(vfs_read(sys, fd, widths, 256) == 256);
+    vfs_close(sys, fd);
+    assert(memcmp(widths, chicago12x12_cff, 256) == 0);
+
+    fd = vfs_open(sys, "/sys/font/monaco", 0);
+    assert(fd >= 100);
+    assert(vfs_stat(sys, fd) == CFF_LEN_UF2);
+    uint8_t mono[256];
+    assert(vfs_read(sys, fd, mono, 256) == 256);
+    vfs_close(sys, fd);
+    assert(mono[(uint8_t)' '] == 10);
+    assert(mono[(uint8_t)'0'] == 10);
+    assert(mono[(uint8_t)'M'] == 10);
+    assert(mono[(uint8_t)'i'] == 10);
+
+    fd = vfs_open(sys, "/sys/font/geneva", 0);
+    assert(fd >= 100);
+    assert(vfs_stat(sys, fd) == CFF_LEN_UF2);
+    vfs_close(sys, fd);
+
+    fd = vfs_open(sys, "/sys/font/chicago", 0);
+    assert(fd >= 100);
+    assert(vfs_stat(sys, fd) == CFF_LEN_UF2);
+    vfs_close(sys, fd);
+
+    fill_screen_white(sys);
+    sys->font_id = FONT_GENEVA;
+    assert(system_draw_char(sys, 4, 4, 'A', 0x000000, 16) > 0);
+    assert(pixel_is_ink(sys, 4, 4) || pixel_is_ink(sys, 5, 5) || pixel_is_ink(sys, 8, 8));
+
+    fill_screen_white(sys);
+    sys->font_id = FONT_MONACO;
+    assert(system_draw_char(sys, 4, 4, '0', 0x000000, 16) > 0);
+    int ink = 0;
+    for (int y = 4; y < 20; y++) {
+        for (int x = 4; x < 20; x++) {
+            if (pixel_is_ink(sys, x, y)) ink++;
+        }
+    }
+    assert(ink > 0);
+
+    int32_t dfd = vfs_open(sys, "/sys/draw", 0x02);
+    assert(dfd >= 100);
+    uint8_t set_geneva[] = {5, FONT_GENEVA};
+    assert(vfs_write(sys, dfd, set_geneva, 2) == 2);
+    assert(sys->font_id == FONT_GENEVA);
+    uint8_t set_monaco[] = {5, FONT_MONACO};
+    assert(vfs_write(sys, dfd, set_monaco, 2) == 2);
+    assert(sys->font_id == FONT_MONACO);
+    vfs_close(sys, dfd);
+
+    free_test_screen(sys);
+    printf("  system fonts: OK\n");
 }
 
 static void test_cff_tile_size(void) {
@@ -1220,6 +1311,41 @@ static void test_illumos_starts(void) {
     printf("  Illumos boot: OK\n");
 }
 
+static void test_tabula_starts(void) {
+    printf("Testing Tabula spreadsheet boots...\n");
+    size_t slen = 0;
+    uint8_t* sprog = load_bin_file("apps/Tabula.bin", &slen);
+    if (!sprog) {
+        printf("  SKIP: apps/Tabula.bin missing\n");
+        return;
+    }
+    Machine* m = machine_create(sprog, (uint32_t)slen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
+    assert(m != NULL);
+    system_set_resolution(m->system, 960, 720);
+    if (!pump_ok(m, 80)) {
+        fprintf(stderr, "  Tabula died (halted=%d pc=0x%08X sp=%d)\n",
+                m->cpu->halted, m->cpu->pc, m->cpu->stack_ptr);
+        assert(0);
+    }
+    assert(!m->cpu->halted);
+    assert(m->cpu->stack_ptr < 32);
+
+    system_push_mouse_event(m->system, 2 /* MOVE */, 88, 72, 0);
+    assert(pump_ok(m, 40));
+    system_push_mouse_event(m->system, 3 /* DOWN */, 88, 72, 1);
+    assert(pump_ok(m, 40));
+    system_push_mouse_event(m->system, 4 /* UP */, 88, 72, 1);
+    assert(pump_ok(m, 40));
+    system_push_kbd_event(m->system, 0 /* KEY_DOWN */, 27 /* Esc */, 0);
+    assert(pump_ok(m, 40));
+    assert(!m->cpu->halted);
+    assert(m->cpu->stack_ptr < 32);
+
+    machine_free(m);
+    free(sprog);
+    printf("  Tabula boot: OK\n");
+}
+
 static char* load_text_file(const char* path) {
     FILE* f = fopen(path, "rb");
     if (!f) return NULL;
@@ -1332,6 +1458,7 @@ int main() {
     test_draw_string_vfs_scale18();
     test_draw_default_scale_from_font_size();
     test_draw_small_scale_multiplier();
+    test_system_fonts();
     test_cff_tile_size();
     test_draw_cff_cmd9();
     test_draw_cff_uf1();
@@ -1349,6 +1476,7 @@ int main() {
     test_two_child_apps_host();
     test_root_app_runs();
     test_illumos_starts();
+    test_tabula_starts();
     test_picker_starts();
     printf("All VFS tests passed!\n");
     return 0;

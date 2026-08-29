@@ -2,6 +2,8 @@
 #include "vfs.h"
 #include "machine.h"
 #include "chicago.h"
+#include "geneva.h"
+#include "monaco.h"
 #include "cff.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -385,7 +387,7 @@ System* system_create(void) {
     if (sys->screen_pixels) memset(sys->screen_pixels, 0, sys->screen_width * sys->screen_height * 4);
     if (sys->back_pixels) memset(sys->back_pixels, 0, sys->screen_width * sys->screen_height * 4);
     sys->play_sound = NULL;
-    sys->font_id = 2;
+    sys->font_id = FONT_CHICAGO;
     sys->font_size = 12;
     sys->text_color = 0xFFFFFF;
     sys->active_win_id = 1;
@@ -530,6 +532,30 @@ void system_draw_rect(System* sys, int32_t x, int32_t y, int32_t w, int32_t h, u
     system_fill_rect(sys, x + w - 1, y, 1, h, color);
 }
 
+const uint8_t* system_font_data_id(int font_id) {
+    switch (font_id) {
+        case FONT_GENEVA: return geneva12_cff;
+        case FONT_MONACO: return monaco12_cff;
+        default:          return chicago12x12_cff; /* Chicago + legacy basic */
+    }
+}
+
+int system_font_nbytes_id(int font_id) {
+    switch (font_id) {
+        case FONT_GENEVA: return (int)geneva12_cff_len;
+        case FONT_MONACO: return (int)monaco12_cff_len;
+        default:          return (int)chicago12x12_cff_len;
+    }
+}
+
+const uint8_t* system_font_data(const System* sys) {
+    return system_font_data_id(sys ? sys->font_id : FONT_CHICAGO);
+}
+
+int system_font_nbytes(const System* sys) {
+    return system_font_nbytes_id(sys ? sys->font_id : FONT_CHICAGO);
+}
+
 double system_normalize_draw_scale(System* sys, int scale) {
     int raw = scale;
     if (raw == 0) {
@@ -549,7 +575,8 @@ double system_normalize_draw_scale(System* sys, int scale) {
 }
 
 int system_measure_char(System* sys, char c, int scale) {
-    unsigned char* data = chicago12x12_cff;
+    const uint8_t* data = system_font_data(sys);
+    if (!data) return 0;
     int width = data[(uint8_t)c];
     if (width == 0) {
         if (c == ' ') width = 6;
@@ -564,11 +591,13 @@ int system_draw_char(System* sys, int32_t x, int32_t y, char c, uint32_t color, 
     int32_t sw = sys->screen_width;
     int32_t sh = sys->screen_height;
 
-    unsigned char* data = chicago12x12_cff;
+    const uint8_t* data = system_font_data(sys);
+    if (!data) return 0;
     int width = data[(uint8_t)c];
     if (width == 0 && c != ' ') return 0;
 
-    int tile_size = 16;
+    int tile_size = cff_tile_size(system_font_nbytes(sys));
+    if (tile_size <= 0) tile_size = 16;
     int num_v_tiles = tile_size / 8;
     int num_h_tiles = tile_size / 8;
     int tile_count = num_h_tiles * num_v_tiles;

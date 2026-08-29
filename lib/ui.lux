@@ -2938,6 +2938,7 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 ;
 
 @draw ( -- )
+    DRAW::fd DRAW::CHICAGO DRAW::set-font
     0
     [ dup COMP_N LOADI < ] [
         dup comp-at

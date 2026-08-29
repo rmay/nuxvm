@@ -91,11 +91,17 @@ The menu bar is always the top 20px strip. Click a title to open, click an item 
 
 Wire keyboard Return to `UI::enter` and Esc to `UI::escape`. The ring is still there (`UI::poll`) if an app wants raw records instead of handlers.
 
-Cloister is a fantasy machine: one program at a time owns the 960×720 screen and its own menu bar. `./bin/cloister` boots `apps/Picker.lux`, a Lux guest that shows two group-box lists (Lux sources from `apps/` on the left, compiled Fluxio bins from `apps/fluxio/` on the right). Click or Enter writes the path to `/sys/launch` and HALTs; the host loads that ROM. `./bin/cloister apps/Quill.bin` boots that ROM directly. Esc in an app raises Continue / Restart / Quit. Halt (Quit) returns to the picker, or exits if the ROM was passed on the command line or Quit was chosen in the picker itself.
+Cloister is a fantasy machine: one program at a time owns the 960×720 screen and its own menu bar. `./bin/cloister` boots `apps/Picker.lux`, a Lux guest that shows two group-box lists (Lux sources from `apps/` on the left, compiled Fluxio bins from `apps/fluxio/` on the right). **Cloister > About Cloister** is a modal info box (`APP::modal!`, dithered desk, title bar, close box, OK). Click or Enter writes the path to `/sys/launch` and HALTs; the host loads that ROM. `./bin/cloister apps/Quill.bin` boots that ROM directly. Esc in an app raises Continue / Restart / Quit. Halt (Quit) returns to the picker, or exits if the ROM was passed on the command line or Quit was chosen in the picker itself.
 
 A group box is FrameRect with the title punched through the top edge. `UI::groupbox` is that chrome alone (place radios or other controls inside by coordinates). `UI::list` is the same chrome plus a clickable column of strings — two of them side by side is how the picker does headers-and-columns, with no layout manager.
 
-**Illumos** (`apps/Illumos.lux`) is the CFF font editor: 16×16 glyph collection, magnified pixel editor, width rule, pangram. Open/Save through `SF::`. See `docs/CFF.md`.
+**Illumos** (`apps/Illumos.lux`) is the CFF font editor: 16×16 glyph collection, magnified pixel editor, width rule, pangram. Open/Save through `SF::`. See `docs/CFF.md`. User-facing: [user-manual.md](user-manual.md).
+
+**Nib** (`apps/Nib.lux`) is MacDraw-simple object drawing: arrow / line / rect / roundrect / oval / text, pen 1–3 pt, fill none/white/black, grid and snap. File > New/Open/Save/Save As | Quit, Edit > Cut/Copy/Paste/Duplicate/Clear, Arrange > Bring to Front / Send to Back. Save files are `NIB 1` text. `./bin/cloister apps/Nib.bin`. User-facing: [user-manual.md](user-manual.md).
+
+**Easel** (`apps/Easel.lux`) is MacPaint-simple pixel painting: pencil / eraser / brush / fill / line / rect / oval / spray, 16 patterns, one undo, FatBits. Canvas is 512×342, 1-bit. File > New/Open/Save/Save As | Quit, Edit > Undo / Invert / Clear, Goodies > Grid / FatBits / Filled. Save files are `EAS1` packed bits. `./bin/cloister apps/Easel.bin`. User-facing: [user-manual.md](user-manual.md).
+
+**Tabula** (`apps/Tabula.lux`) is the spreadsheet: columns A–Z, sparse rows 1…99999, strings/ints/floats and basic formulas. File > New/Open/Save/Save As | Quit, Edit > Cut/Copy/Paste/Select All, Formula > Calculate (Esc stops a running pass). Entry bar shows formula source; the grid shows the last computed value (or `#DIV/0!` / `#VALUE!` / `#REF!` / `#CIRC` / `#NAME?` / `#STOP`). Save files are `TABULA 2` sparse TSV (`addr<TAB>source`); formula source is stored, not the cache. Value fields use backslash escapes (`\\`, `\t`, `\n`, `\r`, and `\=` for a leading equals that is not a formula). `TABULA 1` files still load as raw TSV. Integer arithmetic only: `+ - * /`, parentheses, unary minus, `A1` refs, `SUM(A1:B10)`. `./bin/cloister apps/Tabula.bin`. User-facing: [user-manual.md](user-manual.md).
 
 ## Layers
 
@@ -103,15 +109,15 @@ A group box is FrameRect with the title punched through the top edge. `UI::group
 |---|---|
 | `lib/geom.lux` | Point (`x y`) and Rect (`minx miny maxx maxy`, max exclusive) |
 | `lib/mem.lux` | Bump heap at `0xA00000` |
-| `lib/draw.lux` | QuickDraw: `/dev/draw` packing plus `paint-rect` / `frame-rect`, `paint-oval` / `frame-oval`, `paint-rrect` / `frame-rrect`, `paint-tri`, `hline` / `vline` / `line` / `dash-h`, `x-mark` / `check-mark`, `fill-r` / `stroke-r`, `char-w` / `char-h` |
+| `lib/draw.lux` | QuickDraw: `/dev/draw` packing plus `paint-rect` / `frame-rect`, `paint-oval` / `frame-oval`, `paint-rrect` / `frame-rrect`, `paint-tri`, `hline` / `vline` / `line` / `dash-h`, `x-mark` / `check-mark`, `fill-r` / `stroke-r`, `char-w` / `char-h`. `DRAW::set-font` 0 Chicago / 2 Geneva / 3 Monaco; UI chrome stays Chicago |
 | `lib/ui.lux` | Controls. Faces call DRAW primitives (button → RoundRect, radio → Oval, checkbox → Rect + `x-mark`, scrollbar arrows → `paint-tri`, menu check → `check-mark`, separator → `dash-h`, group box / list → FrameRect + title) |
 | `lib/sf.lux` | System 6 Standard File picker (`SF::`) |
-| `lib/app.lux` | Devices, loop, `dirty!` |
+| `lib/app.lux` | Devices, loop, `dirty!`. Menus/buttons are Chicago. `APP::font-menu` (Quill, Tabula) picks the document face (`APP::use-text-font`, `APP::text-font`). Overlay buttons (`UI::overlay-*`) are the Esc system menu and the picker’s About box. |
 | `lib/menu.lux` | Leftover quotation menu bar (Quill uses `UI::`) |
 
 ## Standard File (`SF`)
 
-Modal System 6-style open dialog. One instance per app. Centered on the window.
+Modal System 6-style open / save-as dialog. One instance per app. Centered on the window.
 
 ```lux
 INCLUDE "lib/sf.lux"
@@ -119,6 +125,7 @@ IMPORT SF
 
 @on-pick ( path -- ) ... ;
 @on-open ( val -- ) drop SF::show ;
+@on-save-as ( val -- ) drop PATH SF::show-save ;
 
 [ on-pick ] SF::on-ok!
 ( in the mouse / kbd / frame vectors: )
@@ -129,18 +136,19 @@ SF::open? [ SF::draw ] ?
 
 | Word | Stack | Notes |
 |---|---|---|
-| `SF::show` | `--` | open at `/` |
+| `SF::show` | `--` | GetFile: open at `/`, **Open** button, no name field |
+| `SF::show-save` | `name --` | PutFile: basename in the name field, **Save** button; starts in `name`'s directory if it has one |
 | `SF::hide` | `--` | dismiss, no handler |
 | `SF::open?` | `-- f` | dialog is up |
 | `SF::draw` | `--` | paint if you already checked `open?` |
 | `SF::mouse` | `mpkt --` | take `/dev/mouse` while open |
-| `SF::kbd` | `kpkt --` | Return opens, Esc cancels |
-| `SF::on-ok!` | `quot --` | `( path -- )` after a file is chosen |
+| `SF::kbd` | `kpkt --` | Return confirms, Esc cancels; in save mode, printable keys edit the name |
+| `SF::on-ok!` | `quot --` | `( path -- )` after a file is chosen / saved |
 | `SF::on-cancel!` | `quot --` | `( -- )` after Cancel / Esc |
 | `SF::hidden!` | `f --` | 1 lists names that start with `.` |
 | `SF::path` | `-- ptr` | last chosen path |
 
-`show` sets `APP::modal!` so Esc goes to the picker, not the system menu. The path popup above the list is the folders you have entered.
+`show` / `show-save` set `APP::modal!` so Esc goes to the picker, not the system menu. The path popup above the list is the folders you have entered. The name field is fully selected on open, so the next printable character replaces it. Empty names do not Save. `/` is rejected while typing. Existing files are overwritten silently.
 
 A radio handler fires only when a new item turns on. Re-clicking the selected radio does nothing. Siblings in the same group clear; a group never ends up empty.
 

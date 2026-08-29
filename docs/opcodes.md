@@ -272,15 +272,17 @@ Copy the top two loop stack items to the main stack (non-destructive). Useful wh
 
 These opcodes implement a **frame pointer**-based local variable system. A frame is established at word entry via `FRAME` and torn down at exit via `UNFRAME`. Locals live in a reserved region above the frame pointer.
 
+Lux `GIRD name` and `{ names }` emit `FRAME`. `UNGIRD` emits `UNFRAME`. A word's `;` and a quotation's `]` also emit `UNFRAME` for any frames still open there. The numbered words `FRAME!` / `UNFRAME!` / `LOCAL@` / `LOCAL!` are the explicit form of the same opcodes.
+
 #### 0x30 — FRAME
 **Format**: `FRAME` (1 byte)  
 **Action**: `[n, v_n ... v_1] → []`  
-Save the old frame pointer, set `FP = SP`, then copy `n` values from the stack into the local variable slots. LUX word: `FRAME!`.
+Save the old frame pointer, set `FP = SP`, then copy `n` values from the stack into the local variable slots. LUX words: `GIRD name`, `{ names }`, `FRAME!`.
 
 #### 0x31 — UNFRAME
 **Format**: `UNFRAME` (1 byte)  
 **Action**: `[] → []`; `SP = FP`, restore old `FP`  
-Tear down the current frame: discard all locals by resetting `SP` to `FP`, then restore the caller's frame pointer. LUX word: `UNFRAME!`.
+Tear down the current frame: discard all locals by resetting `SP` to `FP`, then restore the caller's frame pointer. LUX words: `UNGIRD`, `UNFRAME!`.
 
 #### 0x32 — LOCALGET
 **Format**: `LOCALGET` (1 byte)  

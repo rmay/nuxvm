@@ -3770,7 +3770,7 @@ static void test_quill_fx_edit_select_all_and_cut(void) {
  * typing a marker into the fresh buffer, saving, and checking it landed
  * in a brand-new "new.quill" file while the original scratch file (never
  * reopened for writing) is untouched. File's dropdown is now New(row 0,
- * y=29)/Open(row 1, y=47)/Save(row 2, y=65)/Quit(row 3, y=83). */
+ * y=29)/Open(row 1, y=47)/Save(row 2, y=65)/Save As(row 3, y=83)/Quit(row 4, y=101). */
 static void test_quill_fx_file_new_without_changes_skips_confirm(void) {
     printf("Testing apps/fluxio/Quill.fx: File > New with a clean buffer starts a fresh document with no confirm dialog...\n");
 
@@ -4356,11 +4356,208 @@ static void test_quill_fx_file_picker_opens_and_picks(void) {
     rmdir(sandbox);
 }
 
-/* -----------------------------------------------------------------------
- * End-to-end fixture via the on-disk .bin path is covered by examples/fluxio/fib.fx
- * + bin/fluxioc + bin/nux, exercised manually / in CI shell scripts rather
- * than here, since this binary only links the compiler + VM library code.
- * ----------------------------------------------------------------------- */
+/* File > Save As: put-file dialog (default 640x480, dlg 464x308) is at
+ * dlg_x=88, dlg_y=86. Name field is selected, so typing replaces the
+ * suggested basename. Save button center is (428, 152). */
+static void test_quill_fx_file_save_as_creates_new_file(void) {
+    printf("Testing apps/fluxio/Quill.fx: File > Save As writes a new path and leaves the original untouched...\n");
+
+    const char* dir = "/tmp/nuxvm_test_quill_fx_save_as";
+    char binpath[256];
+    Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    if (!m) return;
+    machine_free(m);
+
+    const char* sandbox = "/tmp/nuxvm_test_quill_fx_save_as_sandbox";
+    mkdir(sandbox, 0755);
+
+    char scratch_path[512];
+    snprintf(scratch_path, sizeof(scratch_path), "%s/quill_scratch.txt", sandbox);
+    FILE* seed = fopen(scratch_path, "wb");
+    assert(seed != NULL);
+    const char* content = "Hello\n";
+    assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
+    fclose(seed);
+
+    m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    assert(m != NULL);
+    system_set_sandbox_root(m->system, sandbox);
+
+    int32_t mc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t mp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(mc >= 100 && mp >= 100);
+    assert(vfs_bind(m->system, mp, "/dev/mouse") == 0);
+    vfs_close(m->system, mp);
+
+    int32_t kc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t kp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(kc >= 100 && kp >= 100);
+    assert(vfs_bind(m->system, kp, "/dev/kbd") == 0);
+    vfs_close(m->system, kp);
+
+    int frames = 0;
+    while (!m->cpu->halted && frames < 5) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(!m->cpu->halted);
+
+    uint8_t marker[8] = { 0, 0, '#', 0, 0, 0, 0, 0 };
+    assert(vfs_write(m->system, kc, marker, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) {
+        machine_tick(m);
+        frames++;
+    }
+
+    uint8_t file_down[8] = { 3, 1, 20, 0, 10, 0, 0, 0 };
+    uint8_t file_up[8] = { 4, 1, 20, 0, 10, 0, 0, 0 };
+    assert(vfs_write(m->system, mc, file_down, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) { machine_tick(m); frames++; }
+    assert(vfs_write(m->system, mc, file_up, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) { machine_tick(m); frames++; }
+
+    /* Save As is File row 3: 20 + 3*18 + 9 = 83. */
+    uint8_t as_down[8] = { 3, 1, 20, 0, 83, 0, 0, 0 };
+    uint8_t as_up[8] = { 4, 1, 20, 0, 83, 0, 0, 0 };
+    assert(vfs_write(m->system, mc, as_down, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) { machine_tick(m); frames++; }
+    assert(vfs_write(m->system, mc, as_up, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 10) { machine_tick(m); frames++; }
+
+    const char* name = "copy.quill";
+    for (const char* p = name; *p; p++) {
+        uint8_t kpkt[8] = { 0, 0, (uint8_t) *p, 0, 0, 0, 0, 0 };
+        assert(vfs_write(m->system, kc, kpkt, 8) == 8);
+        frames = 0;
+        while (!m->cpu->halted && frames < 3) { machine_tick(m); frames++; }
+    }
+
+    uint8_t save_down[8] = { 3, 1, 172, 1, 152, 0, 0, 0 }; /* x=428 LE */
+    uint8_t save_up[8] = { 4, 1, 172, 1, 152, 0, 0, 0 };
+    assert(vfs_write(m->system, mc, save_down, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 3) { machine_tick(m); frames++; }
+    assert(vfs_write(m->system, mc, save_up, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 10) { machine_tick(m); frames++; }
+
+    uint8_t quit[8] = { 0, 0, 27, 0, 0, 0, 0, 0 };
+    assert(vfs_write(m->system, kc, quit, 8) == 8);
+    frames = 0;
+    while (!m->cpu->halted && frames < 10) { machine_tick(m); frames++; }
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    FILE* rf1 = fopen(scratch_path, "rb");
+    assert(rf1 != NULL);
+    char got1[32] = { 0 };
+    size_t n1 = fread(got1, 1, sizeof(got1), rf1);
+    fclose(rf1);
+    assert(n1 == strlen(content));
+    assert(memcmp(got1, content, n1) == 0);
+
+    char copy_path[512];
+    snprintf(copy_path, sizeof(copy_path), "%s/copy.quill", sandbox);
+    FILE* rf2 = fopen(copy_path, "rb");
+    assert(rf2 != NULL);
+    char got2[32] = { 0 };
+    size_t n2 = fread(got2, 1, sizeof(got2), rf2);
+    fclose(rf2);
+    assert(n2 == strlen(content) + 1);
+    assert(got2[0] == '#');
+    assert(memcmp(got2 + 1, content, strlen(content)) == 0);
+
+    remove(scratch_path);
+    remove(copy_path);
+    rmdir(sandbox);
+}
+
+static void test_fluxioc_examples_compile(void) {
+    printf("Testing fluxioc compiles Fluxio examples and HelloCloister...\n");
+    FILE* probe = fopen("./bin/fluxioc", "rb");
+    if (!probe) {
+        printf("  (skipped: ./bin/fluxioc not built yet -- run from repo root after `make`)\n");
+        return;
+    }
+    fclose(probe);
+
+    static const char* cmds[] = {
+        "./bin/fluxioc -target headless -o /tmp/nuxvm_fx_hello_console.bin examples/fluxio/hello_console.fx >/tmp/nuxvm_fx_ex.log 2>&1",
+        "./bin/fluxioc -target headless -o /tmp/nuxvm_fx_fib.bin examples/fluxio/fib.fx >/tmp/nuxvm_fx_ex.log 2>&1",
+        "./bin/fluxioc -target graphical -o apps/fluxio/HelloCloister.bin apps/fluxio/HelloCloister.fx >/tmp/nuxvm_fx_ex.log 2>&1",
+        NULL
+    };
+    for (int i = 0; cmds[i]; i++) {
+        if (system(cmds[i]) != 0) {
+            fprintf(stderr, "  fluxioc failed: %s\n", cmds[i]);
+            assert(0);
+        }
+    }
+    printf("  fluxioc examples/apps: OK\n");
+}
+
+static void test_hello_cloister_fx_runs(void) {
+    printf("Testing apps/fluxio/HelloCloister.fx: boots, draws, stays alive...\n");
+    FILE* probe = fopen("./bin/fluxioc", "rb");
+    if (!probe) {
+        printf("  (skipped: ./bin/fluxioc not built yet -- run from repo root after `make`)\n");
+        return;
+    }
+    fclose(probe);
+    probe = fopen("apps/fluxio/HelloCloister.fx", "rb");
+    if (!probe) {
+        printf("  (skipped: apps/fluxio/HelloCloister.fx not found -- run from repo root)\n");
+        return;
+    }
+    fclose(probe);
+
+    assert(system("./bin/fluxioc -target graphical -o apps/fluxio/HelloCloister.bin apps/fluxio/HelloCloister.fx >/tmp/nuxvm_test_hello_cloister_build.log 2>&1") == 0);
+
+    FILE* bf = fopen("apps/fluxio/HelloCloister.bin", "rb");
+    assert(bf != NULL);
+    fseek(bf, 0, SEEK_END);
+    long blen = ftell(bf);
+    fseek(bf, 0, SEEK_SET);
+    uint8_t* bc = malloc((size_t) blen);
+    assert(fread(bc, 1, (size_t) blen, bf) == (size_t) blen);
+    fclose(bf);
+
+    Machine* m = machine_create(bc, (uint32_t) blen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
+    free(bc);
+    assert(m != NULL);
+    system_set_resolution(m->system, 960, 720);
+
+    int frames = 0;
+    while (!m->cpu->halted && frames < 30) {
+        machine_tick(m);
+        frames++;
+    }
+    assert(frames == 30);
+    assert(!m->cpu->halted);
+
+    int ink = 0;
+    int sw = m->system->screen_width;
+    int sh = m->system->screen_height;
+    uint8_t* fb = m->system->screen_pixels;
+    assert(fb != NULL);
+    for (int y = 0; y < sh; y += 8) {
+        for (int x = 0; x < sw; x += 8) {
+            uint8_t* p = fb + (size_t) y * (size_t) sw * 4 + (size_t) x * 4;
+            if (p[0] || p[1] || p[2]) ink++;
+        }
+    }
+    assert(ink > 0);
+
+    machine_free(m);
+    printf("  HelloCloister.fx: OK\n");
+}
 
 int main(void) {
     /* Unbuffered so progress lines interleave correctly with the compiler's
@@ -4494,6 +4691,9 @@ int main(void) {
     test_quill_fx_file_new_without_changes_skips_confirm();
     test_quill_fx_file_new_dirty_confirm_dialog_buttons();
     test_quill_fx_file_picker_opens_and_picks();
+    test_quill_fx_file_save_as_creates_new_file();
+    test_fluxioc_examples_compile();
+    test_hello_cloister_fx_runs();
     test_include_circular_error();
     test_include_missing_file_error();
     test_error_local_struct_decay();

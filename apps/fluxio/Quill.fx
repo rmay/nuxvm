@@ -1,7 +1,7 @@
 /* Quill (Fluxio port, v13 -- word-wrap + mouse selection + hex view with
  * nibble editing + scrollbar (text and hex mode both) + status bar +
  * viewport auto-follow + menu bar with a live hex-mode checkbox + a real
- * File > Open... file picker + an Edit menu (Cut/Copy/Paste/Select All)
+ * File > Open... file picker + File > Save As + an Edit menu (Cut/Copy/Paste/Select All)
  * + File > New with an unsaved-changes confirm dialog) --
  * docs/quill_fluxio.md Phase C.
  *
@@ -86,10 +86,18 @@ extern int sf_cancelled() = 0x70009D;                                           
 extern void sf_clear_result() = 0x7000A2;                                           /* index 30 */
 extern int sf_path_copy(int dest, int max) = 0x7000B1;                              /* index 33 */
 extern void app_win_set(int w, int h) = 0x7000B6;                                   /* index 34 */
+extern void ui_radio_item(int text, int group, int handler) = 0x7000BB;             /* index 35 */
+extern void sf_show_save(int name) = 0x7000C0;                                      /* index 36 */
 
 byte file_buf[65536];
 byte font_widths[256];
+byte font_cmd[4];
 byte hex_line_buf[72];
+byte font_grp[8] = "font";
+byte menu_font_label[8] = "Font";
+byte menu_chicago_label[8] = "Chicago";
+byte menu_geneva_label[8] = "Geneva";
+byte menu_monaco_label[8] = "Monaco";
 byte scratch_path[300] = "/sys/file/quill_scratch.txt";
 int scratch_path_len = 28;
 byte sf_raw_path[256];
@@ -104,6 +112,7 @@ byte menu_file_label[8] = "File";
 byte menu_new_label[8] = "New";
 byte menu_open_label[8] = "Open";
 byte menu_save_label[8] = "Save";
+byte menu_saveas_label[12] = "Save As";
 byte menu_quit_label[8] = "Quit";
 byte menu_view_label[8] = "View";
 byte menu_hex_label[16] = "Toggle Hex";
@@ -121,6 +130,7 @@ byte new_doc_name[12] = "/new.quill";
  * SF file-picker modal (lib/sf.lux) which is a separate, linked-library
  * dialog for a different purpose. */
 int confirm_new_open;
+int save_as;
 int confirm_panel_w = 260;
 int confirm_panel_h = 170;
 int confirm_btn_w = 180;
@@ -137,6 +147,7 @@ int anchor = -1;
 int mouse_held;
 int hex_mode;
 int hex_nibble;
+int app_font;
 int last_cursor = -1;
 int dirty;
 int sb_dragging;
@@ -166,13 +177,10 @@ int clr_frame = 0xAAAAAA;
 int clr_status_bg = 0xEEEEEE;
 
 /**
- * Pixel advance of one glyph at font_size, from the proportional font
- * width table Quill.lux also uses (/sys/font/widths, 16px-nominal
- * widths scaled to font_size -- exactly matches the renderer's own
- * internal system_measure_char formula, so this stays pixel-accurate
- * with what draw_bytes/draw_str actually draw). Newline has no width. A
- * zero table entry (glyph not covered by the table) falls back to 6px,
- * same as Quill.lux.
+ * Pixel advance of one glyph at font_size, from the document face
+ * (Font menu; /sys/font/widths). Menus stay Chicago. 16px-nominal
+ * widths scaled to font_size match the renderer. Newline has no width.
+ * A zero table entry falls back to 6px, same as Quill.lux.
  */
 int ch_advance(int ch) {
     if (ch == 10) {
@@ -680,9 +688,19 @@ int edit_hex_nibble(int digit) {
 }
 
 /**
- * Loads /sys/font/widths into font_widths (silently leaves it zeroed --
- * every advance falls back to the 6px default -- if the pseudo-file is
- * ever missing, rather than failing the whole program over cosmetics).
+ * DRAW cmd 5: select the system face. 0 Chicago, 2 Geneva, 3 Monaco.
+ */
+int set_font(int fd, int which) {
+    font_cmd[0] = 5;
+    font_cmd[1] = which;
+    vfs_write(fd, font_cmd, 2);
+    return 0;
+}
+
+/**
+ * Loads /sys/font/widths (the face last selected with set_font) into
+ * font_widths. Missing files leave the table zeroed -- every advance
+ * then falls back to 6px rather than failing the program.
  */
 int load_font_widths() {
     int fd = vfs_open("/sys/font/widths");
@@ -690,6 +708,30 @@ int load_font_widths() {
         vfs_read(fd, font_widths, 256);
         vfs_close(fd);
     }
+    return 0;
+}
+
+/**
+ * Document face only. Reloads wrap metrics and Font menu radios.
+ * Does not change menu/button drawing (those stay Chicago).
+ */
+int apply_text_font(int fd, int which) {
+    app_font = which;
+    set_font(fd, which);
+    load_font_widths();
+    ui_item_set(menu_chicago_label, 0);
+    ui_item_set(menu_geneva_label, 0);
+    ui_item_set(menu_monaco_label, 0);
+    if (which == 0) {
+        ui_item_set(menu_chicago_label, 1);
+    } else {
+        if (which == 2) {
+            ui_item_set(menu_geneva_label, 1);
+        } else {
+            ui_item_set(menu_monaco_label, 1);
+        }
+    }
+    rebuild_lines();
     return 0;
 }
 
@@ -779,7 +821,12 @@ int update_status_label_from_path() {
  * load_file() to actually open it -- same as the fixed-path startup load,
  * just against a scratch_path that now points somewhere else.
  */
-int open_picked_file() {
+/**
+ * Copies the SF picker's chosen virtual path into scratch_path, prefixed
+ * with /sys/file, and refreshes the status-bar basename. Shared by Open
+ * (then load) and Save As (then save).
+ */
+int retarget_from_picker() {
     int raw_len = sf_path_copy(sf_raw_path, 255);
     int i = 0;
     while (i < 9) {
@@ -793,7 +840,26 @@ int open_picked_file() {
     }
     scratch_path_len = 9 + raw_len;
     update_status_label_from_path();
+    return 0;
+}
+
+/**
+ * Loads the file the SF picker just chose: retargets scratch_path from
+ * SF::path-copy, then reuses load_file().
+ */
+int open_picked_file() {
+    retarget_from_picker();
     load_file();
+    return 0;
+}
+
+/**
+ * File > Save As: retargets scratch_path from the put-file picker's
+ * chosen path, then writes the current buffer there. Does not load.
+ */
+int save_picked_file() {
+    retarget_from_picker();
+    save_file();
     return 0;
 }
 
@@ -1421,6 +1487,7 @@ int main() {
     int kfd = vfs_open("/dev/kbd");
     int mfd = vfs_open("/dev/mouse");
     set_window_title("Quill (Fluxio)");
+    set_font(fd, 0);
     load_font_widths();
 
     int size = canvas_size(fd);
@@ -1446,6 +1513,7 @@ int main() {
     ui_item(menu_new_label, 0);
     ui_item(menu_open_label, 0);
     ui_item(menu_save_label, 0);
+    ui_item(menu_saveas_label, 0);
     ui_item(menu_quit_label, 0);
     ui_menu(menu_edit_label);
     ui_item(menu_cut_label, 0);
@@ -1454,6 +1522,11 @@ int main() {
     ui_item(menu_selectall_label, 0);
     ui_menu(menu_view_label);
     ui_check_item(menu_hex_label, 0);
+    ui_menu(menu_font_label);
+    ui_radio_item(menu_chicago_label, font_grp, 0);
+    ui_radio_item(menu_geneva_label, font_grp, 0);
+    ui_radio_item(menu_monaco_label, font_grp, 0);
+    apply_text_font(fd, 0);
 
     load_file();
 
@@ -1581,6 +1654,10 @@ int main() {
                 if (fired == menu_save_label) {
                     save_file();
                 } else {
+                    if (fired == menu_saveas_label) {
+                        save_as = 1;
+                        sf_show_save(status_label);
+                    } else {
                     if (fired == menu_quit_label) {
                         vfs_close(fd);
                         vfs_close(kfd);
@@ -1608,11 +1685,24 @@ int main() {
                                             if (!hex_mode) {
                                                 select_all();
                                             }
+                                        } else {
+                                            if (fired == menu_chicago_label) {
+                                                apply_text_font(fd, 0);
+                                            } else {
+                                                if (fired == menu_geneva_label) {
+                                                    apply_text_font(fd, 2);
+                                                } else {
+                                                    if (fired == menu_monaco_label) {
+                                                        apply_text_font(fd, 3);
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
+                    }
                     }
                 }
             }
@@ -1620,10 +1710,16 @@ int main() {
         }
 
         if (sf_picked()) {
-            open_picked_file();
+            if (save_as) {
+                save_as = 0;
+                save_picked_file();
+            } else {
+                open_picked_file();
+            }
             sf_clear_result();
         } else {
             if (sf_cancelled()) {
+                save_as = 0;
                 sf_clear_result();
             }
         }
@@ -1782,11 +1878,13 @@ int main() {
 
         begin_frame(fd);
         fill_rect(fd, 0, 0, canvas_w, canvas_h, clr_bg);
+        set_font(fd, app_font);
         if (hex_mode) {
             draw_hex_buffer(fd);
         } else {
             draw_buffer(fd);
         }
+        set_font(fd, 0);
         draw_status_line(fd);
         ui_draw();
         if (sf_is_open()) {

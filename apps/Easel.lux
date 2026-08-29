@@ -1,0 +1,1513 @@
+( Easel: MacPaint-simple pixel painting.
+  File > New/Open/Save/Save As | Quit, Edit > Undo / Invert / Clear,
+  Goodies > Grid / FatBits / Filled. Eight tools, 16 patterns.
+  Canvas is 512x342, 1-bit. Save is EAS1. ./bin/cloister apps/Easel.bin )
+
+INCLUDE "lib/app.lux"
+INCLUDE "lib/core.lux"
+INCLUDE "lib/str.lux"
+INCLUDE "lib/ui.lux"
+INCLUDE "lib/sf.lux"
+INCLUDE "lib/geom.lux"
+
+MODULE MAIN
+
+IMPORT APP
+IMPORT VFS
+IMPORT DRAW
+IMPORT EVENT
+IMPORT STR
+IMPORT UI
+IMPORT SF
+IMPORT GEOM
+
+( --- Geometry --- )
+@WIN_W         960 ;
+@WIN_H         720 ;
+@BAR_H          20 ;
+@STATUS_H       24 ;
+@PAL_X           0 ;
+@PAL_W          72 ;
+@CANVAS_X       80 ;
+@CANVAS_Y       36 ;
+@CANVAS_W      512 ;
+@CANVAS_H      342 ;
+@CANVAS_BYTES 175104 ;
+@STATUS_Y      696 ;
+@FONT_SIZE      16 ;
+@GRID           8 ;
+@TOOLS           8 ;
+@PAT_N          16 ;
+@PAT_Y         390 ;
+@PAT_H          24 ;
+@PAT_CELL       22 ;
+@FAT_Z           8 ;
+@FAT_VW         64 ;
+@FAT_VH         42 ;
+@STK_MAX      4096 ;
+@ROW_BYTES      64 ;
+@PACK_BYTES  21896 ;
+
+@TOOL_PENCIL     0 ;
+@TOOL_ERASER     1 ;
+@TOOL_BRUSH      2 ;
+@TOOL_FILL       3 ;
+@TOOL_LINE       4 ;
+@TOOL_RECT       5 ;
+@TOOL_OVAL       6 ;
+@TOOL_SPRAY      7 ;
+
+@DRAG_NONE       0 ;
+@DRAG_PAINT      1 ;
+@DRAG_SHAPE      2 ;
+
+@MODE_BLACK      0 ;
+@MODE_WHITE      1 ;
+@MODE_PAT        2 ;
+@MODE_BRUSH      3 ;
+@MODE_ERASE      4 ;
+@MODE_SPRAY      5 ;
+
+@CLR_BG        0xFFFFFF ;
+@CLR_FG        0x000000 ;
+@CLR_PAGE      0xFFFFFF ;
+@CLR_PAL       0xDDDDDD ;
+@CLR_GRID      0xCCCCCC ;
+@CLR_HDR       0xEEEEEE ;
+@CLR_FRAME     0x000000 ;
+@CLR_HINT      0x444444 ;
+@CLR_WHITE     0xFFFFFF ;
+@CLR_DESK      0x000000 ;
+
+@CONFIRM_PANEL_W 260 ;
+@CONFIRM_PANEL_H 170 ;
+@CONFIRM_BTN_W   180 ;
+@CONFIRM_BTN_H    30 ;
+@CONFIRM_BTN_GAP  10 ;
+@CLR_CONFIRM_DIM    0x000000 ;
+@CLR_CONFIRM_PANEL  0x303030 ;
+@CLR_CONFIRM_BORDER 0xAAAAAA ;
+@CLR_CONFIRM_TEXT   0xFFFFFF ;
+@CLR_CONFIRM_BTN    0x505050 ;
+
+( --- Bulk buffers (MM_APP_BULK_BUFFER 0x900000..0xA00000) --- )
+@CANVAS        0x900000 ;
+@UNDO          0x92B000 ;
+@TMP           0x956000 ;
+@PACK          0x981000 ;
+@STK           0x987000 ;
+@PATH          0x990000 ;
+@VFS_PATH      0x990100 ;
+@STATUS_BUF    0x990200 ;
+@PATTERNS      0x990300 ;
+
+( --- Small state (MM_APP_SMALL_STATE) --- )
+@tool              0x8A0000 ;
+@pat-id            0x8A0004 ;
+@drag              0x8A0008 ;
+@mouse-held        0x8A000C ;
+@file-dirty        0x8A0010 ;
+@confirm-new-open  0x8A0014 ;
+@grid-f            0x8A0018 ;
+@fat-f             0x8A001C ;
+@filled-f          0x8A0020 ;
+@undo-ok           0x8A0024 ;
+@plot-mode         0x8A0028 ;
+@last-cx           0x8A002C ;
+@last-cy           0x8A0030 ;
+@shape-x0          0x8A0034 ;
+@shape-y0          0x8A0038 ;
+@shape-x1          0x8A003C ;
+@shape-y1          0x8A0040 ;
+@fat-ox            0x8A0044 ;
+@fat-oy            0x8A0048 ;
+@shift-mod         0x8A004C ;
+@stk-n             0x8A0050 ;
+@rng               0x8A0054 ;
+@erase-btn         0x8A0058 ;
+@save-as           0x8A005C ;
+
+( --- Path / dirty --- )
+
+@make-vfs-path ( path-ptr -- vfs-path-ptr )
+    dup load-byte 47 = [ 1 + ] ?
+    T"/sys/file/" VFS_PATH STR::strcpy
+    VFS_PATH T"/sys/file/" STR::strlen + STR::strcpy
+    VFS_PATH
+;
+
+@mark-dirty ( -- )
+    1 file-dirty STOREI
+    APP::dirty!
+    sync-title
+;
+
+@path-basename ( -- ptr )
+    PATH dup
+    [ dup load-byte ]
+    [
+        dup load-byte 47 = [
+            1 + swap drop dup
+        ] [ 1 + ] ?:
+    ] |:
+    drop
+;
+
+@sync-title ( -- )
+    file-dirty LOADI [ T"Easel *" ] [ T"Easel" ] ?:
+    VFS::set-window-title
+;
+
+( --- Canvas --- )
+
+@copy-buf { src dest -- }
+    dest CANVAS_BYTES + { end }
+        [ dest end < ]
+        [
+            src LOADI dest STOREI
+            src 4 + src!
+            dest 4 + dest!
+        ] |:
+    }
+;
+
+@clear-buf { dest -- }
+    dest CANVAS_BYTES + { end }
+        [ dest end < ]
+        [
+            0 dest STOREI
+            dest 4 + dest!
+        ] |:
+    }
+;
+
+@in-can? { x y -- f }
+    x 0 >= y 0 >= AND x CANVAS_W < AND y CANVAS_H < AND
+;
+
+@pix-addr { x y -- addr }
+    y CANVAS_W * x + CANVAS +
+;
+
+@pix@ { x y -- v }
+    x y in-can? [
+        x y pix-addr load-byte
+    ] [ 0 ] ?:
+;
+
+@pix! { v x y -- }
+    x y in-can? [
+        v x y pix-addr store-byte
+    ] [ drop ] ?:
+;
+
+@pat-bit { x y -- b }
+    PATTERNS pat-id LOADI 8 * + y 7 AND + load-byte
+    128 x 7 AND RSHIFT AND
+    0 = [ 0 ] [ 1 ] ?:
+;
+
+@plot-pat { x y -- }
+    x y x y pat-bit pix!
+;
+
+@plot-black { x y -- } 1 x y pix! ;
+@plot-white { x y -- } 0 x y pix! ;
+
+@hspan-bit { bit x y n -- }
+    0 { k }
+        [ k n < ]
+        [
+            bit x k + y pix!
+            k 1 + k!
+        ] |:
+    }
+;
+
+@hspan-pat { x y n -- }
+    0 { k }
+        [ k n < ]
+        [
+            x k + y plot-pat
+            k 1 + k!
+        ] |:
+    }
+;
+
+@brush-at { cx cy -- }
+    -2 { dy }
+        [ dy 3 < ]
+        [
+            -2 { dx }
+                [ dx 3 < ]
+                [
+                    dx ABS 2 = dy ABS 2 = AND [
+                    ] [
+                        cx dx + cy dy + plot-pat
+                    ] ?:
+                    dx 1 + dx!
+                ] |:
+            }
+            dy 1 + dy!
+        ] |:
+    }
+;
+
+@erase-at { cx cy -- }
+    -4 { dy }
+        [ dy 4 < ]
+        [
+            -4 { dx }
+                [ dx 4 < ]
+                [
+                    0 cx dx + cy dy + pix!
+                    dx 1 + dx!
+                ] |:
+            }
+            dy 1 + dy!
+        ] |:
+    }
+;
+
+@rnd ( -- n )
+    rng LOADI 1103515245 * 12345 + dup rng STOREI
+    16 RSHIFT 32767 AND
+;
+
+@spray-at { cx cy -- }
+    0 { i }
+        [ i 18 < ]
+        [
+            rnd 24 MOD 12 - { dx }
+                rnd 24 MOD 12 - { dy }
+                    dx dx * dy dy * + 144 < [
+                        cx dx + cy dy + plot-pat
+                    ] ?
+                }
+            }
+            i 1 + i!
+        ] |:
+    }
+;
+
+@plot-at { x y -- }
+    plot-mode LOADI
+    dup MODE_BLACK = [ drop x y plot-black ] [
+    dup MODE_WHITE = [ drop x y plot-white ] [
+    dup MODE_PAT = [ drop x y plot-pat ] [
+    dup MODE_BRUSH = [ drop x y brush-at ] [
+    dup MODE_ERASE = [ drop x y erase-at ] [
+        drop x y spray-at
+    ] ?: ] ?: ] ?: ] ?: ] ?:
+;
+
+( 1px Bresenham onto the bitmap. )
+@stroke-to { x0 y0 x1 y1 -- }
+    x1 x0 - ABS
+    y1 y0 - ABS NEGATE
+    x0 x1 < [ 1 ] [ -1 ] ?:
+    y0 y1 < [ 1 ] [ -1 ] ?:
+    { adx ady sx sy }
+        adx ady + { err }
+            x0 y0 plot-at
+            [ x0 x1 = y0 y1 = AND 0 = ]
+            [
+                err 2 * { e2 }
+                    e2 ady >= [
+                        err ady + err!
+                        x0 sx + x0!
+                    ] ?
+                    e2 adx <= [
+                        err adx + err!
+                        y0 sy + y0!
+                    ] ?
+                }
+                x0 y0 plot-at
+            ] |:
+        }
+    }
+;
+
+@canon-xy { x0 y0 x1 y1 -- minx miny maxx maxy }
+    x0 x1 MIN y0 y1 MIN x0 x1 MAX y0 y1 MAX
+;
+
+@frame-rect-pix { x0 y0 x1 y1 -- }
+    x0 y0 x1 y1 canon-xy { minx miny maxx maxy }
+        minx { x }
+            [ x maxx <= ]
+            [
+                1 x miny pix!
+                1 x maxy pix!
+                x 1 + x!
+            ] |:
+        }
+        miny { y }
+            [ y maxy <= ]
+            [
+                1 minx y pix!
+                1 maxx y pix!
+                y 1 + y!
+            ] |:
+        }
+    }
+;
+
+@fill-rect-pat { x0 y0 x1 y1 -- }
+    x0 y0 x1 y1 canon-xy { minx miny maxx maxy }
+        miny { y }
+            [ y maxy <= ]
+            [
+                minx y maxx minx - 1 + hspan-pat
+                y 1 + y!
+            ] |:
+        }
+    }
+;
+
+@fill-oval-pat { x y w h -- }
+    w 1 < h 1 < OR [
+    ] [
+        0 { py }
+            [ py h < ]
+            [
+                w h py DRAW::oval-span
+                dup 0 > [
+                    { xoff spanw }
+                        x xoff + y py + spanw hspan-pat
+                    }
+                ] [ drop drop ] ?:
+                py 1 + py!
+            ] |:
+        }
+    ] ?:
+;
+
+@hspan-black { x y n -- }
+    1 x y n hspan-bit
+;
+
+@frame-oval-pix { x y w h -- }
+    w 3 < h 3 < OR [
+        0 { py }
+            [ py h < ]
+            [
+                w h py DRAW::oval-span
+                dup 0 > [
+                    { xoff spanw }
+                        x xoff + y py + spanw hspan-black
+                    }
+                ] [ drop drop ] ?:
+                py 1 + py!
+            ] |:
+        }
+    ] [
+        0 { py }
+            [ py h < ]
+            [
+                w h py DRAW::oval-span { ox osw }
+                    osw 0 = [
+                    ] [
+                        w 2 - h 2 - py 1 - DRAW::oval-span { ix iw }
+                            iw 0 = [
+                                x ox + y py + osw hspan-black
+                            ] [
+                                1 ix + ox - { lw }
+                                    lw 0 > [
+                                        x ox + y py + lw hspan-black
+                                    ] ?
+                                }
+                                ox osw + 1 ix + iw + - { rw }
+                                    rw 0 > [
+                                        x 1 + ix + iw + y py + rw hspan-black
+                                    ] ?
+                                }
+                            ] ?:
+                        }
+                    ] ?:
+                }
+                py 1 + py!
+            ] |:
+        }
+    ] ?:
+;
+
+( --- Flood fill: connected seed-color -> 2, then 2 -> pattern. --- )
+
+@stk-push { x y -- }
+    stk-n LOADI STK_MAX < [
+        STK stk-n LOADI 8 * + { a }
+            x a STOREI
+            y a 4 + STOREI
+        }
+        stk-n LOADI 1 + stk-n STOREI
+    ] [
+        drop drop
+    ] ?:
+;
+
+@stk-pop ( -- x y )
+    stk-n LOADI 1 - dup stk-n STOREI
+    8 * STK +
+    dup LOADI swap 4 + LOADI
+;
+
+@seed-span { y x0 x1 old -- }
+    y 0 < y CANVAS_H >= OR [
+    ] [
+        0 { inside }
+            x0 { i }
+                [ i x1 <= ]
+                [
+                    i y pix@ old = [
+                        inside 0 = [
+                            i y stk-push
+                            1 inside!
+                        ] ?
+                    ] [
+                        0 inside!
+                    ] ?:
+                    i 1 + i!
+                ] |:
+            }
+        }
+    ] ?:
+;
+
+@apply-pat-over-twos ( -- )
+    0 { y }
+        [ y CANVAS_H < ]
+        [
+            0 { x }
+                [ x CANVAS_W < ]
+                [
+                    x y pix@ 2 = [
+                        x y plot-pat
+                    ] ?
+                    x 1 + x!
+                ] |:
+            }
+            y 1 + y!
+        ] |:
+    }
+;
+
+@flood-from { sx sy -- }
+    sx sy in-can? 0 = [
+    ] [
+        sx sy pix@ 0 0 0 0 0 { old x y x0 x1 i }
+            old 2 = [
+            ] [
+                0 stk-n STOREI
+                sx sy stk-push
+                [ stk-n LOADI 0 > ]
+                [
+                    stk-pop y! x!
+                    y 0 < y CANVAS_H >= OR [
+                    ] [
+                        x x0!
+                        [ x0 0 > x0 1 - y pix@ old = AND ]
+                        [ x0 1 - x0! ] |:
+                        x x1!
+                        [ x1 CANVAS_W 1 - < x1 1 + y pix@ old = AND ]
+                        [ x1 1 + x1! ] |:
+                        x0 i!
+                        [ i x1 <= ]
+                        [
+                            2 i y pix!
+                            i 1 + i!
+                        ] |:
+                        y 1 - x0 x1 old seed-span
+                        y 1 + x0 x1 old seed-span
+                    ] ?:
+                ] |:
+                apply-pat-over-twos
+            ] ?:
+        }
+    ] ?:
+;
+
+( --- Undo / invert / clear --- )
+
+@snapshot ( -- )
+    CANVAS UNDO copy-buf
+    1 undo-ok STOREI
+;
+
+@do-undo ( -- )
+    undo-ok LOADI [
+        CANVAS TMP copy-buf
+        UNDO CANVAS copy-buf
+        TMP UNDO copy-buf
+        mark-dirty
+    ] ?
+;
+
+@do-invert ( -- )
+    snapshot
+    CANVAS { p }
+        CANVAS CANVAS_BYTES + { end }
+            [ p end < ]
+            [
+                p LOADI 0x01010101 XOR p STOREI
+                p 4 + p!
+            ] |:
+        }
+    }
+    mark-dirty
+;
+
+@do-clear ( -- )
+    snapshot
+    CANVAS clear-buf
+    mark-dirty
+;
+
+( --- Patterns --- )
+
+@pat-row { pid row val -- }
+    val PATTERNS pid 8 * + row + store-byte
+;
+
+@set-pat { pid b0 b1 b2 b3 b4 b5 b6 b7 -- }
+    pid 0 b0 pat-row
+    pid 1 b1 pat-row
+    pid 2 b2 pat-row
+    pid 3 b3 pat-row
+    pid 4 b4 pat-row
+    pid 5 b5 pat-row
+    pid 6 b6 pat-row
+    pid 7 b7 pat-row
+;
+
+@init-pats ( -- )
+    0 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 set-pat
+    1 0xFF 0xFF 0xFF 0xFF 0xFF 0xFF 0xFF 0xFF set-pat
+    2 0xAA 0x55 0xAA 0x55 0xAA 0x55 0xAA 0x55 set-pat
+    3 0x88 0x22 0x88 0x22 0x88 0x22 0x88 0x22 set-pat
+    4 0xEE 0xBB 0xEE 0xBB 0xEE 0xBB 0xEE 0xBB set-pat
+    5 0xFF 0x00 0xFF 0x00 0xFF 0x00 0xFF 0x00 set-pat
+    6 0xAA 0xAA 0xAA 0xAA 0xAA 0xAA 0xAA 0xAA set-pat
+    7 0x88 0x44 0x22 0x11 0x88 0x44 0x22 0x11 set-pat
+    8 0x11 0x22 0x44 0x88 0x11 0x22 0x44 0x88 set-pat
+    9 0x80 0x00 0x08 0x00 0x80 0x00 0x08 0x00 set-pat
+    10 0xFF 0x80 0x80 0x80 0xFF 0x08 0x08 0x08 set-pat
+    11 0x10 0x38 0x7C 0xFE 0x7C 0x38 0x10 0x00 set-pat
+    12 0x11 0x11 0xFF 0x11 0x11 0x11 0xFF 0x11 set-pat
+    13 0x81 0x42 0x24 0x18 0x18 0x24 0x42 0x81 set-pat
+    14 0x02 0x04 0x08 0x10 0x20 0x40 0x80 0x00 set-pat
+    15 0xAA 0x00 0x55 0x00 0xAA 0x00 0x55 0x00 set-pat
+    1 pat-id STOREI
+;
+
+( --- Snap / constrain --- )
+
+@constrain-line { x0 y0 x1 y1 -- x1 y1 }
+    x1 x0 - { dx }
+        y1 y0 - { dy }
+            dx ABS { adx }
+                dy ABS { ady }
+                    adx ady 2 * > [
+                        x1 y0
+                    ] [
+                        ady adx 2 * > [
+                            x0 y1
+                        ] [
+                            adx ady MAX { m }
+                                dx 0 < [ x0 m - ] [ x0 m + ] ?:
+                                dy 0 < [ y0 m - ] [ y0 m + ] ?:
+                            }
+                        ] ?:
+                    ] ?:
+                }
+            }
+        }
+    }
+;
+
+@constrain-square { x0 y0 x1 y1 -- x1 y1 }
+    x1 x0 - ABS y1 y0 - ABS MAX { s }
+        x1 x0 < [ x0 s - ] [ x0 s + ] ?:
+        y1 y0 < [ y0 s - ] [ y0 s + ] ?:
+    }
+;
+
+@apply-shift { x0 y0 x1 y1 ty -- x1 y1 }
+    shift-mod LOADI [
+        ty TOOL_LINE = [
+            x0 y0 x1 y1 constrain-line
+        ] [
+            x0 y0 x1 y1 constrain-square
+        ] ?:
+    ] [
+        x1 y1
+    ] ?:
+;
+
+@clamp-fat ( -- )
+    fat-ox LOADI 0 MAX CANVAS_W FAT_VW - MIN fat-ox STOREI
+    fat-oy LOADI 0 MAX CANVAS_H FAT_VH - MIN fat-oy STOREI
+;
+
+@pan-fat { dx dy -- }
+    fat-ox LOADI dx + fat-ox STOREI
+    fat-oy LOADI dy + fat-oy STOREI
+    clamp-fat
+    APP::dirty!
+;
+
+( --- Screen mapping --- )
+
+@in-page? { mx my -- f }
+    mx CANVAS_X >= my CANVAS_Y >= AND
+    mx CANVAS_X CANVAS_W + < AND
+    my CANVAS_Y CANVAS_H + < AND
+;
+
+@in-pat? { mx my -- f }
+    mx CANVAS_X >= my PAT_Y >= AND
+    mx CANVAS_X PAT_N PAT_CELL * + < AND
+    my PAT_Y PAT_H + < AND
+;
+
+@tool-xy { i -- x y }
+    4 i 2 MOD 34 * +
+    CANVAS_Y 4 + i 2 / 40 * +
+;
+
+@in-tool? { mx my i -- f }
+    i tool-xy { x y }
+        mx x >= mx x 32 + < AND
+        my y >= AND
+        my y 36 + < AND
+    }
+;
+
+@hit-tool { mx my -- idx }
+    -1 { found }
+        0 { i }
+            [ i TOOLS < found 0 < AND ]
+            [
+                mx my i in-tool? [ i found! ] ?
+                i 1 + i!
+            ] |:
+        }
+        found
+    }
+;
+
+@scr>can { mx my -- cx cy }
+    fat-f LOADI [
+        mx CANVAS_X - FAT_Z / fat-ox LOADI +
+        my CANVAS_Y - FAT_Z / fat-oy LOADI +
+    ] [
+        mx CANVAS_X -
+        my CANVAS_Y -
+    ] ?:
+;
+
+@can>scr { cx cy -- mx my }
+    fat-f LOADI [
+        cx fat-ox LOADI - FAT_Z * CANVAS_X +
+        cy fat-oy LOADI - FAT_Z * CANVAS_Y +
+    ] [
+        cx CANVAS_X +
+        cy CANVAS_Y +
+    ] ?:
+;
+
+@clip-can { x y -- x' y' }
+    x 0 MAX CANVAS_W 1 - MIN
+    y 0 MAX CANVAS_H 1 - MIN
+;
+
+( --- File format EAS1 --- )
+
+@write-magic { d -- }
+    69 d store-byte
+    65 d 1 + store-byte
+    83 d 2 + store-byte
+    49 d 3 + store-byte
+    CANVAS_W d 4 + DRAW::store-word-le
+    CANVAS_H d 6 + DRAW::store-word-le
+;
+
+@pack-bits ( -- )
+    PACK write-magic
+    PACK 8 + { d }
+        0 { y }
+            [ y CANVAS_H < ]
+            [
+                0 { bx }
+                    [ bx ROW_BYTES < ]
+                    [
+                        0 { b }
+                            0 { bit }
+                                [ bit 8 < ]
+                                [
+                                    bx 8 * bit + y pix@ [
+                                        b 128 bit RSHIFT OR b!
+                                    ] ?
+                                    bit 1 + bit!
+                                ] |:
+                            }
+                            b d store-byte
+                            d 1 + d!
+                        }
+                        bx 1 + bx!
+                    ] |:
+                }
+                y 1 + y!
+            ] |:
+        }
+    }
+;
+
+@unpack-bits ( -- )
+    CANVAS clear-buf
+    PACK 8 + { s }
+        0 { y }
+            [ y CANVAS_H < ]
+            [
+                0 { bx }
+                    [ bx ROW_BYTES < ]
+                    [
+                        s load-byte { b }
+                            0 { bit }
+                                [ bit 8 < ]
+                                [
+                                    b 128 bit RSHIFT AND [
+                                        1 bx 8 * bit + y pix!
+                                    ] ?
+                                    bit 1 + bit!
+                                ] |:
+                            }
+                            s 1 + s!
+                        }
+                        bx 1 + bx!
+                    ] |:
+                }
+                y 1 + y!
+            ] |:
+        }
+    }
+;
+
+@magic-ok? ( -- f )
+    PACK load-byte 69 =
+    PACK 1 + load-byte 65 = AND
+    PACK 2 + load-byte 83 = AND
+    PACK 3 + load-byte 49 = AND
+    PACK 4 + DRAW::load-word-le CANVAS_W = AND
+    PACK 6 + DRAW::load-word-le CANVAS_H = AND
+;
+
+@save-file ( -- )
+    pack-bits
+    PATH make-vfs-path 6 VFS::open-mode
+    dup 0 >= [
+        dup PACK PACK_BYTES VFS::write drop
+        VFS::close drop
+        0 file-dirty STOREI
+        sync-title
+        APP::dirty!
+    ] [ drop ] ?:
+;
+
+@load-path ( path -- )
+    dup load-byte 47 = [ 1 + ] ?
+    PATH STR::strcpy
+    PATH make-vfs-path 0 VFS::open-mode
+    dup 0 >= [
+        dup PACK PACK_BYTES VFS::read { n }
+            VFS::close drop
+            n PACK_BYTES < [
+            ] [
+                magic-ok? [
+                    unpack-bits
+                    0 file-dirty STOREI
+                    0 undo-ok STOREI
+                    0 fat-ox STOREI
+                    0 fat-oy STOREI
+                ] ?
+            ] ?:
+        }
+        sync-title
+    ] [ drop ] ?:
+    APP::dirty!
+;
+
+@new-document ( -- )
+    CANVAS clear-buf
+    T"untitled.eas" PATH STR::strcpy
+    0 file-dirty STOREI
+    0 confirm-new-open STOREI
+    0 APP::modal!
+    0 undo-ok STOREI
+    DRAG_NONE drag STOREI
+    0 fat-ox STOREI
+    0 fat-oy STOREI
+    TOOL_PENCIL tool STOREI
+    1 pat-id STOREI
+    1 rng STOREI
+    sync-title
+    APP::dirty!
+;
+
+( --- Confirm / menus --- )
+
+@confirm-panel-x ( -- x ) WIN_W CONFIRM_PANEL_W - 2 / ;
+@confirm-panel-y ( -- y ) WIN_H CONFIRM_PANEL_H - 2 / ;
+@confirm-btn-x ( -- x ) confirm-panel-x CONFIRM_PANEL_W CONFIRM_BTN_W - 2 / + ;
+@confirm-btn-y ( i -- y ) confirm-panel-y 46 + swap CONFIRM_BTN_H CONFIRM_BTN_GAP + * + ;
+
+@confirm-hit-btn ( i px py -- flag )
+    3 frame! ( 0:py 1:px 2:i )
+    1 local@ confirm-btn-x < [ 0 ] [
+    1 local@ confirm-btn-x CONFIRM_BTN_W + >= [ 0 ] [
+    0 local@ 2 local@ confirm-btn-y < [ 0 ] [
+    0 local@ 2 local@ confirm-btn-y CONFIRM_BTN_H + >= [ 0 ] [
+    1
+    ] ?: ] ?: ] ?: ] ?:
+    3 unframe!
+;
+
+@confirm-new-draw ( -- )
+    confirm-new-open LOADI [
+        APP::draw-fd 0 0 WIN_W WIN_H CLR_CONFIRM_DIM DRAW::fill-rect
+        confirm-panel-x confirm-panel-y confirm-btn-x 3 frame! ( 0:bx 1:py 2:px )
+        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
+        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_H + 1 - CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ CONFIRM_PANEL_W + 1 - 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ 26 + 1 local@ 16 + T"Save changes?" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        APP::draw-fd 0 local@ 0 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
+        APP::draw-fd 0 local@ 68 + 0 confirm-btn-y 9 + T"Save" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        APP::draw-fd 0 local@ 1 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
+        APP::draw-fd 0 local@ 34 + 1 confirm-btn-y 9 + T"Don't Save" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        APP::draw-fd 0 local@ 2 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
+        APP::draw-fd 0 local@ 52 + 2 confirm-btn-y 9 + T"Cancel" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        3 unframe!
+    ] ?
+;
+
+@confirm-new-mouse ( mpkt -- )
+    1 frame! ( 0:mpkt )
+    0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+        0 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
+            save-file
+            0 confirm-new-open STOREI
+            0 APP::modal!
+            new-document
+        ] [
+            1 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
+                0 confirm-new-open STOREI
+                0 APP::modal!
+                new-document
+            ] [
+                2 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
+                    0 confirm-new-open STOREI
+                    0 APP::modal!
+                    APP::dirty!
+                ] ?
+            ] ?:
+        ] ?:
+    ] ?
+    1 unframe!
+;
+
+@confirm-new-kbd ( kpkt -- )
+    dup EVENT::kbd-type EVENT::KEY_DOWN = [
+        dup EVENT::kbd-key EVENT::KEY_ESC = [
+            0 confirm-new-open STOREI
+            0 APP::modal!
+            APP::dirty!
+        ] ?
+    ] ?
+    drop
+;
+
+@on-pick ( path -- )
+    save-as LOADI [
+        0 save-as STOREI
+        dup load-byte 47 = [ 1 + ] ?
+        PATH STR::strcpy
+        save-file
+    ] [
+        load-path
+    ] ?:
+;
+@on-cancel ( -- )
+    0 save-as STOREI
+    APP::dirty!
+;
+
+@menu-new ( -- )
+    file-dirty LOADI [
+        1 confirm-new-open STOREI
+        1 APP::modal!
+        APP::dirty!
+    ] [
+        new-document
+    ] ?:
+;
+
+@menu-open ( -- ) SF::show ;
+@menu-save-as ( -- )
+    1 save-as STOREI
+    PATH SF::show-save
+;
+@menu-quit ( -- ) HALT ;
+@menu-undo ( val -- ) drop do-undo ;
+@menu-invert ( val -- ) drop do-invert ;
+@menu-clear ( val -- ) drop do-clear ;
+@menu-grid ( val -- ) grid-f STOREI APP::dirty! ;
+@menu-fat ( val -- )
+    fat-f STOREI
+    clamp-fat
+    APP::dirty!
+;
+@menu-filled ( val -- ) filled-f STOREI APP::dirty! ;
+
+( --- Draw --- )
+
+@tool-name ( -- ptr )
+    tool LOADI
+    dup TOOL_PENCIL = [ drop T"Pencil" ] [
+    dup TOOL_ERASER = [ drop T"Eraser" ] [
+    dup TOOL_BRUSH = [ drop T"Brush" ] [
+    dup TOOL_FILL = [ drop T"Fill" ] [
+    dup TOOL_LINE = [ drop T"Line" ] [
+    dup TOOL_RECT = [ drop T"Rect" ] [
+    dup TOOL_OVAL = [ drop T"Oval" ] [
+        drop T"Spray"
+    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+;
+
+@draw-tool-icon { i x y color -- }
+    i TOOL_PENCIL = [
+        APP::draw-fd x 6 + y 22 + x 22 + y 8 + color DRAW::line
+        APP::draw-fd x 20 + y 6 + 4 4 color DRAW::fill-rect
+    ] [
+    i TOOL_ERASER = [
+        APP::draw-fd x 8 + y 10 + 16 14 color DRAW::fill-rect
+        APP::draw-fd x 8 + y 10 + 16 14 CLR_FG DRAW::frame-rect
+    ] [
+    i TOOL_BRUSH = [
+        APP::draw-fd x 8 + y 8 + 16 16 color DRAW::paint-oval
+        APP::draw-fd x 14 + y 20 + 4 6 color DRAW::fill-rect
+    ] [
+    i TOOL_FILL = [
+        APP::draw-fd x 8 + y 8 + x 24 + y 8 + x 16 + y 22 + color DRAW::paint-tri
+    ] [
+    i TOOL_LINE = [
+        APP::draw-fd x 6 + y 22 + x 22 + y 8 + color DRAW::line
+    ] [
+    i TOOL_RECT = [
+        APP::draw-fd x 6 + y 8 + 20 18 color DRAW::frame-rect
+    ] [
+    i TOOL_OVAL = [
+        APP::draw-fd x 6 + y 8 + 20 18 color DRAW::frame-oval
+    ] [
+        APP::draw-fd x 10 + y 10 + color DRAW::pix
+        APP::draw-fd x 16 + y 8 + color DRAW::pix
+        APP::draw-fd x 14 + y 14 + color DRAW::pix
+        APP::draw-fd x 20 + y 12 + color DRAW::pix
+        APP::draw-fd x 12 + y 18 + color DRAW::pix
+        APP::draw-fd x 18 + y 20 + color DRAW::pix
+        APP::draw-fd x 22 + y 16 + color DRAW::pix
+    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+;
+
+@draw-palette ( -- )
+    APP::draw-fd PAL_X BAR_H PAL_W WIN_H BAR_H - STATUS_H - CLR_PAL DRAW::fill-rect
+    APP::draw-fd PAL_W 1 - BAR_H 1 WIN_H BAR_H - STATUS_H - CLR_FRAME DRAW::fill-rect
+    0 { i }
+        [ i TOOLS < ]
+        [
+            i tool-xy { x y }
+                i tool LOADI = [
+                    APP::draw-fd x y 32 36 CLR_FG DRAW::fill-rect
+                    i x y CLR_WHITE draw-tool-icon
+                ] [
+                    APP::draw-fd x y 32 36 CLR_WHITE DRAW::fill-rect
+                    APP::draw-fd x y 32 36 CLR_FG DRAW::frame-rect
+                    i x y CLR_FG draw-tool-icon
+                ] ?:
+            }
+            i 1 + i!
+        ] |:
+    }
+;
+
+@draw-pat-cell { i -- }
+    CANVAS_X i PAT_CELL * + { x }
+        PAT_Y { y }
+            i pat-id LOADI = [
+                APP::draw-fd x y 20 20 CLR_FG DRAW::fill-rect
+                APP::draw-fd x 2 + y 2 + 16 16 CLR_WHITE DRAW::fill-rect
+            ] [
+                APP::draw-fd x y 20 20 CLR_FG DRAW::frame-rect
+                APP::draw-fd x 1 + y 1 + 18 18 CLR_WHITE DRAW::fill-rect
+            ] ?:
+            0 { py }
+                [ py 16 < ]
+                [
+                    0 { px }
+                        [ px 16 < ]
+                        [
+                            PATTERNS i 8 * + py 7 AND + load-byte
+                            128 px 7 AND RSHIFT AND [
+                                APP::draw-fd x 2 + px + y 2 + py + CLR_FG DRAW::pix
+                            ] ?
+                            px 1 + px!
+                        ] |:
+                    }
+                    py 1 + py!
+                ] |:
+            }
+        }
+    }
+;
+
+@draw-patterns ( -- )
+    0 { i }
+        [ i PAT_N < ]
+        [
+            i draw-pat-cell
+            i 1 + i!
+        ] |:
+    }
+;
+
+@draw-status ( -- )
+    APP::draw-fd 0 STATUS_Y WIN_W STATUS_H CLR_HDR DRAW::fill-rect
+    APP::draw-fd 0 STATUS_Y WIN_W 1 CLR_FRAME DRAW::fill-rect
+    path-basename STATUS_BUF STR::strcpy
+    file-dirty LOADI [
+        T" *" STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
+    ] ?
+    T"  " STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
+    tool-name STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
+    fat-f LOADI [
+        T"  FatBits" STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
+    ] ?
+    APP::draw-fd 8 STATUS_Y 6 + STATUS_BUF CLR_FG FONT_SIZE DRAW::draw-str
+;
+
+@draw-grid-dots ( -- )
+    grid-f LOADI fat-f LOADI 0 = AND [
+        0 { x }
+            [ x CANVAS_W < ]
+            [
+                0 { y }
+                    [ y CANVAS_H < ]
+                    [
+                        APP::draw-fd CANVAS_X x + CANVAS_Y y + CLR_GRID DRAW::pix
+                        y GRID + y!
+                    ] |:
+                }
+                x GRID + x!
+            ] |:
+        }
+    ] ?
+;
+
+@draw-fat-grid ( -- )
+    0 { vx }
+        [ vx FAT_VW < ]
+        [
+            APP::draw-fd CANVAS_X vx FAT_Z * + CANVAS_Y 1 FAT_VH FAT_Z * CLR_GRID DRAW::fill-rect
+            vx 1 + vx!
+        ] |:
+    }
+    0 { vy }
+        [ vy FAT_VH < ]
+        [
+            APP::draw-fd CANVAS_X CANVAS_Y vy FAT_Z * + FAT_VW FAT_Z * 1 CLR_GRID DRAW::fill-rect
+            vy 1 + vy!
+        ] |:
+    }
+;
+
+@draw-canvas-1x ( -- )
+    0 0 0 { y x x0 }
+        [ y CANVAS_H < ]
+        [
+            0 x!
+            [ x CANVAS_W < ]
+            [
+                x y pix@ [
+                    x x0!
+                    [ x CANVAS_W < x y pix@ AND ]
+                    [ x 1 + x! ] |:
+                    APP::draw-fd CANVAS_X x0 + CANVAS_Y y + x x0 - 1 CLR_FG DRAW::fill-rect
+                ] [
+                    x 1 + x!
+                ] ?:
+            ] |:
+            y 1 + y!
+        ] |:
+    }
+;
+
+@draw-canvas-fat ( -- )
+    0 0 0 0 { vy cy vx vx0 }
+        [ vy FAT_VH < ]
+        [
+            fat-oy LOADI vy + cy!
+            0 vx!
+            [ vx FAT_VW < ]
+            [
+                fat-ox LOADI vx + cy pix@ [
+                    vx vx0!
+                    [ vx FAT_VW < fat-ox LOADI vx + cy pix@ AND ]
+                    [ vx 1 + vx! ] |:
+                    APP::draw-fd CANVAS_X vx0 FAT_Z * + CANVAS_Y vy FAT_Z * +
+                        vx vx0 - FAT_Z * FAT_Z CLR_FG DRAW::fill-rect
+                ] [
+                    vx 1 + vx!
+                ] ?:
+            ] |:
+            vy 1 + vy!
+        ] |:
+    }
+;
+
+@draw-canvas ( -- )
+    APP::draw-fd CANVAS_X CANVAS_Y CANVAS_W CANVAS_H CLR_PAGE DRAW::fill-rect
+    APP::draw-fd CANVAS_X 1 - CANVAS_Y 1 - CANVAS_W 2 + CANVAS_H 2 + CLR_FRAME DRAW::frame-rect
+    fat-f LOADI [
+        draw-canvas-fat
+        draw-fat-grid
+    ] [
+        draw-canvas-1x
+        draw-grid-dots
+    ] ?:
+;
+
+@draw-rubber ( -- )
+    drag LOADI DRAG_SHAPE = [
+        shape-x0 LOADI shape-y0 LOADI can>scr { x0 y0 }
+            shape-x1 LOADI shape-y1 LOADI can>scr { x1 y1 }
+                tool LOADI TOOL_LINE = [
+                    APP::draw-fd x0 y0 x1 y1 CLR_FG DRAW::line
+                ] [
+                    x0 y0 x1 y1 GEOM::rect-canon GEOM::rect>xywh { x y w h }
+                        w 1 < [ 1 w! ] ?
+                        h 1 < [ 1 h! ] ?
+                        tool LOADI TOOL_OVAL = [
+                            APP::draw-fd x y w h CLR_FG DRAW::frame-oval
+                        ] [
+                            APP::draw-fd x y w h CLR_FG DRAW::frame-rect
+                        ] ?:
+                    }
+                ] ?:
+            }
+        }
+    ] ?
+;
+
+@draw-all ( -- )
+    APP::draw-fd 0 0 WIN_W WIN_H CLR_DESK 0 DRAW::fill-pat
+    draw-canvas
+    draw-rubber
+    draw-palette
+    draw-patterns
+    draw-status
+    UI::draw
+    SF::open? [ SF::draw ] ?
+    confirm-new-draw
+;
+
+( --- Paint a finished shape into the bitmap --- )
+
+@commit-shape ( -- )
+    shape-x0 LOADI shape-y0 LOADI shape-x1 LOADI shape-y1 LOADI
+    tool LOADI apply-shift { x1 y1 }
+        shape-x0 LOADI { x0 }
+            shape-y0 LOADI { y0 }
+                tool LOADI TOOL_LINE = [
+                    MODE_BLACK plot-mode STOREI
+                    x0 y0 x1 y1 stroke-to
+                ] [
+                    x0 y0 x1 y1 canon-xy { minx miny maxx maxy }
+                        maxx minx - 1 + { w }
+                            maxy miny - 1 + { h }
+                                tool LOADI TOOL_OVAL = [
+                                    filled-f LOADI [ minx miny w h fill-oval-pat ] ?
+                                    minx miny w h frame-oval-pix
+                                ] [
+                                    filled-f LOADI [ minx miny maxx maxy fill-rect-pat ] ?
+                                    minx miny maxx maxy frame-rect-pix
+                                ] ?:
+                            }
+                        }
+                    }
+                ] ?:
+            }
+        }
+    }
+    mark-dirty
+;
+
+@set-plot-mode ( -- )
+    tool LOADI
+    dup TOOL_PENCIL = [
+        drop
+        erase-btn LOADI [ MODE_WHITE ] [ MODE_BLACK ] ?:
+        plot-mode STOREI
+    ] [
+    dup TOOL_ERASER = [ drop MODE_ERASE plot-mode STOREI ] [
+    dup TOOL_BRUSH = [ drop MODE_BRUSH plot-mode STOREI ] [
+        drop MODE_SPRAY plot-mode STOREI
+    ] ?: ] ?: ] ?:
+;
+
+@paint-tool? ( -- f )
+    tool LOADI TOOL_PENCIL =
+    tool LOADI TOOL_ERASER = OR
+    tool LOADI TOOL_BRUSH = OR
+    tool LOADI TOOL_SPRAY = OR
+;
+
+@shape-tool? ( -- f )
+    tool LOADI TOOL_LINE =
+    tool LOADI TOOL_RECT = OR
+    tool LOADI TOOL_OVAL = OR
+;
+
+@page-down { mx my -- }
+    mx my scr>can clip-can { cx cy }
+        tool LOADI TOOL_FILL = [
+            snapshot
+            cx cy flood-from
+            mark-dirty
+        ] [
+        paint-tool? [
+            snapshot
+            set-plot-mode
+            cx last-cx STOREI
+            cy last-cy STOREI
+            cx cy plot-at
+            DRAG_PAINT drag STOREI
+            mark-dirty
+        ] [
+        shape-tool? [
+            snapshot
+            cx shape-x0 STOREI
+            cy shape-y0 STOREI
+            cx shape-x1 STOREI
+            cy shape-y1 STOREI
+            DRAG_SHAPE drag STOREI
+            APP::dirty!
+        ] ? ] ?: ] ?:
+    }
+;
+
+@page-drag { mx my -- }
+    mx my scr>can clip-can { cx cy }
+        drag LOADI DRAG_PAINT = [
+            last-cx LOADI last-cy LOADI cx cy stroke-to
+            cx last-cx STOREI
+            cy last-cy STOREI
+            mark-dirty
+        ] ?
+        drag LOADI DRAG_SHAPE = [
+            shape-x0 LOADI shape-y0 LOADI cx cy tool LOADI apply-shift
+            shape-y1 STOREI
+            shape-x1 STOREI
+            APP::dirty!
+        ] ?
+    }
+;
+
+@hit-pat { mx -- idx }
+    mx CANVAS_X - PAT_CELL /
+    0 MAX PAT_N 1 - MIN
+;
+
+@handle-page-mouse { mpkt -- }
+    mpkt EVENT::mouse-x { mx }
+    mpkt EVENT::mouse-y { my }
+    mpkt EVENT::mouse-btn 1 = 0 = erase-btn STOREI
+    mpkt EVENT::mouse-type EVENT::MOUSE_DOWN = [
+        1 mouse-held STOREI
+        mx my hit-tool { t }
+            t 0 >= [
+                t tool STOREI
+                DRAG_NONE drag STOREI
+                APP::dirty!
+            ] [
+                mx my in-pat? [
+                    mx hit-pat pat-id STOREI
+                    APP::dirty!
+                ] [
+                    mx my in-page? [
+                        mx my page-down
+                    ] ?
+                ] ?:
+            ] ?:
+        }
+    ] ?
+    mpkt EVENT::mouse-type EVENT::MOUSE_MOVE = mouse-held LOADI AND [
+        mx my page-drag
+    ] ?
+    mpkt EVENT::mouse-type EVENT::MOUSE_UP = [
+        0 mouse-held STOREI
+        drag LOADI DRAG_SHAPE = [ commit-shape ] ?
+        DRAG_NONE drag STOREI
+        APP::dirty!
+    ] ?
+;
+
+@on-mouse ( mpkt -- )
+    confirm-new-open LOADI [
+        confirm-new-mouse
+    ] [
+    SF::open? [
+        SF::mouse
+    ] [
+        UI::menu-open? { was }
+            dup UI::feed
+            was UI::menu-open? OR [
+                drop
+                APP::dirty!
+            ] [
+                handle-page-mouse
+            ] ?:
+        }
+    ] ?:
+    ] ?:
+;
+
+( --- Keyboard --- )
+
+@cycle-pat { d -- }
+    pat-id LOADI d +
+    dup 0 < [ drop PAT_N 1 - ] ?
+    dup PAT_N >= [ drop 0 ] ?
+    pat-id STOREI
+    APP::dirty!
+;
+
+@handle-cmd ( key mods -- )
+    2 frame! ( 0:mods 1:key )
+    1 local@ 32 OR
+    dup 110 = [ drop menu-new ] [
+    dup 111 = [ drop menu-open ] [
+    dup 115 = [
+        drop
+        0 local@ EVENT::MOD_SHIFT AND [
+            menu-save-as
+        ] [
+            save-file
+        ] ?:
+    ] [
+    dup 122 = [ drop do-undo ] [
+        drop
+    ] ?: ] ?: ] ?: ] ?:
+    2 unframe!
+;
+
+@on-kbd ( kpkt -- )
+    confirm-new-open LOADI [
+        confirm-new-kbd
+    ] [
+    SF::open? [
+        SF::kbd
+    ] [
+        dup EVENT::kbd-mods EVENT::MOD_SHIFT AND shift-mod STOREI
+        dup EVENT::kbd-type EVENT::KEY_DOWN = [
+            dup EVENT::kbd-key EVENT::KEY_ESC = [
+                UI::escape drop
+            ] [
+                dup EVENT::kbd-mods
+                over EVENT::kbd-key
+                2 frame! ( 0:key 1:mods )
+                1 local@ EVENT::MOD_CMD AND 1 local@ EVENT::MOD_CTRL AND OR [
+                    0 local@ 1 local@ handle-cmd
+                ] [
+                    0 local@ EVENT::KEY_LEFT_ARROW = [
+                        fat-f LOADI [ -1 0 pan-fat ] ?
+                    ] [
+                    0 local@ EVENT::KEY_RIGHT_ARROW = [
+                        fat-f LOADI [ 1 0 pan-fat ] ?
+                    ] [
+                    0 local@ EVENT::KEY_UP_ARROW = [
+                        fat-f LOADI [ 0 -1 pan-fat ] ?
+                    ] [
+                    0 local@ EVENT::KEY_DOWN_ARROW = [
+                        fat-f LOADI [ 0 1 pan-fat ] ?
+                    ] [
+                    0 local@ 91 = [
+                        -1 cycle-pat
+                    ] [
+                    0 local@ 93 = [
+                        1 cycle-pat
+                    ] [
+                    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+                ] ?:
+                2 unframe!
+            ] ?:
+            APP::dirty!
+        ] ?
+        drop
+    ] ?:
+    ] ?:
+;
+
+@on-frame ( -- )
+    UI::handle
+    APP::dirty? UI::menu-open? OR SF::open? OR confirm-new-open LOADI OR [
+        draw-all
+        APP::dirty-off
+    ] [
+        UI::draw
+        SF::open? [ SF::draw ] ?
+        confirm-new-draw
+    ] ?:
+;
+
+@start
+    T"Easel" APP::init
+    APP::draw-fd FONT_SIZE DRAW::set-font-size
+    UI::new
+    WIN_W UI::menubar
+    T"File" UI::menu
+    T"New"  [ drop menu-new ]  UI::item
+    T"Open" [ drop menu-open ] UI::item
+    T"Save" [ drop save-file ] UI::item
+    T"Save As" [ drop menu-save-as ] UI::item
+    UI::sep
+    T"Quit" [ drop menu-quit ] UI::item
+    T"Edit" UI::menu
+    T"Undo"   [ menu-undo ]   UI::item
+    UI::sep
+    T"Invert" [ menu-invert ] UI::item
+    T"Clear"  [ menu-clear ]  UI::item
+    T"Goodies" UI::menu
+    T"Grid"    [ menu-grid ]    UI::check-item
+    T"FatBits" [ menu-fat ]     UI::check-item
+    T"Filled"  [ menu-filled ]  UI::check-item
+    T"Grid" 0 UI::item-set
+    T"FatBits" 0 UI::item-set
+    T"Filled" 0 UI::item-set
+    [ on-pick ] SF::on-ok!
+    [ on-cancel ] SF::on-cancel!
+    init-pats
+    0 grid-f STOREI
+    0 fat-f STOREI
+    0 filled-f STOREI
+    new-document
+    [ on-mouse ] APP::on-mouse!
+    [ on-kbd ] APP::on-kbd!
+    [ on-frame ] APP::on-frame!
+    [ draw-all ] APP::on-resume!
+    APP::dirty!
+    APP::loop
+;
+
+MAIN::start
+HALT

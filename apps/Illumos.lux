@@ -117,10 +117,10 @@ IMPORT MEMORY
 
 @draw-editor ( -- )
     APP::draw-fd ED_X 1 - ED_Y 1 - ed-w 2 + ed-w 2 + CLR_FG DRAW::draw-rect
-    0 { y }
+    0 GIRD y
         [ y CFF::tile < ]
         [
-            0 { x }
+            0 GIRD x
                 [ x CFF::tile < ]
                 [
                     sel LOADI x y CFF::pixel@ [
@@ -133,12 +133,12 @@ IMPORT MEMORY
                     ] ?
                     x 1 + x!
                 ] |:
-            }
+            UNGIRD
             y 1 + y!
         ] |:
-    }
-    sel LOADI CFF::width@ cell LOADI * ED_X + { rule }
-        0 { i }
+    UNGIRD
+    sel LOADI CFF::width@ cell LOADI * ED_X + GIRD rule
+        0 GIRD i
             [ i ed-w < ]
             [
                 i 4 MOD 2 < [
@@ -146,49 +146,47 @@ IMPORT MEMORY
                 ] ?
                 i 2 + i!
             ] |:
-        }
-    }
+        UNGIRD
+    UNGIRD
     APP::draw-fd ED_X ED_Y guide LOADI cell LOADI * + ed-w CLR_GRID DRAW::dash-h
 ;
 
 @draw-collection ( -- )
-    0 { i }
+    0 GIRD i
         [ i 256 < ]
         [
-            i 15 AND COL_CELL * COL_X + { x }
-            i 4 SHR COL_CELL * COL_Y + { y }
-                i sel LOADI = [
-                    APP::draw-fd x y COL_CELL COL_CELL CLR_FG DRAW::fill-rect
-                    APP::draw-fd x 4 + y 4 + i 0xFFFFFF 1 FONT CFF::bytes DRAW::cff-glyph
-                ] [
-                    APP::draw-fd x y COL_CELL COL_CELL CLR_BG DRAW::fill-rect
-                    APP::draw-fd x y COL_CELL COL_CELL CLR_GRID DRAW::draw-rect
-                    APP::draw-fd x 4 + y 4 + i CLR_FG 1 FONT CFF::bytes DRAW::cff-glyph
-                ] ?:
-            }
+            i 15 AND COL_CELL * COL_X + GIRD x
+            i 4 SHR COL_CELL * COL_Y + GIRD y
+            i sel LOADI = [
+                APP::draw-fd x y COL_CELL COL_CELL CLR_FG DRAW::fill-rect
+                APP::draw-fd x 4 + y 4 + i 0xFFFFFF 1 FONT CFF::bytes DRAW::cff-glyph
+            ] [
+                APP::draw-fd x y COL_CELL COL_CELL CLR_BG DRAW::fill-rect
+                APP::draw-fd x y COL_CELL COL_CELL CLR_GRID DRAW::draw-rect
+                APP::draw-fd x 4 + y 4 + i CLR_FG 1 FONT CFF::bytes DRAW::cff-glyph
+            ] ?:
             i 1 + i!
         ] |:
-    }
+    UNGIRD
 ;
 
 @draw-pangram ( -- )
     ED_X pang-x STOREI
     PAN_Y pang-y STOREI
-    0 { i }
+    0 GIRD i
         [ i pang-len LOADI < ]
         [
-            PANG i + load-byte { ch }
-                ch 10 = [
-                    ED_X pang-x STOREI
-                    pang-y LOADI CFF::tile 2 * 4 + + pang-y STOREI
-                ] [
-                    APP::draw-fd pang-x LOADI pang-y LOADI ch CLR_FG 2 FONT CFF::bytes DRAW::cff-glyph
-                    pang-x LOADI ch CFF::width@ 2 * + pang-x STOREI
-                ] ?:
-            }
+            PANG i + load-byte GIRD ch
+            ch 10 = [
+                ED_X pang-x STOREI
+                pang-y LOADI CFF::tile 2 * 4 + + pang-y STOREI
+            ] [
+                APP::draw-fd pang-x LOADI pang-y LOADI ch CLR_FG 2 FONT CFF::bytes DRAW::cff-glyph
+                pang-x LOADI ch CFF::width@ 2 * + pang-x STOREI
+            ] ?:
             i 1 + i!
         ] |:
-    }
+    UNGIRD
 ;
 
 @draw-all ( -- )
@@ -201,15 +199,13 @@ IMPORT MEMORY
 ;
 
 @paint-at { mx my bit -- }
-    mx ED_X - cell LOADI / { px }
-        my ED_Y - cell LOADI / { py }
-            px 0 < py 0 < OR px CFF::tile >= OR py CFF::tile >= OR [
-            ] [
-                sel LOADI px py bit CFF::pixel!
-                mark-dirty
-            ] ?:
-        }
-    }
+    mx ED_X - cell LOADI / GIRD px
+    my ED_Y - cell LOADI / GIRD py
+    px 0 < py 0 < OR px CFF::tile >= OR py CFF::tile >= OR [
+    ] [
+        sel LOADI px py bit CFF::pixel!
+        mark-dirty
+    ] ?:
 ;
 
 @set-width-from-x ( mx -- )
@@ -348,6 +344,11 @@ IMPORT MEMORY
 
 @menu-open ( val -- ) drop SF::show ;
 @menu-save ( val -- ) drop save-file ;
+@menu-save-as ( val -- )
+    drop
+    1 save-as STOREI
+    PATH SF::show-save
+;
 @menu-quit ( val -- ) drop HALT ;
 @menu-new-8 ( val -- ) drop 8 do-new ;
 @menu-new-16 ( val -- ) drop 16 do-new ;
@@ -425,15 +426,25 @@ IMPORT MEMORY
     ] ?:
 ;
 
-@handle-cmd ( key -- )
-    32 OR
+@handle-cmd ( key mods -- )
+    2 frame! ( 0:mods 1:key )
+    1 local@ 32 OR
     dup 111 = [ drop SF::show ] [
-    dup 115 = [ drop save-file ] [
+    dup 115 = [
+        drop
+        0 local@ EVENT::MOD_SHIFT AND [
+            1 save-as STOREI
+            PATH SF::show-save
+        ] [
+            save-file
+        ] ?:
+    ] [
     dup 120 = [ drop cut-glyph ] [
     dup 99 = [ drop snarf-glyph ] [
     dup 118 = [ drop paste-glyph ] [
     drop
     ] ?: ] ?: ] ?: ] ?: ] ?:
+    2 unframe!
 ;
 
 @on-kbd ( kpkt -- )
@@ -448,7 +459,7 @@ IMPORT MEMORY
                 over EVENT::kbd-key
                 2 frame! ( 0:key 1:mods )
                 1 local@ EVENT::MOD_CMD EVENT::MOD_CTRL OR AND [
-                    0 local@ handle-cmd
+                    0 local@ 1 local@ handle-cmd
                 ] [
                     0 local@ EVENT::KEY_LEFT_ARROW = [
                         1 local@ EVENT::MOD_SHIFT AND [
@@ -543,6 +554,7 @@ IMPORT MEMORY
     UI::sep
     T"Open" [ menu-open ] UI::item
     T"Save" [ menu-save ] UI::item
+    T"Save As" [ menu-save-as ] UI::item
     UI::sep
     T"Quit" [ menu-quit ] UI::item
     T"Edit" UI::menu

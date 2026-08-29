@@ -1,6 +1,6 @@
 ( --- Quill: Plan9-style text editor ---
   Menus and user-visible behavior match apps/fluxio/Quill.fx (the product
-  spec): File > New/Open/Save/Quit, Edit > Cut/Copy/Paste/Select All,
+  spec): File > New/Open/Save/Save As/Quit, Edit > Cut/Copy/Paste/Select All,
   View > Toggle Hex, File > New's unsaved-changes confirm, hex nibble
   editing, hollow blue hex caret + ASCII companion, pixel-width wrap,
   hex click-to-byte via per-glyph widths, short-row hex ASCII alignment,
@@ -94,6 +94,7 @@ IMPORT SF
 @hex-nibble       0x910084 ;
 @confirm-new-open 0x910088 ;
 @prev-cursor      0x91008C ;
+@save-as          0x910090 ;
 @scroll-y         0x91005C ;
 @HEX_LINE_BUF     0x910100 ;
 @sb-bar           0x910200 ;
@@ -988,7 +989,9 @@ IMPORT SF
     APP::draw-fd 0 0 WIN_W WIN_H CLR_BG DRAW::fill-rect
     APP::draw-fd MARGIN 1 - PANE_Y 1 - PANE_W 2 + PANE_H 2 + CLR_FRAME DRAW::draw-rect
     sync-bar
+    APP::use-text-font
     draw-selection layout-and-render
+    APP::draw-fd DRAW::CHICAGO DRAW::set-font
     draw-status-line
     UI::draw
     SF::open? [ SF::draw ] ?
@@ -1065,15 +1068,25 @@ IMPORT SF
     ] ?:
 ;
 
-@handle-cmd ( key -- )
-    32 OR
+@handle-cmd ( key mods -- )
+    2 frame! ( 0:mods 1:key )
+    1 local@ 32 OR
     dup 99 = [ drop snarf-selection ] [
     dup 120 = [ drop menu-cut ] [
     dup 118 = [ drop paste-snarf ] [
-    dup 115 = [ drop save-file ] [
+    dup 115 = [
+        drop
+        0 local@ EVENT::MOD_SHIFT AND [
+            1 save-as STOREI
+            @current-path-buf SF::show-save
+        ] [
+            save-file
+        ] ?:
+    ] [
     dup 97 = [ drop select-all ] [
     drop
     ] ?: ] ?: ] ?: ] ?: ] ?:
+    2 unframe!
 ;
 
 @on-kbd ( kpkt -- )
@@ -1095,7 +1108,7 @@ IMPORT SF
             2 frame! ( 0:key 1:mods )
             1 local@ EVENT::MOD_CMD EVENT::MOD_CTRL OR AND 0 = 0 =
             0 local@ 32 OR dup 97 >= SWAP 122 <= AND AND [
-                0 local@ handle-cmd
+                0 local@ 1 local@ handle-cmd
             ] [
                 0 local@ EVENT::KEY_BACKSPACE = [
                     sel-or-delete
@@ -1189,30 +1202,45 @@ IMPORT SF
 
 @on-pick ( path -- )
     1 frame! ( 0:path )
-    file-fd LOADI 0 >= [ file-fd LOADI VFS::close drop ] ?
-    0 local@
-    dup load-byte 47 = [ 1 + ] ?
-    @current-path-buf STR::strcpy
-    @current-path-buf make-vfs-path 2 VFS::open-mode file-fd STOREI
-    file-fd LOADI 0 >= [
-        file-fd LOADI VFS::stat total-size STOREI
-        0 file-offset STOREI
-        file-fd LOADI FILE_BUF CHUNK_SIZE VFS::read
-        dup file-len STOREI
-        dup orig-chunk-len STOREI
-        0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI 0 hex-nibble STOREI
-        rebuild-lines
+    save-as LOADI [
+        0 save-as STOREI
+        0 local@
+        dup load-byte 47 = [ 1 + ] ?
+        @current-path-buf STR::strcpy
+        save-file
     ] [
-        0 total-size STOREI 0 file-len STOREI 0 orig-chunk-len STOREI -1 file-fd STOREI
-        rebuild-lines
+        file-fd LOADI 0 >= [ file-fd LOADI VFS::close drop ] ?
+        0 local@
+        dup load-byte 47 = [ 1 + ] ?
+        @current-path-buf STR::strcpy
+        @current-path-buf make-vfs-path 2 VFS::open-mode file-fd STOREI
+        file-fd LOADI 0 >= [
+            file-fd LOADI VFS::stat total-size STOREI
+            0 file-offset STOREI
+            file-fd LOADI FILE_BUF CHUNK_SIZE VFS::read
+            dup file-len STOREI
+            dup orig-chunk-len STOREI
+            0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI 0 hex-nibble STOREI
+            rebuild-lines
+        ] [
+            0 total-size STOREI 0 file-len STOREI 0 orig-chunk-len STOREI -1 file-fd STOREI
+            rebuild-lines
+        ] ?:
     ] ?:
     1 needs-redraw STOREI
     1 unframe!
 ;
 
-@on-cancel ( -- ) 1 needs-redraw STOREI ;
+@on-cancel ( -- )
+    0 save-as STOREI
+    1 needs-redraw STOREI
+;
 
 @menu-open ( -- ) SF::show ;
+@menu-save-as ( -- )
+    1 save-as STOREI
+    @current-path-buf SF::show-save
+;
 
 ( --- Menus --- )
 @menu-new ( -- )
@@ -1259,12 +1287,20 @@ IMPORT SF
 
 ( --- Main --- )
 
+@on-font ( id -- )
+    drop
+    APP::use-text-font
+    T"/sys/font/widths" VFS::open dup 0 >= [
+        dup FONT_DATA 256 VFS::read drop VFS::close drop
+    ] [ drop ] ?:
+    FONT_DATA 65 + load-byte FONT_SIZE * 16 / char-w-val STOREI
+    rebuild-lines
+    1 needs-redraw STOREI
+;
+
 @start
     T"Quill" APP::init
-    APP::draw-fd 2 DRAW::set-font APP::draw-fd FONT_SIZE DRAW::set-font-size
-    T"/sys/font/widths" VFS::open dup 0 >= [ dup FONT_DATA 256 VFS::read drop VFS::close drop ] [ drop ] ?:
-    ( Advance at FONT_SIZE. Font 2 uses size/16. )
-    FONT_DATA 65 + load-byte FONT_SIZE * 16 / char-w-val STOREI
+    APP::draw-fd FONT_SIZE DRAW::set-font-size
     PANE_H LINE_H / VISIBLE_LINES-VAL STOREI
     
     UI::new
@@ -1273,6 +1309,7 @@ IMPORT SF
     T"New"  [ drop menu-new ]  UI::item
     T"Open" [ drop menu-open ] UI::item
     T"Save" [ drop save-file ] UI::item
+    T"Save As" [ drop menu-save-as ] UI::item
     T"Quit" [ drop menu-quit ] UI::item
     T"Edit" UI::menu
     T"Cut"        [ drop menu-cut ]        UI::item
@@ -1282,6 +1319,8 @@ IMPORT SF
     T"View" UI::menu
     T"Toggle Hex" [ toggle-hex ] UI::check-item
     T"Toggle Hex" 0 UI::item-set
+    [ on-font ] APP::font-hook!
+    APP::font-menu
     T"V" sb-x PANE_Y SB_W PANE_H 0 0 0 [ on-scroll ] UI::vscroll
     T"V" UI::comp-find UI::C_PAY + LOADI sb-bar STOREI
     VISIBLE_LINES sb-bar LOADI UI::BAR_PAGE + STOREI

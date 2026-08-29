@@ -44,6 +44,8 @@ NUXVM started life in Go, but the whole system is now pure C:
 - [Cloister](#cloister)
 - [The Why](#the-why)
 
+Guest apps (Quill, Illumos, Tabula, Nib, Easel): **[docs/user-manual.md](docs/user-manual.md)**
+
 ---
 
 ## Overview
@@ -123,6 +125,7 @@ make test
 # Graphical fantasy machine (picker, or a ROM)
 ./bin/cloister
 ./bin/cloister apps/Quill.bin
+# Guest app manual: docs/user-manual.md (Quill, Illumos, Tabula, Nib, Easel)
 
 # Run the compiled bytecode in the console runner
 ./bin/nux program.bin
@@ -289,6 +292,9 @@ Define reusable functions with `@name ... ;`
 | Combinators    | CALL          |                          |
 | Combinators    | DIP           |                          |
 | Combinators    | KEEP          |                          |
+| Frame/Local    | GIRD name     | bind TOS to a name       |
+| Frame/Local    | UNGIRD        | pop named frame          |
+| Frame/Local    | { names }     | bind several names       |
 | Frame/Local    | FRAME!        | push local frame         |
 | Frame/Local    | UNFRAME!      | pop local frame          |
 | Frame/Local    | LOCAL@        | read local variable      |
@@ -631,6 +637,35 @@ See `examples/lux/hello.lux`.
 7 quad .       ( Output: 28 )
 ```
 
+#### Named locals
+
+`GIRD` names the top of the stack. `UNGIRD` takes the name off. `n` reads; `n!` writes.
+
+```forth
+5 GIRD n
+    n n * .
+UNGIRD
+( Output: 25 )
+```
+
+Several names at once. The `}` in `{ a b }` only ends the name list:
+
+```forth
+3 4 { a b }
+    a b + .
+UNGIRD
+( Output: 7 )
+```
+
+Inside a word, `{ a b -- sum }` binds the parameters and `;` ungirds for you:
+
+```forth
+@add { a b -- sum } a b + ;
+3 4 add .     ( Output: 7 )
+```
+
+See `examples/lux/gird.lux`.
+
 #### Bitwise Operations
 
 ```forth
@@ -917,7 +952,9 @@ Contributions welcome! Areas for improvement:
 
 # Cloister
 
-Cloister is the graphical host for NUX — a Varvara-shaped fantasy machine, not a multi-app OS. One program owns the screen, `/dev/draw`, `/dev/mouse`, and `/dev/kbd`. Run `./bin/cloister` to pick a ROM: the picker is itself a Lux app (`apps/Picker.lux`) with two group-box columns, Lux sources on the left (compiled on the fly) and compiled Fluxio bins from `apps/fluxio/` on the right. Pass a `.bin` / `.lux` path to boot that ROM directly. Esc is Continue / Restart / Quit inside the app.
+Cloister is the graphical host for NUX — a Varvara-shaped fantasy machine, not a multi-app OS. One program owns the screen, `/dev/draw`, `/dev/mouse`, and `/dev/kbd`. Run `./bin/cloister` to pick a ROM: the picker is itself a Lux app (`apps/Picker.lux`) with two group-box columns, Lux sources on the left (compiled on the fly) and compiled Fluxio bins from `apps/fluxio/` on the right. **Cloister > About Cloister** is a modal info box; **Cloister > Quit** leaves the host. Pass a `.bin` / `.lux` path to boot that ROM directly. Esc is Continue / Restart / Quit inside an app (and closes About on the picker).
+
+The five guest apps — **Quill** (text), **Illumos** (bitmap fonts), **Tabula** (spreadsheet), **Nib** (object drawing), and **Easel** (pixel painting) — are documented in **[docs/user-manual.md](docs/user-manual.md)**. Menus and buttons are Chicago. Quill, Tabula, and Nib have **Font > Chicago / Geneva / Monaco** for document text.
 
 ---
 

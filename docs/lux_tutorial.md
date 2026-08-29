@@ -10,6 +10,7 @@
 - [Comparisons](#comparisons)
 - [Output](#output)
 - [User-defined Words](#user-defined-words)
+- [Named locals](#named-locals)
 - [Conditionals and Loops](#conditionals-and-loops)
 - [Recursion](#recursion)
 - [Modules](#modules)
@@ -267,35 +268,56 @@ You can also use symbols like `!` or `@` in your word names (as long as they don
 
 ### Named locals
 
-Numbered frames work (`4 frame!` / `0 local@`) but they are easy to get backwards. `{ names }` binds the top of the stack to names. Last name is local 0 — the same pop order as `frame!`.
+Passing values around on the stack is honest work, but `dup swap rot` gets old when you just want to call something `n`. `GIRD` puts a name on the top of the stack. `UNGIRD` takes the name off.
 
 ```forth
-lux> 100 200 { a b } a b + }
+lux> 5 GIRD n n n * UNGIRD
+  Stack: [25]
+```
+
+`n` reads the local. `n!` writes it:
+
+```forth
+lux> 5 GIRD n n 1 + n! n UNGIRD
+  Stack: [6]
+```
+
+At the REPL, or at the top of a file, you have to `UNGIRD`. The compiler will refuse an open frame at the end of a program (`Unclosed local frame`). Inside a word, `;` ungirds for you — so don't slap a leftover closer on the end of the definition.
+
+```forth
+lux> @square { n -- n² } n n * ;
+Defined word 'square'
+lux> 5 square
+  Stack: [25]
+```
+
+`{ n -- n² }` is the same idea as `GIRD n`, plus a stack comment. Everything after `--` is ignored. The `}` there only ends the name list; it does **not** close a block.
+
+Several names at once — last name is the top of the stack, same pop order as `frame!`:
+
+```forth
+lux> 100 200 { a b } a b + UNGIRD
   Stack: [300]
 ```
 
-`a` is 100, `b` is 200. The first `}` ends the name list (and opens the frame). The second `}` unframes.
+`a` is 100, `b` is 200.
 
-Inside a word, `;` unframes for you. Everything after `--` is a stack comment and is ignored:
-
-```forth
-@add { a b -- sum } a b + ;
-3 4 add
-```
-
-Write a local with `name!`:
+Frames nest. Inner names shadow outer ones; outer names stay visible. Ungird from the inside out:
 
 ```forth
-5 { n } n 1 + n! n }
+lux> 10 20 { a b } 3 GIRD c a c + UNGIRD UNGIRD
+  Stack: [13]
 ```
 
-Frames nest. Inner names shadow outer ones; outer names stay visible:
+A quotation `]` also ungirds any frames you opened inside it, which is why loop bodies can `GIRD` a scratch name and not mention `UNGIRD`.
 
-```forth
-10 20 { a b } 3 { c } a c + } }
+`GIRD` / `{ names }` / `UNGIRD` compile to the same `FRAME` / `UNFRAME` opcodes as the numbered form (`N frame!` / `N local@` / `N local!` / `N unframe!`). No new opcodes. A stray `}` still ungirds, because that's what it used to mean — prefer `UNGIRD`.
+
+A walkthrough you can compile lives in [`examples/lux/gird.lux`](../examples/lux/gird.lux):
+
 ```
-
-Existing `N frame!` / `N local@` / `N local!` / `N unframe!` still work and are what `{ }` compiles to. No new opcodes.
+./bin/nux examples/lux/gird.lux
+```
 
 ### FIELDS
 
@@ -685,7 +707,7 @@ Run that through the `nux vm`
 > Hello, World!
 > Hi 2
 
-There are more examples to check out at your leisure.
+There are more examples to check out at your leisure. `examples/lux/gird.lux` is the named-locals walkthrough (`GIRD` / `UNGIRD`).
 
 ---
 

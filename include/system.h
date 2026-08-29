@@ -28,6 +28,12 @@
 #define SYS_MAX_CHILD_VMS   16
 #define SYS_INPUT_QUEUE_SZ  64
 
+/* DRAW::set-font ids. 0 and 1 share Chicago glyphs; 1 keeps the old 7x13 scale. */
+#define FONT_CHICAGO 0
+#define FONT_BASIC   1
+#define FONT_GENEVA  2
+#define FONT_MONACO  3
+
 typedef struct Machine Machine;
 
 typedef struct {
@@ -127,6 +133,10 @@ void system_draw_cff(System* sys, const uint8_t* font_data, int nbytes, char c, 
 void system_set_pixel(System* sys, int32_t x, int32_t y, uint32_t color);
 double system_normalize_draw_scale(System* sys, int scale);
 int system_measure_char(System* sys, char c, int scale);
+const uint8_t* system_font_data_id(int font_id);
+int system_font_nbytes_id(int font_id);
+const uint8_t* system_font_data(const System* sys);
+int system_font_nbytes(const System* sys);
 void system_begin_frame(System* sys);
 void system_end_frame(System* sys);
 

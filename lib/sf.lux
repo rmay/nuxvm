@@ -1,10 +1,11 @@
-( Standard File picker — System 6 SFGetFile.
+( Standard File picker — System 6 SFGetFile / SFPutFile.
   INCLUDE "lib/sf.lux"  then  IMPORT SF
 
-  SF::on-ok!     ( quot -- )     handler ( path -- ) after Open
+  SF::on-ok!     ( quot -- )     handler ( path -- ) after Open / Save
   SF::on-cancel! ( quot -- )     handler ( -- ) after Cancel / Esc
   SF::hidden!    ( f -- )        1 = list names that start with '.'
-  SF::show       ( -- )          open at /
+  SF::show       ( -- )          open (GetFile) at /
+  SF::show-save  ( name-ptr -- ) save (PutFile); name is a suggested path
   SF::hide       ( -- )          dismiss without a handler
   SF::open?      ( -- f )
   SF::path       ( -- ptr )      last chosen path
@@ -32,15 +33,18 @@ IMPORT STR
 IMPORT VFS
 IMPORT TIME
 
-@DLG_W   464 ;
-@DLG_H   268 ;
-@LIST_W  268 ;
-@LIST_H  184 ;
-@SB_W    16 ;
-@ITEM_H  16 ;
-@ROWS    11 ;
-@BTN_W   80 ;
-@BTN_H   20 ;
+@DLG_W      464 ;
+@DLG_H      268 ;
+@DLG_H_SAVE 308 ;
+@LIST_W     268 ;
+@LIST_H     184 ;
+@SB_W       16 ;
+@ITEM_H     16 ;
+@ROWS       11 ;
+@BTN_W      80 ;
+@BTN_H      20 ;
+@NAME_MAX   63 ;
+@NAME_H     16 ;
 
 @open-f  0x8B0000 ;
 @cur     0x8B0040 ;
@@ -75,8 +79,11 @@ IMPORT TIME
 @dw      0x8B2548 ;
 @dh      0x8B254C ;
 @sb      0x8B2580 ;
-@bn-open 0x8B2600 ;
-@bn-can  0x8B2640 ;
+@bn-open  0x8B2600 ;
+@bn-can   0x8B2640 ;
+@save-f   0x8B2700 ;
+@name     0x8B2740 ;
+@name-sel 0x8B2780 ;
 
 @open?   open-f LOADI ;
 @path    result ;
@@ -118,6 +125,54 @@ IMPORT TIME
 @bx ( -- x ) dlg-x LOADI 300 + ;
 @opy ( -- y ) dlg-y LOADI 56 + ;
 @cay ( -- y ) dlg-y LOADI 84 + ;
+@dlg-h ( -- n ) save-f LOADI [ DLG_H_SAVE ] [ DLG_H ] ?: ;
+@nx ( -- x ) lx ;
+@ny ( -- y ) dlg-y LOADI 264 + ;
+@nw ( -- w ) LIST_W ;
+@nh ( -- h ) NAME_H ;
+
+@last-slash ( ptr -- slash-ptr|0 )
+    0 SWAP
+    [ dup load-byte 0 > ] [
+        dup load-byte 47 = [
+            SWAP drop
+            dup
+        ] ?
+        1 +
+    ] |:
+    drop
+;
+
+@set-name-from ( path -- )
+    dup last-slash
+    dup [ SWAP drop 1 + ] [ drop ] ?:
+    dup STR::strlen
+    dup NAME_MAX > [ drop NAME_MAX ] ?
+    name SWAP UI::xcopy
+    0 SWAP store-byte
+;
+
+@set-cur-from ( path -- )
+    1 frame! ( 0:path )
+    0 local@ last-slash
+    dup 0 = OVER 0 local@ = OR [
+        drop
+        T"/" cur STR::strcpy
+    ] [
+        1 frame! ( 0:slash 1:path )
+        1 local@ load-byte 47 = [
+            1 local@ cur
+        ] [
+            T"/" cur STR::strcpy
+            1 local@ cur 1 +
+        ] ?:
+        0 local@ 1 local@ -
+        UI::xcopy
+        0 SWAP store-byte
+        1 unframe!
+    ] ?:
+    1 unframe!
+;
 
 @cat ( src dest -- )
     dup STR::strlen + STR::strcpy
@@ -396,6 +451,7 @@ IMPORT TIME
 
 @hide ( -- )
     0 open-f STOREI
+    0 save-f STOREI
     0 APP::modal!
     0 bdrag STOREI
     0 sdrag STOREI
@@ -438,6 +494,42 @@ IMPORT TIME
     1 unframe!
 ;
 
+@commit-save ( -- )
+    name load-byte 0 = [
+    ] [
+        cur STR::strlen 1 <= [
+            T"/" result STR::strcpy
+        ] [
+            cur result STR::strcpy
+            T"/" result cat
+        ] ?:
+        name result cat
+        hide
+        1 picked STOREI
+        ok-h LOADI dup 0 > [
+            result SWAP CALL
+        ] [
+            drop
+        ] ?:
+    ] ?:
+;
+
+@fill-name-from-sel ( -- )
+    save-f LOADI [
+        sel LOADI dup 0 < [
+            drop
+        ] [
+            buf SWAP nth
+            dup dir? [
+                drop
+            ] [
+                name copy-tok
+                1 name-sel STOREI
+            ] ?:
+        ] ?:
+    ] ?
+;
+
 @open-sel ( -- )
     sel LOADI dup 0 < [
         drop
@@ -448,7 +540,14 @@ IMPORT TIME
             0 dd STOREI
             refresh
         ] [
-            choose-file
+            save-f LOADI [
+                dup name copy-tok
+                drop
+                1 name-sel STOREI
+                commit-save
+            ] [
+                choose-file
+            ] ?:
         ] ?:
     ] ?:
 ;
@@ -589,20 +688,24 @@ IMPORT TIME
 ;
 
 @init-btns ( -- )
-    bn-open bx opy BTN_W BTN_H T"Open"   0 UI::button-init
+    save-f LOADI [
+        bn-open bx opy BTN_W BTN_H T"Save" 0 UI::button-init
+    ] [
+        bn-open bx opy BTN_W BTN_H T"Open" 0 UI::button-init
+    ] ?:
     1 bn-open UI::BTN_DEFAULT + STOREI
     bn-can  bx cay BTN_W BTN_H T"Cancel" 0 UI::button-init
 ;
 
-@show ( -- )
+@show-at ( -- )
     APP::width DLG_W - 2 / dlg-x STOREI
-    APP::height DLG_H - 2 / dlg-y STOREI
-    T"/" cur STR::strcpy
+    APP::height dlg-h - 2 / dlg-y STOREI
     0 vol STOREI
     0 bdrag STOREI
     0 sdrag STOREI
     0 dd STOREI
     clear-result!
+    guess-vol
     place-title
     init-btns
     refresh
@@ -610,9 +713,39 @@ IMPORT TIME
     1 APP::modal!
 ;
 
+@show ( -- )
+    0 save-f STOREI
+    0 name store-byte
+    0 name-sel STOREI
+    T"/" cur STR::strcpy
+    show-at
+;
+
+@show-save ( name-ptr -- )
+    1 save-f STOREI
+    dup set-cur-from
+    set-name-from
+    1 name-sel STOREI
+    show-at
+;
+
+@draw-name ( -- )
+    save-f LOADI [
+        DRAW::fd nx ny 16 - T"Save as:" UI::CLR_TEXT 1 DRAW::draw-str
+        DRAW::fd nx ny nw nh UI::frame-rect
+        name-sel LOADI [
+            DRAW::fd nx 1 + ny 1 + nw 2 - nh 2 - UI::CLR_PRESS DRAW::fill-rect
+            DRAW::fd nx 4 + ny 2 + name UI::CLR_BG 1 DRAW::draw-str
+        ] [
+            DRAW::fd nx 4 + ny 2 + name UI::CLR_TEXT 1 DRAW::draw-str
+            DRAW::fd nx 4 + name DRAW::str-w + ny 2 + 1 12 UI::CLR_TEXT DRAW::fill-rect
+        ] ?:
+    ] ?
+;
+
 @draw ( -- )
-    DRAW::fd dlg-x LOADI dlg-y LOADI DLG_W DLG_H UI::CLR_BG DRAW::fill-rect
-    DRAW::fd dlg-x LOADI dlg-y LOADI DLG_W DLG_H UI::CLR_BORDER DRAW::draw-rect
+    DRAW::fd dlg-x LOADI dlg-y LOADI DLG_W dlg-h UI::CLR_BG DRAW::fill-rect
+    DRAW::fd dlg-x LOADI dlg-y LOADI DLG_W dlg-h UI::CLR_BORDER DRAW::draw-rect
     draw-list
     draw-list-title
     draw-dropdown
@@ -620,6 +753,7 @@ IMPORT TIME
     DRAW::fd bx 16 + ty LOADI 1 + vol-name UI::CLR_TEXT 1 DRAW::draw-str
     DRAW::fd bn-open UI::button-draw
     DRAW::fd bn-can UI::button-draw
+    draw-name
 ;
 
 @hit-title? ( mx my -- bool )
@@ -629,6 +763,14 @@ IMPORT TIME
 
 @hit-list? ( mx my -- bool )
     lx ly LIST_W SB_W - LIST_H UI::in-rect?
+;
+
+@hit-name? ( mx my -- bool )
+    save-f LOADI [
+        nx ny nw nh UI::in-rect?
+    ] [
+        drop drop 0
+    ] ?:
 ;
 
 @click-list ( my -- )
@@ -646,6 +788,7 @@ IMPORT TIME
             dup last-i STOREI
             drop
             TIME::milli@ last-t STOREI
+            fill-name-from-sel
         ] ?:
     ] [
         drop
@@ -655,7 +798,8 @@ IMPORT TIME
 
 @fire ( which -- )
     dup 1 = [
-        drop open-sel
+        drop
+        save-f LOADI [ commit-save ] [ open-sel ] ?:
     ] [
         drop cancel
     ] ?:
@@ -720,12 +864,55 @@ IMPORT TIME
             ] [
             2 local@ 1 local@ hit-list? [
                 1 local@ click-list
-            ] ? ] ?: ] ?: ] ?: ] ?:
+            ] [
+                2 local@ 1 local@ hit-name? [
+                    0 name-sel STOREI
+                ] ?
+            ] ?: ] ?: ] ?: ] ?: ] ?:
             ] ?:
         ] ?
     ] ?: ] ?:
     3 unframe!
     1 unframe!
+;
+
+@name-bs ( -- )
+    name-sel LOADI [
+        0 name store-byte
+        0 name-sel STOREI
+    ] [
+        name STR::strlen
+        dup 0 = [
+            drop
+        ] [
+            1 - name + 0 SWAP store-byte
+        ] ?:
+    ] ?:
+;
+
+@name-type ( ch -- )
+    dup 47 = [
+        drop
+    ] [
+        dup STR::printable? [
+            name-sel LOADI [
+                0 name store-byte
+                0 name-sel STOREI
+            ] ?
+            1 frame! ( 0:ch )
+            name STR::strlen
+            dup NAME_MAX >= [
+                drop
+            ] [
+                name +
+                0 local@ OVER store-byte
+                1 + 0 SWAP store-byte
+            ] ?:
+            1 unframe!
+        ] [
+            drop
+        ] ?:
+    ] ?:
 ;
 
 @kbd ( kpkt -- )
@@ -741,21 +928,32 @@ IMPORT TIME
             ] ?:
         ] [
         dup EVENT::KEY_ENTER = [
-            drop open-sel
+            drop
+            save-f LOADI [ commit-save ] [ open-sel ] ?:
         ] [
         dup EVENT::KEY_UP_ARROW = [
             drop
             sel LOADI 1 - 0 MAX sel STOREI
             reveal
+            fill-name-from-sel
         ] [
         dup EVENT::KEY_DOWN_ARROW = [
             drop
             cnt LOADI 0 > [
                 sel LOADI 1 + cnt LOADI 1 - MIN sel STOREI
                 reveal
+                fill-name-from-sel
             ] ?
         ] [
-            drop
+            save-f LOADI [
+                dup EVENT::KEY_BACKSPACE = [
+                    drop name-bs
+                ] [
+                    name-type
+                ] ?:
+            ] [
+                drop
+            ] ?:
         ] ?: ] ?: ] ?: ] ?:
     ] ?
     1 unframe!

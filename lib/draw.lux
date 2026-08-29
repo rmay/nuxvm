@@ -7,6 +7,12 @@ INCLUDE "lib/str.lux"
 MODULE DRAW
 
 @BUF 0x8F0000 ; ( Static buffer for command packing )
+@ST_FD     0x8F8000 ;
+@ST_CW     0x8F8004 ;
+@ST_CH     0x8F8008 ;
+@ST_READY  0x8F800C ;
+@ST_FONT   0x8F8010 ;
+@WIDTHS    0x8F8100 ;
 
 @store-word-le ( val addr -- )
     2 frame!
@@ -127,12 +133,24 @@ MODULE DRAW
     2 unframe!
 ;
 
+@CHICAGO 0 ;
+@BASIC   1 ;
+@GENEVA  2 ;
+@MONACO  3 ;
+
+@font ( -- id ) ST_FONT LOADI ;
+
 @set-font ( fd which -- )
-    ( which: 0 = Chicago CFF default, 1 = 7x13 basic )
+    ( which: 0 Chicago, 1 legacy 7x13 scale, 2 Geneva, 3 Monaco )
     2 frame!
     5 BUF store-byte
     0 local@ BUF 1 + store-byte
     1 local@ BUF 2 VFS::write drop
+    0 local@ ST_FONT LOADI = [
+    ] [
+        0 local@ ST_FONT STOREI
+        0 ST_READY STOREI
+    ] ?:
     2 unframe!
 ;
 
@@ -531,13 +549,7 @@ MODULE DRAW
 ;
 
 ( --- Current draw fd + cached font metrics --- )
-( State lives at 0x8F8000, above BUF at 0x8F0000. )
-
-@ST_FD     0x8F8000 ;
-@ST_CW     0x8F8004 ;
-@ST_CH     0x8F8008 ;
-@ST_READY  0x8F800C ;
-@WIDTHS    0x8F8100 ;
+( Address constants live next to BUF; functions stay here. )
 
 @use { d -- } d ST_FD STOREI ;
 
@@ -569,7 +581,8 @@ MODULE DRAW
 @char-w ( -- w ) ensure-metrics ST_CW LOADI ;
 @char-h ( -- h ) ensure-metrics ST_CH LOADI ;
 
-( Proportional Chicago advance of a C string. )
+( Advance of a C string in the current DRAW::set-font, unscaled CFF pixels.
+  UI chrome sets Chicago before measuring; Quill/Tabula set the document face. )
 @str-w ( ptr -- n )
     ensure-metrics
     0 SWAP 2 frame! ( 0:ptr 1:sum )

@@ -1186,13 +1186,159 @@ static void test_named_locals(void) {
     vm_free(vm);
     free(bc);
 
-    bc = compile_source("100 200 { a b } a b +", HEADLESS_BASE_ADDRESS, &len, false);
+    bc = compile_capturing_stderr("100 200 { a b } a b +", &len);
     assert(bc == NULL);
+    assert(strstr(stderr_capture, "Unclosed local frame") != NULL);
 
-    bc = compile_source("}", HEADLESS_BASE_ADDRESS, &len, false);
+    bc = compile_capturing_stderr("}", &len);
     assert(bc == NULL);
+    assert(strstr(stderr_capture, "Unexpected }") != NULL);
 
     printf("  named locals: OK\n");
+}
+
+static void test_gird_ungird(void) {
+    printf("Testing GIRD / UNGIRD...\n");
+    size_t len;
+    uint8_t* bc;
+    VM* vm;
+    int32_t v;
+
+    bc = must_compile("5 GIRD n n 1 + n! n UNGIRD", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 6);
+    check_stack_count(vm, 0);
+    vm_free(vm);
+    free(bc);
+
+    bc = must_compile("@inc { n -- x } n GIRD m m 1 + ; 4 inc", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 5);
+    vm_free(vm);
+    free(bc);
+
+    bc = must_compile("10 20 { a b } 3 GIRD c a c + UNGIRD UNGIRD", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 13);
+    vm_free(vm);
+    free(bc);
+
+    bc = must_compile("7 gird n n ungird", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 7);
+    vm_free(vm);
+    free(bc);
+
+    bc = must_compile(
+        "@maybe { n -- x } n GIRD m m 0 > [ m ] [ 0 ] ?: ;\n"
+        "5 maybe 0 maybe +", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 5);
+    vm_free(vm);
+    free(bc);
+
+    bc = compile_capturing_stderr("5 GIRD n n", &len);
+    assert(bc == NULL);
+    assert(strstr(stderr_capture, "Unclosed local frame") != NULL);
+
+    bc = compile_capturing_stderr("UNGIRD", &len);
+    assert(bc == NULL);
+    assert(strstr(stderr_capture, "Unexpected UNGIRD") != NULL);
+
+    bc = compile_capturing_stderr("GIRD", &len);
+    assert(bc == NULL);
+    assert(strstr(stderr_capture, "Expected local name after GIRD") != NULL);
+
+    bc = compile_capturing_stderr("5 GIRD GIRD", &len);
+    assert(bc == NULL);
+    assert(strstr(stderr_capture, "Expected local name after GIRD") != NULL);
+
+    /* } still ungirds (compat); UNGIRD also closes { names }. */
+    bc = must_compile("5 GIRD n n }", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 5);
+    vm_free(vm);
+    free(bc);
+
+    bc = must_compile("5 { n } n UNGIRD", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 5);
+    vm_free(vm);
+    free(bc);
+
+    /* Code after UNGIRD must not see the name; the value survives. */
+    bc = must_compile("5 GIRD n n UNGIRD 2 +", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 7);
+    vm_free(vm);
+    free(bc);
+
+    /* ] ungirds frames opened inside a quotation. */
+    bc = must_compile("[ 5 GIRD x x 1 + ] CALL", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 6);
+    check_stack_count(vm, 0);
+    vm_free(vm);
+    free(bc);
+
+    /* Inner GIRD in a loop body must not leak a frame per iteration. */
+    bc = must_compile(
+        "0 GIRD i\n"
+        "[ i 4 < ]\n"
+        "[ i GIRD x x DROP i 1 + i! ] |:\n"
+        "i UNGIRD", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 4);
+    vm_free(vm);
+    free(bc);
+
+    /* 8 nested GIRDs is the compiler max; 9 must fail. */
+    bc = must_compile(
+        "1 GIRD a 1 GIRD b 1 GIRD c 1 GIRD d "
+        "1 GIRD e 1 GIRD f 1 GIRD g 1 GIRD h "
+        "a b + UNGIRD UNGIRD UNGIRD UNGIRD "
+        "UNGIRD UNGIRD UNGIRD UNGIRD", &len);
+    vm = run_and_capture(bc, len, false);
+    assert(vm_pop(vm, &v) && v == 2);
+    vm_free(vm);
+    free(bc);
+
+    bc = compile_capturing_stderr(
+        "1 GIRD a 1 GIRD b 1 GIRD c 1 GIRD d "
+        "1 GIRD e 1 GIRD f 1 GIRD g 1 GIRD h "
+        "1 GIRD i", &len);
+    assert(bc == NULL);
+    assert(strstr(stderr_capture, "Too many nested local frames") != NULL);
+
+    printf("  GIRD / UNGIRD: OK\n");
+}
+
+static void test_gird_example_file(void) {
+    printf("Testing examples/lux/gird.lux...\n");
+    FILE* f = fopen("examples/lux/gird.lux", "rb");
+    if (!f) {
+        printf("  (skipped: examples/lux/gird.lux not found -- run from repo root)\n");
+        return;
+    }
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char* src = malloc((size_t) n + 1);
+    assert(src != NULL);
+    assert(fread(src, 1, (size_t) n, f) == (size_t) n);
+    fclose(f);
+    src[n] = '\0';
+
+    size_t len;
+    uint8_t* bc = must_compile(src, &len);
+    free(src);
+    reset_output();
+    VM* vm = run_and_capture(bc, len, true);
+    assert(vm->halted);
+    assert(strcmp(get_output(), "25\n7\n7\n13\n6\n") == 0);
+    vm_free(vm);
+    free(bc);
+    printf("  examples/lux/gird.lux: OK\n");
 }
 
 static void test_named_locals_no_tail_skip_unframe(void) {
@@ -1715,7 +1861,7 @@ static void quill_lux_key(Machine* m, int32_t kc, int key, int mods) {
     quill_lux_pump(m, 4);
 }
 
-/* File title at x=20,y=10. Items: New=29, Open=47, Save=65, Quit=83. */
+/* File title at x=20,y=10. Items: New=29, Open=47, Save=65, Save As=83, Quit=101. */
 static void quill_lux_file_item(Machine* m, int32_t mc, int row) {
     quill_lux_click(m, mc, 20, 10);
     quill_lux_click(m, mc, 20, 20 + row * 18 + 9);
@@ -1853,7 +1999,7 @@ static void test_quill_lux_file_new_without_changes_skips_confirm(void) {
     assert(quill_lux_dark_panel_ink(m) == 0); /* no confirm */
     quill_lux_key(m, kc, 'Q', 0);
     quill_lux_file_item(m, mc, 2); /* Save */
-    quill_lux_file_item(m, mc, 3); /* Quit */
+    quill_lux_file_item(m, mc, 4); /* Quit */
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     assert(m->cpu->halted);
@@ -1898,7 +2044,7 @@ static void test_quill_lux_file_new_dirty_confirm_dialog_buttons(void) {
         quill_lux_file_item(m, mc, 0);
         assert(quill_lux_dark_panel_ink(m) > 0);
         quill_lux_click(m, mc, 480, 336); /* Save button */
-        quill_lux_file_item(m, mc, 3);
+        quill_lux_file_item(m, mc, 4);
         vfs_close(m->system, mc);
         vfs_close(m->system, kc);
         assert(m->cpu->halted);
@@ -1925,7 +2071,7 @@ static void test_quill_lux_file_new_dirty_confirm_dialog_buttons(void) {
         quill_lux_click(m, mc, 480, 376); /* Don't Save */
         quill_lux_key(m, kc, 'Q', 0);
         quill_lux_file_item(m, mc, 2); /* Save new.quill */
-        quill_lux_file_item(m, mc, 3);
+        quill_lux_file_item(m, mc, 4);
         vfs_close(m->system, mc);
         vfs_close(m->system, kc);
         assert(m->cpu->halted);
@@ -1955,7 +2101,7 @@ static void test_quill_lux_file_new_dirty_confirm_dialog_buttons(void) {
         quill_lux_click(m, mc, 480, 416); /* Cancel */
         assert(quill_lux_dark_panel_ink(m) == 0);
         quill_lux_file_item(m, mc, 2); /* Save current (dirtied manuscript) */
-        quill_lux_file_item(m, mc, 3);
+        quill_lux_file_item(m, mc, 4);
         vfs_close(m->system, mc);
         vfs_close(m->system, kc);
         assert(m->cpu->halted);
@@ -1992,7 +2138,7 @@ static void test_quill_lux_hex_nibble_edit(void) {
     quill_lux_key(m, kc, '4', 0);
     quill_lux_key(m, kc, '1', 0);
     quill_lux_file_item(m, mc, 2); /* Save */
-    quill_lux_file_item(m, mc, 3);
+    quill_lux_file_item(m, mc, 4);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     assert(m->cpu->halted);
@@ -2110,7 +2256,7 @@ static void test_quill_lux_wraps_long_word_without_fault(void) {
     quill_lux_click(m, mc, 16, 670); /* bottom of the text pane, past wrapped lines -> file_len */
     quill_lux_key(m, kc, 'Z', 0);
     quill_lux_file_item(m, mc, 2);
-    quill_lux_file_item(m, mc, 3);
+    quill_lux_file_item(m, mc, 4);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     assert(m->cpu->halted);
@@ -2158,7 +2304,7 @@ static void test_quill_lux_edit_copy_paste(void) {
     quill_lux_click(m, mc, 70, 10);
     quill_lux_click(m, mc, 70, 65); /* Paste */
     quill_lux_file_item(m, mc, 2);
-    quill_lux_file_item(m, mc, 3);
+    quill_lux_file_item(m, mc, 4);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     assert(m->cpu->halted);
@@ -2207,7 +2353,7 @@ static void test_quill_lux_cmd_s_saves_and_esc_does_not_quit(void) {
         quill_lux_pump(m, 8);
         quill_lux_key(m, kc, '#', 0);
         quill_lux_key(m, kc, 's', 8);
-        quill_lux_file_item(m, mc, 3);
+        quill_lux_file_item(m, mc, 4);
         vfs_close(m->system, mc);
         vfs_close(m->system, kc);
         assert(m->cpu->halted);
@@ -2221,6 +2367,975 @@ static void test_quill_lux_cmd_s_saves_and_esc_does_not_quit(void) {
     }
 
     quill_lux_restore_file("manuscript.quill", backup, backup_len);
+}
+
+/* File > Save As: name field is selected, so typing replaces it. Save
+ * button on the put-file dialog (960x720, dlg 464x308) is at
+ * dlg_x=(960-464)/2=248, dlg_y=(720-308)/2=206; bx=dlg_x+300, opy=dlg_y+56;
+ * click center (588, 272). */
+static void test_quill_lux_file_save_as_creates_new_file(void) {
+    printf("Testing apps/Quill.lux: File > Save As writes a new path and leaves the original untouched...\n");
+    Machine* probe = quill_lux_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
+    size_t copy_backup_len = 0;
+    char* copy_backup = quill_lux_backup_file("copy.quill", &copy_backup_len);
+    quill_lux_seed("Hi\n", 3);
+    remove("copy.quill");
+
+    Machine* m = quill_lux_machine();
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 8);
+    quill_lux_key(m, kc, '#', 0);
+    quill_lux_file_item(m, mc, 3); /* Save As */
+    quill_lux_pump(m, 8);
+    const char* name = "copy.quill";
+    for (const char* p = name; *p; p++) {
+        quill_lux_key(m, kc, (int) (unsigned char) *p, 0);
+    }
+    quill_lux_click(m, mc, 588, 272); /* Save */
+    quill_lux_pump(m, 8);
+    quill_lux_file_item(m, mc, 4); /* Quit */
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    uint8_t got[16] = { 0 };
+    int n = 0;
+    quill_lux_read_file("/sys/file/copy.quill", got, sizeof(got), &n);
+    assert(n == 4);
+    assert(memcmp(got, "#Hi\n", 4) == 0);
+    quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+    assert(n == 3);
+    assert(memcmp(got, "Hi\n", 3) == 0);
+
+    quill_lux_restore_file("manuscript.quill", backup, backup_len);
+    quill_lux_restore_file("copy.quill", copy_backup, copy_backup_len);
+}
+
+static void test_quill_lux_file_save_as_cancel_keeps_path(void) {
+    printf("Testing apps/Quill.lux: File > Save As Cancel leaves Save targeting the original path...\n");
+    Machine* probe = quill_lux_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
+    quill_lux_seed("Hi\n", 3);
+
+    Machine* m = quill_lux_machine();
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 8);
+    quill_lux_file_item(m, mc, 3); /* Save As */
+    quill_lux_pump(m, 8);
+    quill_lux_key(m, kc, 27, 0); /* Esc = Cancel */
+    quill_lux_pump(m, 8);
+    quill_lux_key(m, kc, '#', 0);
+    quill_lux_file_item(m, mc, 2); /* Save */
+    quill_lux_file_item(m, mc, 4); /* Quit */
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    uint8_t got[16] = { 0 };
+    int n = 0;
+    quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+    assert(n == 4);
+    assert(memcmp(got, "#Hi\n", 4) == 0);
+
+    quill_lux_restore_file("manuscript.quill", backup, backup_len);
+}
+
+/* -----------------------------------------------------------------------
+ * Tabula.lux host-driven tests.
+ * Grid: A1 at (88,72), B2 (168,92), C3 (248,102). File Quit is item 5
+ * (Save As, then separator after Save). Startup document is untitled.tabula.
+ * ----------------------------------------------------------------------- */
+
+#define TABULA_A1_X 88
+#define TABULA_A1_Y 72
+#define TABULA_B1_X 168
+#define TABULA_B1_Y 72
+#define TABULA_B2_X 168
+#define TABULA_B2_Y 92
+#define TABULA_C3_X 248
+#define TABULA_C3_Y 102
+
+static Machine* tabula_machine(void) {
+    FILE* probe = fopen("./bin/luxc", "rb");
+    if (!probe) {
+        printf("  (skipped: ./bin/luxc not built yet -- run from repo root after `make`)\n");
+        return NULL;
+    }
+    fclose(probe);
+    probe = fopen("apps/Tabula.lux", "rb");
+    if (!probe) {
+        printf("  (skipped: apps/Tabula.lux not found -- run from repo root)\n");
+        return NULL;
+    }
+    fclose(probe);
+    assert(system("make apps/Tabula.bin >/tmp/nuxvm_test_tabula_lux_build.log 2>&1") == 0);
+
+    FILE* bf = fopen("apps/Tabula.bin", "rb");
+    assert(bf != NULL);
+    fseek(bf, 0, SEEK_END);
+    long blen = ftell(bf);
+    fseek(bf, 0, SEEK_SET);
+    uint8_t* bc = malloc((size_t) blen);
+    assert(fread(bc, 1, (size_t) blen, bf) == (size_t) blen);
+    fclose(bf);
+
+    Machine* m = machine_create(bc, (uint32_t) blen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
+    free(bc);
+    assert(m != NULL);
+    system_set_resolution(m->system, 960, 720);
+    return m;
+}
+
+static void tabula_pump(Machine* m, int n) {
+    quill_lux_pump(m, n);
+}
+
+static void tabula_click(Machine* m, int32_t mc, int x, int y) {
+    uint8_t down[8] = {
+        3, 1,
+        (uint8_t) (x & 0xFF), (uint8_t) ((x >> 8) & 0xFF),
+        (uint8_t) (y & 0xFF), (uint8_t) ((y >> 8) & 0xFF),
+        0, 0
+    };
+    uint8_t up[8] = { 4, 1, down[2], down[3], down[4], down[5], 0, 0 };
+    assert(vfs_write(m->system, mc, down, 8) == 8);
+    tabula_pump(m, 40);
+    assert(vfs_write(m->system, mc, up, 8) == 8);
+    tabula_pump(m, 40);
+}
+
+static void tabula_key(Machine* m, int32_t kc, int key, int mods) {
+    uint8_t kpkt[8] = {
+        0, 0,
+        (uint8_t) (key & 0xFF), (uint8_t) ((key >> 8) & 0xFF),
+        (uint8_t) (mods & 0xFF), (uint8_t) ((mods >> 8) & 0xFF),
+        0, 0
+    };
+    assert(vfs_write(m->system, kc, kpkt, 8) == 8);
+    tabula_pump(m, 40);
+}
+
+static void tabula_type(Machine* m, int32_t kc, const char* s) {
+    for (const char* p = s; *p; p++) {
+        tabula_key(m, kc, (int) (unsigned char) *p, 0);
+    }
+}
+
+static void tabula_file_item(Machine* m, int32_t mc, int row) {
+    tabula_click(m, mc, 20, 10);
+    tabula_click(m, mc, 20, 20 + row * 18 + 9);
+}
+
+static void tabula_edit_item(Machine* m, int32_t mc, int row) {
+    tabula_click(m, mc, 70, 10);
+    tabula_click(m, mc, 70, 20 + row * 18 + 9);
+}
+
+static void tabula_save_quit(Machine* m, int32_t mc) {
+    tabula_file_item(m, mc, 2); /* Save */
+    tabula_file_item(m, mc, 5); /* Quit */
+}
+
+static int tabula_file_has(const char* needle) {
+    uint8_t got[4096];
+    int n = 0;
+    memset(got, 0, sizeof(got));
+    quill_lux_read_file("/sys/file/untitled.tabula", got, (int) sizeof(got) - 1, &n);
+    if (n < 0) n = 0;
+    got[n] = 0;
+    return strstr((char*) got, needle) != NULL;
+}
+
+static void test_tabula_type_classify_save(void) {
+    printf("Testing apps/Tabula.lux: typing string/int/float into A1/B2/C3 saves a sparse file...\n");
+    Machine* probe = tabula_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
+    remove("untitled.tabula");
+
+    Machine* m = tabula_machine();
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    tabula_pump(m, 40);
+
+    tabula_click(m, mc, TABULA_A1_X, TABULA_A1_Y);
+    tabula_type(m, kc, "hello");
+    tabula_key(m, kc, 13, 0); /* Enter commits */
+
+    tabula_click(m, mc, TABULA_B2_X, TABULA_B2_Y);
+    tabula_type(m, kc, "42");
+    tabula_key(m, kc, 13, 0);
+
+    tabula_click(m, mc, TABULA_C3_X, TABULA_C3_Y);
+    tabula_type(m, kc, "3.14");
+    tabula_key(m, kc, 13, 0);
+
+    tabula_save_quit(m, mc);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    uint8_t got[256];
+    int n = 0;
+    memset(got, 0, sizeof(got));
+    quill_lux_read_file("/sys/file/untitled.tabula", got, (int) sizeof(got) - 1, &n);
+    assert(n > 8);
+    got[n] = 0;
+    assert(strncmp((char*) got, "TABULA 2\n", 9) == 0);
+    assert(strstr((char*) got, "A1\thello") != NULL);
+    assert(strstr((char*) got, "B2\t42") != NULL);
+    assert(strstr((char*) got, "C3\t3.14") != NULL);
+    /* Sparse: a high empty row is not written as blank lines. */
+    assert(strstr((char*) got, "A4") == NULL);
+
+    quill_lux_restore_file("untitled.tabula", backup, backup_len);
+}
+
+static void test_tabula_click_selects_cell(void) {
+    printf("Testing apps/Tabula.lux: click selects B2 (status/active cell) and typing lands there...\n");
+    Machine* probe = tabula_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
+    remove("untitled.tabula");
+
+    Machine* m = tabula_machine();
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    tabula_pump(m, 40);
+
+    tabula_click(m, mc, TABULA_B2_X, TABULA_B2_Y);
+    tabula_type(m, kc, "Zed");
+    tabula_key(m, kc, 13, 0);
+    tabula_save_quit(m, mc);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    assert(tabula_file_has("B2\tZed"));
+    assert(!tabula_file_has("A1\tZed"));
+
+    quill_lux_restore_file("untitled.tabula", backup, backup_len);
+}
+
+static void test_tabula_file_new_clean_and_dirty(void) {
+    printf("Testing apps/Tabula.lux: File > New skips confirm when clean and prompts when dirty...\n");
+    Machine* probe = tabula_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
+    remove("untitled.tabula");
+
+    {
+        Machine* m = tabula_machine();
+        assert(m != NULL);
+        int32_t mc, kc;
+        quill_lux_bind(m, &mc, &kc);
+        tabula_pump(m, 40);
+        tabula_file_item(m, mc, 0); /* New, clean */
+        tabula_pump(m, 20);
+        assert(quill_lux_dark_panel_ink(m) == 0);
+        vfs_close(m->system, mc);
+        vfs_close(m->system, kc);
+        machine_free(m);
+    }
+
+    {
+        Machine* m = tabula_machine();
+        assert(m != NULL);
+        int32_t mc, kc;
+        quill_lux_bind(m, &mc, &kc);
+        tabula_pump(m, 40);
+        tabula_click(m, mc, TABULA_A1_X, TABULA_A1_Y);
+        tabula_type(m, kc, "keep?");
+        tabula_key(m, kc, 13, 0);
+        tabula_file_item(m, mc, 0); /* New, dirty */
+        tabula_pump(m, 20);
+        assert(quill_lux_dark_panel_ink(m) > 0);
+        /* Don't Save: button 1 at panel-relative y. */
+        tabula_click(m, mc, 480, 376);
+        tabula_pump(m, 20);
+        assert(quill_lux_dark_panel_ink(m) == 0);
+        tabula_save_quit(m, mc);
+        vfs_close(m->system, mc);
+        vfs_close(m->system, kc);
+        assert(m->cpu->halted);
+        machine_free(m);
+
+        uint8_t got[256];
+        int n = 0;
+        memset(got, 0, sizeof(got));
+        quill_lux_read_file("/sys/file/untitled.tabula", got, (int) sizeof(got) - 1, &n);
+        if (n < 0) n = 0;
+        got[n] = 0;
+        assert(strstr((char*) got, "keep?") == NULL);
+    }
+
+    quill_lux_restore_file("untitled.tabula", backup, backup_len);
+}
+
+static void test_tabula_edit_copy_paste(void) {
+    printf("Testing apps/Tabula.lux: Edit > Copy then Paste duplicates a cell through /sys/snarf...\n");
+    Machine* probe = tabula_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
+    remove("untitled.tabula");
+
+    Machine* m = tabula_machine();
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    tabula_pump(m, 40);
+
+    tabula_click(m, mc, TABULA_A1_X, TABULA_A1_Y);
+    tabula_type(m, kc, "abacus");
+    tabula_key(m, kc, 13, 0);
+    tabula_click(m, mc, TABULA_A1_X, TABULA_A1_Y); /* reselect A1 */
+    tabula_edit_item(m, mc, 1); /* Copy */
+    tabula_click(m, mc, TABULA_B1_X, TABULA_B1_Y);
+    tabula_edit_item(m, mc, 2); /* Paste */
+    tabula_save_quit(m, mc);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    assert(tabula_file_has("A1\tabacus"));
+    assert(tabula_file_has("B1\tabacus"));
+
+    quill_lux_restore_file("untitled.tabula", backup, backup_len);
+}
+
+static void test_tabula_high_row_sparse_save(void) {
+    printf("Testing apps/Tabula.lux: Page Down reaches a high row and save stays sparse...\n");
+    Machine* probe = tabula_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
+    remove("untitled.tabula");
+
+    Machine* m = tabula_machine();
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    tabula_pump(m, 40);
+
+    tabula_key(m, kc, 22, 0); /* PAGE_DOWN → row 31 */
+    tabula_type(m, kc, "deep");
+    tabula_key(m, kc, 13, 0);
+    tabula_save_quit(m, mc);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    uint8_t got[256];
+    int n = 0;
+    memset(got, 0, sizeof(got));
+    quill_lux_read_file("/sys/file/untitled.tabula", got, (int) sizeof(got) - 1, &n);
+    assert(n > 8);
+    got[n] = 0;
+    assert(strstr((char*) got, "A31\tdeep") != NULL);
+    /* Must not emit 31 blank rows. */
+    assert(n < 80);
+
+    quill_lux_restore_file("untitled.tabula", backup, backup_len);
+}
+
+#define TABULA_POOL      0x900000
+#define TABULA_CELL_SIZE 72
+#define TABULA_USED_N    0x8A0150
+#define TABULA_CACHE_VAL 0x9F2500
+#define TABULA_CACHE_FLG 0x9FA500
+#define TABULA_FLG_OK    1
+#define TABULA_FLG_ERR   2
+#define TABULA_FLG_STOP  5
+#define TABULA_ERR_DIV   1
+#define TABULA_ERR_CIRC  4
+#define TABULA_ERR_STOP  6
+#define TABULA_FORMULA_X 130
+#define TABULA_CALC_Y    29
+
+static int32_t tabula_be32(const uint8_t* p) {
+    return (int32_t) (((uint32_t) p[0] << 24) | ((uint32_t) p[1] << 16) |
+                      ((uint32_t) p[2] << 8) | (uint32_t) p[3]);
+}
+
+static int tabula_find_cell(Machine* m, int col, int row) {
+    uint8_t* mem = m->cpu->memory;
+    int used = tabula_be32(mem + TABULA_USED_N);
+    if (used < 0) used = 0;
+    if (used > 8192) used = 8192;
+    for (int i = 0; i < used; i++) {
+        uint8_t* a = mem + TABULA_POOL + i * TABULA_CELL_SIZE;
+        if (a[5] > 0 && a[4] == (uint8_t) col && tabula_be32(a) == row) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int tabula_cache_flag(Machine* m, int idx) {
+    return m->cpu->memory[TABULA_CACHE_FLG + idx];
+}
+
+static int32_t tabula_cache_val(Machine* m, int idx) {
+    return tabula_be32(m->cpu->memory + TABULA_CACHE_VAL + idx * 4);
+}
+
+static void tabula_click_low(Machine* m, int32_t mc, int x, int y, int pumps) {
+    uint8_t down[8] = {
+        3, 1,
+        (uint8_t) (x & 0xFF), (uint8_t) ((x >> 8) & 0xFF),
+        (uint8_t) (y & 0xFF), (uint8_t) ((y >> 8) & 0xFF),
+        0, 0
+    };
+    uint8_t up[8] = { 4, 1, down[2], down[3], down[4], down[5], 0, 0 };
+    assert(vfs_write(m->system, mc, down, 8) == 8);
+    tabula_pump(m, pumps);
+    assert(vfs_write(m->system, mc, up, 8) == 8);
+    tabula_pump(m, pumps);
+}
+
+static void test_tabula_formula_source_saved(void) {
+    printf("Testing apps/Tabula.lux: formula source survives save (not the computed value)...\n");
+    Machine* probe = tabula_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
+    remove("untitled.tabula");
+
+    Machine* m = tabula_machine();
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    tabula_pump(m, 40);
+
+    tabula_click(m, mc, TABULA_A1_X, TABULA_A1_Y);
+    tabula_type(m, kc, "10");
+    tabula_key(m, kc, 13, 0);
+    tabula_click(m, mc, TABULA_B1_X, TABULA_B1_Y);
+    tabula_type(m, kc, "20");
+    tabula_key(m, kc, 13, 0);
+    tabula_click(m, mc, 248, 72); /* C1 */
+    tabula_type(m, kc, "=A1+B1");
+    tabula_key(m, kc, 13, 0);
+    tabula_pump(m, 20);
+
+    int idx = tabula_find_cell(m, 2, 1);
+    assert(idx >= 0);
+    assert(tabula_cache_flag(m, idx) == TABULA_FLG_OK);
+    assert(tabula_cache_val(m, idx) == 30);
+
+    tabula_save_quit(m, mc);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    assert(tabula_file_has("C1\t=A1+B1"));
+    assert(!tabula_file_has("C1\t30"));
+    assert(tabula_file_has("TABULA 2"));
+
+    quill_lux_restore_file("untitled.tabula", backup, backup_len);
+}
+
+static void test_tabula_escape_roundtrip(void) {
+    printf("Testing apps/Tabula.lux: backslash escapes round-trip in TABULA 2...\n");
+    Machine* probe = tabula_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
+    remove("untitled.tabula");
+
+    Machine* m = tabula_machine();
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    tabula_pump(m, 40);
+
+    tabula_click(m, mc, TABULA_A1_X, TABULA_A1_Y);
+    tabula_type(m, kc, "a\\b");
+    tabula_key(m, kc, 13, 0);
+    tabula_save_quit(m, mc);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    uint8_t got[256];
+    int n = 0;
+    memset(got, 0, sizeof(got));
+    quill_lux_read_file("/sys/file/untitled.tabula", got, (int) sizeof(got) - 1, &n);
+    assert(n > 8);
+    got[n] = 0;
+    assert(strstr((char*) got, "A1\ta\\\\b") != NULL);
+
+    quill_lux_restore_file("untitled.tabula", backup, backup_len);
+}
+
+static void test_tabula_sum_and_errors(void) {
+    printf("Testing apps/Tabula.lux: SUM, #DIV/0!, and #CIRC...\n");
+    Machine* probe = tabula_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
+    remove("untitled.tabula");
+
+    Machine* m = tabula_machine();
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    tabula_pump(m, 40);
+
+    tabula_click(m, mc, TABULA_A1_X, TABULA_A1_Y);
+    tabula_type(m, kc, "1");
+    tabula_key(m, kc, 13, 0);
+    tabula_type(m, kc, "2");
+    tabula_key(m, kc, 13, 0);
+    tabula_type(m, kc, "=SUM(A1:A2)");
+    tabula_key(m, kc, 13, 0);
+    tabula_pump(m, 20);
+
+    int idx = tabula_find_cell(m, 0, 3);
+    assert(idx >= 0);
+    assert(tabula_cache_flag(m, idx) == TABULA_FLG_OK);
+    assert(tabula_cache_val(m, idx) == 3);
+
+    tabula_click(m, mc, TABULA_B1_X, TABULA_B1_Y);
+    tabula_type(m, kc, "=1/0");
+    tabula_key(m, kc, 13, 0);
+    tabula_pump(m, 20);
+    assert(!m->cpu->halted);
+    idx = tabula_find_cell(m, 1, 1);
+    assert(idx >= 0);
+    assert(tabula_cache_flag(m, idx) == TABULA_FLG_ERR);
+    assert(tabula_cache_val(m, idx) == TABULA_ERR_DIV);
+
+    tabula_click(m, mc, TABULA_B2_X, TABULA_B2_Y);
+    tabula_type(m, kc, "=C3");
+    tabula_key(m, kc, 13, 0);
+    tabula_click(m, mc, TABULA_C3_X, TABULA_C3_Y);
+    tabula_type(m, kc, "=B2");
+    tabula_key(m, kc, 13, 0);
+    tabula_pump(m, 40);
+    assert(!m->cpu->halted);
+    int b2 = tabula_find_cell(m, 1, 2);
+    int c3 = tabula_find_cell(m, 2, 3);
+    assert(b2 >= 0 && c3 >= 0);
+    assert(tabula_cache_flag(m, b2) == TABULA_FLG_ERR);
+    assert(tabula_cache_flag(m, c3) == TABULA_FLG_ERR);
+    assert(tabula_cache_val(m, b2) == TABULA_ERR_CIRC);
+    assert(tabula_cache_val(m, c3) == TABULA_ERR_CIRC);
+
+    tabula_save_quit(m, mc);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+
+    assert(tabula_file_has("A3\t=SUM(A1:A2)"));
+
+    quill_lux_restore_file("untitled.tabula", backup, backup_len);
+}
+
+static void test_tabula_calc_esc_stops(void) {
+    printf("Testing apps/Tabula.lux: Esc stops a running Calculate pass...\n");
+    Machine* probe = tabula_machine();
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
+    remove("untitled.tabula");
+
+    Machine* m = tabula_machine();
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    tabula_pump(m, 40);
+
+    tabula_click(m, mc, TABULA_A1_X, TABULA_A1_Y);
+    for (int i = 0; i < 6; i++) {
+        tabula_type(m, kc, "=1+1");
+        tabula_key(m, kc, 13, 0);
+    }
+
+    tabula_click(m, mc, TABULA_FORMULA_X, 10);
+    tabula_click_low(m, mc, TABULA_FORMULA_X, TABULA_CALC_Y, 1);
+    tabula_key(m, kc, 27, 0); /* Esc */
+    tabula_pump(m, 8);
+    assert(!m->cpu->halted);
+
+    int stopped = 0;
+    int ok = 0;
+    for (int row = 1; row <= 6; row++) {
+        int idx = tabula_find_cell(m, 0, row);
+        assert(idx >= 0);
+        int f = tabula_cache_flag(m, idx);
+        if (f == TABULA_FLG_STOP) stopped++;
+        if (f == TABULA_FLG_OK) ok++;
+    }
+    assert(stopped >= 1);
+    assert(ok + stopped == 6);
+
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+
+    quill_lux_restore_file("untitled.tabula", backup, backup_len);
+}
+
+/* -----------------------------------------------------------------------
+ * Remaining Cloister apps: compile through luxc, then host-drive Illumos,
+ * Nib, and Easel the same way Quill/Tabula are tested.
+ * ----------------------------------------------------------------------- */
+
+static int luxc_compile_app(const char* src, const char* bin) {
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+             "./bin/luxc -target graphical -o %s %s >/tmp/nuxvm_test_app_build.log 2>&1",
+             bin, src);
+    return system(cmd);
+}
+
+static Machine* lux_app_machine(const char* src, const char* bin) {
+    FILE* probe = fopen("./bin/luxc", "rb");
+    if (!probe) {
+        printf("  (skipped: ./bin/luxc not built yet -- run from repo root after `make`)\n");
+        return NULL;
+    }
+    fclose(probe);
+    probe = fopen(src, "rb");
+    if (!probe) {
+        printf("  (skipped: %s not found -- run from repo root)\n", src);
+        return NULL;
+    }
+    fclose(probe);
+    if (luxc_compile_app(src, bin) != 0) {
+        fprintf(stderr, "  luxc failed for %s (see /tmp/nuxvm_test_app_build.log)\n", src);
+        assert(0);
+    }
+
+    FILE* bf = fopen(bin, "rb");
+    assert(bf != NULL);
+    fseek(bf, 0, SEEK_END);
+    long blen = ftell(bf);
+    fseek(bf, 0, SEEK_SET);
+    uint8_t* bc = malloc((size_t) blen);
+    assert(fread(bc, 1, (size_t) blen, bf) == (size_t) blen);
+    fclose(bf);
+
+    Machine* m = machine_create(bc, (uint32_t) blen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
+    free(bc);
+    assert(m != NULL);
+    system_set_resolution(m->system, 960, 720);
+    return m;
+}
+
+static int host_file_size(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return -1;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return -1;
+    }
+    long n = ftell(f);
+    fclose(f);
+    return (int) n;
+}
+
+static int pump_until_file(Machine* m, const char* path, int min_n, int max_ticks) {
+    for (int i = 0; i < max_ticks; i++) {
+        if (m && m->cpu && !m->cpu->halted) {
+            machine_tick(m);
+        }
+        int n = host_file_size(path);
+        if (n >= min_n) return n;
+    }
+    return host_file_size(path);
+}
+
+static void lux_mouse(Machine* m, int32_t mc, int type, int btn, int x, int y) {
+    uint8_t pkt[8] = {
+        (uint8_t) type, (uint8_t) btn,
+        (uint8_t) (x & 0xFF), (uint8_t) ((x >> 8) & 0xFF),
+        (uint8_t) (y & 0xFF), (uint8_t) ((y >> 8) & 0xFF),
+        0, 0
+    };
+    assert(vfs_write(m->system, mc, pkt, 8) == 8);
+    quill_lux_pump(m, 8);
+}
+
+static void lux_drag(Machine* m, int32_t mc, int x0, int y0, int x1, int y1) {
+    lux_mouse(m, mc, 3, 1, x0, y0);
+    lux_mouse(m, mc, 2, 1, x1, y1);
+    lux_mouse(m, mc, 4, 1, x1, y1);
+}
+
+static void lux_file_item(Machine* m, int32_t mc, int row) {
+    quill_lux_click(m, mc, 20, 10);
+    quill_lux_click(m, mc, 20, 20 + row * 18 + 9);
+}
+
+static int lux_file_read(const char* vfs_path, uint8_t* got, int cap) {
+    int n = 0;
+    quill_lux_read_file(vfs_path, got, cap, &n);
+    return n;
+}
+
+static void test_lux_apps_compile(void) {
+    printf("Testing luxc compiles every Cloister app...\n");
+    FILE* probe = fopen("./bin/luxc", "rb");
+    if (!probe) {
+        printf("  (skipped: ./bin/luxc not built yet -- run from repo root after `make`)\n");
+        return;
+    }
+    fclose(probe);
+
+    static const char* apps[][2] = {
+        { "apps/Calculator.lux", "apps/Calculator.bin" },
+        { "apps/Easel.lux", "apps/Easel.bin" },
+        { "apps/Hello.lux", "apps/Hello.bin" },
+        { "apps/Illumos.lux", "apps/Illumos.bin" },
+        { "apps/Nib.lux", "apps/Nib.bin" },
+        { "apps/OurFather.lux", "apps/OurFather.bin" },
+        { "apps/Picker.lux", "apps/Picker.bin" },
+        { "apps/Quill.lux", "apps/Quill.bin" },
+        { "apps/Snake.lux", "apps/Snake.bin" },
+        { "apps/Tabula.lux", "apps/Tabula.bin" },
+        { "apps/UIDemo.lux", "apps/UIDemo.bin" },
+        { NULL, NULL }
+    };
+    for (int i = 0; apps[i][0]; i++) {
+        if (luxc_compile_app(apps[i][0], apps[i][1]) != 0) {
+            fprintf(stderr, "  luxc failed for %s (see /tmp/nuxvm_test_app_build.log)\n", apps[i][0]);
+            assert(0);
+        }
+        int n = host_file_size(apps[i][1]);
+        assert(n > 1000);
+    }
+    printf("  luxc apps: OK\n");
+}
+
+static void test_illumos_paint_save(void) {
+    printf("Testing apps/Illumos.lux: New 16x16, paint A and B, save untitled.cff...\n");
+    Machine* probe = lux_app_machine("apps/Illumos.lux", "apps/Illumos.bin");
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.cff", &backup_len);
+    size_t chicago_len = 0;
+    char* chicago = quill_lux_backup_file("resources/chicago12x12.cff", &chicago_len);
+    remove("untitled.cff");
+
+    Machine* m = lux_app_machine("apps/Illumos.lux", "apps/Illumos.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    lux_file_item(m, mc, 1); /* New 16x16 */
+    quill_lux_pump(m, 40);
+
+    /* Blank glyphs have width 0, so the editor treats every click as a
+     * width-rule drag until we widen. ']' is width-plus. */
+    for (int i = 0; i < 8; i++) quill_lux_key(m, kc, 93, 0);
+    quill_lux_pump(m, 8);
+
+    /* Glyph A (default sel=65), pixel (0,0): ED_X=16 ED_Y=36, cell=16. */
+    quill_lux_click(m, mc, 24, 44);
+
+    /* Collection cell for B=66: col=2 row=4, COL_X=440 COL_Y=36 COL_CELL=24. */
+    quill_lux_click(m, mc, 440 + 2 * 24 + 12, 36 + 4 * 24 + 12);
+    for (int i = 0; i < 8; i++) quill_lux_key(m, kc, 93, 0);
+    quill_lux_pump(m, 8);
+    quill_lux_click(m, mc, 24, 44);
+
+    quill_lux_key(m, kc, 's', 8); /* Cmd+S */
+    int n = pump_until_file(m, "untitled.cff", 8448, 80);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+
+    uint8_t got[8448];
+    assert(n == 8448);
+    n = lux_file_read("/sys/file/untitled.cff", got, (int) sizeof(got));
+    assert(n == 8448);
+    /* glyph-bytes=32; A at 256+65*32=2336, B at 2368. */
+    assert((got[2336] & 0x80) != 0); /* A (0,0) */
+    assert((got[2368] & 0x80) != 0); /* B (0,0) */
+
+    quill_lux_restore_file("untitled.cff", backup, backup_len);
+    quill_lux_restore_file("resources/chicago12x12.cff", chicago, chicago_len);
+}
+
+static void test_illumos_collection_click(void) {
+    printf("Testing apps/Illumos.lux: collection click selects a glyph...\n");
+    Machine* probe = lux_app_machine("apps/Illumos.lux", "apps/Illumos.bin");
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.cff", &backup_len);
+    size_t chicago_len = 0;
+    char* chicago = quill_lux_backup_file("resources/chicago12x12.cff", &chicago_len);
+    remove("untitled.cff");
+
+    Machine* m = lux_app_machine("apps/Illumos.lux", "apps/Illumos.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    lux_file_item(m, mc, 1); /* New 16x16 */
+    quill_lux_pump(m, 40);
+
+    /* Glyph 0 is top-left of the collection: COL_X=440 COL_Y=36 COL_CELL=24. */
+    quill_lux_click(m, mc, 440 + 12, 36 + 12);
+    for (int i = 0; i < 8; i++) quill_lux_key(m, kc, 93, 0);
+    quill_lux_pump(m, 8);
+    quill_lux_click(m, mc, 24, 44); /* paint (0,0) of glyph 0 */
+
+    quill_lux_key(m, kc, 's', 8);
+    int n = pump_until_file(m, "untitled.cff", 8448, 80);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+
+    uint8_t got[8448];
+    assert(n == 8448);
+    n = lux_file_read("/sys/file/untitled.cff", got, (int) sizeof(got));
+    assert(n == 8448);
+    assert((got[256] & 0x80) != 0); /* glyph 0 */
+    assert((got[2336] & 0x80) == 0); /* glyph A untouched */
+
+    quill_lux_restore_file("untitled.cff", backup, backup_len);
+    quill_lux_restore_file("resources/chicago12x12.cff", chicago, chicago_len);
+}
+
+static void test_nib_rect_save(void) {
+    printf("Testing apps/Nib.lux: draw a rectangle and save untitled.nib...\n");
+    Machine* probe = lux_app_machine("apps/Nib.lux", "apps/Nib.bin");
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.nib", &backup_len);
+    remove("untitled.nib");
+
+    Machine* m = lux_app_machine("apps/Nib.lux", "apps/Nib.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    /* Rect tool i=2: x in [4,36), y = PAGE_Y+4+64 = 88, height 28. */
+    quill_lux_click(m, mc, 20, 100);
+    lux_drag(m, mc, 80, 80, 200, 160);
+
+    quill_lux_key(m, kc, 's', 8); /* Cmd+S */
+    int n = pump_until_file(m, "untitled.nib", 8, 80);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+
+    uint8_t got[256];
+    memset(got, 0, sizeof(got));
+    assert(n > 8);
+    n = lux_file_read("/sys/file/untitled.nib", got, (int) sizeof(got) - 1);
+    assert(n > 8);
+    assert(strncmp((char*) got, "NIB 1\n", 6) == 0);
+    assert(strstr((char*) got, "rect") != NULL);
+
+    quill_lux_restore_file("untitled.nib", backup, backup_len);
+}
+
+static void test_easel_paint_save(void) {
+    printf("Testing apps/Easel.lux: paint a pixel and save untitled.eas...\n");
+    Machine* probe = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    /* Pencil is the default tool. Canvas origin CANVAS_X=80 CANVAS_Y=36. */
+    quill_lux_click(m, mc, 90, 46);
+    quill_lux_click(m, mc, 100, 50);
+    quill_lux_pump(m, 20);
+
+    /* pack-bits walks 512x342 pixels; machine_tick caps at 100k ops, so
+     * the save spans many frames. */
+    quill_lux_key(m, kc, 's', 8); /* Cmd+S */
+    int n = pump_until_file(m, "untitled.eas", 21896, 2000);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+
+    uint8_t got[64];
+    memset(got, 0, sizeof(got));
+    assert(n == 21896);
+    n = lux_file_read("/sys/file/untitled.eas", got, (int) sizeof(got));
+    assert(n >= 8);
+    assert(got[0] == 'E' && got[1] == 'A' && got[2] == 'S' && got[3] == '1');
+
+    uint8_t body[22000];
+    n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
+    assert(n == 21896);
+    int nonzero = 0;
+    for (int i = 8; i < n; i++) {
+        if (body[i]) nonzero++;
+    }
+    assert(nonzero > 0);
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 // -----------------------------------------------------------------------------
@@ -2274,6 +3389,8 @@ int main(void) {
     test_deep_stack();
     test_empty_definition();
     test_named_locals();
+    test_gird_ungird();
+    test_gird_example_file();
     test_named_locals_no_tail_skip_unframe();
     test_regression_while_counter_under_read();
     test_regression_question_takes_one_quot();
@@ -2296,6 +3413,24 @@ int main(void) {
     test_quill_lux_wraps_long_word_without_fault();
     test_quill_lux_edit_copy_paste();
     test_quill_lux_cmd_s_saves_and_esc_does_not_quit();
+    test_quill_lux_file_save_as_creates_new_file();
+    test_quill_lux_file_save_as_cancel_keeps_path();
+
+    test_tabula_type_classify_save();
+    test_tabula_click_selects_cell();
+    test_tabula_file_new_clean_and_dirty();
+    test_tabula_edit_copy_paste();
+    test_tabula_high_row_sparse_save();
+    test_tabula_formula_source_saved();
+    test_tabula_escape_roundtrip();
+    test_tabula_sum_and_errors();
+    test_tabula_calc_esc_stops();
+
+    test_lux_apps_compile();
+    test_illumos_paint_save();
+    test_illumos_collection_click();
+    test_nib_rect_save();
+    test_easel_paint_save();
 
     printf("\n=== ALL COMPILER TESTS PASSED ===\n\n");
     return 0;

@@ -1,0 +1,1849 @@
+( Tabula: 26-column spreadsheet with basic formulas.
+  File > New/Open/Save/Save As | Quit, Edit > Cut/Copy/Paste/Select All,
+  Formula > Calculate (Esc stops a pass). Sparse A1..Z99999 cells
+  (string / int / float / formula). Save is TABULA 2 with backslash
+  escapes; grid shows values, entry bar shows formula source.
+  ./bin/cloister apps/Tabula.bin )
+
+INCLUDE "lib/app.lux"
+INCLUDE "lib/core.lux"
+INCLUDE "lib/str.lux"
+INCLUDE "lib/ui.lux"
+INCLUDE "lib/sf.lux"
+
+MODULE MAIN
+
+IMPORT APP
+IMPORT VFS
+IMPORT DRAW
+IMPORT EVENT
+IMPORT STR
+IMPORT UI
+IMPORT SF
+
+( --- Geometry --- )
+@WIN_W         960 ;
+@WIN_H         720 ;
+@BAR_H          20 ;
+@ENTRY_H        24 ;
+@COL_HDR_H      18 ;
+@STATUS_H       24 ;
+@SB_W           16 ;
+@ROW_HDR_W      48 ;
+@CELL_W         80 ;
+@CELL_H         20 ;
+@VISIBLE_COLS   11 ;
+@VISIBLE_ROWS   30 ;
+@GRID_X         48 ;
+@GRID_Y         62 ;
+@GRID_W        880 ;
+@GRID_H        600 ;
+@HSB_Y         680 ;
+@STATUS_Y      696 ;
+@FONT_SIZE      16 ;
+@COLS           26 ;
+@ROW_MAX     99999 ;
+@TEXT_MAX       63 ;
+
+@CLR_BG        0xFFFFFF ;
+@CLR_FG        0x000000 ;
+@CLR_GRID      0xCCCCCC ;
+@CLR_HDR       0xEEEEEE ;
+@CLR_SEL       0xCCDDFF ;
+@CLR_FRAME     0xAAAAAA ;
+@CLR_HINT      0x444444 ;
+
+@CONFIRM_PANEL_W 260 ;
+@CONFIRM_PANEL_H 170 ;
+@CONFIRM_BTN_W   180 ;
+@CONFIRM_BTN_H    30 ;
+@CONFIRM_BTN_GAP  10 ;
+@CLR_CONFIRM_DIM    0x000000 ;
+@CLR_CONFIRM_PANEL  0x303030 ;
+@CLR_CONFIRM_BORDER 0xAAAAAA ;
+@CLR_CONFIRM_TEXT   0xFFFFFF ;
+@CLR_CONFIRM_BTN    0x505050 ;
+
+( --- Cell pool (MM_APP_BULK_BUFFER 0x900000..0xA00000) ---
+  record: int row, byte col, byte type, byte text[64], pad[2] = 72 )
+@POOL          0x900000 ;
+@MAX_CELLS      8192 ;
+@CELL_SIZE        72 ;
+@CELL_COL          4 ;
+@CELL_TYPE         5 ;
+@CELL_TEXT         6 ;
+@TYPE_FREE         0 ;
+@TYPE_STR          1 ;
+@TYPE_INT          2 ;
+@TYPE_FLOAT        3 ;
+@TYPE_FORMULA      4 ;
+
+@FLG_IDLE          0 ;
+@FLG_OK            1 ;
+@FLG_ERR           2 ;
+@FLG_VISIT         3 ;
+@FLG_PEND          4 ;
+@FLG_STOP          5 ;
+
+@ERR_DIV           1 ;
+@ERR_VALUE         2 ;
+@ERR_REF           3 ;
+@ERR_CIRC          4 ;
+@ERR_NAME          5 ;
+@ERR_STOP          6 ;
+
+@CALC_IDLE         0 ;
+@CALC_RUN          1 ;
+@CALC_BUDGET       1 ;
+@VISIT_BUDGET    256 ;
+@EVAL_MAX         64 ;
+
+@PATH          0x990000 ;
+@VFS_PATH      0x990100 ;
+@EDIT_BUF      0x990200 ;
+@STATUS_BUF    0x990280 ;
+@LINE_BUF      0x990300 ;
+@NAME_BUF      0x9903A0 ;
+@SNARF_BUF     0x990400 ;
+@SNARF_MAX      8192 ;
+@FILE_BUF      0x992400 ;
+@FILE_MAX     0x60000 ;
+@CLIP_BUF      0x9F2400 ;
+@EMPTY         0x9F2480 ;
+@CACHE_VAL     0x9F2500 ;
+@CACHE_FLG     0x9FA500 ;
+@NUM_BUF       0x9FC500 ;
+
+( --- Small state (MM_APP_SMALL_STATE) --- )
+@active-col        0x8A0100 ;
+@active-row        0x8A0104 ;
+@anchor-col        0x8A0108 ;
+@anchor-row        0x8A010C ;
+@view-col          0x8A0110 ;
+@view-row          0x8A0114 ;
+@file-dirty        0x8A0118 ;
+@editing           0x8A011C ;
+@edit-len          0x8A0120 ;
+@drag              0x8A0124 ;
+@mouse-held        0x8A0128 ;
+@confirm-new-open  0x8A012C ;
+@vbar              0x8A0130 ;
+@hbar              0x8A0134 ;
+@used-row          0x8A0138 ;
+@down-col          0x8A013C ;
+@down-row          0x8A0140 ;
+@prev-col          0x8A0144 ;
+@prev-row          0x8A0148 ;
+@extend-mod        0x8A014C ;
+@used-n            0x8A0150 ;
+@tmp-c0            0x8A0154 ;
+@tmp-c1            0x8A0158 ;
+@tmp-r0            0x8A015C ;
+@tmp-r1            0x8A0160 ;
+@tmp-x             0x8A0164 ;
+@tmp-y             0x8A0168 ;
+@calc-run          0x8A016C ;
+@calc-i            0x8A0170 ;
+@eval-depth        0x8A0174 ;
+@parse-p           0x8A0178 ;
+@parse-err         0x8A017C ;
+@loading           0x8A0180 ;
+@stopped-f         0x8A0184 ;
+@force-str         0x8A0188 ;
+@p-col             0x8A018C ;
+@p-row             0x8A0190 ;
+@p-err             0x8A0194 ;
+@p-acc             0x8A0198 ;
+@p-ca              0x8A019C ;
+@p-cb              0x8A01A0 ;
+@p-ra              0x8A01A4 ;
+@p-rb              0x8A01A8 ;
+@save-as           0x8A01AC ;
+
+@make-vfs-path ( path-ptr -- vfs-path-ptr )
+    dup load-byte 47 = [ 1 + ] ?
+    T"/sys/file/" VFS_PATH STR::strcpy
+    VFS_PATH T"/sys/file/" STR::strlen + STR::strcpy
+    VFS_PATH
+;
+
+@mark-dirty ( -- )
+    1 file-dirty STOREI
+    APP::dirty!
+;
+
+@path-basename ( -- ptr )
+    PATH dup
+    [ dup load-byte ] [
+        dup load-byte 47 = [
+            1 + swap drop dup
+        ] [ 1 + ] ?:
+    ] |:
+    drop
+;
+
+@cell-at ( i -- addr ) CELL_SIZE * POOL + ;
+
+@cell-find { col row -- idx }
+    0 { i }
+    -1 { found }
+    [ i used-n LOADI < found 0 < AND ]
+    [
+        i cell-at { a }
+        a CELL_TYPE + load-byte 0 >
+        a CELL_COL + load-byte col = AND
+        a LOADI row = AND [
+            i found!
+        ] ?
+        i 1 + i!
+    ] |:
+    found
+;
+
+@cell-alloc ( -- idx )
+    0 { i }
+    -1 { found }
+    [ i used-n LOADI < found 0 < AND ]
+    [
+        i cell-at CELL_TYPE + load-byte 0 = [
+            i found!
+        ] ?
+        i 1 + i!
+    ] |:
+    found 0 < [
+        used-n LOADI MAX_CELLS < [
+            used-n LOADI found!
+            used-n LOADI 1 + used-n STOREI
+        ] ?
+    ] ?
+    found
+;
+
+@classify { ptr -- type }
+    ptr { p }
+    p load-byte 45 = [ p 1 + p! ] ?
+    p load-byte dup 48 >= SWAP 57 <= AND 0 = [
+        1
+    ] [
+        [ p load-byte dup 48 >= SWAP 57 <= AND ]
+        [ p 1 + p! ] |:
+        p load-byte 0 = [
+            2
+        ] [
+            p load-byte 46 = [
+                p 1 + p!
+                p load-byte dup 48 >= SWAP 57 <= AND [
+                    [ p load-byte dup 48 >= SWAP 57 <= AND ]
+                    [ p 1 + p! ] |:
+                    p load-byte 0 = [ 3 ] [ 1 ] ?:
+                ] [
+                    1
+                ] ?:
+            ] [
+                1
+            ] ?:
+        ] ?:
+    ] ?:
+;
+
+@copy-text { src dest -- }
+    0 { i }
+    [ i TEXT_MAX < src i + load-byte 0 > AND ]
+    [
+        src i + load-byte dest i + store-byte
+        i 1 + i!
+    ] |:
+    0 dest i + store-byte
+;
+
+@note-row ( row -- )
+    dup used-row LOADI > [ used-row STOREI ] [ drop ] ?:
+;
+
+@cell-clear { col row -- }
+    col row cell-find { idx }
+    idx 0 < [ ] [
+        0 idx cell-at CELL_TYPE + store-byte
+        FLG_IDLE idx cache-flg-at store-byte
+        mark-dirty
+        maybe-queue
+    ] ?:
+;
+
+@cell-set { col row src -- }
+    src load-byte 0 = [
+        col row cell-clear
+    ] [
+        col row cell-find { idx }
+        idx 0 < [ cell-alloc idx! ] ?
+        idx 0 < [ ] [
+            idx cell-at { a }
+            row a STOREI
+            col a CELL_COL + store-byte
+            src a CELL_TEXT + copy-text
+            src load-byte 61 = force-str LOADI 0 = AND [
+                TYPE_FORMULA a CELL_TYPE + store-byte
+                FLG_PEND idx cache-flg-at store-byte
+            ] [
+                a CELL_TEXT + classify a CELL_TYPE + store-byte
+                FLG_IDLE idx cache-flg-at store-byte
+            ] ?:
+            row note-row
+            mark-dirty
+            maybe-queue
+        ] ?:
+    ] ?:
+;
+
+@cell-text { col row -- ptr }
+    col row cell-find { idx }
+    idx 0 < [
+        EMPTY
+    ] [
+        idx cell-at CELL_TEXT +
+    ] ?:
+;
+
+@cell-type { col row -- t }
+    col row cell-find { idx }
+    idx 0 < [
+        0
+    ] [
+        idx cell-at CELL_TYPE + load-byte
+    ] ?:
+;
+
+@cache-val-at ( idx -- addr ) 4 * CACHE_VAL + ;
+@cache-flg-at ( idx -- addr ) CACHE_FLG + ;
+
+@err-text { code -- ptr }
+    code ERR_DIV = [ T"#DIV/0!" ] [
+    code ERR_VALUE = [ T"#VALUE!" ] [
+    code ERR_REF = [ T"#REF!" ] [
+    code ERR_CIRC = [ T"#CIRC" ] [
+    code ERR_STOP = [ T"#STOP" ] [
+        T"#NAME?"
+    ] ?: ] ?: ] ?: ] ?: ] ?:
+;
+
+@read-int { ptr -- n }
+    0 { n }
+    1 { sign }
+    ptr load-byte 45 = [
+        -1 sign!
+        ptr 1 + ptr!
+    ] ?
+    [ ptr load-byte dup 48 >= SWAP 57 <= AND ]
+    [
+        n 10 * ptr load-byte 48 - + n!
+        ptr 1 + ptr!
+    ] |:
+    n sign *
+;
+
+@fpeek ( -- ch ) parse-p LOADI load-byte ;
+@fadv ( -- ) parse-p LOADI 1 + parse-p STOREI ;
+
+@set-parse-err { e -- }
+    parse-err LOADI 0 = [ e parse-err STOREI ] [ drop ] ?:
+;
+
+@formula-mark-pend { idx -- }
+    FLG_PEND idx cache-flg-at store-byte
+;
+
+@end-calc-modal ( -- )
+    editing LOADI confirm-new-open LOADI OR SF::open? OR 0 = [
+        0 APP::modal!
+    ] ?
+;
+
+@calc-abort ( -- )
+    calc-run LOADI CALC_RUN = [
+        0 { i }
+        [ i used-n LOADI < ]
+        [
+            i cell-at CELL_TYPE + load-byte TYPE_FORMULA = [
+                i cache-flg-at load-byte { f }
+                f FLG_PEND = f FLG_VISIT = OR [
+                    ERR_STOP i cache-val-at STOREI
+                    FLG_STOP i cache-flg-at store-byte
+                ] ?
+            ] ?
+            i 1 + i!
+        ] |:
+        CALC_IDLE calc-run STOREI
+        1 stopped-f STOREI
+        end-calc-modal
+        APP::dirty!
+    ] ?
+;
+
+@calc-done ( -- )
+    CALC_IDLE calc-run STOREI
+    0 stopped-f STOREI
+    end-calc-modal
+    APP::dirty!
+;
+
+@calc-queue ( -- )
+    0 { i }
+    [ i used-n LOADI < ]
+    [
+        i cell-at CELL_TYPE + load-byte TYPE_FORMULA = [
+            i formula-mark-pend
+        ] ?
+        i 1 + i!
+    ] |:
+    0 calc-i STOREI
+    0 eval-depth STOREI
+    CALC_RUN calc-run STOREI
+    0 stopped-f STOREI
+    1 APP::modal!
+    APP::dirty!
+;
+
+@maybe-queue ( -- )
+    loading LOADI 0 = [ calc-queue ] ?
+;
+
+@clear-pool ( -- )
+    0 used-n STOREI
+    0 used-row STOREI
+    CALC_IDLE calc-run STOREI
+    0 stopped-f STOREI
+;
+
+@is-sum? ( -- f )
+    parse-p LOADI { p }
+    p load-byte 83 =
+    p 1 + load-byte 85 = AND
+    p 2 + load-byte 77 = AND
+    p 3 + load-byte 40 = AND
+;
+
+@parse-number ( -- val )
+    0 { n }
+    [ fpeek dup 48 >= SWAP 57 <= AND ]
+    [
+        n 10 * fpeek 48 - + n!
+        fadv
+    ] |:
+    n
+;
+
+@parse-cell-ref ( -- col row err )
+    fpeek dup 65 >= SWAP 90 <= AND [
+        fpeek 65 - p-col STOREI
+        fadv
+        fpeek dup 48 >= SWAP 57 <= AND [
+            0 p-row STOREI
+            [ fpeek dup 48 >= SWAP 57 <= AND ]
+            [
+                p-row LOADI 10 * fpeek 48 - + p-row STOREI
+                fadv
+            ] |:
+            p-row LOADI 1 < p-row LOADI ROW_MAX > OR [
+                0 0 ERR_REF
+            ] [
+                p-col LOADI COLS >= [
+                    0 0 ERR_REF
+                ] [
+                    p-col LOADI p-row LOADI 0
+                ] ?:
+            ] ?:
+        ] [
+            0 0 ERR_REF
+        ] ?:
+    ] [
+        0 0 ERR_NAME
+    ] ?:
+;
+
+@lit-num { idx -- val err }
+    idx cell-at CELL_TYPE + load-byte { ty }
+    ty TYPE_INT = ty TYPE_FLOAT = OR [
+        idx cell-at CELL_TEXT + read-int 0
+    ] [
+        ty TYPE_STR = [
+            0 ERR_VALUE
+        ] [
+            0 0
+        ] ?:
+    ] ?:
+;
+
+@sum-num { idx -- val err }
+    idx cell-at CELL_TYPE + load-byte { ty }
+    ty TYPE_FORMULA = [
+        idx eval-idx
+    ] [
+        ty TYPE_INT = ty TYPE_FLOAT = OR [
+            idx cell-at CELL_TEXT + read-int 0
+        ] [
+            0 0
+        ] ?:
+    ] ?:
+;
+
+@eval-ref { col row -- val err }
+    col row cell-find { idx }
+    idx 0 < [
+        0 0
+    ] [
+        idx cell-at CELL_TYPE + load-byte TYPE_FORMULA = [
+            idx eval-idx
+        ] [
+            idx lit-num
+        ] ?:
+    ] ?:
+;
+
+@sum-range { c0 r0 c1 r1 -- val err }
+    c0 c1 MIN p-ca STOREI
+    c0 c1 MAX p-cb STOREI
+    r0 r1 MIN p-ra STOREI
+    r0 r1 MAX p-rb STOREI
+    0 p-acc STOREI
+    0 p-err STOREI
+    0 { i }
+    [ i used-n LOADI < p-err LOADI 0 = AND ]
+    [
+        i cell-at CELL_TYPE + load-byte 0 > [
+            i cell-at CELL_COL + load-byte p-ca LOADI >=
+            i cell-at CELL_COL + load-byte p-cb LOADI <= AND
+            i cell-at LOADI p-ra LOADI >= AND
+            i cell-at LOADI p-rb LOADI <= AND [
+                i sum-num
+                dup 0 = [
+                    drop p-acc LOADI + p-acc STOREI
+                ] [
+                    p-err STOREI drop
+                ] ?:
+            ] ?
+        ] ?
+        i 1 + i!
+    ] |:
+    p-acc LOADI p-err LOADI
+;
+
+@parse-sum ( -- val )
+    fadv fadv fadv fadv
+    parse-cell-ref
+    dup 0 = [
+        drop
+        fpeek 58 = [
+            fadv
+            parse-cell-ref
+            dup 0 = [
+                drop
+                fpeek 41 = [
+                    fadv
+                    sum-range
+                    dup 0 = [ drop ] [ set-parse-err drop 0 ] ?:
+                ] [
+                    ERR_NAME set-parse-err
+                    drop drop drop drop
+                    0
+                ] ?:
+            ] [
+                set-parse-err
+                drop drop drop drop
+                0
+            ] ?:
+        ] [
+            ERR_NAME set-parse-err
+            drop drop
+            0
+        ] ?:
+    ] [
+        set-parse-err
+        drop drop
+        0
+    ] ?:
+;
+
+@parse-factor ( -- val )
+    parse-err LOADI [
+        0
+    ] [
+        fpeek 45 = [
+            fadv
+            parse-factor NEGATE
+        ] [
+            fpeek dup 48 >= SWAP 57 <= AND [
+                parse-number
+            ] [
+                fpeek 40 = [
+                    fadv
+                    parse-expr
+                    fpeek 41 = [
+                        fadv
+                    ] [
+                        ERR_NAME set-parse-err
+                        drop 0
+                    ] ?:
+                ] [
+                    is-sum? [
+                        parse-sum
+                    ] [
+                        fpeek dup 65 >= SWAP 90 <= AND [
+                            parse-cell-ref
+                            dup 0 = [
+                                drop eval-ref
+                                dup 0 = [
+                                    drop
+                                ] [
+                                    set-parse-err drop 0
+                                ] ?:
+                            ] [
+                                set-parse-err drop drop 0
+                            ] ?:
+                        ] [
+                            ERR_NAME set-parse-err
+                            0
+                        ] ?:
+                    ] ?:
+                ] ?:
+            ] ?:
+        ] ?:
+    ] ?:
+;
+
+@parse-term ( -- val )
+    parse-factor
+    [ parse-err LOADI 0 = fpeek 42 = fpeek 47 = OR AND ]
+    [
+        fpeek
+        fadv
+        parse-factor
+        parse-err LOADI [
+            drop drop
+        ] [
+            SWAP
+            dup 42 = [
+                drop *
+            ] [
+                drop
+                dup 0 = [
+                    ERR_DIV set-parse-err
+                    drop 0
+                ] [
+                    /
+                ] ?:
+            ] ?:
+        ] ?:
+    ] |:
+;
+
+@parse-expr ( -- val )
+    parse-term
+    [ parse-err LOADI 0 = fpeek 43 = fpeek 45 = OR AND ]
+    [
+        fpeek
+        fadv
+        parse-term
+        parse-err LOADI [
+            drop drop
+        ] [
+            SWAP
+            dup 43 = [ drop + ] [ drop - ] ?:
+        ] ?:
+    ] |:
+;
+
+@eval-formula { text -- val err }
+    0 parse-err STOREI
+    text 1 + parse-p STOREI
+    parse-expr
+    parse-err LOADI [
+        drop 0 parse-err LOADI
+    ] [
+        fpeek 0 = [
+            0
+        ] [
+            drop 0 ERR_NAME
+        ] ?:
+    ] ?:
+;
+
+@eval-idx { idx -- val err }
+    idx cell-at CELL_TYPE + load-byte TYPE_FORMULA = 0 = [
+        idx lit-num
+    ] [
+        idx cache-flg-at load-byte FLG_OK = [
+            idx cache-val-at LOADI 0
+        ] [
+        idx cache-flg-at load-byte FLG_ERR = [
+            0 idx cache-val-at LOADI
+        ] [
+        idx cache-flg-at load-byte FLG_VISIT = [
+            0 ERR_CIRC
+        ] [
+            eval-depth LOADI EVAL_MAX >= [
+                0 ERR_CIRC
+            ] [
+                eval-depth LOADI 1 + eval-depth STOREI
+                FLG_VISIT idx cache-flg-at store-byte
+                idx cell-at CELL_TEXT + eval-formula
+                dup 0 = [
+                    OVER idx cache-val-at STOREI
+                    FLG_OK idx cache-flg-at store-byte
+                ] [
+                    dup idx cache-val-at STOREI
+                    FLG_ERR idx cache-flg-at store-byte
+                ] ?:
+                eval-depth LOADI 1 - eval-depth STOREI
+            ] ?:
+        ] ?: ] ?: ] ?:
+    ] ?:
+;
+
+@calc-step ( -- )
+    calc-run LOADI CALC_RUN = [
+        CALC_BUDGET { fleft }
+        VISIT_BUDGET { vleft }
+        [ fleft 0 > vleft 0 > AND calc-i LOADI used-n LOADI < AND ]
+        [
+            vleft 1 - vleft!
+            calc-i LOADI { i }
+            i cell-at CELL_TYPE + load-byte TYPE_FORMULA = [
+                i eval-idx drop drop
+                fleft 1 - fleft!
+            ] ?
+            i 1 + calc-i STOREI
+        ] |:
+        calc-i LOADI used-n LOADI >= [
+            calc-done
+        ] [
+            APP::dirty!
+        ] ?:
+    ] ?
+;
+
+@cell-name { col row buf -- }
+    col 65 + buf store-byte
+    row buf 1 + STR::int-to-str
+;
+
+@sel-c0 ( -- c ) active-col LOADI anchor-col LOADI MIN ;
+@sel-c1 ( -- c ) active-col LOADI anchor-col LOADI MAX ;
+@sel-r0 ( -- r ) active-row LOADI anchor-row LOADI MIN ;
+@sel-r1 ( -- r ) active-row LOADI anchor-row LOADI MAX ;
+
+@in-sel? { col row -- f }
+    col sel-c0 >= col sel-c1 <= AND
+    row sel-r0 >= AND
+    row sel-r1 <= AND
+;
+
+@in-view? { col row -- f }
+    col view-col LOADI >=
+    col view-col LOADI VISIBLE_COLS + < AND
+    row view-row LOADI >= AND
+    row view-row LOADI VISIBLE_ROWS + < AND
+;
+
+@cell-x ( col -- x ) view-col LOADI - CELL_W * GRID_X + ;
+@cell-y ( row -- y ) view-row LOADI - CELL_H * GRID_Y + ;
+
+@content-row ( -- n )
+    used-row LOADI
+    view-row LOADI VISIBLE_ROWS + 1 - MAX
+    VISIBLE_ROWS MAX
+    ROW_MAX MIN
+;
+
+@vmax ( -- n ) content-row VISIBLE_ROWS - 0 MAX ;
+@hmax ( -- n ) COLS VISIBLE_COLS - 0 MAX ;
+
+@clamp-view ( -- )
+    view-col LOADI 0 MAX hmax MIN view-col STOREI
+    view-row LOADI 1 MAX ROW_MAX VISIBLE_ROWS - 1 + MIN view-row STOREI
+;
+
+@sync-bars ( -- )
+    UI::SBAR_DRAG LOADI 0 = [
+        vbar LOADI
+        WIN_W SB_W - GRID_Y SB_W GRID_H
+        0 vmax view-row LOADI 1 - 0
+        UI::sbar-init
+        VISIBLE_ROWS vbar LOADI UI::BAR_PAGE + STOREI
+        hbar LOADI
+        GRID_X HSB_Y GRID_W SB_W
+        0 hmax view-col LOADI 1
+        UI::sbar-init
+        VISIBLE_COLS hbar LOADI UI::BAR_PAGE + STOREI
+    ] ?
+;
+
+@ensure-visible ( -- )
+    active-col LOADI view-col LOADI < [ active-col LOADI view-col STOREI ] ?
+    active-col LOADI view-col LOADI VISIBLE_COLS + >= [
+        active-col LOADI VISIBLE_COLS - 1 + view-col STOREI
+    ] ?
+    active-row LOADI view-row LOADI < [ active-row LOADI view-row STOREI ] ?
+    active-row LOADI view-row LOADI VISIBLE_ROWS + >= [
+        active-row LOADI VISIBLE_ROWS - 1 + view-row STOREI
+    ] ?
+    clamp-view
+    sync-bars
+;
+
+@end-edit ( -- )
+    0 editing STOREI
+    confirm-new-open LOADI SF::open? OR 0 = [ 0 APP::modal! ] ?
+;
+
+@begin-edit ( -- )
+    1 editing STOREI
+    1 APP::modal!
+;
+
+@commit-edit ( -- )
+    editing LOADI [
+        0 EDIT_BUF edit-len LOADI + store-byte
+        active-col LOADI active-row LOADI EDIT_BUF cell-set
+        end-edit
+    ] ?
+;
+
+@cancel-edit ( -- )
+    editing LOADI [ end-edit APP::dirty! ] ?
+;
+
+@start-replace { ch -- }
+    ch EDIT_BUF store-byte
+    0 EDIT_BUF 1 + store-byte
+    1 edit-len STOREI
+    begin-edit
+    APP::dirty!
+;
+
+@start-inplace ( -- )
+    active-col LOADI active-row LOADI cell-text EDIT_BUF copy-text
+    EDIT_BUF STR::strlen edit-len STOREI
+    begin-edit
+    APP::dirty!
+;
+
+@edit-add { ch -- }
+    editing LOADI 0 = [
+        ch start-replace
+    ] [
+        edit-len LOADI TEXT_MAX < [
+            ch EDIT_BUF edit-len LOADI + store-byte
+            edit-len LOADI 1 + edit-len STOREI
+            0 EDIT_BUF edit-len LOADI + store-byte
+            APP::dirty!
+        ] ?
+    ] ?:
+;
+
+@edit-backspace ( -- )
+    editing LOADI [
+        edit-len LOADI 0 > [
+            edit-len LOADI 1 - edit-len STOREI
+            0 EDIT_BUF edit-len LOADI + store-byte
+            APP::dirty!
+        ] ?
+    ] [
+        sel-c0 { c }
+        sel-r0 { r }
+        [ r sel-r1 <= ]
+        [
+            sel-c0 c!
+            [ c sel-c1 <= ]
+            [
+                c r cell-clear
+                c 1 + c!
+            ] |:
+            r 1 + r!
+        ] |:
+        APP::dirty!
+    ] ?:
+;
+
+@select-cell { col row extend -- }
+    commit-edit
+    col 0 MAX COLS 1 - MIN col!
+    row 1 MAX ROW_MAX MIN row!
+    col active-col STOREI
+    row active-row STOREI
+    extend 0 = [
+        col anchor-col STOREI
+        row anchor-row STOREI
+    ] ?
+    ensure-visible
+    APP::dirty!
+;
+
+@clip-copy { src dest maxw -- }
+    src { p }
+    dest { d }
+    1 { go }
+    0 d store-byte
+    [ p load-byte 0 > go AND ]
+    [
+        p load-byte d store-byte
+        0 d 1 + store-byte
+        dest DRAW::str-w maxw > [
+            0 d store-byte
+            0 go!
+        ] [
+            p 1 + p!
+            d 1 + d!
+        ] ?:
+    ] |:
+;
+
+@draw-cell-text { col row -- }
+    editing LOADI
+    col active-col LOADI = AND
+    row active-row LOADI = AND [
+        EDIT_BUF dup classify
+    ] [
+        col row cell-type TYPE_FORMULA = [
+            col row cell-find { idx }
+            idx cache-flg-at load-byte { f }
+            f FLG_OK = [
+                idx cache-val-at LOADI NUM_BUF STR::int-to-str
+                NUM_BUF TYPE_INT
+            ] [
+            f FLG_ERR = f FLG_STOP = OR [
+                idx cache-val-at LOADI err-text TYPE_STR
+            ] [
+                EMPTY 0
+            ] ?: ] ?:
+        ] [
+            col row cell-text
+            col row cell-type
+        ] ?:
+    ] ?:
+    { ptr ty }
+    ptr load-byte 0 = [ ] [
+        ptr CLIP_BUF CELL_W 8 - clip-copy
+        CLIP_BUF DRAW::str-w { tw }
+        col cell-x { x }
+        row cell-y { y }
+        ty TYPE_INT =
+        ty TYPE_FLOAT = OR [
+            APP::draw-fd x CELL_W + 4 - tw - y 2 + CLIP_BUF CLR_FG FONT_SIZE DRAW::draw-str
+        ] [
+            APP::draw-fd x 4 + y 2 + CLIP_BUF CLR_FG FONT_SIZE DRAW::draw-str
+        ] ?:
+    ] ?:
+;
+
+@draw-entry ( -- )
+    APP::draw-fd 0 BAR_H WIN_W ENTRY_H CLR_HDR DRAW::fill-rect
+    APP::draw-fd 0 BAR_H WIN_W 1 CLR_FRAME DRAW::fill-rect
+    APP::draw-fd 0 BAR_H ENTRY_H + 1 - WIN_W 1 CLR_FRAME DRAW::fill-rect
+    active-col LOADI active-row LOADI NAME_BUF cell-name
+    APP::draw-fd 8 BAR_H 6 + NAME_BUF CLR_FG FONT_SIZE DRAW::draw-str
+    APP::draw-fd 52 BAR_H 4 + 1 ENTRY_H 8 - CLR_FRAME DRAW::fill-rect
+    editing LOADI [
+        EDIT_BUF
+    ] [
+        active-col LOADI active-row LOADI cell-text
+    ] ?:
+    { ptr }
+    APP::draw-fd 60 BAR_H 6 + ptr CLR_FG FONT_SIZE DRAW::draw-str
+;
+
+@draw-headers ( -- )
+    APP::draw-fd 0 GRID_Y COL_HDR_H - ROW_HDR_W COL_HDR_H CLR_HDR DRAW::fill-rect
+    0 { vc }
+    [ vc VISIBLE_COLS < ]
+    [
+        view-col LOADI vc + { col }
+        col COLS < [
+            GRID_X vc CELL_W * + { x }
+            APP::draw-fd x GRID_Y COL_HDR_H - CELL_W COL_HDR_H CLR_HDR DRAW::fill-rect
+            APP::draw-fd x GRID_Y COL_HDR_H - CELL_W COL_HDR_H CLR_GRID DRAW::draw-rect
+            col 65 + CLIP_BUF store-byte
+            0 CLIP_BUF 1 + store-byte
+            APP::draw-fd x 36 + GRID_Y COL_HDR_H - 3 + CLIP_BUF CLR_FG FONT_SIZE DRAW::draw-str
+        ] ?
+        vc 1 + vc!
+    ] |:
+    0 { vr }
+    [ vr VISIBLE_ROWS < ]
+    [
+        view-row LOADI vr + { row }
+        GRID_Y vr CELL_H * + { y }
+        APP::draw-fd 0 y ROW_HDR_W CELL_H CLR_HDR DRAW::fill-rect
+        APP::draw-fd 0 y ROW_HDR_W CELL_H CLR_GRID DRAW::draw-rect
+        APP::draw-fd 6 y 3 + row CLR_HINT FONT_SIZE DRAW::draw-int
+        vr 1 + vr!
+    ] |:
+;
+
+@draw-sel-fill ( -- )
+    sel-c0 dup view-col LOADI < [ drop view-col LOADI ] ?
+    tmp-c0 STOREI
+    sel-c1 dup view-col LOADI VISIBLE_COLS + 1 - > [ drop view-col LOADI VISIBLE_COLS + 1 - ] ?
+    tmp-c1 STOREI
+    sel-r0 dup view-row LOADI < [ drop view-row LOADI ] ?
+    tmp-r0 STOREI
+    sel-r1 dup view-row LOADI VISIBLE_ROWS + 1 - > [ drop view-row LOADI VISIBLE_ROWS + 1 - ] ?
+    tmp-r1 STOREI
+    [ tmp-r0 LOADI tmp-r1 LOADI <= ]
+    [
+        tmp-c0 LOADI
+        [ dup tmp-c1 LOADI <= ]
+        [
+            dup COLS < [
+                dup cell-x tmp-x STOREI
+                tmp-r0 LOADI cell-y tmp-y STOREI
+                APP::draw-fd tmp-x LOADI tmp-y LOADI CELL_W CELL_H CLR_SEL DRAW::fill-rect
+            ] ?
+            1 +
+        ] |:
+        drop
+        tmp-r0 LOADI 1 + tmp-r0 STOREI
+    ] |:
+;
+
+@draw-grid-bg ( -- )
+    APP::draw-fd GRID_X GRID_Y GRID_W GRID_H CLR_BG DRAW::fill-rect
+    draw-sel-fill
+    0 { i }
+    [ i VISIBLE_ROWS 1 + < ]
+    [
+        APP::draw-fd GRID_X GRID_Y i CELL_H * + GRID_W 1 CLR_GRID DRAW::fill-rect
+        i 1 + i!
+    ] |:
+    0 { j }
+    [ j VISIBLE_COLS 1 + < ]
+    [
+        APP::draw-fd GRID_X j CELL_W * + GRID_Y 1 GRID_H CLR_GRID DRAW::fill-rect
+        j 1 + j!
+    ] |:
+;
+
+@draw-active-frame ( -- )
+    active-col LOADI active-row LOADI in-view? [
+        active-col LOADI cell-x { x }
+        active-row LOADI cell-y { y }
+        APP::draw-fd x y CELL_W CELL_H CLR_FG DRAW::draw-rect
+        APP::draw-fd x 1 + y 1 + CELL_W 2 - CELL_H 2 - CLR_FG DRAW::draw-rect
+    ] ?
+;
+
+@draw-cells ( -- )
+    0 { i }
+    [ i used-n LOADI < ]
+    [
+        i cell-at { a }
+        a CELL_TYPE + load-byte 0 > [
+            a CELL_COL + load-byte { col }
+            a LOADI { row }
+            col row in-view? [
+                editing LOADI
+                col active-col LOADI = AND
+                row active-row LOADI = AND [
+                ] [
+                    col row draw-cell-text
+                ] ?:
+            ] ?
+        ] ?
+        i 1 + i!
+    ] |:
+    editing LOADI [
+        active-col LOADI active-row LOADI in-view? [
+            active-col LOADI active-row LOADI draw-cell-text
+        ] ?
+    ] ?
+;
+
+@draw-status ( -- )
+    APP::draw-fd 0 STATUS_Y WIN_W STATUS_H CLR_HDR DRAW::fill-rect
+    APP::draw-fd 0 STATUS_Y WIN_W 1 CLR_FRAME DRAW::fill-rect
+    path-basename STATUS_BUF STR::strcpy
+    file-dirty LOADI [
+        T" *" STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
+    ] ?
+    T"  " STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
+    active-col LOADI active-row LOADI NAME_BUF cell-name
+    NAME_BUF STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
+    calc-run LOADI CALC_RUN = [
+        T"  Calculating... Esc to stop" STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
+    ] [
+        stopped-f LOADI [
+            T"  Stopped" STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
+        ] ?
+    ] ?:
+    APP::draw-fd 8 STATUS_Y 6 + STATUS_BUF CLR_FG FONT_SIZE DRAW::draw-str
+;
+
+@confirm-panel-x ( -- x ) WIN_W CONFIRM_PANEL_W - 2 / ;
+@confirm-panel-y ( -- y ) WIN_H CONFIRM_PANEL_H - 2 / ;
+@confirm-btn-x ( -- x ) confirm-panel-x CONFIRM_PANEL_W CONFIRM_BTN_W - 2 / + ;
+@confirm-btn-y ( i -- y ) confirm-panel-y 46 + swap CONFIRM_BTN_H CONFIRM_BTN_GAP + * + ;
+
+@confirm-hit-btn ( i px py -- flag )
+    3 frame! ( 0:py 1:px 2:i )
+    1 local@ confirm-btn-x < [ 0 ] [
+    1 local@ confirm-btn-x CONFIRM_BTN_W + >= [ 0 ] [
+    0 local@ 2 local@ confirm-btn-y < [ 0 ] [
+    0 local@ 2 local@ confirm-btn-y CONFIRM_BTN_H + >= [ 0 ] [
+    1
+    ] ?: ] ?: ] ?: ] ?:
+    3 unframe!
+;
+
+@confirm-new-draw ( -- )
+    confirm-new-open LOADI [
+        APP::draw-fd 0 0 WIN_W WIN_H CLR_CONFIRM_DIM DRAW::fill-rect
+        confirm-panel-x confirm-panel-y confirm-btn-x 3 frame! ( 0:bx 1:py 2:px )
+        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
+        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_H + 1 - CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ CONFIRM_PANEL_W + 1 - 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ 26 + 1 local@ 16 + T"Save changes?" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        APP::draw-fd 0 local@ 0 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
+        APP::draw-fd 0 local@ 68 + 0 confirm-btn-y 9 + T"Save" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        APP::draw-fd 0 local@ 1 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
+        APP::draw-fd 0 local@ 34 + 1 confirm-btn-y 9 + T"Don't Save" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        APP::draw-fd 0 local@ 2 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
+        APP::draw-fd 0 local@ 52 + 2 confirm-btn-y 9 + T"Cancel" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        3 unframe!
+    ] ?
+;
+
+@draw-all ( -- )
+    APP::draw-fd 0 0 WIN_W WIN_H CLR_BG DRAW::fill-rect
+    draw-headers
+    draw-grid-bg
+    APP::use-text-font
+    draw-entry
+    draw-cells
+    APP::draw-fd DRAW::CHICAGO DRAW::set-font
+    draw-active-frame
+    draw-status
+    UI::draw
+    SF::open? [ SF::draw ] ?
+    confirm-new-draw
+;
+
+( --- File --- )
+
+@esc-ch { ch d -- d' }
+    ch 92 = [
+        92 d store-byte
+        92 d 1 + store-byte
+        d 2 +
+    ] [
+    ch 9 = [
+        92 d store-byte
+        116 d 1 + store-byte
+        d 2 +
+    ] [
+    ch 10 = [
+        92 d store-byte
+        110 d 1 + store-byte
+        d 2 +
+    ] [
+    ch 13 = [
+        92 d store-byte
+        114 d 1 + store-byte
+        d 2 +
+    ] [
+        ch d store-byte
+        d 1 +
+    ] ?: ] ?: ] ?: ] ?:
+;
+
+@escape-from { src d lead-eq -- d' }
+    lead-eq [
+        src load-byte 61 = [
+            92 d store-byte
+            61 d 1 + store-byte
+            d 2 + d!
+            src 1 + src!
+        ] ?
+    ] ?
+    [ src load-byte 0 > ]
+    [
+        src load-byte d esc-ch d!
+        src 1 + src!
+    ] |:
+    d
+;
+
+@unescape-to { src dest -- src' }
+    dest TEXT_MAX + { lim }
+    [ src load-byte 0 > src load-byte 10 = 0 = AND src load-byte 13 = 0 = AND dest lim < AND ]
+    [
+        src load-byte 92 = [
+            src 1 + src!
+            src load-byte
+            dup 0 = OVER 10 = OR OVER 13 = OR [
+                drop
+                92 dest store-byte
+                dest 1 + dest!
+            ] [
+                dup 116 = [ drop 9 ] [
+                dup 110 = [ drop 10 ] [
+                dup 114 = [ drop 13 ] [
+                dup 92 = [ drop 92 ] [
+                dup 61 = [ drop 61 ] [
+                    drop src load-byte
+                ] ?: ] ?: ] ?: ] ?: ] ?:
+                dest store-byte
+                dest 1 + dest!
+                src 1 + src!
+            ] ?:
+        ] [
+            src load-byte dest store-byte
+            src 1 + src!
+            dest 1 + dest!
+        ] ?:
+    ] |:
+    0 dest store-byte
+    src
+;
+
+@write-all { fd -- }
+    T"TABULA 2" LINE_BUF STR::strcpy
+    10 LINE_BUF LINE_BUF STR::strlen + store-byte
+    0 LINE_BUF LINE_BUF STR::strlen + store-byte
+    fd LINE_BUF LINE_BUF STR::strlen VFS::write drop
+    0 { i }
+    [ i used-n LOADI < ]
+    [
+        i cell-at { a }
+        a CELL_TYPE + load-byte 0 > [
+            a CELL_COL + load-byte 65 + LINE_BUF store-byte
+            a LOADI LINE_BUF 1 + STR::int-to-str
+            LINE_BUF { d }
+            d STR::strlen d + d!
+            9 d store-byte
+            d 1 + d!
+            a CELL_TYPE + load-byte TYPE_FORMULA = [
+                61 d store-byte
+                d 1 + d!
+                a CELL_TEXT + 1 + d 0 escape-from d!
+            ] [
+                a CELL_TEXT + d 1 escape-from d!
+            ] ?:
+            10 d store-byte
+            d 1 + d!
+            0 d store-byte
+            fd LINE_BUF LINE_BUF STR::strlen VFS::write drop
+        ] ?
+        i 1 + i!
+    ] |:
+;
+
+@save-file ( -- )
+    commit-edit
+    PATH make-vfs-path 6 VFS::open-mode
+    dup 0 >= [
+        dup write-all
+        VFS::close drop
+        0 file-dirty STOREI
+        APP::dirty!
+    ] [ drop ] ?:
+;
+
+@skip-nl { p -- p' }
+    [ p load-byte 13 = p load-byte 10 = OR ]
+    [ p 1 + p! ] |:
+    p
+;
+
+@skip-line { p -- p' }
+    [ p load-byte 0 > p load-byte 10 = 0 = AND ]
+    [ p 1 + p! ] |:
+    p skip-nl
+;
+
+@parse-addr { p -- col row p' ok }
+    p load-byte { ch }
+    ch 65 >= ch 90 <= AND [
+        ch 65 - { col }
+        p 1 + p!
+        p load-byte dup 48 >= SWAP 57 <= AND [
+            0 { row }
+            [ p load-byte dup 48 >= SWAP 57 <= AND ]
+            [
+                row 10 * p load-byte 48 - + row!
+                p 1 + p!
+            ] |:
+            col row p 1
+        ] [
+            0 0 p 0
+        ] ?:
+    ] [
+        0 0 p 0
+    ] ?:
+;
+
+@copy-raw-field { src dest -- src' }
+    [ src load-byte 0 > src load-byte 10 = 0 = AND src load-byte 13 = 0 = AND ]
+    [
+        src load-byte dest store-byte
+        src 1 + src!
+        dest 1 + dest!
+    ] |:
+    0 dest store-byte
+    src
+;
+
+@parse-file ( -- )
+    FILE_BUF 0 1 { p i ok }
+    [ i 7 < ]
+    [
+        p i + load-byte T"TABULA " i + load-byte = 0 = [ 0 ok! ] ?
+        i 1 + i!
+    ] |:
+    p 7 + load-byte p-acc STOREI
+    p-acc LOADI 49 = p-acc LOADI 50 = OR 0 = [ 0 ok! ] ?
+    ok [
+        p 8 + skip-nl p!
+        1 loading STOREI
+        [ p load-byte 0 > ]
+        [
+            p parse-addr { col row q good }
+            good [
+                q load-byte 9 = [
+                    q 1 + q!
+                    p-acc LOADI 50 = [
+                        q load-byte 61 = [
+                            0 force-str STOREI
+                            61 LINE_BUF store-byte
+                            q 1 + LINE_BUF 1 + unescape-to q!
+                        ] [
+                            q LINE_BUF unescape-to q!
+                            LINE_BUF load-byte 61 = [ 1 ] [ 0 ] ?: force-str STOREI
+                        ] ?:
+                    ] [
+                        q LINE_BUF copy-raw-field q!
+                    ] ?:
+                    col row LINE_BUF cell-set
+                    0 force-str STOREI
+                    q skip-nl p!
+                ] [
+                    q skip-line p!
+                ] ?:
+            ] [
+                p skip-line p!
+            ] ?:
+        ] |:
+        0 loading STOREI
+        calc-queue
+    ] ?
+;
+
+@load-path ( path -- )
+    dup load-byte 47 = [ 1 + ] ?
+    PATH STR::strcpy
+    clear-pool
+    PATH make-vfs-path 0 VFS::open-mode
+    dup 0 >= [
+        dup FILE_BUF FILE_MAX 1 - VFS::read { n }
+        n 0 < [ 0 n! ] ?
+        0 FILE_BUF n + store-byte
+        VFS::close drop
+        parse-file
+        0 file-dirty STOREI
+    ] [ drop ] ?:
+    0 active-col STOREI 1 active-row STOREI
+    0 anchor-col STOREI 1 anchor-row STOREI
+    0 view-col STOREI 1 view-row STOREI
+    0 editing STOREI
+    ensure-visible
+    APP::dirty!
+;
+
+@new-document ( -- )
+    cancel-edit
+    clear-pool
+    T"untitled.tabula" PATH STR::strcpy
+    0 active-col STOREI 1 active-row STOREI
+    0 anchor-col STOREI 1 anchor-row STOREI
+    0 view-col STOREI 1 view-row STOREI
+    0 file-dirty STOREI
+    0 editing STOREI
+    0 confirm-new-open STOREI
+    0 loading STOREI
+    0 force-str STOREI
+    0 APP::modal!
+    ensure-visible
+    APP::dirty!
+;
+
+@confirm-new-mouse ( mpkt -- )
+    1 frame! ( 0:mpkt )
+    0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+        0 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
+            save-file
+            0 confirm-new-open STOREI
+            0 APP::modal!
+            new-document
+        ] [
+            1 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
+                0 confirm-new-open STOREI
+                0 APP::modal!
+                new-document
+            ] [
+                2 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
+                    0 confirm-new-open STOREI
+                    0 APP::modal!
+                    APP::dirty!
+                ] ?
+            ] ?:
+        ] ?:
+    ] ?
+    1 unframe!
+;
+
+@confirm-new-kbd ( kpkt -- )
+    dup EVENT::kbd-type EVENT::KEY_DOWN = [
+        dup EVENT::kbd-key EVENT::KEY_ESC = [
+            0 confirm-new-open STOREI
+            0 APP::modal!
+            APP::dirty!
+        ] ?
+    ] ?
+    drop
+;
+
+@on-pick ( path -- )
+    save-as LOADI [
+        0 save-as STOREI
+        dup load-byte 47 = [ 1 + ] ?
+        PATH STR::strcpy
+        save-file
+    ] [
+        load-path
+    ] ?:
+;
+@on-cancel ( -- )
+    0 save-as STOREI
+    APP::dirty!
+;
+
+@menu-new ( -- )
+    commit-edit
+    file-dirty LOADI [
+        1 confirm-new-open STOREI
+        1 APP::modal!
+        APP::dirty!
+    ] [
+        new-document
+    ] ?:
+;
+
+@menu-open ( -- ) commit-edit SF::show ;
+@menu-save-as ( -- )
+    commit-edit
+    1 save-as STOREI
+    PATH SF::show-save
+;
+@menu-quit ( -- ) HALT ;
+
+( --- Snarf --- )
+
+@snarf-selection ( -- )
+    T"/sys/snarf" VFS::open dup 0 >= [
+        { fd }
+        0 { n }
+        sel-r0 { r }
+        [ r sel-r1 <= n SNARF_MAX 2 - < AND ]
+        [
+            sel-c0 { c }
+            [ c sel-c1 <= n SNARF_MAX 2 - < AND ]
+            [
+                c r cell-text { ptr }
+                [ ptr load-byte 0 > n SNARF_MAX 2 - < AND ]
+                [
+                    ptr load-byte SNARF_BUF n + store-byte
+                    n 1 + n!
+                    ptr 1 + ptr!
+                ] |:
+                c sel-c1 < [
+                    9 SNARF_BUF n + store-byte
+                    n 1 + n!
+                ] ?
+                c 1 + c!
+            ] |:
+            r sel-r1 < [
+                10 SNARF_BUF n + store-byte
+                n 1 + n!
+            ] ?
+            r 1 + r!
+        ] |:
+        fd SNARF_BUF n VFS::write drop
+        fd VFS::close drop
+    ] [ drop ] ?:
+;
+
+@clear-selection ( -- )
+    sel-r0 { r }
+    [ r sel-r1 <= ]
+    [
+        sel-c0 { c }
+        [ c sel-c1 <= ]
+        [
+            c r cell-clear
+            c 1 + c!
+        ] |:
+        r 1 + r!
+    ] |:
+;
+
+@paste-snarf ( -- )
+    commit-edit
+    T"/sys/snarf" VFS::open dup 0 >= [
+        dup SNARF_BUF SNARF_MAX 1 - VFS::read { n }
+        VFS::close drop
+        n 0 < [ 0 n! ] ?
+        0 SNARF_BUF n + store-byte
+        SNARF_BUF { p }
+        active-row LOADI { r }
+        active-col LOADI { c }
+        LINE_BUF { d }
+        [ p load-byte 0 > r ROW_MAX <= AND ]
+        [
+            p load-byte 9 = [
+                0 d store-byte
+                c COLS < [ c r LINE_BUF cell-set ] ?
+                c 1 + c!
+                LINE_BUF d!
+                p 1 + p!
+            ] [
+                p load-byte 10 = p load-byte 13 = OR [
+                    0 d store-byte
+                    c COLS < [ c r LINE_BUF cell-set ] ?
+                    r 1 + r!
+                    active-col LOADI c!
+                    LINE_BUF d!
+                    p skip-nl p!
+                ] [
+                    d LINE_BUF - TEXT_MAX < [
+                        p load-byte d store-byte
+                        d 1 + d!
+                    ] ?
+                    p 1 + p!
+                ] ?:
+            ] ?:
+        ] |:
+        LINE_BUF d = 0 = [
+            0 d store-byte
+            c COLS < r ROW_MAX <= AND [ c r LINE_BUF cell-set ] ?
+        ] ?
+        APP::dirty!
+    ] [ drop ] ?:
+;
+
+@select-all ( -- )
+    commit-edit
+    -1 { minc }
+    -1 { minr }
+    -1 { maxc }
+    -1 { maxr }
+    0 { i }
+    [ i used-n LOADI < ]
+    [
+        i cell-at { a }
+        a CELL_TYPE + load-byte 0 > [
+            a CELL_COL + load-byte { col }
+            a LOADI { row }
+            minc 0 < [
+                col minc! row minr! col maxc! row maxr!
+            ] [
+                col minc < [ col minc! ] ?
+                col maxc > [ col maxc! ] ?
+                row minr < [ row minr! ] ?
+                row maxr > [ row maxr! ] ?
+            ] ?:
+        ] ?
+        i 1 + i!
+    ] |:
+    minc 0 < [
+        0 1 0 select-cell
+    ] [
+        minc minr 0 select-cell
+        maxc maxr 1 select-cell
+    ] ?:
+;
+
+@menu-cut ( -- )
+    commit-edit
+    snarf-selection
+    clear-selection
+    APP::dirty!
+;
+
+@menu-copy ( -- ) commit-edit snarf-selection ;
+@menu-paste ( -- ) paste-snarf ;
+@menu-select-all ( -- ) select-all ;
+
+( --- Mouse / keyboard --- )
+
+@hit-grid { mx my -- col row hit }
+    mx GRID_X >= my GRID_Y >= AND
+    mx GRID_X GRID_W + < AND
+    my GRID_Y GRID_H + < AND [
+        mx GRID_X - CELL_W /
+        view-col LOADI +
+        0 MAX COLS 1 - MIN
+        my GRID_Y - CELL_H /
+        view-row LOADI +
+        1 MAX ROW_MAX MIN
+        1
+    ] [
+        0 0 0
+    ] ?:
+;
+
+@in-entry? { mx my -- f }
+    my BAR_H >= my BAR_H ENTRY_H + < AND
+    mx 56 >= AND
+;
+
+@on-vscroll ( val -- )
+    1 + view-row STOREI
+    clamp-view
+    APP::dirty!
+;
+
+@on-hscroll ( val -- )
+    view-col STOREI
+    clamp-view
+    APP::dirty!
+;
+
+@handle-grid-mouse { mpkt -- }
+    mpkt EVENT::mouse-x { mx }
+    mpkt EVENT::mouse-y { my }
+    mpkt EVENT::mouse-type EVENT::MOUSE_DOWN = [
+        1 mouse-held STOREI
+        0 drag STOREI
+        mx my in-entry? [
+            start-inplace
+        ] [
+            mx my hit-grid { col row hit }
+            hit [
+                active-col LOADI prev-col STOREI
+                active-row LOADI prev-row STOREI
+                col down-col STOREI
+                row down-row STOREI
+                col row extend-mod LOADI select-cell
+            ] ?
+        ] ?:
+    ] ?
+    mpkt EVENT::mouse-type EVENT::MOUSE_MOVE = mouse-held LOADI AND [
+        mx my hit-grid { col row hit }
+        hit [
+            1 drag STOREI
+            col row 1 select-cell
+        ] ?
+    ] ?
+    mpkt EVENT::mouse-type EVENT::MOUSE_UP = [
+        0 mouse-held STOREI
+        drag LOADI 0 =
+        down-col LOADI prev-col LOADI = AND
+        down-row LOADI prev-row LOADI = AND
+        down-col LOADI active-col LOADI = AND
+        down-row LOADI active-row LOADI = AND [
+            editing LOADI 0 = [ start-inplace ] ?
+        ] ?
+        0 drag STOREI
+    ] ?
+;
+
+@on-mouse ( mpkt -- )
+    calc-run LOADI CALC_RUN = [
+        drop
+    ] [
+    confirm-new-open LOADI [
+        confirm-new-mouse
+    ] [
+    SF::open? [
+        SF::mouse
+    ] [
+        UI::menu-open? { was }
+        dup UI::feed
+        was UI::menu-open? OR [
+            drop
+            APP::dirty!
+        ] [
+            handle-grid-mouse
+        ] ?:
+    ] ?:
+    ] ?:
+    ] ?:
+;
+
+@handle-cmd ( key mods -- )
+    2 frame! ( 0:mods 1:key )
+    1 local@ 32 OR
+    dup 99 = [ drop menu-copy ] [
+    dup 120 = [ drop menu-cut ] [
+    dup 118 = [ drop menu-paste ] [
+    dup 115 = [
+        drop
+        0 local@ EVENT::MOD_SHIFT AND [
+            menu-save-as
+        ] [
+            save-file
+        ] ?:
+    ] [
+    dup 97 = [ drop menu-select-all ] [
+    drop
+    ] ?: ] ?: ] ?: ] ?: ] ?:
+    2 unframe!
+;
+
+@menu-calc ( -- ) commit-edit calc-queue ;
+
+@on-kbd ( kpkt -- )
+    calc-run LOADI CALC_RUN = [
+        dup EVENT::kbd-type EVENT::KEY_DOWN = [
+            dup EVENT::kbd-key EVENT::KEY_ESC = [
+                calc-abort
+            ] ?
+        ] ?
+        drop
+    ] [
+    confirm-new-open LOADI [
+        confirm-new-kbd
+    ] [
+    SF::open? [
+        SF::kbd
+    ] [
+        dup EVENT::kbd-type EVENT::KEY_DOWN = [
+            dup EVENT::kbd-key EVENT::KEY_ESC = [
+                editing LOADI [
+                    cancel-edit
+                ] [
+                    UI::escape drop
+                ] ?:
+            ] [
+                dup EVENT::kbd-mods
+                over EVENT::kbd-key
+                2 frame! ( 0:key 1:mods )
+                1 local@ EVENT::MOD_SHIFT AND extend-mod STOREI
+                1 local@ EVENT::MOD_CMD EVENT::MOD_CTRL OR AND 0 = 0 =
+                0 local@ 32 OR dup 97 >= SWAP 122 <= AND AND [
+                    0 local@ 1 local@ handle-cmd
+                ] [
+                    0 local@ EVENT::KEY_ENTER = [
+                        commit-edit
+                        active-col LOADI active-row LOADI 1 + 0 select-cell
+                    ] [
+                    0 local@ EVENT::KEY_TAB = [
+                        commit-edit
+                        active-col LOADI 1 + active-row LOADI 0 select-cell
+                    ] [
+                    0 local@ EVENT::KEY_BACKSPACE = [
+                        edit-backspace
+                    ] [
+                    0 local@ 127 = [
+                        edit-backspace
+                    ] [
+                    0 local@ EVENT::KEY_LEFT_ARROW = [
+                        commit-edit
+                        active-col LOADI 1 - active-row LOADI extend-mod LOADI select-cell
+                    ] [
+                    0 local@ EVENT::KEY_RIGHT_ARROW = [
+                        commit-edit
+                        active-col LOADI 1 + active-row LOADI extend-mod LOADI select-cell
+                    ] [
+                    0 local@ EVENT::KEY_UP_ARROW = [
+                        commit-edit
+                        active-col LOADI active-row LOADI 1 - extend-mod LOADI select-cell
+                    ] [
+                    0 local@ EVENT::KEY_DOWN_ARROW = [
+                        commit-edit
+                        active-col LOADI active-row LOADI 1 + extend-mod LOADI select-cell
+                    ] [
+                    0 local@ EVENT::KEY_PAGE_UP = [
+                        commit-edit
+                        active-col LOADI active-row LOADI VISIBLE_ROWS - extend-mod LOADI select-cell
+                    ] [
+                    0 local@ EVENT::KEY_PAGE_DOWN = [
+                        commit-edit
+                        active-col LOADI active-row LOADI VISIBLE_ROWS + extend-mod LOADI select-cell
+                    ] [
+                    0 local@ EVENT::KEY_HOME = [
+                        commit-edit
+                        0 active-row LOADI extend-mod LOADI select-cell
+                    ] [
+                    0 local@ EVENT::KEY_END = [
+                        commit-edit
+                        COLS 1 - active-row LOADI extend-mod LOADI select-cell
+                    ] [
+                        0 local@ STR::printable? [
+                            0 local@ edit-add
+                        ] ?
+                    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+                ] ?:
+                0 extend-mod STOREI
+                2 unframe!
+            ] ?:
+            APP::dirty!
+        ] ?
+        drop
+    ] ?:
+    ] ?:
+    ] ?:
+;
+
+@on-frame ( -- )
+    UI::handle
+    calc-step
+    APP::dirty? UI::menu-open? OR SF::open? OR confirm-new-open LOADI OR calc-run LOADI OR [
+        sync-bars
+        draw-all
+        APP::dirty-off
+    ] [
+        UI::draw
+        SF::open? [ SF::draw ] ?
+        confirm-new-draw
+    ] ?:
+;
+
+@start
+    T"Tabula" APP::init
+    APP::draw-fd FONT_SIZE DRAW::set-font-size
+    0 EMPTY store-byte
+    UI::new
+    WIN_W UI::menubar
+    T"File" UI::menu
+    T"New"  [ drop menu-new ]  UI::item
+    T"Open" [ drop menu-open ] UI::item
+    T"Save" [ drop save-file ] UI::item
+    T"Save As" [ drop menu-save-as ] UI::item
+    UI::sep
+    T"Quit" [ drop menu-quit ] UI::item
+    T"Edit" UI::menu
+    T"Cut"        [ drop menu-cut ]        UI::item
+    T"Copy"       [ drop menu-copy ]       UI::item
+    T"Paste"      [ drop menu-paste ]      UI::item
+    T"Select All" [ drop menu-select-all ] UI::item
+    T"Formula" UI::menu
+    T"Calculate" [ drop menu-calc ] UI::item
+    APP::font-menu
+    T"V" WIN_W SB_W - GRID_Y SB_W GRID_H 0 0 0 [ on-vscroll ] UI::vscroll
+    T"H" GRID_X HSB_Y GRID_W SB_W 0 0 0 [ on-hscroll ] UI::hscroll
+    T"V" UI::comp-find UI::C_PAY + LOADI vbar STOREI
+    T"H" UI::comp-find UI::C_PAY + LOADI hbar STOREI
+    [ on-pick ] SF::on-ok!
+    [ on-cancel ] SF::on-cancel!
+    new-document
+    [ on-mouse ] APP::on-mouse!
+    [ on-kbd ] APP::on-kbd!
+    [ on-frame ] APP::on-frame!
+    [ draw-all ] APP::on-resume!
+    APP::dirty!
+    APP::loop
+;
+
+MAIN::start
+HALT

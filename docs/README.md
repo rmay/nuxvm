@@ -96,6 +96,7 @@ nuxvm/
 
 ## Documentation
 
+- [user-manual.md](user-manual.md) — Quill, Illumos, Tabula, Nib, and Easel (Cloister guest apps).
 - [using-lux.md](using-lux.md) / [lux_tutorial.md](lux_tutorial.md) — the Lux language and toolchain.
 - [using-fluxio.md](using-fluxio.md) / [fluxio_tutorial.md](fluxio_tutorial.md) — the Fluxio language and toolchain.
 - [examples/README.md](../examples/README.md) — index for both languages.

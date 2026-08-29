@@ -18,7 +18,19 @@ Glyph cell size is taken from **file length**, not from the filename:
 
 `resources/chicago12x12.cff` is 8448 bytes (16×16 storage). The `12x12` in the name is the visual cap height, not the tile grid.
 
-Edit CFF files with **Illumos** (`apps/Illumos.lux`): `./bin/cloister apps/Illumos.bin`.
+Shipped 16×16 faces, also baked into the host and exported under `/sys/font/`:
+
+| Face | File | `/sys/font/` | `DRAW::set-font` | Role |
+| ---- | ---- | ------------ | ---------------- | ---- |
+| Chicago | `resources/chicago12x12.cff` | `/sys/font/chicago` | 0 (1 = same glyphs, legacy 7×13 scale) | UI chrome |
+| Geneva | `resources/geneva12.cff` | `/sys/font/geneva` | 2 | Body sans |
+| Monaco | `resources/monaco12.cff` | `/sys/font/monaco` | 3 | Monospace |
+
+`/sys/font/widths` is the first 256 bytes (advance table) of the **current** `DRAW::set-font` face.
+
+Menus and buttons always draw Chicago. Quill and Tabula pick the **document** face from **Font > Chicago / Geneva / Monaco** (body and hex in Quill; cell values and the entry bar in Tabula). Column/row headers and status bars stay Chicago. Illumos edits a CFF; its chrome is Chicago. The picker About box is Chicago.
+
+Edit CFF files with **Illumos** (`apps/Illumos.lux`): `./bin/cloister apps/Illumos.bin`. How to use the editor: [user-manual.md](user-manual.md). Regenerating the baked Geneva/Monaco headers: `python3 tools/genfonts.py`.
 
 
 
