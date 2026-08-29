@@ -23,8 +23,8 @@ IMPORT SF
 IMPORT GEOM
 
 ( --- Geometry --- )
-@WIN_W         960 ;
-@WIN_H         720 ;
+@WIN_W         600 ;
+@WIN_H         448 ;
 @BAR_H          20 ;
 @STATUS_H       24 ;
 @PAL_X           0 ;
@@ -34,7 +34,7 @@ IMPORT GEOM
 @CANVAS_W      512 ;
 @CANVAS_H      342 ;
 @CANVAS_BYTES 175104 ;
-@STATUS_Y      696 ;
+@STATUS_Y      424 ;
 @FONT_SIZE      16 ;
 @GRID           8 ;
 @TOOLS           8 ;
@@ -78,7 +78,6 @@ IMPORT GEOM
 @CLR_FRAME     0x000000 ;
 @CLR_HINT      0x444444 ;
 @CLR_WHITE     0xFFFFFF ;
-@CLR_DESK      0x000000 ;
 
 @CONFIRM_PANEL_W 260 ;
 @CONFIRM_PANEL_H 170 ;
@@ -128,7 +127,26 @@ IMPORT GEOM
 @erase-btn         0x8A0058 ;
 @save-as           0x8A005C ;
 @last-pat-id       0x8A0060 ; ( previously drawn pattern selection, -1 = none yet )
-@pat-full          0x8A0064 ; ( 1 = draw-patterns must redraw all PAT_N swatches )
+@damage            0x8A0064 ; ( bitmask of DIRTY_* below: what changed since the last draw )
+
+( Explicit damage bits, replacing the old single pat-full flag (whose narrow
+  meaning -- "must draw-patterns redraw all swatches" -- was the exact bug: a
+  full-window wipe ran every dirty frame regardless, erasing the pattern strip
+  whenever pat-full was 0, i.e. every frame except @start/resume-draw-all).
+  DIRTY_TOOLS/WIDTHS are not yet consumed by any call site -- reserved for
+  finer-grained repaint in later rewrite steps -- but the rule that fixes the
+  reported bug already holds: any region draw-damaged clears must be redrawn
+  under that same bit, never assumed clear from a blanket wipe. )
+@DIRTY_CANVAS   1 ;
+@DIRTY_TOOLS    2 ;
+@DIRTY_WIDTHS   4 ;
+@DIRTY_PATS     8 ;
+@DIRTY_CHROME  16 ;
+@DIRTY_ALL     31 ;
+
+@damage! ( bits -- )
+    damage LOADI OR damage STOREI
+;
 
 ( --- Path / dirty --- )
 
@@ -1081,7 +1099,7 @@ IMPORT GEOM
   that full pass once and, after that, only the 1-2 swatches whose selection
   state actually changed. )
 @draw-patterns ( -- )
-    pat-full LOADI [
+    damage LOADI DIRTY_PATS AND 0 > [
         0 { i }
             [ i PAT_N < ]
             [
@@ -1089,7 +1107,6 @@ IMPORT GEOM
                 i 1 + i!
             ] |:
         }
-        0 pat-full STOREI
     ] [
         last-pat-id LOADI dup -1 > [ draw-pat-cell ] [ drop ] ?:
         pat-id LOADI draw-pat-cell
@@ -1235,8 +1252,14 @@ IMPORT GEOM
     ] ?
 ;
 
-@draw-all ( -- )
-    APP::draw-fd 0 0 WIN_W WIN_H CLR_DESK 0 DRAW::fill-pat
+( The rule that fixes bug 1 (swatches vanishing): the blanket background wipe
+  only runs when DIRTY_CHROME is set, and draw-patterns' own full-vs-partial
+  choice is driven by the same damage word -- so a region is never cleared
+  without also being the thing that gets redrawn on top of it this frame. )
+@draw-damaged ( -- )
+    damage LOADI DIRTY_CHROME AND 0 > [
+        APP::draw-fd 0 0 WIN_W WIN_H CLR_BG DRAW::fill-rect
+    ] ?
     draw-canvas
     draw-rubber
     draw-palette
@@ -1245,14 +1268,15 @@ IMPORT GEOM
     UI::draw
     SF::open? [ SF::draw ] ?
     confirm-new-draw
+    0 damage STOREI
 ;
 
-( draw-all skips most of draw-patterns' work once steady-state (see
-  draw-patterns); a resume needs the full repaint since the whole window
-  was just cleared/hidden underneath us. )
+( draw-damaged skips most of draw-patterns' work and the background wipe once
+  steady-state (see draw-patterns / DIRTY_CHROME above); a resume needs the
+  full repaint since the whole window was just cleared/hidden underneath us. )
 @resume-draw-all ( -- )
-    1 pat-full STOREI
-    draw-all
+    DIRTY_ALL damage!
+    draw-damaged
 ;
 
 ( --- Paint a finished shape into the bitmap --- )
@@ -1365,8 +1389,11 @@ IMPORT GEOM
 @handle-page-mouse { mpkt -- }
     mpkt EVENT::mouse-x { mx }
     mpkt EVENT::mouse-y { my }
-    mpkt EVENT::mouse-btn 1 = 0 = erase-btn STOREI
     mpkt EVENT::mouse-type EVENT::MOUSE_DOWN = [
+        ( Read the erase-button latch only here: the host hardcodes btn=0 for
+          MOUSE_MOVE packets (src/cloister.c), so sampling it on every packet
+          made a move after a right-button down silently look left-button. )
+        mpkt EVENT::mouse-btn 1 = 0 = erase-btn STOREI
         1 mouse-held STOREI
         mx my hit-tool { t }
             t 0 >= [
@@ -1495,7 +1522,7 @@ IMPORT GEOM
 @on-frame ( -- )
     UI::handle
     APP::dirty? SF::open? OR confirm-new-open LOADI OR [
-        draw-all
+        draw-damaged
         APP::dirty-off
     ] [
         UI::draw
@@ -1535,7 +1562,7 @@ IMPORT GEOM
     0 fat-f STOREI
     0 filled-f STOREI
     -1 last-pat-id STOREI
-    1 pat-full STOREI
+    DIRTY_ALL damage!
     new-document
     [ on-mouse ] APP::on-mouse!
     [ on-kbd ] APP::on-kbd!
