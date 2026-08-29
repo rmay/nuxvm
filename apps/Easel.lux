@@ -71,14 +71,14 @@ IMPORT TIME
 @WIN_H         PAT_Y PAT_CELL_H PAT_ROWS * + ;
 
 ( Authentic MacPaint tool order, row-major in the 2x10 palette (see
-  easel_plan.md's target layout list). MARQUEE/PENCIL/ERASER/BRUSH/FILL/
-  LINE/SPRAY/RECT/RECT_FILLED/OVAL/OVAL_FILLED/ROUNDRECT/ROUNDRECT_FILLED
-  have real behavior so far -- the rest (LASSO/HAND/TEXT/FREEFORM*/
-  POLYGON*) are visible, correctly positioned, and inert, pending Steps 5
-  (lasso)/7/8. RECT_FILLED/OVAL_FILLED/ROUNDRECT_FILLED are their own tool
-  slots, not a filled-f toggle -- see shape-filled? below -- since MacPaint
-  puts filled variants on their own palette buttons rather than a Goodies
-  checkbox. )
+  easel_plan.md's target layout list). LASSO/MARQUEE/PENCIL/ERASER/BRUSH/
+  FILL/LINE/SPRAY/RECT/RECT_FILLED/OVAL/OVAL_FILLED/ROUNDRECT/
+  ROUNDRECT_FILLED have real behavior so far -- the rest (HAND/TEXT/
+  FREEFORM*/POLYGON*) are visible, correctly positioned, and inert, pending
+  Steps 5 (clipboard)/7/8. RECT_FILLED/OVAL_FILLED/ROUNDRECT_FILLED are
+  their own tool slots, not a filled-f toggle -- see shape-filled? below --
+  since MacPaint puts filled variants on their own palette buttons rather
+  than a Goodies checkbox. )
 @TOOL_LASSO             0 ;
 @TOOL_MARQUEE            1 ;
 @TOOL_HAND               2 ;
@@ -105,6 +105,7 @@ IMPORT TIME
 @DRAG_SHAPE      2 ;
 @DRAG_MARQUEE    3 ; ( rubber-banding out a new marquee selection )
 @DRAG_MOVE       4 ; ( dragging an already-lifted selection to a new spot )
+@DRAG_LASSO      5 ; ( freehand-tracing a lasso path )
 
 @MODE_BLACK      0 ;
 @MODE_WHITE      1 ;
@@ -182,6 +183,7 @@ IMPORT TIME
 @VFS_PATH      0x990100 ;
 @PATTERNS      0x990300 ; ( 38 * 8 bytes, one row per byte -- see init-pats )
 @BRUSHES       0x990500 ; ( 32 * 32 bytes, 16x16 1bpp masks, 2 bytes/row -- see init-brushes )
+@SEL_MASK      0x991000 ; ( BITMAP::PAGE_BYTES page: lasso's filled-interior selection mask )
 
 ( --- Small state (MM_APP_SMALL_STATE) --- )
 @tool              0x8A0000 ;
@@ -226,6 +228,13 @@ IMPORT TIME
 @sel-y1            0x8A009C ;
 @move-dx           0x8A00A0 ; ( live translation while DRAG_MOVE, canvas px )
 @move-dy           0x8A00A4 ;
+@sel-mask-active   0x8A00A8 ; ( 0/1: selection is SEL_MASK-gated (lasso) vs full-rect (marquee) )
+@lasso-minx        0x8A00AC ; ( running bbox of the traced path, while DRAG_LASSO )
+@lasso-miny        0x8A00B0 ;
+@lasso-maxx        0x8A00B4 ;
+@lasso-maxy        0x8A00B8 ;
+@lasso-start-cx    0x8A00BC ; ( first point of the path, to close the loop on mouse-up )
+@lasso-start-cy    0x8A00C0 ;
 
 ( Explicit damage bits, replacing the old single pat-full flag (whose narrow
   meaning -- "must draw-patterns redraw all swatches" -- was the exact bug: a
@@ -1308,9 +1317,17 @@ IMPORT TIME
     ] ?:
 ;
 
+( Marquee has no mask (every pixel in the rect participates); lasso gates
+  each pixel through SEL_MASK so a move only carries the traced shape, not
+  its whole bounding box. )
+@sel-px-active? { x y -- f }
+    sel-mask-active LOADI 0 = [ 1 ] [ SEL_MASK x y BITMAP::get ] ?:
+;
+
 ( Copies the selection rect out of CANVAS into TMP at the same coordinates
   (never concurrent with do-undo's own transient TMP use -- see the TMP
-  buffer comment), then blanks the vacated rect to white. )
+  buffer comment), then blanks the vacated rect to white. Only the pixels
+  sel-px-active? says are part of the selection are touched. )
 @sel-lift ( -- )
     sel-y0 LOADI { y }
         [ y sel-y1 LOADI <= ]
@@ -1318,10 +1335,12 @@ IMPORT TIME
             sel-x0 LOADI { x }
                 [ x sel-x1 LOADI <= ]
                 [
-                    CANVAS x y BITMAP::get { bit }
-                        TMP x y bit BITMAP::set
-                    }
-                    0 x y pix!
+                    x y sel-px-active? [
+                        CANVAS x y BITMAP::get { bit }
+                            TMP x y bit BITMAP::set
+                        }
+                        0 x y pix!
+                    ] ?
                     x 1 + x!
                 ] |:
             }
@@ -1331,10 +1350,13 @@ IMPORT TIME
 ;
 
 ( Writes TMP's lifted rect back into CANVAS translated by move-dx/move-dy
-  (clipped to canvas bounds), then slides sel-x0..y1 to the new location.
-  Every pixel of the rect is written, not just the set ones, so a move over
-  existing ink correctly overwrites it (a 1bpp selection has no separate
-  "transparent" value). )
+  (clipped to canvas bounds, gated by sel-px-active?), then slides
+  sel-x0..y1 to the new location. Every selected pixel is written, not just
+  the set ones, so a move over existing ink correctly overwrites it (a
+  1bpp selection has no separate "transparent" value). SEL_MASK itself is
+  NOT relocated -- a lasso selection keeps its exact shape for one move,
+  then MOUSE_UP drops sel-mask-active back to a plain bounding-box
+  selection for any further moves (see the MOUSE_UP handler). )
 @sel-drop ( -- )
     sel-y0 LOADI { y }
         [ y sel-y1 LOADI <= ]
@@ -1342,15 +1364,17 @@ IMPORT TIME
             sel-x0 LOADI { x }
                 [ x sel-x1 LOADI <= ]
                 [
-                    TMP x y BITMAP::get { bit }
-                        x move-dx LOADI + { nx }
-                            y move-dy LOADI + { ny }
-                                nx 0 >= nx CANVAS_W < AND ny 0 >= AND ny CANVAS_H < AND [
-                                    bit nx ny pix!
-                                ] ?
+                    x y sel-px-active? [
+                        TMP x y BITMAP::get { bit }
+                            x move-dx LOADI + { nx }
+                                y move-dy LOADI + { ny }
+                                    nx 0 >= nx CANVAS_W < AND ny 0 >= AND ny CANVAS_H < AND [
+                                        bit nx ny pix!
+                                    ] ?
+                                }
                             }
                         }
-                    }
+                    ] ?
                     x 1 + x!
                 ] |:
             }
@@ -1413,19 +1437,154 @@ IMPORT TIME
             sel-x0 LOADI { x }
                 [ x sel-x1 LOADI <= ]
                 [
-                    TMP x y BITMAP::get { bit }
-                        x move-dx LOADI + { nx }
-                            y move-dy LOADI + { ny }
-                                nx 0 >= nx CANVAS_W < AND ny 0 >= AND ny CANVAS_H < AND [
-                                    APP::draw-fd
-                                    CANVAS_X nx +
-                                    CANVAS_Y ny +
-                                    bit 0 = [ CLR_WHITE ] [ CLR_FG ] ?:
-                                    DRAW::pix
-                                ] ?
+                    x y sel-px-active? [
+                        TMP x y BITMAP::get { bit }
+                            x move-dx LOADI + { nx }
+                                y move-dy LOADI + { ny }
+                                    nx 0 >= nx CANVAS_W < AND ny 0 >= AND ny CANVAS_H < AND [
+                                        APP::draw-fd
+                                        CANVAS_X nx +
+                                        CANVAS_Y ny +
+                                        bit 0 = [ CLR_WHITE ] [ CLR_FG ] ?:
+                                        DRAW::pix
+                                    ] ?
+                                }
                             }
                         }
+                    ] ?
+                    x 1 + x!
+                ] |:
+            }
+            y 1 + y!
+        ] |:
+    }
+;
+
+( --- Selection: lasso (Step 5) --- )
+
+@sel-mask-clear ( -- ) SEL_MASK BITMAP::clear ;
+
+@lasso-plot { x y -- } SEL_MASK x y 1 BITMAP::set ;
+
+( 1px Bresenham into SEL_MASK, mirroring stroke-to but plotting into the
+  selection mask instead of CANVAS. clip-can already clamps every mouse
+  position to canvas bounds before this is called, and SEL_MASK's page
+  (576x720) is larger than the canvas (480x416), so no bounds check is
+  needed here. )
+@lasso-line { x0 y0 x1 y1 -- }
+    x1 x0 - ABS
+    y1 y0 - ABS NEGATE
+    x0 x1 < [ 1 ] [ -1 ] ?:
+    y0 y1 < [ 1 ] [ -1 ] ?:
+    { adx ady sx sy }
+        adx ady + { err }
+            x0 y0 lasso-plot
+            [ x0 x1 = y0 y1 = AND 0 = ]
+            [
+                err 2 * { e2 }
+                    e2 ady >= [
+                        err ady + err!
+                        x0 sx + x0!
+                    ] ?
+                    e2 adx <= [
+                        err adx + err!
+                        y0 sy + y0!
+                    ] ?
+                }
+                x0 y0 lasso-plot
+            ] |:
+        }
+    }
+;
+
+( On mouse-up: scanline-fill the traced outline's interior (even-odd rule,
+  one toggle per contiguous run of outline pixels on a row rather than per
+  pixel, so a 1px-thick traced line doesn't double-toggle), then shrink the
+  selection to the tight bbox of actual CANVAS ink inside the filled mask
+  -- falling back to the full lasso bbox if the loop enclosed no ink, so a
+  selection is never silently dropped. )
+@lasso-finish ( -- )
+    lasso-miny LOADI { y }
+        [ y lasso-maxy LOADI <= ]
+        [
+            0 { inside }
+                0 { prev }
+                    lasso-minx LOADI { x }
+                        [ x lasso-maxx LOADI <= ]
+                        [
+                            SEL_MASK x y BITMAP::get { cur }
+                                cur 1 = prev 0 = AND [
+                                    inside 0 = [ 1 inside! ] [ 0 inside! ] ?:
+                                ] ?
+                                inside 1 = cur 0 = AND [
+                                    SEL_MASK x y 1 BITMAP::set
+                                ] ?
+                                cur prev!
+                            }
+                            x 1 + x!
+                        ] |:
                     }
+                }
+            }
+            y 1 + y!
+        ] |:
+    }
+    0 { found }
+        CANVAS_W { minx }
+            -1 { maxx }
+                CANVAS_H { miny }
+                    -1 { maxy }
+                        lasso-miny LOADI { y2 }
+                            [ y2 lasso-maxy LOADI <= ]
+                            [
+                                lasso-minx LOADI { x2 }
+                                    [ x2 lasso-maxx LOADI <= ]
+                                    [
+                                        SEL_MASK x2 y2 BITMAP::get CANVAS x2 y2 BITMAP::get AND [
+                                            1 found!
+                                            x2 minx MIN minx!
+                                            x2 maxx MAX maxx!
+                                            y2 miny MIN miny!
+                                            y2 maxy MAX maxy!
+                                        ] ?
+                                        x2 1 + x2!
+                                    ] |:
+                                }
+                                y2 1 + y2!
+                            ] |:
+                        }
+                        found 0 = [
+                            lasso-minx LOADI sel-x0 STOREI
+                            lasso-miny LOADI sel-y0 STOREI
+                            lasso-maxx LOADI sel-x1 STOREI
+                            lasso-maxy LOADI sel-y1 STOREI
+                        ] [
+                            minx sel-x0 STOREI
+                            miny sel-y0 STOREI
+                            maxx sel-x1 STOREI
+                            maxy sel-y1 STOREI
+                        ] ?:
+                    }
+                }
+            }
+        }
+    }
+    1 sel-active STOREI
+    1 sel-mask-active STOREI
+;
+
+@draw-lasso-path ( -- )
+    lasso-miny LOADI { y }
+        [ y lasso-maxy LOADI <= ]
+        [
+            lasso-minx LOADI { x }
+                [ x lasso-maxx LOADI <= ]
+                [
+                    SEL_MASK x y BITMAP::get 0 > [
+                        x y can>scr { sx sy }
+                            APP::draw-fd sx sy CLR_FG DRAW::pix
+                        }
+                    ] ?
                     x 1 + x!
                 ] |:
             }
@@ -1444,10 +1603,13 @@ IMPORT TIME
             sel-x1 LOADI move-dx LOADI + sel-y1 LOADI move-dy LOADI +
             draw-sel-border
         ] [
+        drag LOADI DRAG_LASSO = [
+            draw-lasso-path
+        ] [
             sel-active LOADI [
                 sel-x0 LOADI sel-y0 LOADI sel-x1 LOADI sel-y1 LOADI draw-sel-border
             ] ?
-        ] ?:
+        ] ?: ] ?:
     ] ?
 ;
 
@@ -1565,6 +1727,7 @@ IMPORT TIME
                     0 fat-ox STOREI
                     0 fat-oy STOREI
                     0 sel-active STOREI
+                    0 sel-mask-active STOREI
                     0 move-dx STOREI
                     0 move-dy STOREI
                 ] ?
@@ -1589,6 +1752,7 @@ IMPORT TIME
     1 pat-id STOREI
     1 rng STOREI
     0 sel-active STOREI
+    0 sel-mask-active STOREI
     0 move-dx STOREI
     0 move-dy STOREI
     sync-title
@@ -1883,6 +2047,12 @@ IMPORT TIME
   (Steps 5/7/8 and the rest of Step 4) get their index number so the
   palette is legible without pretending they work. )
 @draw-tool-icon { i x y color -- }
+    i TOOL_LASSO = [
+        APP::draw-fd x 6 + y 6 + 12 8 color DRAW::frame-oval
+    ] [
+    i TOOL_MARQUEE = [
+        APP::draw-fd x 6 + y 5 + 13 11 color DRAW::frame-rect
+    ] [
     i TOOL_PENCIL = [
         APP::draw-fd x 7 + y 17 + x 18 + y 6 + color DRAW::line
         APP::draw-fd x 16 + y 4 + 4 4 color DRAW::fill-rect
@@ -1929,7 +2099,7 @@ IMPORT TIME
         APP::draw-fd x 17 + y 12 + color DRAW::pix
     ] [
         APP::draw-fd x 12 + y 5 + i color 0 DRAW::draw-int
-    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
 ;
 
 @draw-palette ( -- )
@@ -2331,7 +2501,7 @@ IMPORT TIME
     tool LOADI TOOL_ROUNDRECT_FILLED = OR
 ;
 
-( Gates hit-tool's palette clicks: LASSO/HAND/TEXT/FREEFORM*/POLYGON* are
+( Gates hit-tool's palette clicks: HAND/TEXT/FREEFORM*/POLYGON* are
   visible in the palette but not wired to anything yet, so clicking them
   is a no-op rather than leaving `tool` pointing at a slot
   nothing else recognizes. )
@@ -2341,7 +2511,7 @@ IMPORT TIME
     t TOOL_RECT = OR t TOOL_RECT_FILLED = OR
     t TOOL_OVAL = OR t TOOL_OVAL_FILLED = OR
     t TOOL_ROUNDRECT = OR t TOOL_ROUNDRECT_FILLED = OR
-    t TOOL_MARQUEE = OR
+    t TOOL_MARQUEE = OR t TOOL_LASSO = OR
 ;
 
 @page-down { mx my -- }
@@ -2365,7 +2535,32 @@ IMPORT TIME
                 cx sel-x1 STOREI
                 cy sel-y1 STOREI
                 0 sel-active STOREI
+                0 sel-mask-active STOREI
                 DRAG_MARQUEE drag STOREI
+            ] ?:
+            APP::dirty!
+        ] [
+        tool LOADI TOOL_LASSO = [
+            cx cy in-sel? [
+                cx last-cx STOREI
+                cy last-cy STOREI
+                0 move-dx STOREI
+                0 move-dy STOREI
+                sel-lift
+                DRAG_MOVE drag STOREI
+            ] [
+                sel-mask-clear
+                cx lasso-start-cx STOREI
+                cy lasso-start-cy STOREI
+                cx lasso-minx STOREI
+                cx lasso-maxx STOREI
+                cy lasso-miny STOREI
+                cy lasso-maxy STOREI
+                cx last-cx STOREI
+                cy last-cy STOREI
+                cx cy lasso-plot
+                0 sel-active STOREI
+                DRAG_LASSO drag STOREI
             ] ?:
             APP::dirty!
         ] [
@@ -2386,7 +2581,7 @@ IMPORT TIME
             cy shape-y1 STOREI
             DRAG_SHAPE drag STOREI
             APP::dirty!
-        ] ? ] ?: ] ?: ] ?:
+        ] ? ] ?: ] ?: ] ?: ] ?:
     }
 ;
 
@@ -2412,6 +2607,16 @@ IMPORT TIME
         drag LOADI DRAG_MOVE = [
             cx last-cx LOADI - move-dx STOREI
             cy last-cy LOADI - move-dy STOREI
+            APP::dirty!
+        ] ?
+        drag LOADI DRAG_LASSO = [
+            last-cx LOADI last-cy LOADI cx cy lasso-line
+            cx last-cx STOREI
+            cy last-cy STOREI
+            cx lasso-minx LOADI MIN lasso-minx STOREI
+            cx lasso-maxx LOADI MAX lasso-maxx STOREI
+            cy lasso-miny LOADI MIN lasso-miny STOREI
+            cy lasso-maxy LOADI MAX lasso-maxy STOREI
             APP::dirty!
         ] ?
     }
@@ -2444,7 +2649,7 @@ IMPORT TIME
         mx my hit-tool { t }
             t 0 >= [
                 t tool-implemented? [
-                    t TOOL_MARQUEE = 0 = sel-active LOADI AND [
+                    t TOOL_MARQUEE = t TOOL_LASSO = OR 0 = sel-active LOADI AND [
                         0 sel-active STOREI
                     ] ?
                     t tool STOREI
@@ -2502,7 +2707,15 @@ IMPORT TIME
         0 mouse-held STOREI
         drag LOADI DRAG_SHAPE = [ commit-shape ] ?
         drag LOADI DRAG_MARQUEE = [ commit-marquee ] ?
-        drag LOADI DRAG_MOVE = [ sel-drop mark-dirty ] ?
+        ( sel-mask-active drops back to plain-bbox after one move -- see
+          sel-drop's comment; a lasso selection keeps its exact shape only
+          for its first move. )
+        drag LOADI DRAG_MOVE = [ sel-drop 0 sel-mask-active STOREI mark-dirty ] ?
+        drag LOADI DRAG_LASSO = [
+            last-cx LOADI last-cy LOADI lasso-start-cx LOADI lasso-start-cy LOADI lasso-line
+            lasso-finish
+            mark-dirty
+        ] ?
         DRAG_NONE drag STOREI
         APP::dirty!
     ] ?
@@ -2681,8 +2894,13 @@ IMPORT TIME
     -1 br-last-idx STOREI
     0 br-last-time STOREI
     0 sel-active STOREI
+    0 sel-mask-active STOREI
     0 move-dx STOREI
     0 move-dy STOREI
+    0 lasso-minx STOREI
+    0 lasso-miny STOREI
+    0 lasso-maxx STOREI
+    0 lasso-maxy STOREI
     DIRTY_ALL damage!
     new-document
     [ on-mouse ] APP::on-mouse!
