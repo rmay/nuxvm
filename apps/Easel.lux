@@ -13,6 +13,7 @@ INCLUDE "lib/ui.lux"
 INCLUDE "lib/sf.lux"
 INCLUDE "lib/geom.lux"
 INCLUDE "lib/bitmap.lux"
+INCLUDE "lib/time.lux"
 
 MODULE MAIN
 VERSION 400000
@@ -26,6 +27,7 @@ IMPORT UI
 IMPORT SF
 IMPORT GEOM
 IMPORT BITMAP
+IMPORT TIME
 
 ( --- Geometry: sized for the full 20-tool / 38-pattern layout to be
   comfortable at its own natural size, then the window fits that -- not the
@@ -128,6 +130,22 @@ IMPORT BITMAP
 @CLR_CONFIRM_TEXT   0xFFFFFF ;
 @CLR_CONFIRM_BTN    0x505050 ;
 
+( Edit Pattern modal: an 8x8 grid of clickable cells, reusing the confirm
+  dialog's dim/panel/border/text/btn palette. )
+@EPAT_CELL        20 ;
+@EPAT_GRID        EPAT_CELL 8 * ;
+@EPAT_PANEL_W     EPAT_GRID 40 + ;
+@EPAT_PANEL_H     EPAT_GRID 74 + ;
+@EPAT_PANEL_X     WIN_W EPAT_PANEL_W - 2 / ;
+@EPAT_PANEL_Y     WIN_H EPAT_PANEL_H - 2 / ;
+@EPAT_GRID_X      EPAT_PANEL_X 20 + ;
+@EPAT_GRID_Y      EPAT_PANEL_Y 34 + ;
+@EPAT_BTN_W        70 ;
+@EPAT_BTN_H        20 ;
+@EPAT_BTN_Y       EPAT_GRID_Y EPAT_GRID + 14 + ;
+@EPAT_OK_X        EPAT_PANEL_X EPAT_PANEL_W + 20 - EPAT_BTN_W - ;
+@EPAT_CANCEL_X    EPAT_PANEL_X 20 + ;
+
 ( --- Bulk buffers (MM_APP_BULK_BUFFER 0x900000..0xA00000) ---
   CANVAS/UNDO/TMP are now packed 1bpp BITMAP::PAGE_BYTES (51840) pages, not
   one-byte-per-pixel CANVAS_BYTES (175104) -- see lib/bitmap.lux. TMP sits at
@@ -171,6 +189,10 @@ IMPORT BITMAP
 @last-pat-id       0x8A0060 ; ( previously drawn pattern selection, -1 = none yet )
 @damage            0x8A0064 ; ( bitmask of DIRTY_* below: what changed since the last draw )
 @pen-width         0x8A0068 ; ( index into LW_VALUES; drives line/rect/oval outline thickness )
+@epat-last-idx     0x8A006C ; ( pattern-strip double-click tracking: last clicked swatch index )
+@epat-last-time    0x8A0070 ;
+@edit-pat-open     0x8A0074 ; ( 0/1: Edit Pattern modal open )
+@edit-pat-id       0x8A0078 ; ( which PATTERNS slot the editor is modifying )
 
 ( Explicit damage bits, replacing the old single pat-full flag (whose narrow
   meaning -- "must draw-patterns redraw all swatches" -- was the exact bug: a
@@ -864,6 +886,20 @@ IMPORT BITMAP
     pid 7 b7 pat-row
 ;
 
+@epat-byte@ { pid row -- byte } PATTERNS pid 8 * + row + load-byte ;
+
+@epat-bit { pid col row -- b }
+    pid row epat-byte@
+    128 col 7 AND RSHIFT AND
+    0 = [ 0 ] [ 1 ] ?:
+;
+
+@epat-toggle { pid col row -- }
+    pid row epat-byte@
+    128 col 7 AND RSHIFT XOR
+    PATTERNS pid 8 * + row + store-byte
+;
+
 @init-pats ( -- )
     0 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 set-pat
     1 0xFF 0xFF 0xFF 0xFF 0xFF 0xFF 0xFF 0xFF set-pat
@@ -1234,6 +1270,91 @@ IMPORT BITMAP
         ] ?
     ] ?
     drop
+;
+
+@edit-pat-draw ( -- )
+    edit-pat-open LOADI [
+        APP::draw-fd 0 0 WIN_W WIN_H CLR_CONFIRM_DIM DRAW::fill-rect
+        APP::draw-fd EPAT_PANEL_X EPAT_PANEL_Y EPAT_PANEL_W EPAT_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
+        APP::draw-fd EPAT_PANEL_X EPAT_PANEL_Y EPAT_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd EPAT_PANEL_X EPAT_PANEL_Y EPAT_PANEL_H + 1 - EPAT_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd EPAT_PANEL_X EPAT_PANEL_Y 1 EPAT_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd EPAT_PANEL_X EPAT_PANEL_W + 1 - EPAT_PANEL_Y 1 EPAT_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd EPAT_PANEL_X 12 + EPAT_PANEL_Y 8 + T"Edit Pattern" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        0 { row }
+            [ row 8 < ]
+            [
+                0 { col }
+                    [ col 8 < ]
+                    [
+                        edit-pat-id LOADI col row epat-bit 0 = [ CLR_WHITE ] [ CLR_FG ] ?: { cc }
+                            APP::draw-fd
+                                EPAT_GRID_X col EPAT_CELL * +
+                                EPAT_GRID_Y row EPAT_CELL * +
+                                EPAT_CELL 1 - EPAT_CELL 1 - cc DRAW::fill-rect
+                        }
+                        col 1 + col!
+                    ] |:
+                }
+                row 1 + row!
+            ] |:
+        }
+        APP::draw-fd EPAT_GRID_X EPAT_GRID_Y EPAT_GRID EPAT_GRID CLR_CONFIRM_BORDER DRAW::frame-rect
+        APP::draw-fd EPAT_OK_X EPAT_BTN_Y EPAT_BTN_W EPAT_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
+        APP::draw-fd EPAT_OK_X 24 + EPAT_BTN_Y 6 + T"OK" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        APP::draw-fd EPAT_CANCEL_X EPAT_BTN_Y EPAT_BTN_W EPAT_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
+        APP::draw-fd EPAT_CANCEL_X 10 + EPAT_BTN_Y 6 + T"Cancel" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+    ] ?
+;
+
+@epat-in-btn? { bx by mx my -- f }
+    mx bx >= mx bx EPAT_BTN_W + < AND
+    my by >= AND my by EPAT_BTN_H + < AND
+;
+
+( OK and Cancel both just close the modal -- every toggle already wrote
+  straight into PATTERNS, so there is nothing to commit/discard. )
+@edit-pat-mouse { mpkt -- }
+    mpkt EVENT::mouse-type EVENT::MOUSE_DOWN = [
+        mpkt EVENT::mouse-x { mx }
+            mpkt EVENT::mouse-y { my }
+                EPAT_OK_X EPAT_BTN_Y mx my epat-in-btn?
+                EPAT_CANCEL_X EPAT_BTN_Y mx my epat-in-btn? OR [
+                    0 edit-pat-open STOREI
+                    0 APP::modal!
+                    APP::dirty!
+                ] [
+                    mx EPAT_GRID_X >= mx EPAT_GRID_X EPAT_GRID + < AND
+                    my EPAT_GRID_Y >= AND my EPAT_GRID_Y EPAT_GRID + < AND [
+                        edit-pat-id LOADI
+                        mx EPAT_GRID_X - EPAT_CELL /
+                        my EPAT_GRID_Y - EPAT_CELL /
+                        epat-toggle
+                        APP::dirty!
+                    ] ?
+                ] ?:
+            }
+        }
+    ] ?
+;
+
+@edit-pat-kbd ( kpkt -- )
+    dup EVENT::kbd-type EVENT::KEY_DOWN = [
+        dup EVENT::kbd-key EVENT::KEY_ESC = [
+            0 edit-pat-open STOREI
+            0 APP::modal!
+            APP::dirty!
+        ] ?
+    ] ?
+    drop
+;
+
+@menu-edit-pat ( val -- )
+    drop
+    pat-id LOADI edit-pat-id STOREI
+    1 edit-pat-open STOREI
+    1 APP::modal!
+    APP::dirty!
 ;
 
 @on-pick ( path -- )
@@ -1634,6 +1755,7 @@ IMPORT BITMAP
     UI::draw
     SF::open? [ SF::draw ] ?
     confirm-new-draw
+    edit-pat-draw
     0 damage STOREI
 ;
 
@@ -1820,6 +1942,16 @@ IMPORT BITMAP
                 mx my in-pat? [
                     mx my hit-pat { pi }
                         pi 0 >= [
+                            TIME::milli@ { now }
+                                pi epat-last-idx LOADI =
+                                now epat-last-time LOADI - 400 < AND [
+                                    pi edit-pat-id STOREI
+                                    1 edit-pat-open STOREI
+                                    1 APP::modal!
+                                ] ?
+                                now epat-last-time STOREI
+                            }
+                            pi epat-last-idx STOREI
                             pi pat-id STOREI
                             APP::dirty!
                         ] ?
@@ -1854,6 +1986,9 @@ IMPORT BITMAP
     confirm-new-open LOADI [
         confirm-new-mouse
     ] [
+    edit-pat-open LOADI [
+        edit-pat-mouse
+    ] [
     SF::open? [
         SF::mouse
     ] [
@@ -1866,6 +2001,7 @@ IMPORT BITMAP
                 handle-page-mouse
             ] ?:
         }
+    ] ?:
     ] ?:
     ] ?:
 ;
@@ -1902,6 +2038,9 @@ IMPORT BITMAP
 @on-kbd ( kpkt -- )
     confirm-new-open LOADI [
         confirm-new-kbd
+    ] [
+    edit-pat-open LOADI [
+        edit-pat-kbd
     ] [
     SF::open? [
         SF::kbd
@@ -1944,17 +2083,19 @@ IMPORT BITMAP
         drop
     ] ?:
     ] ?:
+    ] ?:
 ;
 
 @on-frame ( -- )
     UI::handle
-    APP::dirty? SF::open? OR confirm-new-open LOADI OR [
+    APP::dirty? SF::open? OR confirm-new-open LOADI OR edit-pat-open LOADI OR [
         draw-damaged
         APP::dirty-off
     ] [
         UI::draw
         SF::open? [ SF::draw ] ?
         confirm-new-draw
+        edit-pat-draw
     ] ?:
 ;
 
@@ -1979,6 +2120,8 @@ IMPORT BITMAP
     T"Goodies" UI::menu
     T"Grid"    [ menu-grid ]    UI::check-item
     T"FatBits" [ menu-fat ]     UI::check-item
+    UI::sep
+    T"Edit Pattern..." [ menu-edit-pat ] UI::item
     T"Grid" 0 UI::item-set
     T"FatBits" 0 UI::item-set
     [ on-pick ] SF::on-ok!
@@ -1988,6 +2131,9 @@ IMPORT BITMAP
     0 fat-f STOREI
     0 pen-width STOREI
     -1 last-pat-id STOREI
+    0 edit-pat-open STOREI
+    -1 epat-last-idx STOREI
+    0 epat-last-time STOREI
     DIRTY_ALL damage!
     new-document
     [ on-mouse ] APP::on-mouse!
