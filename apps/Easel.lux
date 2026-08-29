@@ -71,14 +71,14 @@ IMPORT TIME
 @WIN_H         PAT_Y PAT_CELL_H PAT_ROWS * + ;
 
 ( Authentic MacPaint tool order, row-major in the 2x10 palette (see
-  easel_plan.md's target layout list). PENCIL/ERASER/BRUSH/FILL/LINE/SPRAY/
-  RECT/RECT_FILLED/OVAL/OVAL_FILLED/ROUNDRECT/ROUNDRECT_FILLED have real
-  behavior so far -- the rest (LASSO/MARQUEE/HAND/TEXT/FREEFORM*/POLYGON*)
-  are visible, correctly positioned, and inert, pending Steps 5/7/8 and the
-  rest of Step 4's shape work. RECT_FILLED/OVAL_FILLED/ROUNDRECT_FILLED are
-  their own tool slots, not a filled-f toggle -- see shape-filled? below --
-  since MacPaint puts filled variants on their own palette buttons rather
-  than a Goodies checkbox. )
+  easel_plan.md's target layout list). MARQUEE/PENCIL/ERASER/BRUSH/FILL/
+  LINE/SPRAY/RECT/RECT_FILLED/OVAL/OVAL_FILLED/ROUNDRECT/ROUNDRECT_FILLED
+  have real behavior so far -- the rest (LASSO/HAND/TEXT/FREEFORM*/
+  POLYGON*) are visible, correctly positioned, and inert, pending Steps 5
+  (lasso)/7/8. RECT_FILLED/OVAL_FILLED/ROUNDRECT_FILLED are their own tool
+  slots, not a filled-f toggle -- see shape-filled? below -- since MacPaint
+  puts filled variants on their own palette buttons rather than a Goodies
+  checkbox. )
 @TOOL_LASSO             0 ;
 @TOOL_MARQUEE            1 ;
 @TOOL_HAND               2 ;
@@ -103,6 +103,8 @@ IMPORT TIME
 @DRAG_NONE       0 ;
 @DRAG_PAINT      1 ;
 @DRAG_SHAPE      2 ;
+@DRAG_MARQUEE    3 ; ( rubber-banding out a new marquee selection )
+@DRAG_MOVE       4 ; ( dragging an already-lifted selection to a new spot )
 
 @MODE_BLACK      0 ;
 @MODE_WHITE      1 ;
@@ -217,6 +219,13 @@ IMPORT TIME
 @brush-pick-open   0x8A0080 ; ( 0/1: Brush Shape modal open )
 @br-last-idx       0x8A0084 ; ( tool-palette double-click tracking, separate from epat-last-* )
 @br-last-time      0x8A0088 ;
+@sel-active        0x8A008C ; ( 0/1: a marquee selection is currently marked )
+@sel-x0            0x8A0090 ; ( canonical canvas-space rect, min<=max always once committed )
+@sel-y0            0x8A0094 ;
+@sel-x1            0x8A0098 ;
+@sel-y1            0x8A009C ;
+@move-dx           0x8A00A0 ; ( live translation while DRAG_MOVE, canvas px )
+@move-dy           0x8A00A4 ;
 
 ( Explicit damage bits, replacing the old single pat-full flag (whose narrow
   meaning -- "must draw-patterns redraw all swatches" -- was the exact bug: a
@@ -1073,9 +1082,29 @@ IMPORT TIME
     mark-dirty
 ;
 
+@fill-rect-white { x0 y0 x1 y1 -- }
+    x0 y0 x1 y1 canon-xy { minx miny maxx maxy }
+        miny { y }
+            [ y maxy <= ]
+            [
+                0 minx y maxx minx - 1 + hspan-bit
+                y 1 + y!
+            ] |:
+        }
+    }
+;
+
+( Edit > Clear only wipes the marquee selection's rect (and drops it) when
+  one is active, matching MacPaint -- otherwise it's the old whole-canvas
+  clear. )
 @do-clear ( -- )
     snapshot
-    CANVAS clear-buf
+    sel-active LOADI [
+        sel-x0 LOADI sel-y0 LOADI sel-x1 LOADI sel-y1 LOADI fill-rect-white
+        0 sel-active STOREI
+    ] [
+        CANVAS clear-buf
+    ] ?:
     mark-dirty
 ;
 
@@ -1270,6 +1299,158 @@ IMPORT TIME
     ] ?:
 ;
 
+( --- Selection: marquee (Step 5) --- )
+
+@in-sel? { cx cy -- f }
+    sel-active LOADI 0 = [ 0 ] [
+        cx sel-x0 LOADI >= cx sel-x1 LOADI <= AND
+        cy sel-y0 LOADI >= AND cy sel-y1 LOADI <= AND
+    ] ?:
+;
+
+( Copies the selection rect out of CANVAS into TMP at the same coordinates
+  (never concurrent with do-undo's own transient TMP use -- see the TMP
+  buffer comment), then blanks the vacated rect to white. )
+@sel-lift ( -- )
+    sel-y0 LOADI { y }
+        [ y sel-y1 LOADI <= ]
+        [
+            sel-x0 LOADI { x }
+                [ x sel-x1 LOADI <= ]
+                [
+                    CANVAS x y BITMAP::get { bit }
+                        TMP x y bit BITMAP::set
+                    }
+                    0 x y pix!
+                    x 1 + x!
+                ] |:
+            }
+            y 1 + y!
+        ] |:
+    }
+;
+
+( Writes TMP's lifted rect back into CANVAS translated by move-dx/move-dy
+  (clipped to canvas bounds), then slides sel-x0..y1 to the new location.
+  Every pixel of the rect is written, not just the set ones, so a move over
+  existing ink correctly overwrites it (a 1bpp selection has no separate
+  "transparent" value). )
+@sel-drop ( -- )
+    sel-y0 LOADI { y }
+        [ y sel-y1 LOADI <= ]
+        [
+            sel-x0 LOADI { x }
+                [ x sel-x1 LOADI <= ]
+                [
+                    TMP x y BITMAP::get { bit }
+                        x move-dx LOADI + { nx }
+                            y move-dy LOADI + { ny }
+                                nx 0 >= nx CANVAS_W < AND ny 0 >= AND ny CANVAS_H < AND [
+                                    bit nx ny pix!
+                                ] ?
+                            }
+                        }
+                    }
+                    x 1 + x!
+                ] |:
+            }
+            y 1 + y!
+        ] |:
+    }
+    sel-x0 LOADI move-dx LOADI + sel-x0 STOREI
+    sel-x1 LOADI move-dx LOADI + sel-x1 STOREI
+    sel-y0 LOADI move-dy LOADI + sel-y0 STOREI
+    sel-y1 LOADI move-dy LOADI + sel-y1 STOREI
+    0 move-dx STOREI
+    0 move-dy STOREI
+;
+
+@commit-marquee ( -- )
+    sel-x0 LOADI sel-y0 LOADI sel-x1 LOADI sel-y1 LOADI canon-xy
+    sel-y1 STOREI
+    sel-x1 STOREI
+    sel-y0 STOREI
+    sel-x0 STOREI
+    1 sel-active STOREI
+;
+
+@draw-sel-border { x0 y0 x1 y1 -- }
+    x0 y0 can>scr { sx0 sy0 }
+        x1 y1 can>scr { sx1 sy1 }
+            sx0 { x }
+                [ x sx1 <= ]
+                [
+                    x sx0 - 2 MOD 0 = [
+                        APP::draw-fd x sy0 CLR_FG DRAW::pix
+                        APP::draw-fd x sy1 CLR_FG DRAW::pix
+                    ] ?
+                    x 1 + x!
+                ] |:
+            }
+            sy0 { y }
+                [ y sy1 <= ]
+                [
+                    y sy0 - 2 MOD 0 = [
+                        APP::draw-fd sx0 y CLR_FG DRAW::pix
+                        APP::draw-fd sx1 y CLR_FG DRAW::pix
+                    ] ?
+                    y 1 + y!
+                ] |:
+            }
+        }
+    }
+;
+
+( Purely a screen-space overlay -- CANVAS keeps the vacated rect blank for
+  the whole drag, so nothing here touches CANVAS until sel-drop on mouse-up.
+  O(w*h) DRAW::pix calls per frame while actively moving; fine for the
+  modest selections a marquee tool typically makes, batched through
+  DRAW::batch-begin like every other draw call in this app. )
+@draw-sel-float ( -- )
+    sel-y0 LOADI { y }
+        [ y sel-y1 LOADI <= ]
+        [
+            sel-x0 LOADI { x }
+                [ x sel-x1 LOADI <= ]
+                [
+                    TMP x y BITMAP::get { bit }
+                        x move-dx LOADI + { nx }
+                            y move-dy LOADI + { ny }
+                                nx 0 >= nx CANVAS_W < AND ny 0 >= AND ny CANVAS_H < AND [
+                                    APP::draw-fd
+                                    CANVAS_X nx +
+                                    CANVAS_Y ny +
+                                    bit 0 = [ CLR_WHITE ] [ CLR_FG ] ?:
+                                    DRAW::pix
+                                ] ?
+                            }
+                        }
+                    }
+                    x 1 + x!
+                ] |:
+            }
+            y 1 + y!
+        ] |:
+    }
+;
+
+( FatBits isn't wired up to selection coordinates yet, so the overlay is
+  1x-view only for now. )
+@draw-selection ( -- )
+    fat-f LOADI 0 = [
+        drag LOADI DRAG_MOVE = [
+            draw-sel-float
+            sel-x0 LOADI move-dx LOADI + sel-y0 LOADI move-dy LOADI +
+            sel-x1 LOADI move-dx LOADI + sel-y1 LOADI move-dy LOADI +
+            draw-sel-border
+        ] [
+            sel-active LOADI [
+                sel-x0 LOADI sel-y0 LOADI sel-x1 LOADI sel-y1 LOADI draw-sel-border
+            ] ?
+        ] ?:
+    ] ?
+;
+
 @clip-can { x y -- x' y' }
     x 0 MAX CANVAS_W 1 - MIN
     y 0 MAX CANVAS_H 1 - MIN
@@ -1383,6 +1564,9 @@ IMPORT TIME
                     0 undo-ok STOREI
                     0 fat-ox STOREI
                     0 fat-oy STOREI
+                    0 sel-active STOREI
+                    0 move-dx STOREI
+                    0 move-dy STOREI
                 ] ?
             ] ?:
         }
@@ -1404,6 +1588,9 @@ IMPORT TIME
     TOOL_PENCIL tool STOREI
     1 pat-id STOREI
     1 rng STOREI
+    0 sel-active STOREI
+    0 move-dx STOREI
+    0 move-dy STOREI
     sync-title
     APP::dirty!
 ;
@@ -2041,6 +2228,7 @@ IMPORT TIME
     ] ?
     draw-canvas
     draw-rubber
+    draw-selection
     draw-palette
     draw-linewidths
     draw-patterns
@@ -2143,9 +2331,9 @@ IMPORT TIME
     tool LOADI TOOL_ROUNDRECT_FILLED = OR
 ;
 
-( Gates hit-tool's palette clicks: LASSO/MARQUEE/HAND/TEXT/FREEFORM*/
-  POLYGON* are visible in the palette but not wired to anything yet, so
-  clicking them is a no-op rather than leaving `tool` pointing at a slot
+( Gates hit-tool's palette clicks: LASSO/HAND/TEXT/FREEFORM*/POLYGON* are
+  visible in the palette but not wired to anything yet, so clicking them
+  is a no-op rather than leaving `tool` pointing at a slot
   nothing else recognizes. )
 @tool-implemented? { t -- f }
     t TOOL_FILL = t TOOL_SPRAY = OR t TOOL_BRUSH = OR t TOOL_PENCIL = OR
@@ -2153,6 +2341,7 @@ IMPORT TIME
     t TOOL_RECT = OR t TOOL_RECT_FILLED = OR
     t TOOL_OVAL = OR t TOOL_OVAL_FILLED = OR
     t TOOL_ROUNDRECT = OR t TOOL_ROUNDRECT_FILLED = OR
+    t TOOL_MARQUEE = OR
 ;
 
 @page-down { mx my -- }
@@ -2161,6 +2350,24 @@ IMPORT TIME
             snapshot
             cx cy flood-from
             mark-dirty
+        ] [
+        tool LOADI TOOL_MARQUEE = [
+            cx cy in-sel? [
+                cx last-cx STOREI
+                cy last-cy STOREI
+                0 move-dx STOREI
+                0 move-dy STOREI
+                sel-lift
+                DRAG_MOVE drag STOREI
+            ] [
+                cx sel-x0 STOREI
+                cy sel-y0 STOREI
+                cx sel-x1 STOREI
+                cy sel-y1 STOREI
+                0 sel-active STOREI
+                DRAG_MARQUEE drag STOREI
+            ] ?:
+            APP::dirty!
         ] [
         paint-tool? [
             snapshot
@@ -2179,7 +2386,7 @@ IMPORT TIME
             cy shape-y1 STOREI
             DRAG_SHAPE drag STOREI
             APP::dirty!
-        ] ? ] ?: ] ?:
+        ] ? ] ?: ] ?: ] ?:
     }
 ;
 
@@ -2195,6 +2402,16 @@ IMPORT TIME
             shape-x0 LOADI shape-y0 LOADI cx cy tool LOADI apply-shift
             shape-y1 STOREI
             shape-x1 STOREI
+            APP::dirty!
+        ] ?
+        drag LOADI DRAG_MARQUEE = [
+            cx sel-x1 STOREI
+            cy sel-y1 STOREI
+            APP::dirty!
+        ] ?
+        drag LOADI DRAG_MOVE = [
+            cx last-cx LOADI - move-dx STOREI
+            cy last-cy LOADI - move-dy STOREI
             APP::dirty!
         ] ?
     }
@@ -2227,6 +2444,9 @@ IMPORT TIME
         mx my hit-tool { t }
             t 0 >= [
                 t tool-implemented? [
+                    t TOOL_MARQUEE = 0 = sel-active LOADI AND [
+                        0 sel-active STOREI
+                    ] ?
                     t tool STOREI
                     DRAG_NONE drag STOREI
                     t TOOL_BRUSH = [
@@ -2281,6 +2501,8 @@ IMPORT TIME
     mpkt EVENT::mouse-type EVENT::MOUSE_UP = [
         0 mouse-held STOREI
         drag LOADI DRAG_SHAPE = [ commit-shape ] ?
+        drag LOADI DRAG_MARQUEE = [ commit-marquee ] ?
+        drag LOADI DRAG_MOVE = [ sel-drop mark-dirty ] ?
         DRAG_NONE drag STOREI
         APP::dirty!
     ] ?
@@ -2359,6 +2581,10 @@ IMPORT TIME
         dup EVENT::kbd-mods EVENT::MOD_SHIFT AND shift-mod STOREI
         dup EVENT::kbd-type EVENT::KEY_DOWN = [
             dup EVENT::kbd-key EVENT::KEY_ESC = [
+                sel-active LOADI [
+                    0 sel-active STOREI
+                    APP::dirty!
+                ] ?
                 UI::escape drop
             ] [
                 dup EVENT::kbd-mods
@@ -2454,6 +2680,9 @@ IMPORT TIME
     0 brush-pick-open STOREI
     -1 br-last-idx STOREI
     0 br-last-time STOREI
+    0 sel-active STOREI
+    0 move-dx STOREI
+    0 move-dy STOREI
     DIRTY_ALL damage!
     new-document
     [ on-mouse ] APP::on-mouse!

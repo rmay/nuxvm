@@ -3344,6 +3344,67 @@ static void test_easel_paint_save(void) {
     quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
+static int easel_bit_set(const uint8_t* body, int n, int col, int row) {
+    /* EAS1 body starts after the 8-byte header; ROW_BYTES=60 for
+     * CANVAS_W=480, MSB-first bit order (see lib/bitmap.lux). */
+    int off = 8 + row * 60 + col / 8;
+    if (off < 0 || off >= n) return -1;
+    return (body[off] & (128 >> (col % 8))) != 0;
+}
+
+static void test_easel_marquee_move(void) {
+    printf("Testing apps/Easel.lux: marquee-select and move a pixel...\n");
+    Machine* probe = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    if (!probe) return;
+    machine_free(probe);
+
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    /* Pencil (default tool) paints one pixel at screen (100,50) ->
+     * canvas (20,30) (CANVAS_X=80, CANVAS_Y=20). */
+    quill_lux_click(m, mc, 100, 50);
+    quill_lux_pump(m, 20);
+
+    /* Marquee tool: palette cell 1, x in [40,80) y in [20,52). */
+    quill_lux_click(m, mc, 60, 36);
+    quill_lux_pump(m, 20);
+
+    /* Drag out a marquee enclosing canvas (20,30): screen (90,40)..(115,65)
+     * is canvas (10,20)..(35,45). */
+    lux_drag(m, mc, 90, 40, 115, 65);
+    quill_lux_pump(m, 20);
+
+    /* Drag from inside the selection (still over the painted pixel) 50px
+     * right, moving canvas (20,30) -> (70,30). */
+    lux_drag(m, mc, 100, 50, 150, 50);
+    quill_lux_pump(m, 20);
+
+    quill_lux_key(m, kc, 's', 8); /* Cmd+S */
+    int n = pump_until_file(m, "untitled.eas", 24968, 2000);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+
+    assert(n == 24968);
+    uint8_t body[25000];
+    n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
+    assert(n == 24968);
+
+    assert(easel_bit_set(body, n, 20, 30) == 0);   /* source now blank */
+    assert(easel_bit_set(body, n, 70, 30) == 1);   /* destination now set */
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
 // -----------------------------------------------------------------------------
 // main
 // -----------------------------------------------------------------------------
@@ -3437,6 +3498,7 @@ int main(void) {
     test_illumos_collection_click();
     test_nib_rect_save();
     test_easel_paint_save();
+    test_easel_marquee_move();
 
     printf("\n=== ALL COMPILER TESTS PASSED ===\n\n");
     return 0;
