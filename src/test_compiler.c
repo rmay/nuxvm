@@ -3310,30 +3310,31 @@ static void test_easel_paint_save(void) {
     quill_lux_pump(m, 40);
     assert(!m->cpu->halted);
 
-    /* Pencil is the default tool. Canvas origin CANVAS_X=72 CANVAS_Y=20
-     * (the authentic-layout 440x280 viewport onto the page, Step 9). */
+    /* Pencil is the default tool. Canvas origin CANVAS_X=80 (PAL_W)
+     * CANVAS_Y=20 (BAR_H) -- geometry sized to the tools, not a fixed
+     * window size (see easel_plan.md / the Easel rewrite commits). */
     quill_lux_click(m, mc, 90, 46);
     quill_lux_click(m, mc, 100, 50);
     quill_lux_pump(m, 20);
 
-    /* pack-bits walks 440x280 pixels; machine_tick caps at 100k ops, so
+    /* pack-bits walks 480x416 pixels; machine_tick caps at 100k ops, so
      * the save spans many frames. */
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 15408, 2000);
+    int n = pump_until_file(m, "untitled.eas", 24968, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
     uint8_t got[64];
     memset(got, 0, sizeof(got));
-    assert(n == 15408);
+    assert(n == 24968);
     n = lux_file_read("/sys/file/untitled.eas", got, (int) sizeof(got));
     assert(n >= 8);
     assert(got[0] == 'E' && got[1] == 'A' && got[2] == 'S' && got[3] == '1');
 
-    uint8_t body[16000];
+    uint8_t body[25000];
     n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
-    assert(n == 15408);
+    assert(n == 24968);
     int nonzero = 0;
     for (int i = 8; i < n; i++) {
         if (body[i]) nonzero++;

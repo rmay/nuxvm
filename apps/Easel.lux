@@ -26,42 +26,44 @@ IMPORT SF
 IMPORT GEOM
 IMPORT BITMAP
 
-( --- Geometry: authentic MacPaint 512x342, sized for the full 20-tool /
-  38-pattern layout up front (see easel_plan.md's target layout) rather than
-  the old 600x448 / 8-tool sketch, so later steps fill in behavior against
-  final geometry instead of resizing again. )
-@WIN_W         512 ;
-@WIN_H         342 ;
+( --- Geometry: sized for the full 20-tool / 38-pattern layout to be
+  comfortable at its own natural size, then the window fits that -- not the
+  other way around (the 512x342 authentic-MacPaint size was tried first and
+  came out cramped, so it's gone; see easel_plan.md for the tool/pattern
+  content this still follows). All the *_CELL_* sizes below are the actual
+  free variables; WIN_W/WIN_H/PAT_Y/etc. are derived from them. )
 @BAR_H          20 ; ( menu bar height )
 @PAL_X           0 ;
-@PAL_W          72 ;
+@PAL_CELL_W     40 ;
+@PAL_CELL_H     32 ;
+@PAL_W          PAL_CELL_W 2 * ; ( 2 cols )
 @PAL_Y          BAR_H ;
-@PAL_CELL_W     36 ;
-@PAL_CELL_H     22 ;
 @TOOLS          20 ; ( 2 cols x 10 rows )
-@LW_Y          240 ; ( PAL_Y + 10*PAL_CELL_H )
 @LW_ROWS         6 ;
-@LW_ROW_H       10 ; ( 60 / LW_ROWS )
-@CANVAS_X       72 ; ( PAL_W )
+@LW_ROW_H       16 ;
+@LW_Y          PAL_Y PAL_CELL_H 10 * + ; ( below the 10-row tool palette )
+@CANVAS_X       PAL_W ;
 @CANVAS_Y       BAR_H ;
-@CANVAS_W      440 ;
-@CANVAS_H      280 ;
-@CANVAS_WORDS   14 ; ( CANVAS_W / 32 = 13.75 -- not exact; see draw-canvas-1x's tail-word note )
+@CANVAS_W      480 ; ( a multiple of 32 -- see draw-canvas-1x's word scan )
+@CANVAS_H      LW_Y LW_ROW_H LW_ROWS * + BAR_H - ; ( level with the tool palette + line-width strip )
+@CANVAS_WORDS   15 ; ( CANVAS_W / 32, exact )
 @FONT_SIZE      16 ;
 @GRID            8 ;
-@PAT_Y         300 ; ( CANVAS_Y + CANVAS_H )
-@PAT_CUR_W      36 ; ( current-pattern preview box, x 0..35 )
+@PAT_Y         CANVAS_Y CANVAS_H + ;
 @PAT_COLS       19 ;
+@PAT_CELL_W     26 ;
+@PAT_CELL_H     28 ;
+@PAT_CUR_W      CANVAS_X CANVAS_W + PAT_COLS PAT_CELL_W * - ; ( remaining width, current-pattern preview box )
 @PAT_ROWS        2 ;
-@PAT_CELL_W     25 ;
-@PAT_CELL_H     20 ;
 @PAT_N          38 ; ( PAT_COLS * PAT_ROWS )
 @FAT_Z           8 ;
-@FAT_VW         55 ; ( CANVAS_W / FAT_Z, per Step 8's "8x zoom of a 55x35 window" )
-@FAT_VH         35 ; ( CANVAS_H / FAT_Z )
+@FAT_VW         60 ; ( CANVAS_W / FAT_Z, exact -- Step 8's FatBits zoom window )
+@FAT_VH         52 ; ( CANVAS_H / FAT_Z, exact )
 @STK_MAX      4096 ;
-@ROW_BYTES      55 ; ( CANVAS_W / 8, for the EAS1 pack; CANVAS_W is a multiple of 8 )
-@PACK_BYTES  15408 ; ( 8-byte header + ROW_BYTES * CANVAS_H )
+@ROW_BYTES      60 ; ( CANVAS_W / 8, for the EAS1 pack )
+@PACK_BYTES  24968 ; ( 8-byte header + ROW_BYTES * CANVAS_H )
+@WIN_W         CANVAS_X CANVAS_W + ;
+@WIN_H         PAT_Y PAT_CELL_H PAT_ROWS * + ;
 
 ( Authentic MacPaint tool order, row-major in the 2x10 palette (see
   easel_plan.md's target layout list). Only PENCIL/ERASER/BRUSH/FILL/LINE/
@@ -1251,8 +1253,8 @@ IMPORT BITMAP
   instead of 32 pixel tests. CANVAS_W is exactly CANVAS_WORDS*32 for now, so
   every word is fully in-bounds -- no edge masking needed here (unlike
   BITMAP::hspan, which does need it for arbitrary spans). )
-( CANVAS_W (440) is not a multiple of 32, so the last word of a row only
-  covers CANVAS_W - wx*32 real columns; bitlim clamps the scan to that. )
+( CANVAS_W is a multiple of 32 (word width), so every word in a row is fully
+  in-bounds -- no edge masking needed, unlike BITMAP::hspan's general case. )
 @draw-canvas-1x ( -- )
     0 { y }
         [ y CANVAS_H < ]
@@ -1261,26 +1263,24 @@ IMPORT BITMAP
                 [ wx CANVAS_WORDS < ]
                 [
                     CANVAS wx y BITMAP::word@ { w }
-                        32 CANVAS_W wx 32 * - MIN { bitlim }
-                            w 0 = [
-                            ] [
-                                0 { bit }
-                                    [ bit bitlim < ]
-                                    [
-                                        w 31 bit - RSHIFT 1 AND [
-                                            bit { rstart }
-                                                [ bit bitlim < w 31 bit - RSHIFT 1 AND AND ]
-                                                [ bit 1 + bit! ] |:
-                                                APP::draw-fd CANVAS_X wx 32 * rstart + +
-                                                    CANVAS_Y y + bit rstart - 1 CLR_FG DRAW::fill-rect
-                                            }
-                                        ] [
-                                            bit 1 + bit!
-                                        ] ?:
-                                    ] |:
-                                }
-                            ] ?:
-                        }
+                        w 0 = [
+                        ] [
+                            0 { bit }
+                                [ bit 32 < ]
+                                [
+                                    w 31 bit - RSHIFT 1 AND [
+                                        bit { rstart }
+                                            [ bit 32 < w 31 bit - RSHIFT 1 AND AND ]
+                                            [ bit 1 + bit! ] |:
+                                            APP::draw-fd CANVAS_X wx 32 * rstart + +
+                                                CANVAS_Y y + bit rstart - 1 CLR_FG DRAW::fill-rect
+                                        }
+                                    ] [
+                                        bit 1 + bit!
+                                    ] ?:
+                                ] |:
+                            }
+                        ] ?:
                     }
                     wx 1 + wx!
                 ] |:
