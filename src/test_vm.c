@@ -372,15 +372,15 @@ void test_breaking_calls() {
 
 
 void test_bus_read() {
-    printf("Testing device bus read (MOUSE_PORT)...\n");
+    printf("Testing SCI result port...\n");
     uint8_t prog[] = {
-        OP_LOAD, 0x00, 0x01, 0x00, 0x50,  // MOUSE_PORT = 0x00010050
+        OP_LOAD, 0x00, 0x01, 0x00, 0xD0,  /* SCI_PORT */
         OP_HALT
     };
 
     Machine* m = machine_create(prog, sizeof(prog), HEADLESS_BASE_ADDRESS, 1024 * 1024, false);
     assert(m != NULL);
-    m->system->mouse_x = 12345;
+    m->system->sci_result = 12345;
 
     vm_run(m->cpu);
 
@@ -388,6 +388,42 @@ void test_bus_read() {
     assert(vm_pop(m->cpu, &v) == true);
     assert(v == 12345);
     machine_free(m);
+}
+
+void test_mmio_ports_gone() {
+    printf("Testing Varvara MMIO ports are gone...\n");
+    uint8_t prog[] = {
+        OP_LOAD, 0x00, 0x01, 0x00, 0x50,  /* old MOUSE_PORT */
+        OP_HALT
+    };
+
+    Machine* m = machine_create(prog, sizeof(prog), HEADLESS_BASE_ADDRESS, 1024 * 1024, false);
+    assert(m != NULL);
+    m->system->mouse_x = 12345;
+    vm_run(m->cpu);
+    assert(m->cpu->running == false);
+    assert(m->cpu->halted == false);
+    machine_free(m);
+    printf("  MMIO gone: OK\n");
+}
+
+void test_time_scratch_is_ram() {
+    printf("Testing /dev/time scratch is ordinary RAM...\n");
+    uint8_t prog[] = {
+        OP_PUSH, 0x00, 0x50, 0x01, 0x00, /* 0x500100 TIME::BUF */
+        OP_LOADI,
+        OP_HALT
+    };
+    Machine* m = machine_create(prog, sizeof(prog), GRAPHICAL_BASE_ADDRESS,
+                                32 * 1024 * 1024, false);
+    assert(m != NULL);
+    vm_run(m->cpu);
+    assert(m->cpu->halted == true);
+    int32_t v;
+    assert(vm_pop(m->cpu, &v) == true);
+    assert(v == 0);
+    machine_free(m);
+    printf("  time scratch RAM: OK\n");
 }
 
 void test_yield() {
@@ -522,6 +558,8 @@ int main() {
     test_frames();
     test_breaking_calls();
     test_bus_read();
+    test_mmio_ports_gone();
+    test_time_scratch_is_ram();
     test_yield();
     test_memory_faults();
     printf("All VM opcode tests passed!\n");

@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* Low RAM base for the globals segment. Always below device/MMIO space
+/* Low RAM base for the globals segment. Always below the SCI trap
  * (0x10000) and outside every program image, so writes never fault. */
 #define FX_GLOBALS_BASE MM_FX_GLOBALS_BASE
 

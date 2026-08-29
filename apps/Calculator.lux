@@ -6,6 +6,7 @@ INCLUDE "lib/draw.lux"
 INCLUDE "lib/event.lux"
 
 MODULE CALC
+VERSION 400000
 
 IMPORT APP
 IMPORT UI

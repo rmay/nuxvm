@@ -2599,12 +2599,12 @@ static void test_tabula_type_classify_save(void) {
     int n = 0;
     memset(got, 0, sizeof(got));
     quill_lux_read_file("/sys/file/untitled.tabula", got, (int) sizeof(got) - 1, &n);
-    assert(n > 8);
+    assert(n > 10);
     got[n] = 0;
-    assert(strncmp((char*) got, "TABULA 2\n", 9) == 0);
-    assert(strstr((char*) got, "A1\thello") != NULL);
-    assert(strstr((char*) got, "B2\t42") != NULL);
-    assert(strstr((char*) got, "C3\t3.14") != NULL);
+    assert(strncmp((char*) got, "TABULA 400\n", 11) == 0);
+    assert(strstr((char*) got, "A1,hello") != NULL);
+    assert(strstr((char*) got, "B2,42") != NULL);
+    assert(strstr((char*) got, "C3,3.14") != NULL);
     /* Sparse: a high empty row is not written as blank lines. */
     assert(strstr((char*) got, "A4") == NULL);
 
@@ -2636,8 +2636,8 @@ static void test_tabula_click_selects_cell(void) {
     assert(m->cpu->halted);
     machine_free(m);
 
-    assert(tabula_file_has("B2\tZed"));
-    assert(!tabula_file_has("A1\tZed"));
+    assert(tabula_file_has("B2,Zed"));
+    assert(!tabula_file_has("A1,Zed"));
 
     quill_lux_restore_file("untitled.tabula", backup, backup_len);
 }
@@ -2729,8 +2729,8 @@ static void test_tabula_edit_copy_paste(void) {
     assert(m->cpu->halted);
     machine_free(m);
 
-    assert(tabula_file_has("A1\tabacus"));
-    assert(tabula_file_has("B1\tabacus"));
+    assert(tabula_file_has("A1,abacus"));
+    assert(tabula_file_has("B1,abacus"));
 
     quill_lux_restore_file("untitled.tabula", backup, backup_len);
 }
@@ -2766,7 +2766,7 @@ static void test_tabula_high_row_sparse_save(void) {
     quill_lux_read_file("/sys/file/untitled.tabula", got, (int) sizeof(got) - 1, &n);
     assert(n > 8);
     got[n] = 0;
-    assert(strstr((char*) got, "A31\tdeep") != NULL);
+    assert(strstr((char*) got, "A31,deep") != NULL);
     /* Must not emit 31 blank rows. */
     assert(n < 80);
 
@@ -2866,15 +2866,15 @@ static void test_tabula_formula_source_saved(void) {
     assert(m->cpu->halted);
     machine_free(m);
 
-    assert(tabula_file_has("C1\t=A1+B1"));
-    assert(!tabula_file_has("C1\t30"));
-    assert(tabula_file_has("TABULA 2"));
+    assert(tabula_file_has("C1,=A1+B1"));
+    assert(!tabula_file_has("C1,30"));
+    assert(tabula_file_has("TABULA 400"));
 
     quill_lux_restore_file("untitled.tabula", backup, backup_len);
 }
 
 static void test_tabula_escape_roundtrip(void) {
-    printf("Testing apps/Tabula.lux: backslash escapes round-trip in TABULA 2...\n");
+    printf("Testing apps/Tabula.lux: backslash and comma escapes round-trip in TABULA 400...\n");
     Machine* probe = tabula_machine();
     if (!probe) return;
     machine_free(probe);
@@ -2892,6 +2892,9 @@ static void test_tabula_escape_roundtrip(void) {
     tabula_click(m, mc, TABULA_A1_X, TABULA_A1_Y);
     tabula_type(m, kc, "a\\b");
     tabula_key(m, kc, 13, 0);
+    tabula_click(m, mc, TABULA_B1_X, TABULA_B1_Y);
+    tabula_type(m, kc, "a,b");
+    tabula_key(m, kc, 13, 0);
     tabula_save_quit(m, mc);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
@@ -2904,7 +2907,8 @@ static void test_tabula_escape_roundtrip(void) {
     quill_lux_read_file("/sys/file/untitled.tabula", got, (int) sizeof(got) - 1, &n);
     assert(n > 8);
     got[n] = 0;
-    assert(strstr((char*) got, "A1\ta\\\\b") != NULL);
+    assert(strstr((char*) got, "A1,a\\\\b") != NULL);
+    assert(strstr((char*) got, "B1,a\\,b") != NULL);
 
     quill_lux_restore_file("untitled.tabula", backup, backup_len);
 }
@@ -2970,7 +2974,7 @@ static void test_tabula_sum_and_errors(void) {
     vfs_close(m->system, kc);
     machine_free(m);
 
-    assert(tabula_file_has("A3\t=SUM(A1:A2)"));
+    assert(tabula_file_has("A3,=SUM(A1:A2)"));
 
     quill_lux_restore_file("untitled.tabula", backup, backup_len);
 }

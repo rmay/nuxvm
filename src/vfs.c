@@ -11,6 +11,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <time.h>
 
 // All VFS state lives in sys->vfs (per-System, so child VMs get isolated
 // namespaces). Files are refcounted: each fd slot and each mount entry holds
@@ -316,6 +317,60 @@ static VFSFile* create_snarf_file(System* sys) {
     return file;
 }
 
+// --- /dev/time : 16-byte LE snapshot (unix, packed date, packed hms, monotonic ms) ---
+
+static void time_put_le32(uint8_t* p, uint32_t v) {
+    p[0] = (uint8_t)(v & 0xFF);
+    p[1] = (uint8_t)((v >> 8) & 0xFF);
+    p[2] = (uint8_t)((v >> 16) & 0xFF);
+    p[3] = (uint8_t)((v >> 24) & 0xFF);
+}
+
+static int time_read(VFSFile* file, uint8_t* buf, int len) {
+    (void)file;
+    if (!buf || len <= 0) return 0;
+
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+
+    uint32_t unix_ts = (uint32_t)now;
+    uint32_t date = ((uint32_t)(tm.tm_year + 1900) << 16) |
+                    ((uint32_t)(tm.tm_mon + 1) << 8) |
+                    (uint32_t)tm.tm_mday;
+    uint32_t hms = ((uint32_t)tm.tm_hour << 16) |
+                   ((uint32_t)tm.tm_min << 8) |
+                   (uint32_t)tm.tm_sec;
+
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint32_t milli = (uint32_t)((uint64_t)ts.tv_sec * 1000ull +
+                                (uint64_t)ts.tv_nsec / 1000000ull);
+
+    uint8_t snap[16];
+    time_put_le32(snap, unix_ts);
+    time_put_le32(snap + 4, date);
+    time_put_le32(snap + 8, hms);
+    time_put_le32(snap + 12, milli);
+
+    if (len > 16) len = 16;
+    memcpy(buf, snap, (size_t)len);
+    return len;
+}
+
+static int time_close(VFSFile* file) {
+    free(file);
+    return 0;
+}
+
+static VFSFile* create_time_file(void) {
+    VFSFile* file = (VFSFile*)calloc(1, sizeof(VFSFile));
+    if (!file) return NULL;
+    file->read = time_read;
+    file->close = time_close;
+    return file;
+}
+
 // --- launch ---
 // Guest writes a ROM path; Cloister reads System.launch_path on HALT.
 
@@ -421,12 +476,12 @@ typedef struct {
     System* sys;
 } InputFileData;
 
-static int kbd_read(VFSFile* file, uint8_t* buf, int len) {
+static int kbd_read_impl(VFSFile* file, uint8_t* buf, int len, bool may_yield) {
     InputFileData* d = (InputFileData*)file->private_data;
     if (!d || !d->sys || len < 4) return -1;
     System* sys = d->sys;
     if (sys->kbd_head == sys->kbd_tail) {
-        sys->yielded = true;
+        if (may_yield) sys->yielded = true;
         return 0;
     }
     SysInputEvent* e = &sys->kbd_queue[sys->kbd_head];
@@ -444,13 +499,19 @@ static int kbd_read(VFSFile* file, uint8_t* buf, int len) {
     }
     return 4;
 }
+static int kbd_read(VFSFile* file, uint8_t* buf, int len) {
+    return kbd_read_impl(file, buf, len, true);
+}
+static int kbd_read_noyield(VFSFile* file, uint8_t* buf, int len) {
+    return kbd_read_impl(file, buf, len, false);
+}
 
-static int mouse_read(VFSFile* file, uint8_t* buf, int len) {
+static int mouse_read_impl(VFSFile* file, uint8_t* buf, int len, bool may_yield) {
     InputFileData* d = (InputFileData*)file->private_data;
     if (!d || !d->sys || len < 8) return -1;
     System* sys = d->sys;
     if (sys->mouse_head == sys->mouse_tail) {
-        sys->yielded = true;
+        if (may_yield) sys->yielded = true;
         return 0;
     }
     SysInputEvent* e = &sys->mouse_queue[sys->mouse_head];
@@ -464,6 +525,12 @@ static int mouse_read(VFSFile* file, uint8_t* buf, int len) {
     buf[6] = 0;
     buf[7] = 0;
     return 8;
+}
+static int mouse_read(VFSFile* file, uint8_t* buf, int len) {
+    return mouse_read_impl(file, buf, len, true);
+}
+static int mouse_read_noyield(VFSFile* file, uint8_t* buf, int len) {
+    return mouse_read_impl(file, buf, len, false);
 }
 
 static int input_write_fail(VFSFile* file, const uint8_t* buf, int len) {
@@ -482,6 +549,7 @@ static VFSFile* create_input_file(System* sys, bool is_kbd) {
     d->sys = sys;
     file->private_data = d;
     file->read = is_kbd ? kbd_read : mouse_read;
+    file->read_noyield = is_kbd ? kbd_read_noyield : mouse_read_noyield;
     file->write = input_write_fail;
     file->close = generic_close;
     return file;
@@ -1024,6 +1092,29 @@ static int draw_write(VFSFile* file, const uint8_t* buf, int len) {
                                 (char)ch, x, y, color, (int)scale);
                 break;
             }
+            case 10: {
+                /* BlitTile: x i16, y i16, size u8, use_key u8, key u32,
+                   tile_ptr u32, nbytes u16. 17 bytes including cmd. */
+                if (i + 16 > len) return i - 1;
+                int16_t x = (int16_t)(buf[i] | (buf[i+1] << 8));
+                int16_t y = (int16_t)(buf[i+2] | (buf[i+3] << 8));
+                uint8_t size = buf[i+4];
+                uint8_t use_key = buf[i+5];
+                uint32_t key = (uint32_t)buf[i+6] | ((uint32_t)buf[i+7] << 8) |
+                               ((uint32_t)buf[i+8] << 16) | ((uint32_t)buf[i+9] << 24);
+                uint32_t tile_ptr = (uint32_t)buf[i+10] | ((uint32_t)buf[i+11] << 8) |
+                                    ((uint32_t)buf[i+12] << 16) | ((uint32_t)buf[i+13] << 24);
+                uint16_t nbytes = (uint16_t)(buf[i+14] | (buf[i+15] << 8));
+                i += 16;
+                if (!sys->memory || tile_ptr >= sys->memory_size) break;
+                uint32_t avail = sys->memory_size - tile_ptr;
+                if ((uint32_t)nbytes > avail) nbytes = (uint16_t)avail;
+                uint32_t need = (uint32_t)size * (uint32_t)size * 3;
+                if (nbytes < need) break;
+                system_draw_tile(sys, sys->memory + tile_ptr, (int)size,
+                                 x, y, (int)use_key, key);
+                break;
+            }
             default:
                 return i - 1;
         }
@@ -1177,6 +1268,9 @@ static VFSFile* open_path(System* sys, const char* path, int32_t flags) {
     if (strcmp(path, "/sys/snarf") == 0) {
         return create_snarf_file(sys);
     }
+    if (strcmp(path, "/sys/time") == 0 || strcmp(path, "/dev/time") == 0) {
+        return create_time_file();
+    }
     if (strcmp(path, "/sys/launch") == 0 || strcmp(path, "/dev/launch") == 0) {
         return create_launch_file(sys);
     }
@@ -1284,6 +1378,14 @@ int32_t vfs_open(System* sys, const char* path, int32_t flags) {
 int vfs_read(System* sys, int32_t fd, uint8_t* buf, int len) {
     VFSFile* file = get_fd(sys, fd);
     if (!file || !file->read) return -1;
+    return file->read(file, buf, len);
+}
+
+int vfs_read_noyield(System* sys, int32_t fd, uint8_t* buf, int len) {
+    VFSFile* file = get_fd(sys, fd);
+    if (!file) return -1;
+    if (file->read_noyield) return file->read_noyield(file, buf, len);
+    if (!file->read) return -1;
     return file->read(file, buf, len);
 }
 

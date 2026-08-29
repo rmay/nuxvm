@@ -9,6 +9,8 @@
  *   bin/nux examples/fluxio/struct_demo.bin
  */
 
+version 400000;
+
 /** a point in 2D space */
 struct Point {
     int x;

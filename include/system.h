@@ -7,21 +7,13 @@
 #include "vm.h"
 #include "vfs.h"
 
-#define SCREEN_PORT      (DEVICE_MEMORY_OFFSET + 0x0020)
-#define AUDIO_PORT       (DEVICE_MEMORY_OFFSET + 0x0030)
-#define CONTROLLER_PORT  (DEVICE_MEMORY_OFFSET + 0x0040)
-#define MOUSE_PORT       (DEVICE_MEMORY_OFFSET + 0x0050)
-#define FILE_PORT        (DEVICE_MEMORY_OFFSET + 0x0060)
-#define DATETIME_PORT    (DEVICE_MEMORY_OFFSET + 0x0070)
-#define RNG_PORT         (DEVICE_MEMORY_OFFSET + 0x0080)
-#define TEXT_PORT        (DEVICE_MEMORY_OFFSET + 0x0090)
-#define WINDOW_PORT      (DEVICE_MEMORY_OFFSET + 0x00B0)
-#define WHEEL_PORT       (DEVICE_MEMORY_OFFSET + 0x00A0)
-#define RESIZE_PORT      (DEVICE_MEMORY_OFFSET + 0x00C0)
-#define PANE_PORT        (DEVICE_MEMORY_OFFSET + 0x00E0)
+/* Guest I/O is Plan 9 VFS files. This band is only the SCI trap that
+ * implements open/read/write/close/bind — not Varvara device ports. */
 #define SCI_PORT         (DEVICE_MEMORY_OFFSET + 0x00D0)
-#define MENU_PORT        (DEVICE_MEMORY_OFFSET + 0x00F0)
-#define GPU_PORT         (DEVICE_MEMORY_OFFSET + 0x0100)
+#define SCI_CMD_ADDR     (SCI_PORT + 4)
+#define SCI_ARG1_ADDR    (SCI_PORT + 8)
+#define SCI_ARG2_ADDR    (SCI_PORT + 12)
+#define SCI_ARG3_ADDR    (DEVICE_MEMORY_OFFSET + 0x0124)
 
 #define SYS_SNARF_MAX       65536
 #define SYS_LAUNCH_MAX      256
@@ -57,11 +49,9 @@ typedef struct System {
 
     int32_t sci_result;
 
-    uint32_t (*get_vector)(struct System* sys, int index);
-    void (*set_vector)(struct System* sys, int index, uint32_t addr);
-    void* vm_ptr;
-
     bool yielded;
+    uint64_t frame_commits; // incremented by system_end_frame; diagnostic for NUXVM_MENU_DEBUG
+    int32_t last_tick_cycles; // cycles executed by the most recent machine_tick; diagnostic
 
     uint32_t text_attr;
     uint32_t text_cursor;
@@ -116,7 +106,6 @@ System* system_create(void);
 void system_free(System* sys);
 void system_set_memory(System* sys, uint8_t* mem, uint32_t mem_size);
 void system_set_resolution(System* sys, int32_t width, int32_t height);
-void system_set_vector_callbacks(System* sys, uint32_t (*get)(System*, int), void (*set)(System*, int, uint32_t), void* vm);
 void system_set_sandbox_root(System* sys, const char* root);
 
 void system_push_kbd_event(System* sys, uint8_t type, int32_t keycode, uint32_t modifiers);
@@ -130,6 +119,7 @@ int system_draw_char(System* sys, int32_t x, int32_t y, char c, uint32_t color, 
 void system_draw_text(System* sys, int32_t x, int32_t y, const char* str, uint32_t color, int scale);
 void system_draw_text_len(System* sys, int32_t x, int32_t y, const char* str, int16_t len, uint32_t color, int scale);
 void system_draw_cff(System* sys, const uint8_t* font_data, int nbytes, char c, int32_t x, int32_t y, uint32_t color, int scale);
+void system_draw_tile(System* sys, const uint8_t* pixels, int size, int32_t x, int32_t y, int use_key, uint32_t key);
 void system_set_pixel(System* sys, int32_t x, int32_t y, uint32_t color);
 double system_normalize_draw_scale(System* sys, int scale);
 int system_measure_char(System* sys, char c, int scale);

@@ -14,6 +14,11 @@ struct VFSFile {
     int refcount;   // fds + mounts holding this file; destroyed at zero
     void* private_data;
     int (*read)(VFSFile* file, uint8_t* buf, int len);
+    // Optional: a read variant that never sets sys->yielded on "no data yet".
+    // NULL for file types where read() never yields anyway. Used by input
+    // devices (mouse/kbd) so a per-frame drain loop can poll them without
+    // tripping the VM's cooperative-yield scheduling on every empty queue.
+    int (*read_noyield)(VFSFile* file, uint8_t* buf, int len);
     int (*write)(VFSFile* file, const uint8_t* buf, int len);
     int (*close)(VFSFile* file);
     int64_t (*seek)(VFSFile* file, int64_t offset);
@@ -40,6 +45,9 @@ typedef struct VFSState {
 
 int32_t vfs_open(System* sys, const char* path, int32_t flags);
 int vfs_read(System* sys, int32_t fd, uint8_t* buf, int len);
+// Like vfs_read, but for files with a read_noyield variant, uses that
+// instead -- see the read_noyield field comment in VFSFile.
+int vfs_read_noyield(System* sys, int32_t fd, uint8_t* buf, int len);
 int vfs_write(System* sys, int32_t fd, const uint8_t* buf, int len);
 int vfs_close(System* sys, int32_t fd);
 int64_t vfs_seek(System* sys, int32_t fd, int64_t offset);

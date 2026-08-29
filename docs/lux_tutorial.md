@@ -639,6 +639,30 @@ IMPORT MATH AS M
 5 M::SQUARE .
 ```
 
+### Version
+
+Every app build must declare a version, using the project's Kelvin
+versioning scheme (see `AGENTS.md`): higher numbers are "hotter," and a
+hotter build can run something just as hot or colder, but not the reverse.
+NUX opcodes/implementation sit at 300K; everything else defaults to 400K
+unless a specific app has a reason to declare otherwise.
+
+```forth
+MODULE MYAPP
+VERSION 400000
+```
+
+`luxc` rejects an app build that never declares `VERSION <n>` anywhere in
+the compiled unit (the main file or any `INCLUDE`d file), with:
+
+```
+luxc: myapp.lux: missing required 'VERSION <n>' directive
+```
+
+This check only applies to normal app builds. A library build (`luxc -base
+0xADDR ...`, e.g. `lib/sf.lux` linked into a Fluxio host) is exempt — it
+isn't a runnable app on its own.
+
 ### Compiling Lux Source
 
 After playing around in the REPL, it stands to reason that the more inquisitive or just plain nosy might look into compiling code.

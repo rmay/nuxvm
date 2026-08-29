@@ -510,7 +510,7 @@ About eleven columns and thirty rows fit on screen. Scrollbars, Page Up/Down, an
 | --- | --- |
 | **New** | Empty sheet named `untitled.tabula`. Dirty sheets get the Save changes? panel. |
 | **Open** | Standard File picker. Does not ask about unsaved work. |
-| **Save** | Write the current path as TABULA 2. |
+| **Save** | Write the current path as TABULA 400. |
 | **Save As** | Put-file picker: choose a folder and name, then write. |
 | **Quit** | Halt Tabula. |
 
@@ -568,7 +568,7 @@ Tabula classifies each cell from its text:
 | `3.`, `.5`, `3.14x` | string, not a float | left-aligned |
 | `=B1+C1` | formula | last computed integer, or an error token |
 
-A cell whose text starts with `=` is a formula, unless you forced it to a string (see [TABULA 2](#tabula-2-current)). Clearing a cell (empty edit, or Backspace on a selection) removes it.
+A cell whose text starts with `=` is a formula, unless you forced it to a string (see [TABULA 400](#tabula-400-current)). Clearing a cell (empty edit, or Backspace on a selection) removes it.
 
 ### Formulas
 
@@ -884,24 +884,25 @@ Plain text. Newlines are `\n`. No magic header. `manuscript.quill` in the repo i
 
 256 width bytes, then 1-bit glyph tiles. Length selects 8×8, 16×16, or 24×24. Compatible with Uxn UFX (`.uf1` / `.uf2` / `.uf3`). Full layout: [CFF.md](CFF.md).
 
-### TABULA 2 (current)
+### TABULA 400 (current)
 
-Saved by **File > Save**. First line is `TABULA 2`. Each following line is one used cell:
+Saved by **File > Save**. First line is `TABULA 400`. Each following line is one used cell:
 
 ```
-TABULA 2
-A1	hello
-B1	42
-C1	3.14
-D1	=B1+C1
-E1	\=literally equals
+TABULA 400
+A1,hello
+B1,42
+C1,3.14
+D1,=B1+C1
+E1,\=literally equals
+F1,hello\, world
 ```
 
-- Address, then a tab, then the **source** (not the computed value).
+- Address, then a comma, then the **source** (not the computed value).
 - Formulas are stored with a leading `=`.
-- Inside values, backslash escapes: `\\`, `\t`, `\n`, `\r`. A leading equals that is **not** a formula is stored as `\=`.
+- Inside values, backslash escapes: `\\`, `\t`, `\n`, `\r`, `\,`. A leading equals that is **not** a formula is stored as `\=`.
 
-Opening a TABULA 2 file recalculates formulas.
+Opening a TABULA 400 file recalculates formulas.
 
 ### NIB 1
 
@@ -932,10 +933,6 @@ packed bits   64 bytes per row, MSB first, 342 rows
 ```
 
 Total size is 21,896 bytes. A file whose magic is not `EAS1`, or whose size is not 512×342, is left unchanged.
-
-### TABULA 1 (legacy)
-
-Older files whose header is `TABULA 1` still open. Fields are raw (no backslash unescaping). Save always writes TABULA 2.
 
 ---
 

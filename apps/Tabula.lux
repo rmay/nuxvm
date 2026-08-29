@@ -1,8 +1,8 @@
 ( Tabula: 26-column spreadsheet with basic formulas.
   File > New/Open/Save/Save As | Quit, Edit > Cut/Copy/Paste/Select All,
   Formula > Calculate (Esc stops a pass). Sparse A1..Z99999 cells
-  (string / int / float / formula). Save is TABULA 2 with backslash
-  escapes; grid shows values, entry bar shows formula source.
+  (string / int / float / formula). Save is TABULA 400 CSV (`addr,source`)
+  with backslash escapes; grid shows values, entry bar shows formula source.
   ./bin/cloister apps/Tabula.bin )
 
 INCLUDE "lib/app.lux"
@@ -12,6 +12,7 @@ INCLUDE "lib/ui.lux"
 INCLUDE "lib/sf.lux"
 
 MODULE MAIN
+VERSION 400000
 
 IMPORT APP
 IMPORT VFS
@@ -1141,6 +1142,11 @@ IMPORT SF
         116 d 1 + store-byte
         d 2 +
     ] [
+    ch 44 = [
+        92 d store-byte
+        44 d 1 + store-byte
+        d 2 +
+    ] [
     ch 10 = [
         92 d store-byte
         110 d 1 + store-byte
@@ -1153,7 +1159,7 @@ IMPORT SF
     ] [
         ch d store-byte
         d 1 +
-    ] ?: ] ?: ] ?: ] ?:
+    ] ?: ] ?: ] ?: ] ?: ] ?:
 ;
 
 @escape-from { src d lead-eq -- d' }
@@ -1207,7 +1213,7 @@ IMPORT SF
 ;
 
 @write-all { fd -- }
-    T"TABULA 2" LINE_BUF STR::strcpy
+    T"TABULA 400" LINE_BUF STR::strcpy
     10 LINE_BUF LINE_BUF STR::strlen + store-byte
     0 LINE_BUF LINE_BUF STR::strlen + store-byte
     fd LINE_BUF LINE_BUF STR::strlen VFS::write drop
@@ -1220,7 +1226,7 @@ IMPORT SF
             a LOADI LINE_BUF 1 + STR::int-to-str
             LINE_BUF { d }
             d STR::strlen d + d!
-            9 d store-byte
+            44 d store-byte
             d 1 + d!
             a CELL_TYPE + load-byte TYPE_FORMULA = [
                 61 d store-byte
@@ -1282,46 +1288,29 @@ IMPORT SF
     ] ?:
 ;
 
-@copy-raw-field { src dest -- src' }
-    [ src load-byte 0 > src load-byte 10 = 0 = AND src load-byte 13 = 0 = AND ]
-    [
-        src load-byte dest store-byte
-        src 1 + src!
-        dest 1 + dest!
-    ] |:
-    0 dest store-byte
-    src
-;
-
 @parse-file ( -- )
     FILE_BUF 0 1 { p i ok }
-    [ i 7 < ]
+    [ i 10 < ]
     [
-        p i + load-byte T"TABULA " i + load-byte = 0 = [ 0 ok! ] ?
+        p i + load-byte T"TABULA 400" i + load-byte = 0 = [ 0 ok! ] ?
         i 1 + i!
     ] |:
-    p 7 + load-byte p-acc STOREI
-    p-acc LOADI 49 = p-acc LOADI 50 = OR 0 = [ 0 ok! ] ?
     ok [
-        p 8 + skip-nl p!
+        p 10 + skip-nl p!
         1 loading STOREI
         [ p load-byte 0 > ]
         [
             p parse-addr { col row q good }
             good [
-                q load-byte 9 = [
+                q load-byte 44 = [
                     q 1 + q!
-                    p-acc LOADI 50 = [
-                        q load-byte 61 = [
-                            0 force-str STOREI
-                            61 LINE_BUF store-byte
-                            q 1 + LINE_BUF 1 + unescape-to q!
-                        ] [
-                            q LINE_BUF unescape-to q!
-                            LINE_BUF load-byte 61 = [ 1 ] [ 0 ] ?: force-str STOREI
-                        ] ?:
+                    q load-byte 61 = [
+                        0 force-str STOREI
+                        61 LINE_BUF store-byte
+                        q 1 + LINE_BUF 1 + unescape-to q!
                     ] [
-                        q LINE_BUF copy-raw-field q!
+                        q LINE_BUF unescape-to q!
+                        LINE_BUF load-byte 61 = [ 1 ] [ 0 ] ?: force-str STOREI
                     ] ?:
                     col row LINE_BUF cell-set
                     0 force-str STOREI
@@ -1798,7 +1787,7 @@ IMPORT SF
 @on-frame ( -- )
     UI::handle
     calc-step
-    APP::dirty? UI::menu-open? OR SF::open? OR confirm-new-open LOADI OR calc-run LOADI OR [
+    APP::dirty? SF::open? OR confirm-new-open LOADI OR calc-run LOADI OR [
         sync-bars
         draw-all
         APP::dirty-off

@@ -21,6 +21,8 @@
  * of scope, e.g. dynamic/runtime text) in this v2b Cloister-bindings slice.
  */
 
+version 400000;
+
 /** entry point */
 int main() {
     int fd = vfs_open("/dev/draw");

@@ -1,9 +1,33 @@
-( --- DATETIME --- )
+( Clock via Plan 9 VFS: /dev/time is a 16-byte little-endian snapshot
+  [unix u32][date u32][hms u32][monotonic-ms u32]. date is
+  (year<<16)|(month<<8)|day; hms is (hour<<16)|(min<<8)|sec. )
+
+INCLUDE "lib/core.lux"
+INCLUDE "lib/vfs.lux"
 
 MODULE TIME
-@addr 0x10070 ;
 
-@unix@   ( -- ts ) addr 4 + LOADI ;
-@date@   ( -- year-month-day ) addr 8 + LOADI ;
-@time@   ( -- hour-min-sec ) addr 12 + LOADI ;
-@milli@  ( -- ms ) addr 16 + LOADI ;
+IMPORT VFS
+
+( MM_SHARED_LUX_FLAGS_BASE + 0x100 — 16-byte /dev/time scratch. )
+@BUF 0x500100 ;
+
+@load-int-le ( addr -- val )
+    dup load-byte
+    over 1 + load-byte 8 LSHIFT OR
+    over 2 + load-byte 16 LSHIFT OR
+    swap 3 + load-byte 24 LSHIFT OR
+;
+
+@snap ( -- )
+    T"/dev/time" VFS::open
+    dup 0 < [ drop ] [
+        dup BUF 16 VFS::read drop
+        VFS::close drop
+    ] ?:
+;
+
+@unix@  ( -- ts  ) snap BUF      load-int-le ;
+@date@  ( -- ymd ) snap BUF 4  + load-int-le ;
+@time@  ( -- hms ) snap BUF 8  + load-int-le ;
+@milli@ ( -- ms  ) snap BUF 12 + load-int-le ;

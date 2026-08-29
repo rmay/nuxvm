@@ -7,6 +7,8 @@
  *   bin/nux examples/fluxio/array_string_demo.bin
  */
 
+version 400000;
+
 int greeting[] = "Hello, Fluxio!";
 
 int numbers[10];

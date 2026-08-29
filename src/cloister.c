@@ -15,6 +15,32 @@
 #define WIN_HEIGHT 720
 #define PICKER_PATH "apps/Picker.lux"
 
+// Frame timing diagnostics: set NUXVM_FRAME_DEBUG=1 to log per-phase
+// frame time (event poll / VM tick / render+present) once a second.
+static bool g_frame_debug = false;
+typedef struct {
+    double sum_ms;
+    double max_ms;
+} PhaseStat;
+static void phase_stat_add(PhaseStat* s, double ms) {
+    s->sum_ms += ms;
+    if (ms > s->max_ms) s->max_ms = ms;
+}
+static void phase_stat_reset(PhaseStat* s) { s->sum_ms = 0.0; s->max_ms = 0.0; }
+
+// Menu-hover latency diagnostics: set NUXVM_MENU_DEBUG=1 to log, with a shared
+// timestamp clock, every raw mouse-motion event alongside every change to
+// lib/ui.lux's MB_HOVER cell (address 0x8E0F60), so the two logs can be
+// eyeballed together to see how many ms/frames separate an input from the
+// menu library actually updating its hover state.
+#define MB_HOVER_ADDR 0x8E0F60u
+static bool g_menu_debug = false;
+static int32_t read_le32(const uint8_t* mem, size_t mem_size, uint32_t addr) {
+    if ((size_t)addr + 4 > mem_size) return 0;
+    return (int32_t)((uint32_t)mem[addr] | ((uint32_t)mem[addr+1] << 8) |
+                      ((uint32_t)mem[addr+2] << 16) | ((uint32_t)mem[addr+3] << 24));
+}
+
 // Audio handling
 #define AUDIO_SAMPLE_RATE 44100
 static SDL_AudioDeviceID audio_device;
@@ -257,7 +283,15 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    // Vsync is off by default: on macOS, SDL_RENDERER_PRESENTVSYNC (via the Metal
+    // backend) buffers multiple frames deep, adding 2-3 frames (~30-50ms) of
+    // input-to-display latency -- this is what made menu highlights visibly lag
+    // behind the mouse. We pace frames manually instead (see FRAME_TARGET_MS
+    // below) to keep CPU usage bounded without paying that latency cost.
+    // Set NUXVM_VSYNC=1 to opt back into vsync (smoother/tear-free, higher latency).
+    Uint32 renderer_flags = SDL_RENDERER_ACCELERATED;
+    if (getenv("NUXVM_VSYNC")) renderer_flags |= SDL_RENDERER_PRESENTVSYNC;
+    SDL_Renderer* ren = SDL_CreateRenderer(win, -1, renderer_flags);
     SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, WIN_WIDTH, WIN_HEIGHT);
 
     SDL_AudioSpec want, have;
@@ -285,8 +319,23 @@ int main(int argc, char** argv) {
         is_picker = true;
     }
 
+    g_frame_debug = getenv("NUXVM_FRAME_DEBUG") != NULL;
+    g_menu_debug = getenv("NUXVM_MENU_DEBUG") != NULL;
+    Uint64 perf_freq = SDL_GetPerformanceFrequency();
+    Uint64 t_program_start = SDL_GetPerformanceCounter();
+    PhaseStat stat_poll = {0}, stat_tick = {0}, stat_render = {0}, stat_total = {0};
+    int frame_debug_count = 0;
+    Uint64 frame_debug_window_start = SDL_GetPerformanceCounter();
+    int32_t last_hover = INT32_MIN;
+    uint64_t last_frame_commits = 0;
+    uint64_t host_loop_iters = 0;
+
+    const double FRAME_TARGET_MS = 1000.0 / 60.0;
+
     bool quit = false;
     while (!quit) {
+        host_loop_iters++;
+        Uint64 t_frame_start = SDL_GetPerformanceCounter();
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) {
@@ -320,6 +369,10 @@ int main(int argc, char** argv) {
                 } else if (e.type == SDL_MOUSEMOTION) {
                     machine->system->mouse_x = e.motion.x;
                     machine->system->mouse_y = e.motion.y;
+                    if (g_menu_debug) {
+                        double t_ms = (double)(SDL_GetPerformanceCounter() - t_program_start) * 1000.0 / (double)perf_freq;
+                        fprintf(stderr, "[menu] t=%.1f mousemotion x=%d y=%d\n", t_ms, e.motion.x, e.motion.y);
+                    }
                     queue_event(machine, 2, (e.motion.x << 12) | (e.motion.y & 0xFFF), 0);
                 } else if (e.type == SDL_MOUSEBUTTONDOWN) {
                     uint32_t mods = current_modifiers(SDL_GetModState());
@@ -340,6 +393,8 @@ int main(int argc, char** argv) {
                 }
             }
         }
+
+        Uint64 t_after_poll = g_frame_debug ? SDL_GetPerformanceCounter() : 0;
 
         if (running_rom && machine) {
             if (!machine_tick(machine)) {
@@ -371,6 +426,30 @@ int main(int argc, char** argv) {
             }
         }
 
+        Uint64 t_after_tick = g_frame_debug ? SDL_GetPerformanceCounter() : 0;
+
+        if (g_menu_debug && machine && machine->cpu && machine->cpu->memory) {
+            int32_t hover = read_le32(machine->cpu->memory, machine->cpu->memory_size, MB_HOVER_ADDR);
+            if (hover != last_hover) {
+                double t_ms = (double)(SDL_GetPerformanceCounter() - t_program_start) * 1000.0 / (double)perf_freq;
+                fprintf(stderr, "[menu] t=%.1f MB_HOVER %d -> %d  (host_iter=%llu commits=%llu)\n",
+                    t_ms, last_hover, hover,
+                    (unsigned long long)host_loop_iters, (unsigned long long)machine->system->frame_commits);
+                last_hover = hover;
+            }
+            uint64_t commits_now = machine->system->frame_commits;
+            if (commits_now == last_frame_commits && running_rom) {
+                // This host loop iteration presented a frame without the VM ever
+                // reaching its end-frame/yield point -- screen_pixels is stale,
+                // i.e. the same picture is being re-presented while state moved on.
+                double t_ms = (double)(SDL_GetPerformanceCounter() - t_program_start) * 1000.0 / (double)perf_freq;
+                fprintf(stderr, "[menu] t=%.1f STALL: host_iter=%llu presented with no new VM frame commit (commits=%llu, cycles=%d)\n",
+                    t_ms, (unsigned long long)host_loop_iters, (unsigned long long)commits_now,
+                    machine->system->last_tick_cycles);
+            }
+            last_frame_commits = commits_now;
+        }
+
         uint32_t* pixels;
         int pitch;
         SDL_LockTexture(tex, NULL, (void**)&pixels, &pitch);
@@ -379,15 +458,18 @@ int main(int argc, char** argv) {
             if (g_dialog.active) dialog_draw(&g_dialog);
             int w = machine->system->screen_width;
             int h = machine->system->screen_height;
+            if (w > WIN_WIDTH) w = WIN_WIDTH;
+            if (h > WIN_HEIGHT) h = WIN_HEIGHT;
+            int src_stride = machine->system->screen_width;
+            int dst_stride = pitch / 4;
+            // screen_pixels is [A,R,G,B] per pixel; the ABGR8888 texture wants the
+            // exact byte-reversed word, so this is a single bswap per pixel rather
+            // than three shifted loads/stores with a per-pixel bounds check.
             for (int y = 0; y < h; y++) {
-                if (y >= WIN_HEIGHT) break;
+                const uint32_t* srow = (const uint32_t*)(machine->system->screen_pixels + (size_t)y * src_stride * 4);
+                uint32_t* drow = pixels + (size_t)y * dst_stride;
                 for (int x = 0; x < w; x++) {
-                    if (x >= WIN_WIDTH) break;
-                    int src_idx = (y * w + x) * 4;
-                    uint8_t r = machine->system->screen_pixels[src_idx + 1];
-                    uint8_t g = machine->system->screen_pixels[src_idx + 2];
-                    uint8_t b = machine->system->screen_pixels[src_idx + 3];
-                    pixels[y * (pitch / 4) + x] = (0xFFu << 24) | (r << 16) | (g << 8) | b;
+                    drow[x] = __builtin_bswap32(srow[x]);
                 }
             }
         }
@@ -395,6 +477,45 @@ int main(int argc, char** argv) {
         SDL_UnlockTexture(tex);
         SDL_RenderCopy(ren, tex, NULL, NULL);
         SDL_RenderPresent(ren);
+
+        if (g_frame_debug) {
+            Uint64 t_frame_end = SDL_GetPerformanceCounter();
+            double poll_ms = (double)(t_after_poll - t_frame_start) * 1000.0 / (double)perf_freq;
+            double tick_ms = (double)(t_after_tick - t_after_poll) * 1000.0 / (double)perf_freq;
+            double render_ms = (double)(t_frame_end - t_after_tick) * 1000.0 / (double)perf_freq;
+            double total_ms = (double)(t_frame_end - t_frame_start) * 1000.0 / (double)perf_freq;
+            phase_stat_add(&stat_poll, poll_ms);
+            phase_stat_add(&stat_tick, tick_ms);
+            phase_stat_add(&stat_render, render_ms);
+            phase_stat_add(&stat_total, total_ms);
+            frame_debug_count++;
+
+            double window_s = (double)(t_frame_end - frame_debug_window_start) / (double)perf_freq;
+            if (window_s >= 1.0) {
+                fprintf(stderr,
+                    "[frame] n=%d avg/max ms  poll=%.3f/%.3f  tick=%.3f/%.3f  render=%.3f/%.3f  total=%.3f/%.3f\n",
+                    frame_debug_count,
+                    stat_poll.sum_ms / frame_debug_count, stat_poll.max_ms,
+                    stat_tick.sum_ms / frame_debug_count, stat_tick.max_ms,
+                    stat_render.sum_ms / frame_debug_count, stat_render.max_ms,
+                    stat_total.sum_ms / frame_debug_count, stat_total.max_ms);
+                phase_stat_reset(&stat_poll);
+                phase_stat_reset(&stat_tick);
+                phase_stat_reset(&stat_render);
+                phase_stat_reset(&stat_total);
+                frame_debug_count = 0;
+                frame_debug_window_start = t_frame_end;
+            }
+        }
+
+        // Manual frame pacing: with vsync off (the default, see above) nothing
+        // else caps the loop rate, so sleep off whatever's left of the frame
+        // budget rather than spinning the CPU or racing ahead of the display.
+        Uint64 t_now = SDL_GetPerformanceCounter();
+        double elapsed_ms = (double)(t_now - t_frame_start) * 1000.0 / (double)perf_freq;
+        if (elapsed_ms < FRAME_TARGET_MS) {
+            SDL_Delay((Uint32)(FRAME_TARGET_MS - elapsed_ms));
+        }
     }
 
     eject_rom(&machine, &program, win);

@@ -272,8 +272,13 @@ IMPORT UI
         dfd LOADI DRAW::CHICAGO DRAW::set-font
         sync-canvas
 
-        ( 1. Handle Mouse — drain the queue so a drag sees every move )
-        [ mfd LOADI mpkt 8 VFS::read 8 = ]
+        ( 1. Handle Mouse — drain the queue so a drag sees every move.
+          Uses read-noyield: a plain VFS::read yields the whole VM the
+          instant the queue is empty (its natural, expected loop-exit
+          case here), which stalls this frame's draw/end-frame for
+          1-2 host ticks on every call that finds nothing queued -- the
+          common case. read-noyield polls without that side effect. )
+        [ mfd LOADI mpkt 8 VFS::read-noyield 8 = ]
         [
             esc-open LOADI [
                 mpkt handle-esc-mouse
@@ -285,7 +290,7 @@ IMPORT UI
         ] |:
 
         ( 2. Handle Keyboard )
-        kfd LOADI kpkt 8 VFS::read 8 = [
+        kfd LOADI kpkt 8 VFS::read-noyield 8 = [
             esc-open LOADI [
                 kpkt handle-esc-kbd
             ] [

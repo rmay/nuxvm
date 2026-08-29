@@ -139,20 +139,6 @@ void vm_set_bus(VM* vm, DeviceBus* bus) {
     }
 }
 
-bool vm_call_vector(VM* vm, uint32_t addr) {
-    vm->op_pc = vm->pc;
-    if (vm->return_stack_ptr >= MAX_RETURN_STACK_SIZE) {
-        vm_fault(vm, "return stack overflow");
-        return false;
-    }
-    if (!check_exec_target(vm, addr)) {
-        return false;
-    }
-    vm->return_stack[vm->return_stack_ptr++] = vm->pc;
-    vm->pc = addr;
-    return true;
-}
-
 bool vm_push(VM* vm, int32_t value) {
     if (vm->stack_ptr >= MAX_STACK_SIZE) {
         vm_fault(vm, "data stack overflow");
@@ -193,12 +179,11 @@ static bool fetch_i32(VM* vm, int32_t* out) {
     return true;
 }
 
-static bool is_device_addr(VM* vm, uint32_t addr) {
-    if (addr >= vm->user_memory_start) {
-        return false;
-    }
-    return (addr >= DEVICE_MEMORY_OFFSET && addr < DEVICE_MEMORY_OFFSET + DEVICE_MEMORY_SIZE)
-        || (addr >= VIDEO_FRAMEBUFFER_START && addr < VIDEO_FRAMEBUFFER_END);
+static bool is_device_addr(uint32_t addr) {
+    /* SCI trap only. Framebuffer and app RAM are ordinary memory;
+     * guests draw through /dev/draw, not MMIO. */
+    return addr >= DEVICE_MEMORY_OFFSET &&
+           addr < DEVICE_MEMORY_OFFSET + DEVICE_MEMORY_SIZE;
 }
 
 
@@ -221,7 +206,7 @@ static bool write_mem32(VM* vm, uint32_t addr, int32_t val) {
     vm->memory[addr+2] = (val >> 8) & 0xFF;
     vm->memory[addr+3] = val & 0xFF;
     
-    if (is_device_addr(vm, addr)) {
+    if (is_device_addr(addr)) {
         if (vm->bus && vm->bus->write) {
             vm->bus->write(vm->bus, addr, val);
         }
@@ -234,7 +219,7 @@ static bool read_mem32(VM* vm, uint32_t addr, int32_t* out) {
         vm_fault(vm, "unaligned memory read at 0x%08X", addr);
         return false;
     }
-    if (is_device_addr(vm, addr)) {
+    if (is_device_addr(addr)) {
         if (vm->bus && vm->bus->read) {
             bool success = false;
             int32_t val = vm->bus->read(vm->bus, addr, &success);

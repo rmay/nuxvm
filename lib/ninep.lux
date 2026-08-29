@@ -1,0 +1,639 @@
+( 9P2000 (Plan 9 filesystem protocol) — a minimal client+server subset riding
+  on top of the existing /sys/chan/new + /sys/chan/peer + vfs_bind channel
+  primitives. No VM/opcode changes: this is exactly the "standardize byte
+  formats so they can be marshaled into 9P messages later" recommendation
+  from ARCHITECTURE.md, now acted on as a pure Lux library.
+
+  Scope: Tversion/Rversion, Tattach/Rattach, Twalk/Rwalk (single-element
+  walks only — flat one-level namespace, no subdirectories), Topen/Ropen,
+  Tread/Rread, Twrite/Rwrite, Tclunk/Rclunk. No auth, no create/remove,
+  no stat/wstat, no Tflush, no pipelining (one request in flight at a
+  time, fixed tag). Wire format matches real 9P2000 exactly for the
+  fields used, so a real 9P client/server could in principle interop.
+
+  A "connection" is 16 bytes the CALLER owns (in its own app-state band)
+  holding: fd, next-fid, msize, iounit. Pass its address to every
+  NINEP::conn-*/version/attach/walk/open/read/write/clunk word.
+
+  A "server" is this library's own small file table (up to 16 named,
+  buffer-backed files) plus a fid table (up to 8 concurrent fids); an app
+  registers files with NINEP::serve-file and calls NINEP::serve-pump once
+  per tick on the fd its clients write to. )
+
+INCLUDE "lib/vfs.lux"
+INCLUDE "lib/draw.lux"
+INCLUDE "lib/str.lux"
+
+MODULE NINEP
+
+IMPORT VFS
+IMPORT DRAW
+IMPORT STR
+
+( --- Message types (real 9P2000 codes) --- )
+@TVERSION 100 ; @RVERSION 101 ;
+@TATTACH  104 ; @RATTACH  105 ;
+@RERROR   107 ;
+@TWALK    110 ; @RWALK    111 ;
+@TOPEN    112 ; @ROPEN    113 ;
+@TREAD    116 ; @RREAD    117 ;
+@TWRITE   118 ; @RWRITE   119 ;
+@TCLUNK   120 ; @RCLUNK   121 ;
+
+@QTFILE 0x00 ;
+@QTDIR  0x80 ;
+@NOFID  -1 ;
+@TAG    1 ;      ( fixed; no pipelining )
+@MSIZE  512 ;    ( fixed negotiated message size )
+
+( --- Library scratch state --- )
+@BUF        0x8D2000 ; ( 512-byte message build/parse buffer )
+@WPOS       0x8D2200 ;
+@RPOS       0x8D2204 ;
+@SRV_NFILES 0x8D2208 ;
+@NAMEBUF    0x8D2210 ; ( 64 bytes: scratch for a parsed wname )
+@FILE_REC   32 ;
+@MAXFILES   16 ;
+@SRV_FILES  0x8D2300 ; ( 16*32 = 512 bytes )
+@MAXFIDS    8 ;
+@SRV_FIDS   0x8D2500 ; ( 8*8 = 64 bytes )
+
+( --- Connection accessors (conn is a 16-byte block the caller owns) --- )
+@CONN_FD      0 ;
+@CONN_NEXTFID 4 ;
+@CONN_MSIZE   8 ;
+@CONN_IOUNIT  12 ;
+
+@conn-fd@      ( conn -- fd ) CONN_FD + LOADI ;
+@conn-fd!      ( fd conn -- ) CONN_FD + STOREI ;
+@conn-nextfid@ ( conn -- n )  CONN_NEXTFID + LOADI ;
+@conn-nextfid! ( n conn -- )  CONN_NEXTFID + STOREI ;
+@conn-msize@   ( conn -- n )  CONN_MSIZE + LOADI ;
+@conn-msize!   ( n conn -- )  CONN_MSIZE + STOREI ;
+@conn-iounit@  ( conn -- n )  CONN_IOUNIT + LOADI ;
+@conn-iounit!  ( n conn -- )  CONN_IOUNIT + STOREI ;
+
+@open-conn ( conn fd -- )
+    { conn fd }
+        fd conn conn-fd!
+        1 conn conn-nextfid!
+        MSIZE conn conn-msize!
+        0 conn conn-iounit!
+    }
+;
+
+( --- Byte-safe wire primitives (any address, no 4-byte-alignment need) --- )
+
+@load-int-le ( addr -- val )
+    { addr }
+        addr load-byte
+        addr 1 + load-byte 8 LSHIFT OR
+        addr 2 + load-byte 16 LSHIFT OR
+        addr 3 + load-byte 24 LSHIFT OR
+    }
+;
+
+@put-u8 ( val -- )
+    { val }
+        val BUF WPOS LOADI + store-byte
+        WPOS LOADI 1 + WPOS STOREI
+    }
+;
+@put-u16 ( val -- )
+    { val }
+        val BUF WPOS LOADI + DRAW::store-word-le
+        WPOS LOADI 2 + WPOS STOREI
+    }
+;
+@put-u32 ( val -- )
+    { val }
+        val BUF WPOS LOADI + DRAW::store-int-le
+        WPOS LOADI 4 + WPOS STOREI
+    }
+;
+@put-bytes ( ptr len -- )
+    { ptr len }
+        0
+        { i }
+            [ i len < ]
+            [
+                ptr i + load-byte BUF WPOS LOADI i + + store-byte
+                i 1 + i!
+            ] |:
+        }
+        WPOS LOADI len + WPOS STOREI
+    }
+;
+@put-str ( ptr -- )
+    { ptr }
+        ptr STR::strlen
+        { n }
+            n put-u16
+            ptr n put-bytes
+        }
+    }
+;
+@put-qid ( qtype qvers qpath -- )
+    { qtype qvers qpath }
+        qtype put-u8
+        qvers put-u32
+        qpath put-u32
+        0 put-u32
+    }
+;
+
+@get-u8 ( -- val )
+    BUF RPOS LOADI + load-byte
+    RPOS LOADI 1 + RPOS STOREI
+;
+@get-u16 ( -- val )
+    BUF RPOS LOADI + DRAW::load-word-le
+    RPOS LOADI 2 + RPOS STOREI
+;
+@get-u32 ( -- val )
+    BUF RPOS LOADI + load-int-le
+    RPOS LOADI 4 + RPOS STOREI
+;
+@get-bytes ( dest len -- )
+    { dest len }
+        0
+        { i }
+            [ i len < ]
+            [
+                BUF RPOS LOADI i + + load-byte dest i + store-byte
+                i 1 + i!
+            ] |:
+        }
+        RPOS LOADI len + RPOS STOREI
+    }
+;
+@get-str ( dest -- )
+    get-u16
+    { dest n }
+        dest n get-bytes
+        0 dest n + store-byte
+    }
+;
+@get-qid ( -- qtype qvers qpath )
+    get-u8
+    get-u32
+    get-u32
+    get-u32 drop
+;
+
+( --- Message framing --- )
+
+@msg-begin ( type -- )
+    { type }
+        0 WPOS STOREI
+        0 put-u32
+        type put-u8
+        TAG put-u16
+    }
+;
+
+@msg-end ( fd -- )
+    { fd }
+        WPOS LOADI
+        { total }
+            total BUF DRAW::store-int-le
+            fd BUF total VFS::write drop
+        }
+    }
+;
+
+( Blocks (cooperatively yielding) until a message arrives on fd, then
+  checks its type. Sets RPOS just past the 7-byte header either way. )
+@recv ( fd expect-type -- ok? )
+    { fd expect }
+        [ fd BUF MSIZE VFS::read dup 0 <= ] [ drop VFS::yield drop ] |:
+        drop
+        7 RPOS STOREI
+        BUF 4 + load-byte
+        { got }
+            got RERROR = [
+                0
+            ] [
+                got expect =
+            ] ?:
+        }
+    }
+;
+
+( --- Client --- )
+
+@version ( conn -- ok? )
+    { conn }
+        TVERSION msg-begin
+        conn conn-msize@ put-u32
+        T"9P2000" put-str
+        conn conn-fd@ msg-end
+        conn conn-fd@ RVERSION recv
+        { ok }
+            ok [ get-u32 conn conn-msize! ] ?
+            ok
+        }
+    }
+;
+
+@attach ( conn uname-ptr aname-ptr -- ok? )
+    { conn uname aname }
+        TATTACH msg-begin
+        0 put-u32
+        NOFID put-u32
+        uname put-str
+        aname put-str
+        conn conn-fd@ msg-end
+        conn conn-fd@ RATTACH recv
+    }
+;
+
+( Single-element walk only: flat one-level namespace. )
+@walk ( conn name-ptr -- fid )
+    { conn name }
+        conn conn-nextfid@
+        { newfid }
+            TWALK msg-begin
+            0 put-u32
+            newfid put-u32
+            1 put-u16
+            name put-str
+            conn conn-fd@ msg-end
+            conn conn-fd@ RWALK recv
+            { ok }
+                ok [
+                    get-u16 1 = [
+                        newfid 1 + conn conn-nextfid!
+                        newfid
+                    ] [
+                        -1
+                    ] ?:
+                ] [
+                    -1
+                ] ?:
+            }
+        }
+    }
+;
+
+@open ( conn fid mode -- ok? )
+    { conn fid mode }
+        TOPEN msg-begin
+        fid put-u32
+        mode put-u8
+        conn conn-fd@ msg-end
+        conn conn-fd@ ROPEN recv
+        { ok }
+            ok [
+                get-qid drop drop drop
+                get-u32 conn conn-iounit!
+            ] ?
+            ok
+        }
+    }
+;
+
+@read ( conn fid offset count dest -- n )
+    { conn fid offset count dest }
+        TREAD msg-begin
+        fid put-u32
+        offset put-u32
+        0 put-u32
+        count put-u32
+        conn conn-fd@ msg-end
+        conn conn-fd@ RREAD recv
+        { ok }
+            ok [
+                get-u32
+                { n }
+                    dest n get-bytes
+                    n
+                }
+            ] [
+                0
+            ] ?:
+        }
+    }
+;
+
+@write ( conn fid offset src count -- n )
+    { conn fid offset src count }
+        TWRITE msg-begin
+        fid put-u32
+        offset put-u32
+        0 put-u32
+        count put-u32
+        src count put-bytes
+        conn conn-fd@ msg-end
+        conn conn-fd@ RWRITE recv
+        { ok }
+            ok [ get-u32 ] [ 0 ] ?:
+        }
+    }
+;
+
+@clunk ( conn fid -- )
+    { conn fid }
+        TCLUNK msg-begin
+        fid put-u32
+        conn conn-fd@ msg-end
+        conn conn-fd@ RCLUNK recv drop
+    }
+;
+
+( --- Server: named buffer-backed files + a small fid table --- )
+
+@srv-file-rec      ( idx -- addr ) FILE_REC * SRV_FILES + ;
+@srv-file-name     ( idx -- addr ) srv-file-rec ;
+@srv-file-buf-addr ( idx -- addr ) srv-file-rec 16 + ;
+@srv-file-cap-addr ( idx -- addr ) srv-file-rec 20 + ;
+@srv-file-len-addr ( idx -- addr ) srv-file-rec 24 + ;
+
+@serve-init ( -- ) 0 SRV_NFILES STOREI ;
+
+( Registers a named buffer-backed file. buf-ptr/capacity are caller-owned;
+  content starts empty (length 0) and grows as clients Twrite into it. )
+@serve-file ( name-ptr buf-ptr capacity -- )
+    { name buf cap }
+        SRV_NFILES LOADI
+        { idx }
+            idx MAXFILES < [
+                name idx srv-file-name STR::strcpy
+                buf idx srv-file-buf-addr STOREI
+                cap idx srv-file-cap-addr STOREI
+                0 idx srv-file-len-addr STOREI
+                SRV_NFILES LOADI 1 + SRV_NFILES STOREI
+            ] ?
+        }
+    }
+;
+
+@find-file-by-name ( name-ptr -- idx )
+    { name }
+        -1 SRV_NFILES LOADI
+        { found n }
+            0
+            { i }
+                [ i n < ]
+                [
+                    i srv-file-name name STR::streq [
+                        i found!
+                    ] ?
+                    i 1 + i!
+                ] |:
+            }
+            found
+        }
+    }
+;
+
+@srv-fid-rec       ( slot -- addr ) 8 * SRV_FIDS + ;
+@srv-fid-num-addr  ( slot -- addr ) srv-fid-rec ;
+@srv-fid-file-addr ( slot -- addr ) srv-fid-rec 4 + ;
+
+@serve-fids-init ( -- )
+    0
+    { i }
+        [ i MAXFIDS < ]
+        [
+            -1 i srv-fid-num-addr STOREI
+            i 1 + i!
+        ] |:
+    }
+;
+
+@srv-fid-alloc ( fid file-idx -- )
+    { fid fidx }
+        0
+        { i }
+            [ i MAXFIDS < ]
+            [
+                i srv-fid-num-addr LOADI -1 = [
+                    fid i srv-fid-num-addr STOREI
+                    fidx i srv-fid-file-addr STOREI
+                    MAXFIDS i!
+                ] ?
+                i 1 + i!
+            ] |:
+        }
+    }
+;
+
+@srv-fid-find ( fid -- slot )
+    { fid }
+        -1
+        { found }
+            0
+            { i }
+                [ i MAXFIDS < ]
+                [
+                    i srv-fid-num-addr LOADI fid = [
+                        i found!
+                    ] ?
+                    i 1 + i!
+                ] |:
+            }
+            found
+        }
+    }
+;
+
+@srv-fid-free ( fid -- )
+    srv-fid-find
+    { slot }
+        slot 0 >= [
+            -1 slot srv-fid-num-addr STOREI
+        ] ?
+    }
+;
+
+@handle-version ( fd -- )
+    { fd }
+        get-u32 drop
+        RVERSION msg-begin
+        MSIZE put-u32
+        T"9P2000" put-str
+        fd msg-end
+    }
+;
+
+@handle-attach ( fd -- )
+    { fd }
+        get-u32
+        { fid }
+            get-u32 drop
+            fid -1 srv-fid-alloc
+            RATTACH msg-begin
+            QTDIR 0 0 put-qid
+            fd msg-end
+        }
+    }
+;
+
+@handle-walk ( fd -- )
+    { fd }
+        get-u32 drop
+        get-u32
+        { newfid }
+            get-u16
+            { nwname }
+                nwname 0 = [
+                    RWALK msg-begin
+                    0 put-u16
+                    fd msg-end
+                ] [
+                    NAMEBUF get-str
+                    NAMEBUF find-file-by-name
+                    { fidx }
+                        fidx 0 >= [
+                            newfid fidx srv-fid-alloc
+                            RWALK msg-begin
+                            1 put-u16
+                            QTFILE 0 fidx 1 + put-qid
+                            fd msg-end
+                        ] [
+                            RERROR msg-begin
+                            T"no such file" put-str
+                            fd msg-end
+                        ] ?:
+                    }
+                ] ?:
+            }
+        }
+    }
+;
+
+@handle-open ( fd -- )
+    { fd }
+        get-u32
+        { fid }
+            get-u8 drop
+            fid srv-fid-find
+            { slot }
+                slot 0 >= [
+                    slot srv-fid-file-addr LOADI
+                    { fidx }
+                        ROPEN msg-begin
+                        fidx 0 >= [ QTFILE ] [ QTDIR ] ?: 0 fidx 1 + put-qid
+                        MSIZE put-u32
+                        fd msg-end
+                    }
+                ] [
+                    RERROR msg-begin
+                    T"unknown fid" put-str
+                    fd msg-end
+                ] ?:
+            }
+        }
+    }
+;
+
+@handle-read ( fd -- )
+    { fd }
+        get-u32
+        { fid }
+            get-u32
+            { offset }
+                get-u32 drop
+                get-u32
+                { count }
+                    fid srv-fid-find
+                    { slot }
+                        slot 0 >= slot srv-fid-file-addr LOADI 0 >= AND [
+                            slot srv-fid-file-addr LOADI
+                            { fidx }
+                                fidx srv-file-len-addr LOADI
+                                { len }
+                                    offset len < [ len offset - count MIN ] [ 0 ] ?:
+                                    { n }
+                                        RREAD msg-begin
+                                        n put-u32
+                                        fidx srv-file-buf-addr LOADI offset + n put-bytes
+                                        fd msg-end
+                                    }
+                                }
+                            }
+                        ] [
+                            RERROR msg-begin
+                            T"bad fid" put-str
+                            fd msg-end
+                        ] ?:
+                    }
+                }
+            }
+        }
+    }
+;
+
+@handle-write ( fd -- )
+    { fd }
+        get-u32
+        { fid }
+            get-u32
+            { offset }
+                get-u32 drop
+                get-u32
+                { count }
+                    fid srv-fid-find
+                    { slot }
+                        slot 0 >= slot srv-fid-file-addr LOADI 0 >= AND [
+                            slot srv-fid-file-addr LOADI
+                            { fidx }
+                                fidx srv-file-cap-addr LOADI
+                                { cap }
+                                    offset cap < [ cap offset - count MIN ] [ 0 ] ?:
+                                    { n }
+                                        fidx srv-file-buf-addr LOADI offset + n get-bytes
+                                        offset n + fidx srv-file-len-addr LOADI MAX
+                                        fidx srv-file-len-addr STOREI
+                                        RWRITE msg-begin
+                                        n put-u32
+                                        fd msg-end
+                                    }
+                                }
+                            }
+                        ] [
+                            RERROR msg-begin
+                            T"bad fid" put-str
+                            fd msg-end
+                        ] ?:
+                    }
+                }
+            }
+        }
+    }
+;
+
+@handle-clunk ( fd -- )
+    { fd }
+        get-u32
+        { fid }
+            fid srv-fid-free
+            RCLUNK msg-begin
+            fd msg-end
+        }
+    }
+;
+
+( Non-blocking: services at most one pending request on fd, if any. Call
+  once per tick (e.g. from @on-frame) for each fd a server listens on. )
+@serve-pump ( fd -- )
+    { fd }
+        fd BUF MSIZE VFS::read
+        { n }
+            n 7 >= [
+                7 RPOS STOREI
+                BUF 4 + load-byte
+                { type }
+                    type TVERSION = [ fd handle-version ] ?
+                    type TATTACH = [ fd handle-attach ] ?
+                    type TWALK = [ fd handle-walk ] ?
+                    type TOPEN = [ fd handle-open ] ?
+                    type TREAD = [ fd handle-read ] ?
+                    type TWRITE = [ fd handle-write ] ?
+                    type TCLUNK = [ fd handle-clunk ] ?
+                }
+            ] ?
+        }
+    }
+;

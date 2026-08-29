@@ -18,6 +18,7 @@ MODULE VFS
 @CMD_SEEK  23 ;
 @CMD_STAT  24 ;
 @CMD_WRITE_CHUNK 25 ;
+@CMD_READ_NOYIELD 26 ;
 
 @CMD_CREATE_WIN 1 ;
 @CMD_CLOSE_WIN  2 ;
@@ -63,6 +64,19 @@ MODULE VFS
     3 frame! ( 0:len, 1:buf, 2:fd )
     0 local@ SCI-ARG3 STOREI
     CMD_READ
+    2 local@
+    1 local@
+    EXEC
+    3 unframe!
+;
+
+( Like read, but never triggers the VM's cooperative yield on an empty
+  queue -- for input devices (mouse/kbd) only. Use this for per-frame
+  polling loops so an empty queue doesn't cut the frame short. )
+@read-noyield ( fd buf-ptr len -- bytes-read )
+    3 frame! ( 0:len, 1:buf, 2:fd )
+    0 local@ SCI-ARG3 STOREI
+    CMD_READ_NOYIELD
     2 local@
     1 local@
     EXEC

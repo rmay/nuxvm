@@ -8,6 +8,8 @@
  *   bin/nux examples/fluxio/include_demo.bin
  */
 
+version 400000;
+
 include "include_lib/mathlib.fx";
 
 /** entry point */

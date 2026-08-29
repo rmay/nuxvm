@@ -8,6 +8,8 @@
  *   bin/nux examples/fluxio/float_demo.bin
  */
 
+version 400000;
+
 include "../../lib/float.fx";
 
 Float a;

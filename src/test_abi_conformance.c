@@ -355,6 +355,7 @@ static void test_fluxio_extern_end_to_end(void) {
     CHECK(app_src != NULL, "opened scratch app.fx for writing");
     if (!app_src) return;
     fprintf(app_src,
+        "version 400000;\n\n"
         "extern int lib_double(int n) = 0x%X;\n"
         "extern int lib_triple(int n) = 0x%X;\n"
         "extern int lib_add2(int a, int b) = 0x%X;\n\n"
@@ -447,6 +448,7 @@ static void test_fluxio_extern_void_end_to_end(void) {
     CHECK(app_src != NULL, "opened scratch app.fx for writing");
     if (!app_src) return;
     fprintf(app_src,
+        "version 400000;\n\n"
         "extern void v_stash(int x) = 0x%X;\n"
         "extern int v_peek() = 0x%X;\n\n"
         "/** Entry point. */\n"
@@ -495,6 +497,7 @@ static void test_fluxio_extern_void_end_to_end(void) {
     CHECK(bad_src != NULL, "opened scratch bad.fx for writing");
     if (bad_src) {
         fprintf(bad_src,
+            "version 400000;\n\n"
             "extern void v_stash(int x) = 0x%X;\n\n"
             "/** Entry point. */\n"
             "int main() {\n"
@@ -556,6 +559,7 @@ static void test_uisf_library_link(void) {
     CHECK(app_src != NULL, "opened scratch app.fx for writing");
     if (!app_src) return;
     fprintf(app_src,
+        "version 400000;\n\n"
         "extern void ui_new() = 0x%X;\n"
         "extern int ui_menu_open() = 0x%X;\n\n"
         "/** Entry point. */\n"

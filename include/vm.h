@@ -56,7 +56,7 @@ typedef struct {
 
     uint8_t last_opcode;
 
-    // SCI (system call interface) result register, read via DEVICE_MEMORY_OFFSET + 0xD0.
+    // SCI result register, read via SCI_PORT (the VFS syscall trap).
     int32_t sci_result;
 
     // Callbacks
@@ -82,8 +82,6 @@ bool vm_tick(VM* vm);
 
 // Push a value to the main stack
 bool vm_push(VM* vm, int32_t value);
-
-bool vm_call_vector(VM* vm, uint32_t addr);
 
 // Pop a value from the main stack
 bool vm_pop(VM* vm, int32_t* value);

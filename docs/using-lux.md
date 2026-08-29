@@ -53,6 +53,8 @@ Source: `src/luxc.c`.
 
 The default output path logic is exactly: strip a trailing `.lux` extension (case-insensitive) from the input and append `.bin`. If the input has no `.lux` suffix, `.bin` is appended as-is.
 
+Every app build must also declare a top-level `VERSION <n>` directive (Kelvin versioning — see `AGENTS.md`), anywhere in the main file or an `INCLUDE`d one; `luxc` refuses to compile an app that never declares one. A library build (`-base 0xADDR`, meant to be linked into another program rather than run standalone) is exempt from this check.
+
 ### Examples
 
 Compile with defaults:
@@ -121,7 +123,7 @@ With no argument, CLOISTER tries to load `lib/boot.lux` relative to the current 
 | Flag      | Default | Purpose                                                                  |
 | --------- | ------- | ------------------------------------------------------------------------ |
 | `-mem N`  | 32      | RAM size in MB. Capped at 128.                                           |
-| `-w N`    | —       | Screen width override. Wins over whatever boot.lux wrote via MMIO.       |
+| `-w N`    | —       | Screen width override.                                                   |
 | `-h N`    | —       | Screen height override.                                                  |
 | `-scale N`| —       | Window pixel-scale override (otherwise derived from `TEXT::font-size!`).  |
 
@@ -150,7 +152,7 @@ Built-in commands:
 | `drop`                     | Pop the top value.                           |
 | `clearstack`, `cs`         | Empty the stack.                             |
 | Up / Down arrows           | Scroll line history.                         |
-| F1                         | Toggle the debug overlay (PC, stack, MMIO). |
+| F1                         | Toggle the debug overlay (PC, stack).        |
 
 Anything else is compiled with `compile_source` and executed by injecting the bytecode at the start of user memory and triggering vector 0 (`src/cloister.c`).
 
@@ -215,17 +217,22 @@ IMPORT CTRL
 main
 ```
 
-The first tick after launch runs until `YIELD` or `HALT`. CLOISTER then reads `SCR_W`, `SCR_H`, and the `TEXT` font size back from MMIO to size the window (`src/cloister.c`), so boot code that writes those registers controls the initial window geometry.
+The first tick after launch runs until `YIELD` or `HALT`. Cloister is a
+fixed 960×720 window. Guests draw with `/dev/draw` and read input from
+`/dev/mouse` and `/dev/kbd` — see `ARCHITECTURE.md`. There are no Varvara
+MMIO device ports.
 
 ### Using the system library
 
-`lib/system.lux` wraps the MMIO device bus as lux modules: `SYSTEM`, `SCREEN`, `AUDIO`, `CTRL`, `MOUSE`, `FILE`, `TIME`, `TEXT`. Programs that touch hardware typically start with:
+Graphical apps include `lib/app.lux` (which pulls in VFS, draw, event, UI).
+Clock words live in `lib/time.lux` and read `/dev/time`. Programs that
+touch the machine typically start with:
 
 ```forth
-INCLUDE "lib/system.lux"
-IMPORT SCREEN
-IMPORT TEXT
-IMPORT CTRL
+INCLUDE "lib/app.lux"
+IMPORT APP
+IMPORT DRAW
+IMPORT EVENT
 ```
 
 Naming conventions:
@@ -234,25 +241,26 @@ Naming conventions:
 - `@name@` — getter. Pushes the value onto the stack.
 - `@name-get` / `@name-set` — used when the getter/setter shape needs extra args.
 
-For example, to draw a single pixel:
+For example, to fill a rectangle through `/dev/draw`:
 
 ```forth
-0xFFFFFF 10 20 SCREEN::pixel!   ( color x y -- )
+dfd LOADI 10 20 8 8 0x000000 DRAW::fill-rect
 ```
 
 ## Troubleshooting
 
 - **Compile error, not sure why** — re-run with `-trace` and look at the last successful pass in the stderr output.
+- **"missing required 'VERSION <n>' directive"** — the file (and everything it `INCLUDE`s) never declared `VERSION <n>` at the top level. Unless a specific app has a reason to declare otherwise, use `VERSION 400000` (400K) — see `AGENTS.md`'s versioning section for what 300K is reserved for. Library builds (`luxc -base ...`) are exempt.
 - **`read <path>: no such file`** from CLOISTER at launch — the path is resolved relative to your working directory. Running from outside the repo root means `lib/boot.lux` isn't found; CLOISTER falls back to a HALT and enters REPL mode. Either `cd` into the repo or pass an explicit path.
 - **File-device calls return `-1`** — the path escaped the sandbox root (`..`, absolute path, or a symlink). Relative paths under the launch directory are the safe bet.
 - **REPL seems to ignore input** — most often an unterminated `@word` definition. Close it with `;` and re-enter. The REPL logs `Defined word` on success and `Compile error: ...` otherwise.
-- **Window geometry looks wrong** — boot code writes `SCR_W`/`SCR_H`/`TEXT::font-size!` during the first tick; CLOISTER reads those to size the window. Use `-w`, `-h`, `-scale` to override.
+- **Window geometry looks wrong** — Cloister is a fixed 960×720 host window. Guest canvas size is read from `/dev/draw`.
 
 ## Further reading
 
 - [`lux_tutorial.md`](lux_tutorial.md) — the language itself: words, quotations, modules, combinators.
 - [`opcodes.md`](opcodes.md) — bytecode opcode reference.
 - [`NUX_ARCHITECTURE.md`](NUX_ARCHITECTURE.md) — VM internals and memory map.
-- [`CLOISTER.md`](CLOISTER.md) — CLOISTER devices and MMIO register map.
-- [`file-device.md`](file-device.md) — File device protocol.
+- [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — VM, Plan 9 VFS, Cloister.
+- Host files are `/sys/file/…` under the launch directory.
 - [`lexer.md`](lexer.md) — token grammar.

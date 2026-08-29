@@ -825,7 +825,18 @@ static bool compile_token(Compiler* c, Token t) {
             c->import_count++;
             return true;
         }
-        
+        if (strcmp(t.value, "VERSION") == 0) {
+            Token ver = advance(c);
+            int32_t val;
+            if (ver.type != TOKEN_NUMBER || !parse_number(&ver, &val)) {
+                fprintf(stderr, "Error: expected integer after VERSION (line %d)\n", t.line);
+                return false;
+            }
+            c->version_seen = true;
+            c->version_value = val;
+            return true;
+        }
+
         if (compile_combinator(c, t.value)) {
             return true;
         }

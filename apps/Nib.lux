@@ -12,6 +12,7 @@ INCLUDE "lib/sf.lux"
 INCLUDE "lib/geom.lux"
 
 MODULE MAIN
+VERSION 400000
 
 IMPORT APP
 IMPORT VFS
@@ -1624,7 +1625,7 @@ IMPORT GEOM
 
 @on-frame ( -- )
     UI::handle
-    APP::dirty? UI::menu-open? OR SF::open? OR confirm-new-open LOADI OR [
+    APP::dirty? SF::open? OR confirm-new-open LOADI OR [
         draw-all
         APP::dirty-off
     ] [

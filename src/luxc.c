@@ -245,6 +245,18 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    /* Every app build must declare `VERSION <n>` (Kelvin versioning,
+     * AGENTS.md). Library builds (-base, linked into a Fluxio host rather
+     * than run standalone) are exempt -- they don't own a runnable app. */
+    if (!base_override_arg && !compiler->version_seen) {
+        fprintf(stderr, "luxc: %s: missing required 'VERSION <n>' directive\n", filename);
+        free(bytecode);
+        compiler_free(compiler);
+        token_list_free(token_list);
+        free(source);
+        return 1;
+    }
+
     if (symbols_out_arg) {
         if (!write_symtab(symbols_out_arg, compiler)) {
             fprintf(stderr, "luxc: could not write symbol table to \"%s\"\n", symbols_out_arg);

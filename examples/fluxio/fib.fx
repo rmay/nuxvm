@@ -1,3 +1,5 @@
+version 400000;
+
 /** fibonacci, bounded */
 recursive(32) int fib(int n) {
     if (n < 2) { return n; }

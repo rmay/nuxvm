@@ -885,7 +885,7 @@ nuxvm/
 │   └── vfs.lux
 ├── src/
 │   ├── vm.c        - Core VM interpreter
-│   ├── system.c    - MMIO devices + system call interface
+│   ├── system.c    - SCI trap (VFS syscalls) + framebuffer
 │   ├── vfs.c       - Virtual filesystem
 │   ├── machine.c   - Machine (CPU + System)
 │   ├── lexer.c     - Tokenizer

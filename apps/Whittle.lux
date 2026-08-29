@@ -1,0 +1,1049 @@
+( Whittle — sprite/tile editor with named flip-book animation sequences.
+  A document is a sheet of named "sprites"; each sprite is a strip of same
+  -size RGB tile frames (the same 3-bytes/pixel format DRAW::blit-tile /
+  TILEMAP::kind-bitmap consume). 0xFF00FF is the universal transparency
+  key color across every Whittle-authored tile. Saved as CSF (Cloister
+  Sprite File, magic "CSF1") — see docs/memory-map.md for the byte layout. )
+
+INCLUDE "lib/app.lux"
+INCLUDE "lib/core.lux"
+INCLUDE "lib/str.lux"
+INCLUDE "lib/ui.lux"
+INCLUDE "lib/sf.lux"
+
+MODULE WHITTLE
+VERSION 400000
+
+IMPORT APP
+IMPORT UI
+IMPORT DRAW
+IMPORT EVENT
+IMPORT STR
+IMPORT VFS
+IMPORT SF
+
+@KEY_COLOR 0xFF00FF ;
+
+@SLOT_BYTES 3072 ;             ( 32*32*3, fixed per-frame slot stride )
+@MAX_FRAMES 256 ;              ( shared frame-pixel bank, bump-allocated, never reclaimed within a session )
+@FRAME_BANK 0x900000 ;         ( 256*3072 = 786432 bytes )
+
+@SPRITE_REC_BYTES 96 ;         ( name(16) + count(4) + speed(4) + flist(16*4=64) = 88, padded )
+@MAX_SPRITES 16 ;
+@MAX_FRAMES_PER_SPRITE 16 ;
+@SPRITE_TAB 0x9C0000 ;         ( 16*96 = 1536 bytes )
+
+( --- Small per-instance state --- )
+@doc-size      0x8A0000 ;
+@doc-nsprites  0x8A0004 ;
+@cur-sprite    0x8A0008 ;
+@cur-frame     0x8A000C ;
+@cur-color     0x8A0010 ;
+@drag          0x8A0014 ;
+@playing       0x8A0018 ;
+@play-tick     0x8A001C ;
+@play-frame    0x8A0020 ;
+@file-dirty    0x8A0024 ;
+@next-slot     0x8A0028 ;
+@editing-name  0x8A002C ;
+@edit-len      0x8A0030 ;
+@name-edit-mode 0x8A0034 ;
+@confirm-kind  0x8A0038 ;      ( 0=none, 1=delete-sprite confirm open )
+@save-as       0x8A003C ;
+@sprite-counter 0x8A0040 ;
+
+@EDIT_BUF  0x8A0100 ;          ( 32 bytes: sprite-name text-input buffer )
+@PATH      0x8A0140 ;          ( 256 bytes: current file path )
+@VFS_PATH  0x8A0240 ;          ( 256 bytes: /sys/file/ scratch )
+@NBUF      0x8A0340 ;          ( 32 bytes: int-to-str scratch )
+@HDR       0x8A0380 ;          ( 16 bytes: file-header staging )
+@PAL_RESULT 0x8A0390 ;
+
+( --- Sprite record accessors --- )
+
+@sprite-rec ( sidx -- addr ) SPRITE_REC_BYTES * SPRITE_TAB + ;
+@sprite-name ( sidx -- addr ) sprite-rec ;
+@sprite-count-addr ( sidx -- addr ) sprite-rec 16 + ;
+@sprite-speed-addr ( sidx -- addr ) sprite-rec 20 + ;
+@sprite-flist-addr ( sidx -- addr ) sprite-rec 24 + ;
+@sprite-count ( sidx -- n ) sprite-count-addr LOADI ;
+@sprite-speed ( sidx -- n ) sprite-speed-addr LOADI ;
+
+@sprite-frame-slot ( sidx fi -- slot )
+    { sidx fi }
+        sidx sprite-flist-addr fi 4 * + LOADI
+    }
+;
+
+@sprite-set-frame-slot ( sidx fi slot -- )
+    { sidx fi slot }
+        slot sidx sprite-flist-addr fi 4 * + STOREI
+    }
+;
+
+( --- Frame pixel access (byte-addressed RGB, row-major) --- )
+
+@frame-pixel-addr ( slot-addr px py -- addr )
+    { slot-addr px py }
+        py doc-size LOADI * px + 3 * slot-addr +
+    }
+;
+
+@color-r ( c -- r ) 16 RSHIFT 255 AND ;
+@color-g ( c -- g ) 8 RSHIFT 255 AND ;
+@color-b ( c -- b ) 255 AND ;
+
+@frame-pixel@ ( slot-addr px py -- r g b )
+    0 4 frame! ( 0:addr 1:py 2:px 3:slot-addr )
+    3 local@ 2 local@ 1 local@ frame-pixel-addr 0 local!
+    0 local@ load-byte
+    0 local@ 1 + load-byte
+    0 local@ 2 + load-byte
+    4 unframe!
+;
+
+@frame-pixel! ( slot-addr px py r g b -- )
+    0 7 frame! ( 0:addr 1:b 2:g 3:r 4:py 5:px 6:slot-addr )
+    6 local@ 5 local@ 4 local@ frame-pixel-addr 0 local!
+    3 local@ 0 local@ store-byte
+    2 local@ 0 local@ 1 + store-byte
+    1 local@ 0 local@ 2 + store-byte
+    7 unframe!
+;
+
+@cur-slot ( -- slot ) cur-sprite LOADI cur-frame LOADI sprite-frame-slot ;
+@cur-frame-addr ( -- addr ) cur-slot SLOT_BYTES * FRAME_BANK + ;
+@play-slot ( -- slot ) cur-sprite LOADI play-frame LOADI sprite-frame-slot ;
+@play-frame-addr ( -- addr ) play-slot SLOT_BYTES * FRAME_BANK + ;
+@show-frame-addr ( -- addr ) playing LOADI 0 = [ cur-frame-addr ] [ play-frame-addr ] ?: ;
+
+( --- Fixed 16-color palette + reserved transparent key --- )
+
+@palette-color ( idx -- color )
+    dup 0 = [ 0x000000 PAL_RESULT STOREI ] ?
+    dup 1 = [ 0xFFFFFF PAL_RESULT STOREI ] ?
+    dup 2 = [ 0x808080 PAL_RESULT STOREI ] ?
+    dup 3 = [ 0xC0C0C0 PAL_RESULT STOREI ] ?
+    dup 4 = [ 0x800000 PAL_RESULT STOREI ] ?
+    dup 5 = [ 0xFF0000 PAL_RESULT STOREI ] ?
+    dup 6 = [ 0xFF8000 PAL_RESULT STOREI ] ?
+    dup 7 = [ 0xFFFF00 PAL_RESULT STOREI ] ?
+    dup 8 = [ 0x008000 PAL_RESULT STOREI ] ?
+    dup 9 = [ 0x00FF00 PAL_RESULT STOREI ] ?
+    dup 10 = [ 0x008080 PAL_RESULT STOREI ] ?
+    dup 11 = [ 0x00FFFF PAL_RESULT STOREI ] ?
+    dup 12 = [ 0x000080 PAL_RESULT STOREI ] ?
+    dup 13 = [ 0x0000FF PAL_RESULT STOREI ] ?
+    dup 14 = [ 0x800080 PAL_RESULT STOREI ] ?
+    dup 15 = [ 0xFF00A0 PAL_RESULT STOREI ] ?
+    drop
+    PAL_RESULT LOADI
+;
+
+( --- Bank / sprite / frame management --- )
+
+@alloc-slot ( -- slot )
+    next-slot LOADI MAX_FRAMES >= [
+        -1
+    ] [
+        next-slot LOADI
+        next-slot LOADI 1 + next-slot STOREI
+    ] ?:
+;
+
+@blank-slot ( slot -- )
+    SLOT_BYTES * FRAME_BANK +
+    { addr }
+        0
+        { py }
+            [ py doc-size LOADI < ]
+            [
+                0
+                { px }
+                    [ px doc-size LOADI < ]
+                    [
+                        addr px py KEY_COLOR color-r KEY_COLOR color-g KEY_COLOR color-b frame-pixel!
+                        px 1 + px!
+                    ] |:
+                }
+                py 1 + py!
+            ] |:
+        }
+    }
+;
+
+@copy-slot ( src-slot dst-slot -- )
+    { src dst }
+        src SLOT_BYTES * FRAME_BANK + { sa }
+            dst SLOT_BYTES * FRAME_BANK + { da }
+                0
+                { i }
+                    [ i SLOT_BYTES < ]
+                    [
+                        sa i + load-byte da i + store-byte
+                        i 1 + i!
+                    ] |:
+                }
+            }
+        }
+    }
+;
+
+@name-sprite ( sidx -- )
+    { sidx }
+        T"Sprite" sidx sprite-name STR::strcpy
+        sprite-counter LOADI NBUF STR::int-to-str
+        NBUF sidx sprite-name strcat
+        sprite-counter LOADI 1 + sprite-counter STOREI
+    }
+;
+
+@new-sprite ( -- )
+    doc-nsprites LOADI MAX_SPRITES >= [
+    ] [
+        alloc-slot
+        { slot }
+            slot 0 < [
+            ] [
+                slot blank-slot
+                doc-nsprites LOADI
+                { sidx }
+                    sidx name-sprite
+                    1 sidx sprite-count-addr STOREI
+                    8 sidx sprite-speed-addr STOREI
+                    sidx 0 slot sprite-set-frame-slot
+                    doc-nsprites LOADI 1 + doc-nsprites STOREI
+                    sidx cur-sprite STOREI
+                    0 cur-frame STOREI
+                    1 file-dirty STOREI
+                }
+            ] ?:
+        }
+    ] ?
+;
+
+@shift-sprite-down ( sidx -- )
+    { sidx }
+        sidx sprite-rec { dst }
+            sidx 1 + sprite-rec { src }
+                0
+                { i }
+                    [ i SPRITE_REC_BYTES < ]
+                    [
+                        src i + load-byte dst i + store-byte
+                        i 1 + i!
+                    ] |:
+                }
+            }
+        }
+    }
+;
+
+@delete-sprite ( sidx -- )
+    { sidx }
+        doc-nsprites LOADI 1 - { last }
+            sidx
+            { i }
+                [ i last < ]
+                [
+                    i shift-sprite-down
+                    i 1 + i!
+                ] |:
+            }
+        }
+        doc-nsprites LOADI 1 - doc-nsprites STOREI
+        cur-sprite LOADI doc-nsprites LOADI >= [
+            doc-nsprites LOADI 1 - 0 MAX cur-sprite STOREI
+        ] ?
+        0 cur-frame STOREI
+        1 file-dirty STOREI
+    }
+;
+
+@sprite-add-frame ( sidx -- )
+    { sidx }
+        sidx sprite-count MAX_FRAMES_PER_SPRITE >= [
+        ] [
+            alloc-slot
+            { slot }
+                slot 0 < [
+                ] [
+                    slot blank-slot
+                    sidx sprite-count
+                    { fi }
+                        sidx fi slot sprite-set-frame-slot
+                        sidx sprite-count-addr LOADI 1 + sidx sprite-count-addr STOREI
+                        fi cur-frame STOREI
+                        1 file-dirty STOREI
+                    }
+                ] ?:
+            }
+        ] ?
+    }
+;
+
+@sprite-insert-frame-after ( sidx fi slot -- )
+    { sidx fi slot }
+        fi 1 + { ins }
+            sidx sprite-count { cnt }
+                cnt
+                { i }
+                    [ i ins > ]
+                    [
+                        sidx i 1 - sprite-frame-slot
+                        { v }
+                            sidx i v sprite-set-frame-slot
+                        }
+                        i 1 - i!
+                    ] |:
+                }
+            }
+            sidx ins slot sprite-set-frame-slot
+            sidx sprite-count-addr LOADI 1 + sidx sprite-count-addr STOREI
+        }
+    }
+;
+
+@sprite-duplicate-frame ( sidx fi -- )
+    { sidx fi }
+        sidx sprite-count MAX_FRAMES_PER_SPRITE >= [
+        ] [
+            alloc-slot
+            { newslot }
+                newslot 0 < [
+                ] [
+                    sidx fi sprite-frame-slot newslot copy-slot
+                    sidx fi newslot sprite-insert-frame-after
+                    fi 1 + cur-frame STOREI
+                    1 file-dirty STOREI
+                ] ?:
+            }
+        ] ?:
+    }
+;
+
+@sprite-delete-frame ( sidx fi -- )
+    { sidx fi }
+        sidx sprite-count 1 <= [
+        ] [
+            sidx sprite-count { cnt }
+                fi
+                { i }
+                    [ i cnt 1 - < ]
+                    [
+                        sidx i 1 + sprite-frame-slot
+                        { v }
+                            sidx i v sprite-set-frame-slot
+                        }
+                        i 1 + i!
+                    ] |:
+                }
+            }
+            sidx sprite-count-addr LOADI 1 - sidx sprite-count-addr STOREI
+            cur-frame LOADI sidx sprite-count-addr LOADI >= [
+                sidx sprite-count-addr LOADI 1 - 0 MAX cur-frame STOREI
+            ] ?
+            1 file-dirty STOREI
+        ] ?:
+    }
+;
+
+( --- Per-frame pixel ops --- )
+
+@flip-h ( -- )
+    cur-frame-addr
+    { addr }
+        0
+        { py }
+            [ py doc-size LOADI < ]
+            [
+                0
+                { px }
+                    [ px doc-size LOADI 2 / < ]
+                    [
+                        doc-size LOADI 1 - px - { mx }
+                            addr px py frame-pixel@
+                            { r g b }
+                                addr mx py frame-pixel@
+                                { r2 g2 b2 }
+                                    addr px py r2 g2 b2 frame-pixel!
+                                    addr mx py r g b frame-pixel!
+                                }
+                            }
+                        }
+                        px 1 + px!
+                    ] |:
+                }
+                py 1 + py!
+            ] |:
+        }
+    }
+    1 file-dirty STOREI
+;
+
+@flip-v ( -- )
+    cur-frame-addr
+    { addr }
+        0
+        { py }
+            [ py doc-size LOADI 2 / < ]
+            [
+                doc-size LOADI 1 - py - { my }
+                    0
+                    { px }
+                        [ px doc-size LOADI < ]
+                        [
+                            addr px py frame-pixel@
+                            { r g b }
+                                addr px my frame-pixel@
+                                { r2 g2 b2 }
+                                    addr px py r2 g2 b2 frame-pixel!
+                                    addr px my r g b frame-pixel!
+                                }
+                            }
+                        px 1 + px!
+                    ] |:
+                }
+                }
+                py 1 + py!
+            ] |:
+        }
+    }
+    1 file-dirty STOREI
+;
+
+@fill-frame ( -- )
+    cur-frame-addr
+    { addr }
+        0
+        { py }
+            [ py doc-size LOADI < ]
+            [
+                0
+                { px }
+                    [ px doc-size LOADI < ]
+                    [
+                        addr px py cur-color LOADI color-r cur-color LOADI color-g cur-color LOADI color-b frame-pixel!
+                        px 1 + px!
+                    ] |:
+                }
+                py 1 + py!
+            ] |:
+        }
+    }
+    1 file-dirty STOREI
+;
+
+@clear-frame ( -- ) cur-slot blank-slot 1 file-dirty STOREI ;
+
+@paint-px ( px py -- )
+    { px py }
+        px 0 >= px doc-size LOADI < AND
+        py 0 >= AND py doc-size LOADI < AND [
+            cur-frame-addr px py
+            cur-color LOADI color-r cur-color LOADI color-g cur-color LOADI color-b
+            frame-pixel!
+            1 file-dirty STOREI
+        ] ?
+    }
+;
+
+( --- Document lifecycle --- )
+
+@new-doc ( size -- )
+    { size }
+        size doc-size STOREI
+        0 doc-nsprites STOREI
+        0 cur-sprite STOREI
+        0 cur-frame STOREI
+        0 next-slot STOREI
+        0 sprite-counter STOREI
+        0 playing STOREI
+        0 PATH store-byte
+        0 file-dirty STOREI
+        new-sprite
+    }
+;
+
+@menu-new-8  ( val -- ) drop 8  new-doc ;
+@menu-new-16 ( val -- ) drop 16 new-doc ;
+@menu-new-24 ( val -- ) drop 24 new-doc ;
+@menu-new-32 ( val -- ) drop 32 new-doc ;
+
+( --- File I/O --- )
+
+@make-vfs-path ( path-ptr -- vfs-path-ptr )
+    dup load-byte 47 = [ 1 + ] ?
+    T"/sys/file/" VFS_PATH STR::strcpy
+    VFS_PATH T"/sys/file/" STR::strlen + STR::strcpy
+    VFS_PATH
+;
+
+@do-save ( -- )
+    PATH make-vfs-path 6 VFS::open-mode
+    dup 0 >= [
+        { fd }
+            T"CSF1" HDR STR::strcpy
+            doc-size LOADI HDR 4 + DRAW::store-word-le
+            doc-nsprites LOADI HDR 6 + DRAW::store-word-le
+            next-slot LOADI HDR 8 + DRAW::store-word-le
+            0 HDR 10 + DRAW::store-word-le
+            fd HDR 12 VFS::write drop
+            fd FRAME_BANK MAX_FRAMES SLOT_BYTES * VFS::write drop
+            fd SPRITE_TAB MAX_SPRITES SPRITE_REC_BYTES * VFS::write drop
+            fd VFS::close drop
+            0 file-dirty STOREI
+        }
+    ] [ drop ] ?:
+;
+
+@load-file ( -- )
+    PATH make-vfs-path 0 VFS::open-mode
+    dup 0 >= [
+        { fd }
+            fd HDR 12 VFS::read
+            { n }
+                n 12 < [
+                    fd VFS::close drop
+                ] [
+                    HDR load-byte 67 =
+                    HDR 1 + load-byte 83 = AND
+                    HDR 2 + load-byte 70 = AND
+                    HDR 3 + load-byte 49 = AND
+                    [
+                        HDR 4 + DRAW::load-word-le doc-size STOREI
+                        HDR 6 + DRAW::load-word-le doc-nsprites STOREI
+                        HDR 8 + DRAW::load-word-le next-slot STOREI
+                        fd FRAME_BANK MAX_FRAMES SLOT_BYTES * VFS::read drop
+                        fd SPRITE_TAB MAX_SPRITES SPRITE_REC_BYTES * VFS::read drop
+                        fd VFS::close drop
+                        0 cur-sprite STOREI
+                        0 cur-frame STOREI
+                        0 playing STOREI
+                        0 file-dirty STOREI
+                    ] [
+                        fd VFS::close drop
+                    ] ?:
+                ] ?:
+            }
+        }
+    ] [ drop ] ?:
+;
+
+@on-sf-ok ( path -- )
+    save-as LOADI [
+        0 save-as STOREI
+        dup load-byte 47 = [ 1 + ] ?
+        PATH STR::strcpy
+        do-save
+    ] [
+        dup load-byte 47 = [ 1 + ] ?
+        PATH STR::strcpy
+        load-file
+    ] ?:
+;
+
+@on-sf-cancel ( -- ) 0 save-as STOREI ;
+
+@menu-open ( -- ) SF::show ;
+@menu-save-as ( -- ) 1 save-as STOREI PATH SF::show-save ;
+@menu-save ( -- ) PATH load-byte 0 = [ menu-save-as ] [ do-save ] ?: ;
+
+( --- Sprite-name text input (modal, keyboard-only) --- )
+
+@begin-name-edit ( mode -- )
+    { mode }
+        mode name-edit-mode STOREI
+        mode 0 = [
+            0 EDIT_BUF store-byte
+        ] [
+            cur-sprite LOADI sprite-name EDIT_BUF STR::strcpy
+        ] ?:
+        EDIT_BUF STR::strlen edit-len STOREI
+        1 editing-name STOREI
+    }
+;
+@begin-new-sprite-name ( -- ) 0 begin-name-edit ;
+@begin-rename-sprite   ( -- ) 1 begin-name-edit ;
+
+@commit-name-edit ( -- )
+    name-edit-mode LOADI 0 = [ new-sprite ] ?
+    EDIT_BUF load-byte 0 > [
+        EDIT_BUF cur-sprite LOADI sprite-name STR::strcpy
+    ] ?
+    0 editing-name STOREI
+    1 file-dirty STOREI
+;
+
+@cancel-name-edit ( -- ) 0 editing-name STOREI ;
+
+@name-edit-add ( ch -- )
+    { ch }
+        edit-len LOADI 15 < [
+            ch EDIT_BUF edit-len LOADI + store-byte
+            0 EDIT_BUF edit-len LOADI 1 + + store-byte
+            edit-len LOADI 1 + edit-len STOREI
+        ] ?
+    }
+;
+
+@name-edit-backspace ( -- )
+    edit-len LOADI 0 > [
+        edit-len LOADI 1 - edit-len STOREI
+        0 EDIT_BUF edit-len LOADI + store-byte
+    ] ?
+;
+
+( --- Delete-sprite confirm (reuses UI overlay, like a Snake start screen) --- )
+
+@do-confirm-no  ( -- ) 0 confirm-kind STOREI UI::overlay-clear ;
+@do-confirm-yes ( -- ) cur-sprite LOADI delete-sprite 0 confirm-kind STOREI UI::overlay-clear ;
+@confirm-no  ( val -- ) drop do-confirm-no ;
+@confirm-yes ( val -- ) drop do-confirm-yes ;
+
+@place-confirm ( -- )
+    UI::overlay-clear
+    T"Yes"
+    APP::width 90 - 2 /
+    APP::height 2 / 10 +
+    40 20 [ confirm-yes ] UI::overlay-button
+    T"No"
+    APP::width 90 - 2 / 50 +
+    APP::height 2 / 10 +
+    40 20 [ confirm-no ] UI::overlay-button
+;
+
+( --- Playback --- )
+
+@toggle-play ( -- )
+    playing LOADI 0 = [
+        1 playing STOREI
+        cur-frame LOADI play-frame STOREI
+        0 play-tick STOREI
+    ] [
+        0 playing STOREI
+    ] ?:
+;
+
+@speed-adjust ( d -- )
+    { d }
+        cur-sprite LOADI sprite-speed-addr
+        { a }
+            a LOADI d + 1 MAX 30 MIN a STOREI
+        }
+    }
+;
+
+@on-frame-tick ( -- )
+    playing LOADI [
+        play-tick LOADI 1 + play-tick STOREI
+        play-tick LOADI cur-sprite LOADI sprite-speed >= [
+            0 play-tick STOREI
+            play-frame LOADI 1 + cur-sprite LOADI sprite-count MOD play-frame STOREI
+        ] ?
+    ] ?
+;
+
+( --- Geometry --- )
+
+@EDITOR_X 24 ;
+@EDITOR_Y 50 ;
+@EDITOR_BOX 256 ;
+@zoom ( -- z ) EDITOR_BOX doc-size LOADI / ;
+
+@PAL_X 320 ;
+@PAL_Y 50 ;
+@SWATCH 28 ;
+@SWATCH_GAP 4 ;
+@PAL_COLS 4 ;
+
+@swatch-rect ( idx -- x y w h )
+    { idx }
+        idx PAL_COLS MOD { c }
+            idx PAL_COLS / { r }
+                PAL_X c SWATCH SWATCH_GAP + * +
+                PAL_Y r SWATCH SWATCH_GAP + * +
+                SWATCH SWATCH
+            }
+        }
+    }
+;
+
+@trans-y ( -- y ) PAL_Y 4 SWATCH SWATCH_GAP + * + 8 + ;
+@trans-w ( -- w ) PAL_COLS SWATCH SWATCH_GAP + * SWATCH_GAP - ;
+
+@act-y ( -- y ) trans-y SWATCH + 20 + ;
+@ACT_H 22 ;
+@ACT_GAP 6 ;
+@act-rect ( idx -- x y w h )
+    { idx }
+        PAL_X
+        act-y idx ACT_H ACT_GAP + * +
+        trans-w ACT_H
+    }
+;
+
+@SPR_X 484 ;
+@SPR_Y 50 ;
+@SPR_W 140 ;
+@SPR_ROW_H 22 ;
+@spr-row-rect ( idx -- x y w h )
+    { idx } SPR_X SPR_Y idx SPR_ROW_H * + SPR_W SPR_ROW_H }
+;
+@spr-btn-y ( -- y ) SPR_Y MAX_SPRITES SPR_ROW_H * + 10 + ;
+@spr-new-rect ( -- x y w h ) SPR_X spr-btn-y 44 22 ;
+@spr-ren-rect ( -- x y w h ) SPR_X 48 + spr-btn-y 44 22 ;
+@spr-del-rect ( -- x y w h ) SPR_X 96 + spr-btn-y 44 22 ;
+
+@STRIP_X 24 ;
+@strip-y ( -- y ) EDITOR_Y EDITOR_BOX + 40 + ;
+@STRIP_CELL_PAD 8 ;
+@strip-cell-w ( -- w ) doc-size LOADI STRIP_CELL_PAD + ;
+@strip-cell-rect ( fi -- x y w h )
+    { fi } STRIP_X fi strip-cell-w * + strip-y strip-cell-w strip-cell-w }
+;
+
+@strip-btn-y ( -- y ) strip-y strip-cell-w + 12 + ;
+@fbtn-rect ( idx -- x y w h )
+    { idx } STRIP_X idx 60 * + strip-btn-y 54 22 }
+;
+
+@in-rect? ( mx my x y w h -- f )
+    { mx my x y w h }
+        mx x >= mx x w + < AND
+        my y >= AND my y h + < AND
+    }
+;
+
+( --- Drawing --- )
+
+@draw-btn ( x y w h label -- )
+    { x y w h label }
+        APP::draw-fd x y w h 0xE0E0E0 DRAW::fill-rect
+        APP::draw-fd x y w h 0x000000 DRAW::draw-rect
+        APP::draw-fd x 6 + y h 2 / 6 - + label 0x000000 1 DRAW::draw-str
+    }
+;
+
+@draw-editor ( -- )
+    APP::draw-fd EDITOR_X 2 - EDITOR_Y 2 - EDITOR_BOX 4 + EDITOR_BOX 4 + 0x000000 DRAW::fill-rect
+    show-frame-addr zoom
+    { addr z }
+        0
+        { py }
+            [ py doc-size LOADI < ]
+            [
+                0
+                { px }
+                    [ px doc-size LOADI < ]
+                    [
+                        addr px py frame-pixel@
+                        { r g b }
+                            r 16 LSHIFT g 8 LSHIFT OR b OR
+                            { c }
+                                c KEY_COLOR = [
+                                    APP::draw-fd EDITOR_X px z * + EDITOR_Y py z * + z z 0xC0C0C0 0 DRAW::fill-pat
+                                ] [
+                                    APP::draw-fd EDITOR_X px z * + EDITOR_Y py z * + z z c DRAW::fill-rect
+                                ] ?:
+                            }
+                        }
+                        px 1 + px!
+                    ] |:
+                }
+                py 1 + py!
+            ] |:
+        }
+    }
+;
+
+@draw-palette ( -- )
+    0
+    { i }
+        [ i 16 < ]
+        [
+            i swatch-rect
+            { x y w h }
+                APP::draw-fd x y w h i palette-color DRAW::fill-rect
+                i palette-color cur-color LOADI = [
+                    APP::draw-fd x 1 - y 1 - w 2 + h 2 + 0x000000 DRAW::draw-rect
+                ] ?
+            }
+            i 1 + i!
+        ] |:
+    }
+    APP::draw-fd PAL_X trans-y trans-w SWATCH 0x808080 0 DRAW::fill-pat
+    cur-color LOADI KEY_COLOR = [
+        APP::draw-fd PAL_X 1 - trans-y 1 - trans-w 2 + SWATCH 2 + 0x000000 DRAW::draw-rect
+    ] ?
+;
+
+@draw-actions ( -- )
+    0 act-rect T"Flip H" draw-btn
+    1 act-rect T"Flip V" draw-btn
+    2 act-rect T"Fill"   draw-btn
+    3 act-rect T"Clear"  draw-btn
+;
+
+@draw-sprite-list ( -- )
+    0
+    { i }
+        [ i doc-nsprites LOADI < ]
+        [
+            i spr-row-rect
+            { x y w h }
+                i cur-sprite LOADI = [ 0xD0D0FF ] [ 0xFFFFFF ] ?:
+                { bg }
+                    APP::draw-fd x y w h bg DRAW::fill-rect
+                    APP::draw-fd x y w h 0x000000 DRAW::draw-rect
+                    APP::draw-fd x 4 + y 4 + i sprite-name 0x000000 1 DRAW::draw-str
+                }
+            }
+            i 1 + i!
+        ] |:
+    }
+    spr-new-rect T"+New" draw-btn
+    spr-ren-rect T"Rename" draw-btn
+    spr-del-rect T"Delete" draw-btn
+;
+
+@draw-strip ( -- )
+    0
+    { i }
+        [ i cur-sprite LOADI sprite-count < ]
+        [
+            i strip-cell-rect
+            { x y w h }
+                APP::draw-fd x y w h 0xFFFFFF DRAW::fill-rect
+                APP::draw-fd
+                x STRIP_CELL_PAD 2 / +
+                y STRIP_CELL_PAD 2 / +
+                doc-size LOADI
+                1 KEY_COLOR
+                cur-sprite LOADI i sprite-frame-slot SLOT_BYTES * FRAME_BANK +
+                doc-size LOADI doc-size LOADI * 3 *
+                DRAW::blit-tile
+                i cur-frame LOADI = [
+                    APP::draw-fd x y w h 0x0000FF DRAW::draw-rect
+                ] [
+                    APP::draw-fd x y w h 0x000000 DRAW::draw-rect
+                ] ?:
+            }
+            i 1 + i!
+        ] |:
+    }
+    0 fbtn-rect T"+Add" draw-btn
+    1 fbtn-rect T"Dup"  draw-btn
+    2 fbtn-rect T"Del"  draw-btn
+    3 fbtn-rect playing LOADI [ T"Stop" ] [ T"Play" ] ?: draw-btn
+;
+
+@draw-controls ( -- )
+    4 fbtn-rect T"-" draw-btn
+    5 fbtn-rect T"+" draw-btn
+    cur-sprite LOADI sprite-speed NBUF STR::int-to-str
+    APP::draw-fd STRIP_X 4 60 * + strip-btn-y 14 - NBUF 0x000000 1 DRAW::draw-str
+;
+
+@draw-name-edit ( -- )
+    editing-name LOADI [
+        APP::draw-fd APP::width 240 - 2 / APP::height 80 - 2 / 240 80 0x000000 DRAW::fill-rect
+        APP::draw-fd APP::width 236 - 2 / APP::height 76 - 2 / 236 76 0xFFFFFF DRAW::fill-rect
+        APP::draw-fd APP::width 200 - 2 / APP::height 40 - 2 / T"Sprite name:" 0x000000 1 DRAW::draw-str
+        APP::draw-fd APP::width 200 - 2 / APP::height 2 / EDIT_BUF 0x000000 1 DRAW::draw-str
+    ] ?
+;
+
+@draw-confirm ( -- )
+    confirm-kind LOADI 0 > [
+        APP::draw-fd APP::width 240 - 2 / APP::height 100 - 2 / 240 100 0x000000 DRAW::fill-rect
+        APP::draw-fd APP::width 236 - 2 / APP::height 96 - 2 / 236 96 0xFFFFFF DRAW::fill-rect
+        APP::draw-fd APP::width 200 - 2 / APP::height 60 - 2 / T"Delete this sprite?" 0x000000 1 DRAW::draw-str
+        UI::overlay-draw
+    ] ?
+;
+
+( --- Mouse hit-testing --- )
+
+@handle-down ( mx my -- )
+    { mx my }
+        mx my EDITOR_X EDITOR_Y EDITOR_BOX EDITOR_BOX in-rect? playing LOADI 0 = AND [
+            1 drag STOREI
+            mx my mouse-cell
+            { px py valid }
+                valid [ px py paint-px ] ?
+            }
+        ] ?
+        0
+        { i }
+            [ i 16 < ]
+            [
+                i swatch-rect
+                { x y w h }
+                    mx my x y w h in-rect? [
+                        i palette-color cur-color STOREI
+                    ] ?
+                }
+                i 1 + i!
+            ] |:
+        }
+        mx my PAL_X trans-y trans-w SWATCH in-rect? [
+            KEY_COLOR cur-color STOREI
+        ] ?
+        mx my 0 act-rect in-rect? [ flip-h ] ?
+        mx my 1 act-rect in-rect? [ flip-v ] ?
+        mx my 2 act-rect in-rect? [ fill-frame ] ?
+        mx my 3 act-rect in-rect? [ clear-frame ] ?
+        0
+        { i }
+            [ i doc-nsprites LOADI < ]
+            [
+                i spr-row-rect
+                { x y w h }
+                    mx my x y w h in-rect? [
+                        i cur-sprite STOREI
+                        0 cur-frame STOREI
+                    ] ?
+                }
+                i 1 + i!
+            ] |:
+        }
+        mx my spr-new-rect in-rect? [ begin-new-sprite-name ] ?
+        mx my spr-ren-rect in-rect? [ begin-rename-sprite ] ?
+        mx my spr-del-rect in-rect? doc-nsprites LOADI 1 > AND [
+            1 confirm-kind STOREI
+            place-confirm
+        ] ?
+        0
+        { i }
+            [ i cur-sprite LOADI sprite-count < ]
+            [
+                i strip-cell-rect
+                { x y w h }
+                    mx my x y w h in-rect? [
+                        i cur-frame STOREI
+                    ] ?
+                }
+                i 1 + i!
+            ] |:
+        }
+        mx my 0 fbtn-rect in-rect? [ cur-sprite LOADI sprite-add-frame ] ?
+        mx my 1 fbtn-rect in-rect? [ cur-sprite LOADI cur-frame LOADI sprite-duplicate-frame ] ?
+        mx my 2 fbtn-rect in-rect? [ cur-sprite LOADI cur-frame LOADI sprite-delete-frame ] ?
+        mx my 3 fbtn-rect in-rect? [ toggle-play ] ?
+        mx my 4 fbtn-rect in-rect? [ -1 speed-adjust ] ?
+        mx my 5 fbtn-rect in-rect? [ 1 speed-adjust ] ?
+    }
+;
+
+@mouse-cell ( mx my -- px py valid? )
+    0 0 4 frame! ( 0:py 1:px 2:my 3:mx )
+    3 local@ EDITOR_X - zoom / 1 local!
+    2 local@ EDITOR_Y - zoom / 0 local!
+    3 local@ EDITOR_X >=
+    2 local@ EDITOR_Y >= AND
+    1 local@ 0 >= AND
+    0 local@ 0 >= AND
+    1 local@ doc-size LOADI < AND
+    0 local@ doc-size LOADI < AND
+    1 local@ 0 local@ ROT
+    4 unframe!
+;
+
+( --- Events --- )
+
+@on-mouse ( mpkt -- )
+    { mpkt }
+        confirm-kind LOADI 0 > [
+            mpkt UI::overlay-feed
+            UI::overlay-handle
+        ] [
+            editing-name LOADI [
+            ] [
+                UI::menu-open?
+                { was }
+                    mpkt UI::feed
+                    was UI::menu-open? OR [
+                    ] [
+                        mpkt EVENT::mouse-type EVENT::MOUSE_DOWN = [
+                            mpkt EVENT::mouse-x mpkt EVENT::mouse-y handle-down
+                        ] ?
+                        mpkt EVENT::mouse-type EVENT::MOUSE_MOVE = [
+                            drag LOADI [
+                                mpkt EVENT::mouse-x mpkt EVENT::mouse-y mouse-cell
+                                { px py valid }
+                                    valid [ px py paint-px ] ?
+                                }
+                            ] ?
+                        ] ?
+                        mpkt EVENT::mouse-type EVENT::MOUSE_UP = [
+                            0 drag STOREI
+                        ] ?
+                    ] ?
+                }
+            ] ?:
+        ] ?:
+    }
+;
+
+@on-kbd ( kpkt -- )
+    { kpkt }
+        confirm-kind LOADI 0 > [
+            kpkt EVENT::kbd-type EVENT::KEY_DOWN = [
+                kpkt EVENT::kbd-key EVENT::KEY_ESC = [ do-confirm-no ] ?
+                kpkt EVENT::kbd-key EVENT::KEY_ENTER = [ do-confirm-yes ] ?
+            ] ?
+        ] [
+            editing-name LOADI [
+                kpkt EVENT::kbd-type EVENT::KEY_DOWN = [
+                    kpkt EVENT::kbd-key
+                    { key }
+                        key EVENT::KEY_ESC = [ cancel-name-edit ] ?
+                        key EVENT::KEY_ENTER = [ commit-name-edit ] ?
+                        key EVENT::KEY_BACKSPACE = [ name-edit-backspace ] ?
+                        key STR::printable? [ key name-edit-add ] ?
+                    }
+                ] ?
+            ] ?
+        ] ?:
+    }
+;
+
+@on-frame ( -- )
+    on-frame-tick
+    APP::draw-fd 0 0 APP::width APP::height 0xFFFFFF DRAW::fill-rect
+    draw-editor
+    draw-palette
+    draw-actions
+    draw-sprite-list
+    draw-strip
+    draw-controls
+    draw-name-edit
+    draw-confirm
+;
+
+@start
+    T"Whittle" APP::init
+    UI::new
+    0 confirm-kind STOREI
+    0 editing-name STOREI
+    16 new-doc
+    [ on-sf-ok ] SF::on-ok!
+    [ on-sf-cancel ] SF::on-cancel!
+    T"File" UI::menu
+    T"New 8x8"   [ menu-new-8 ]         UI::item
+    T"New 16x16" [ menu-new-16 ]        UI::item
+    T"New 24x24" [ menu-new-24 ]        UI::item
+    T"New 32x32" [ menu-new-32 ]        UI::item
+    T"Open"      [ drop menu-open ]     UI::item
+    T"Save"      [ drop menu-save ]     UI::item
+    T"Save As"   [ drop menu-save-as ]  UI::item
+    T"Quit"      [ drop HALT ]          UI::item
+    [ on-mouse ] APP::on-mouse!
+    [ on-kbd ] APP::on-kbd!
+    [ on-frame ] APP::on-frame!
+    APP::loop
+;
+
+WHITTLE::start
+HALT

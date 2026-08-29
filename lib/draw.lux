@@ -183,6 +183,22 @@ MODULE DRAW
     8 unframe!
 ;
 
+@blit-tile ( fd x y size use-key key tile-ptr nbytes -- )
+    ( Cmd 10: blit an NxN RGB (3 bytes/pixel, row-major) bitmap tile from
+      guest memory. use-key: 1 = key is a transparent color, 0 = opaque. )
+    8 frame! ( 0:nbytes 1:tile-ptr 2:key 3:use-key 4:size 5:y 6:x 7:fd )
+    10 BUF store-byte
+    6 local@ BUF 1 + store-word-le
+    5 local@ BUF 3 + store-word-le
+    4 local@ BUF 5 + store-byte
+    3 local@ BUF 6 + store-byte
+    2 local@ BUF 7 + store-int-le
+    1 local@ BUF 11 + store-int-le
+    0 local@ BUF 15 + store-word-le
+    7 local@ BUF 17 VFS::write drop
+    8 unframe!
+;
+
 @draw-str ( fd x y ptr color scale -- )
     6 frame! ( 0:scale, 1:color, 2:ptr, 3:y, 4:x, 5:fd )
 

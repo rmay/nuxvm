@@ -204,6 +204,8 @@ typedef struct {
     int nstructs;
     FxExtern* externs;
     int nexterns;
+    bool version_seen;
+    int32_t version_value;
 } FxProgram;
 
 /* Looks up a struct definition by name, or NULL if none exists. */

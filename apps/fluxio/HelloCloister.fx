@@ -13,6 +13,8 @@
  */
 include "../../lib/escape_menu.fx";
 
+version 400000;
+
 /** entry point */
 int main() {
     int fd = vfs_open("/dev/draw");

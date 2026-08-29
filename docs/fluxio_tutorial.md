@@ -9,6 +9,8 @@ For the compiler command line, see [`using-fluxio.md`](using-fluxio.md). For the
 Fluxio v1 has no string literals as general values, so console output is one character at a time via `emit()`:
 
 ```c
+version 400000;
+
 /** prints "Hello, World!" followed by a newline, one ASCII code at a time */
 int say_hello() {
     emit(72);  /* H */
@@ -34,6 +36,14 @@ int main() {
 ```
 
 Every Fluxio program needs an `int main()` — that's the compiled entry point. See `examples/fluxio/hello_console.fx`.
+
+Every Fluxio program also needs a top-level `version <n>;` directive (Kelvin versioning — see `AGENTS.md`), anywhere before it's used, in the main file or an `include`d one. `fluxioc` refuses to compile a program that never declares one:
+
+```
+fluxioc: hello.fx: missing required 'version <n>;' directive
+```
+
+Unless a specific app has a reason to declare otherwise, use `400000` (400K) — see `AGENTS.md`'s versioning section for what 300K is reserved for.
 
 ## Naming and documentation rules
 

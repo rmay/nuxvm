@@ -129,6 +129,13 @@ typedef struct {
 
     bool trace;
 
+    /* Set by the top-level `VERSION <n>` directive (Kelvin versioning,
+     * AGENTS.md). Required for app builds; luxc.c enforces presence
+     * since compiler.c is also used for REPL/boot/library compiles that
+     * should not be forced to declare one. */
+    bool version_seen;
+    int32_t version_value;
+
     /* Best-effort duplicate-base-address check (docs/memory-map.md):
      * every `@NAME 0xHEX ;` constant across the whole compiled unit
      * (including transitively-included files) that isn't named like a

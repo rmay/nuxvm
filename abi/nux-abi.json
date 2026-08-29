@@ -36,7 +36,7 @@
   "memory_bands": {
     "$comment": "Mirrors include/memory_map.h exactly -- that header is the real source of truth for the VM/compilers; this block exists so a non-C tool (fluxlink's symtab tooling, docs generators) doesn't have to parse C to know the layout.",
     "fx_small_scalar_globals": { "base": "0x001000", "end": "0x010000" },
-    "device_mmio": { "base": "0x010000", "end": "0x011000" },
+    "sci_trap": { "base": "0x010000", "end": "0x011000", "desc": "VFS syscall registers only. Not Varvara MMIO device ports." },
     "headless_code": { "base": "0x011000" },
     "shared_lux_flags": { "base": "0x500000", "end": "0x510000" },
     "graphical_code": { "base": "0x600000" },

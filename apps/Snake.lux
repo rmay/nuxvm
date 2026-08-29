@@ -2,8 +2,10 @@
 
 INCLUDE "lib/app.lux"
 INCLUDE "lib/ui.lux"
+INCLUDE "lib/tilemap.lux"
 
 MODULE SNAKE
+VERSION 400000
 
 IMPORT APP
 IMPORT UI
@@ -11,6 +13,7 @@ IMPORT DRAW
 IMPORT EVENT
 IMPORT STR
 IMPORT VFS
+IMPORT TILEMAP
 
 @GRID   20 ;
 @SEGS   400 ;
@@ -29,9 +32,6 @@ IMPORT VFS
 @best   0x8A0028 ;
 @seed   0x8A002C ;
 @afd    0x8A0030 ;
-@tile   0x8A0034 ;
-@offx   0x8A0038 ;
-@offy   0x8A003C ;
 @nx     0x8A0040 ;
 @ny     0x8A0044 ;
 @nbuf   0x8A0050 ;
@@ -39,27 +39,8 @@ IMPORT VFS
 @btitle 0x8A0070 ;
 @body   0x8A1000 ;
 
-@wrap ( i -- i' )
-    SEGS MOD
-    dup 0 < [ SEGS + ] ?
-;
-
-@seg-addr ( i -- addr )
-    wrap 8 * body +
-;
-
-@get-seg ( i -- x y )
-    seg-addr
-    dup LOADI
-    SWAP 4 + LOADI
-;
-
-@set-seg ( x y i -- )
-    3 frame! ( 0:i 1:y 2:x )
-    2 local@ 0 local@ seg-addr STOREI
-    1 local@ 0 local@ seg-addr 4 + STOREI
-    3 unframe!
-;
+@get-seg ( i -- x y ) SEGS body TILEMAP::ent-get ;
+@set-seg ( x y i -- ) SEGS body TILEMAP::ent-set ;
 
 @random ( max -- n )
     seed LOADI 1103515245 * 12345 +
@@ -134,11 +115,8 @@ IMPORT VFS
 ;
 
 @layout
-    APP::height BAR_H -
-    APP::width
-    OVER MIN 8 - GRID / tile STOREI
-    APP::width tile LOADI GRID * - 2 / offx STOREI
-    APP::height BAR_H - tile LOADI GRID * - 2 / BAR_H + offy STOREI
+    GRID GRID APP::width APP::height BAR_H - TILEMAP::layout
+    0 BAR_H TILEMAP::nudge
 ;
 
 @reset
@@ -185,7 +163,7 @@ IMPORT VFS
         nx LOADI ny LOADI on-snake? [
             die
         ] [
-            head LOADI 1 + wrap head STOREI
+            head LOADI 1 + SEGS TILEMAP::ent-wrap head STOREI
             nx LOADI ny LOADI head LOADI set-seg
             foodx LOADI nx LOADI =
             foody LOADI ny LOADI = AND [
@@ -209,22 +187,13 @@ IMPORT VFS
     ] ?:
 ;
 
-@cell-box ( gx gy -- x y w h )
-    2 frame! ( 0:gy 1:gx )
-    1 local@ tile LOADI * offx LOADI + 1 +
-    0 local@ tile LOADI * offy LOADI + 1 +
-    tile LOADI 2 -
-    tile LOADI 2 -
-    2 unframe!
-;
-
 @cell-solid ( gx gy -- )
-    APP::draw-fd ROT ROT cell-box 0x000000 DRAW::fill-rect
+    APP::draw-fd ROT ROT TILEMAP::cell-box 0x000000 DRAW::fill-rect
 ;
 
 @cell-pat ( gx gy pat -- )
     3 frame! ( 0:pat 1:gy 2:gx )
-    APP::draw-fd 2 local@ 1 local@ cell-box 0x000000 0 local@ DRAW::fill-pat
+    APP::draw-fd 2 local@ 1 local@ TILEMAP::cell-box 0x000000 0 local@ DRAW::fill-pat
     3 unframe!
 ;
 
@@ -241,16 +210,16 @@ IMPORT VFS
 
 @paint-field
     APP::draw-fd
-    offx LOADI 2 -
-    offy LOADI 2 -
-    tile LOADI GRID * 4 +
-    tile LOADI GRID * 4 +
+    TILEMAP::offx 2 -
+    TILEMAP::offy 2 -
+    TILEMAP::tile-px GRID * 4 +
+    TILEMAP::tile-px GRID * 4 +
     0x000000 DRAW::fill-rect
     APP::draw-fd
-    offx LOADI 1 -
-    offy LOADI 1 -
-    tile LOADI GRID * 2 +
-    tile LOADI GRID * 2 +
+    TILEMAP::offx 1 -
+    TILEMAP::offy 1 -
+    TILEMAP::tile-px GRID * 2 +
+    TILEMAP::tile-px GRID * 2 +
     0xFFFFFF DRAW::fill-rect
     0
     [ dup len LOADI < ] [

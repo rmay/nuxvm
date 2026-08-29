@@ -3,6 +3,7 @@
 INCLUDE "lib/app.lux"
 
 MODULE HELLO
+VERSION 400000
 
 ( MM_APP_SMALL_STATE, same pocket as Snake/UIDemo/Picker — not 0x8E0000,
   which is lib/ui.lux. )

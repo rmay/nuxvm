@@ -11,6 +11,7 @@ INCLUDE "lib/sf.lux"
 INCLUDE "lib/geom.lux"
 
 MODULE MAIN
+VERSION 400000
 
 IMPORT APP
 IMPORT VFS
@@ -126,6 +127,8 @@ IMPORT GEOM
 @rng               0x8A0054 ;
 @erase-btn         0x8A0058 ;
 @save-as           0x8A005C ;
+@last-pat-id       0x8A0060 ; ( previously drawn pattern selection, -1 = none yet )
+@pat-full          0x8A0064 ; ( 1 = draw-patterns must redraw all PAT_N swatches )
 
 ( --- Path / dirty --- )
 
@@ -1071,14 +1074,27 @@ IMPORT GEOM
     }
 ;
 
+( PATTERNS is static once loaded -- the pixel content of every swatch never
+  changes, only which one is selected. Redrawing all PAT_N swatches (each up
+  to 256 per-pixel DRAW::pix calls) every dirty frame was a needless cost
+  comparable to the Illumos glyph-collection bug, so draw-patterns now does
+  that full pass once and, after that, only the 1-2 swatches whose selection
+  state actually changed. )
 @draw-patterns ( -- )
-    0 { i }
-        [ i PAT_N < ]
-        [
-            i draw-pat-cell
-            i 1 + i!
-        ] |:
-    }
+    pat-full LOADI [
+        0 { i }
+            [ i PAT_N < ]
+            [
+                i draw-pat-cell
+                i 1 + i!
+            ] |:
+        }
+        0 pat-full STOREI
+    ] [
+        last-pat-id LOADI dup -1 > [ draw-pat-cell ] [ drop ] ?:
+        pat-id LOADI draw-pat-cell
+    ] ?:
+    pat-id LOADI last-pat-id STOREI
 ;
 
 @draw-status ( -- )
@@ -1131,22 +1147,30 @@ IMPORT GEOM
     }
 ;
 
+( Row-address arithmetic and byte loads are inlined here (instead of going
+  through pix@ / in-can? / pix-addr) because these scans touch every one
+  of the CANVAS_W*CANVAS_H pixels every redraw; the per-pixel call overhead
+  of the framed helper words was the difference between an instant redraw
+  and one taking on the order of a minute. )
+
 @draw-canvas-1x ( -- )
     0 0 0 { y x x0 }
         [ y CANVAS_H < ]
         [
-            0 x!
-            [ x CANVAS_W < ]
-            [
-                x y pix@ [
-                    x x0!
-                    [ x CANVAS_W < x y pix@ AND ]
-                    [ x 1 + x! ] |:
-                    APP::draw-fd CANVAS_X x0 + CANVAS_Y y + x x0 - 1 CLR_FG DRAW::fill-rect
-                ] [
-                    x 1 + x!
-                ] ?:
-            ] |:
+            y CANVAS_W * CANVAS + { row }
+                0 x!
+                [ x CANVAS_W < ]
+                [
+                    row x + load-byte [
+                        x x0!
+                        [ x CANVAS_W < row x + load-byte AND ]
+                        [ x 1 + x! ] |:
+                        APP::draw-fd CANVAS_X x0 + CANVAS_Y y + x x0 - 1 CLR_FG DRAW::fill-rect
+                    ] [
+                        x 1 + x!
+                    ] ?:
+                ] |:
+            }
             y 1 + y!
         ] |:
     }
@@ -1157,19 +1181,21 @@ IMPORT GEOM
         [ vy FAT_VH < ]
         [
             fat-oy LOADI vy + cy!
-            0 vx!
-            [ vx FAT_VW < ]
-            [
-                fat-ox LOADI vx + cy pix@ [
-                    vx vx0!
-                    [ vx FAT_VW < fat-ox LOADI vx + cy pix@ AND ]
-                    [ vx 1 + vx! ] |:
-                    APP::draw-fd CANVAS_X vx0 FAT_Z * + CANVAS_Y vy FAT_Z * +
-                        vx vx0 - FAT_Z * FAT_Z CLR_FG DRAW::fill-rect
-                ] [
-                    vx 1 + vx!
-                ] ?:
-            ] |:
+            cy CANVAS_W * CANVAS + fat-ox LOADI + { row }
+                0 vx!
+                [ vx FAT_VW < ]
+                [
+                    row vx + load-byte [
+                        vx vx0!
+                        [ vx FAT_VW < row vx + load-byte AND ]
+                        [ vx 1 + vx! ] |:
+                        APP::draw-fd CANVAS_X vx0 FAT_Z * + CANVAS_Y vy FAT_Z * +
+                            vx vx0 - FAT_Z * FAT_Z CLR_FG DRAW::fill-rect
+                    ] [
+                        vx 1 + vx!
+                    ] ?:
+                ] |:
+            }
             vy 1 + vy!
         ] |:
     }
@@ -1219,6 +1245,14 @@ IMPORT GEOM
     UI::draw
     SF::open? [ SF::draw ] ?
     confirm-new-draw
+;
+
+( draw-all skips most of draw-patterns' work once steady-state (see
+  draw-patterns); a resume needs the full repaint since the whole window
+  was just cleared/hidden underneath us. )
+@resume-draw-all ( -- )
+    1 pat-full STOREI
+    draw-all
 ;
 
 ( --- Paint a finished shape into the bitmap --- )
@@ -1460,7 +1494,7 @@ IMPORT GEOM
 
 @on-frame ( -- )
     UI::handle
-    APP::dirty? UI::menu-open? OR SF::open? OR confirm-new-open LOADI OR [
+    APP::dirty? SF::open? OR confirm-new-open LOADI OR [
         draw-all
         APP::dirty-off
     ] [
@@ -1500,11 +1534,13 @@ IMPORT GEOM
     0 grid-f STOREI
     0 fat-f STOREI
     0 filled-f STOREI
+    -1 last-pat-id STOREI
+    1 pat-full STOREI
     new-document
     [ on-mouse ] APP::on-mouse!
     [ on-kbd ] APP::on-kbd!
     [ on-frame ] APP::on-frame!
-    [ draw-all ] APP::on-resume!
+    [ resume-draw-all ] APP::on-resume!
     APP::dirty!
     APP::loop
 ;

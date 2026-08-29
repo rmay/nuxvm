@@ -746,6 +746,18 @@ FxProgram* fx_parse(FxTokenList* tokens) {
                       "and should never reach the parser directly -- this token list wasn't preprocessed");
         }
 
+        if (check(&p, FXTOK_KW_VERSION)) {
+            advance(&p);
+            FxToken* ver = expect(&p, FXTOK_INT_LIT, "an integer literal");
+            if (ver->int_value < 0) {
+                fail(&p, "version must be a nonnegative integer (Kelvin versioning, AGENTS.md)");
+            }
+            expect(&p, FXTOK_SEMI, "';'");
+            program->version_seen = true;
+            program->version_value = ver->int_value;
+            continue;
+        }
+
         if (check(&p, FXTOK_KW_EXTERN)) {
             if (nexterns == ecap) { ecap = ecap ? ecap * 2 : 8; externs = realloc(externs, sizeof(FxExtern) * ecap); }
             parse_extern_decl(&p, t, &externs[nexterns]);

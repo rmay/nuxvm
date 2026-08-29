@@ -9,6 +9,7 @@ INCLUDE "lib/sf.lux"
 INCLUDE "lib/cff.lux"
 
 MODULE MAIN
+VERSION 400000
 
 IMPORT APP
 IMPORT VFS
@@ -36,6 +37,8 @@ IMPORT MEMORY
 @cell       0x91101C ;
 @pang-x     0x911020 ;
 @pang-y     0x911024 ;
+@last-sel   0x911028 ; ( previously drawn collection selection, -1 = none yet )
+@col-full   0x91102C ; ( 1 = draw-collection must redraw all 256 cells )
 
 @BAR_H     20 ;
 @ED_X      16 ;
@@ -94,6 +97,7 @@ IMPORT MEMORY
     0 file-dirty STOREI
     T"untitled.cff" PATH STR::strcpy
     pang-reset
+    1 col-full STOREI
     APP::dirty!
     sync-title
 ;
@@ -151,23 +155,40 @@ IMPORT MEMORY
     APP::draw-fd ED_X ED_Y guide LOADI cell LOADI * + ed-w CLR_GRID DRAW::dash-h
 ;
 
+( Draws one collection cell. Only the selected cell's highlight/thumbnail
+  actually changes frame to frame, so draw-collection redraws just this
+  instead of all 256 cells whenever it can -- that full pass was costing
+  well over a million VM instructions every frame the menu was open. )
+@col-draw-cell ( i -- )
+    dup 15 AND COL_CELL * COL_X + GIRD x
+    dup 4 SHR COL_CELL * COL_Y + GIRD y
+    dup sel LOADI = [
+        APP::draw-fd x y COL_CELL COL_CELL CLR_FG DRAW::fill-rect
+        APP::draw-fd x 4 + y 4 + dup 0xFFFFFF 1 FONT CFF::bytes DRAW::cff-glyph
+    ] [
+        APP::draw-fd x y COL_CELL COL_CELL CLR_BG DRAW::fill-rect
+        APP::draw-fd x y COL_CELL COL_CELL CLR_GRID DRAW::draw-rect
+        APP::draw-fd x 4 + y 4 + dup CLR_FG 1 FONT CFF::bytes DRAW::cff-glyph
+    ] ?:
+    drop
+    UNGIRD UNGIRD
+;
+
 @draw-collection ( -- )
-    0 GIRD i
-        [ i 256 < ]
-        [
-            i 15 AND COL_CELL * COL_X + GIRD x
-            i 4 SHR COL_CELL * COL_Y + GIRD y
-            i sel LOADI = [
-                APP::draw-fd x y COL_CELL COL_CELL CLR_FG DRAW::fill-rect
-                APP::draw-fd x 4 + y 4 + i 0xFFFFFF 1 FONT CFF::bytes DRAW::cff-glyph
-            ] [
-                APP::draw-fd x y COL_CELL COL_CELL CLR_BG DRAW::fill-rect
-                APP::draw-fd x y COL_CELL COL_CELL CLR_GRID DRAW::draw-rect
-                APP::draw-fd x 4 + y 4 + i CLR_FG 1 FONT CFF::bytes DRAW::cff-glyph
-            ] ?:
-            i 1 + i!
-        ] |:
-    UNGIRD
+    col-full LOADI [
+        0 GIRD i
+            [ i 256 < ]
+            [
+                i col-draw-cell
+                i 1 + i!
+            ] |:
+        UNGIRD
+        0 col-full STOREI
+    ] [
+        last-sel LOADI dup -1 > [ col-draw-cell ] [ drop ] ?:
+        sel LOADI col-draw-cell
+    ] ?:
+    sel LOADI last-sel STOREI
 ;
 
 @draw-pangram ( -- )
@@ -193,7 +214,7 @@ IMPORT MEMORY
     APP::draw-fd 0 0 APP::width APP::height CLR_BG DRAW::fill-rect
     draw-editor
     draw-hint
-    draw-collection
+    ( draw-collection )
     draw-pangram
     UI::draw
 ;
@@ -318,6 +339,7 @@ IMPORT MEMORY
             sync-cell
             0 file-dirty STOREI
             65 sel STOREI
+            1 col-full STOREI
             sync-title
             APP::dirty!
         ] ?
@@ -380,6 +402,7 @@ IMPORT MEMORY
         OVER UI::feed
         UI::menu-open? OR [
             drop
+            APP::dirty!
         ] [
             dup EVENT::mouse-type EVENT::MOUSE_UP = [
                 drop
@@ -516,7 +539,7 @@ IMPORT MEMORY
 
 @on-frame ( -- )
     UI::handle
-    APP::dirty? UI::menu-open? OR SF::open? OR [
+    APP::dirty? SF::open? OR [
         draw-all
         APP::dirty-off
     ] [
@@ -579,6 +602,8 @@ IMPORT MEMORY
     [ on-cancel ] SF::on-cancel!
     pang-reset
     65 sel STOREI
+    -1 last-sel STOREI
+    1 col-full STOREI
     try-chicago
     [ on-mouse ] APP::on-mouse!
     [ on-kbd ] APP::on-kbd!

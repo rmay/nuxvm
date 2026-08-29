@@ -8,12 +8,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
-
-#define SCI_CMD_ADDR    (SCI_PORT + 4)
-#define SCI_ARG1_ADDR   (SCI_PORT + 8)
-#define SCI_ARG2_ADDR   (SCI_PORT + 12)
-#define SCI_ARG3_ADDR   (DEVICE_MEMORY_OFFSET + 0x0124)
 
 #define SCI_VFS_OPEN    10
 #define SCI_VFS_CLOSE   11
@@ -23,6 +17,7 @@
 #define SCI_VFS_SEEK    23
 #define SCI_VFS_STAT    24
 #define SCI_VFS_WRITE_CHUNK 25
+#define SCI_VFS_READ_NOYIELD 26
 
 #define SCI_CREATE_WIN  1
 #define SCI_CLOSE_WIN   2
@@ -65,38 +60,8 @@ static int32_t system_read(DeviceBus* bus, uint32_t address, bool* success) {
         *success = true;
         return sys->sci_result;
     }
-    if (address == SCI_CMD_ADDR || address == SCI_ARG1_ADDR || address == SCI_ARG2_ADDR || address == SCI_ARG3_ADDR) {
-        *success = true;
-        return (int32_t)read_mem32(sys, address);
-    }
-
-    if (address == MOUSE_PORT) { *success = true; return sys->mouse_x; }
-    if (address == MOUSE_PORT + 4) { *success = true; return sys->mouse_y; }
-    if (address == MOUSE_PORT + 8) { *success = true; return sys->mouse_btn; }
-
-    if (address == CONTROLLER_PORT) { *success = true; return 0; }
-    if (address == CONTROLLER_PORT + 4) { *success = true; return 0; }
-    if (address == CONTROLLER_PORT + 8) { *success = true; return 0; }
-
-    // TIME::unix@ / date@ / time@ / milli@ at DATETIME_PORT+4/8/12/16.
-    if (address == DATETIME_PORT || address == DATETIME_PORT + 4 ||
-        address == DATETIME_PORT + 8 || address == DATETIME_PORT + 12 ||
-        address == DATETIME_PORT + 16) {
-        time_t now = time(NULL);
-        struct tm tm;
-        localtime_r(&now, &tm);
-        *success = true;
-        if (address == DATETIME_PORT || address == DATETIME_PORT + 4)
-            return (int32_t)now;
-        if (address == DATETIME_PORT + 8)
-            return ((tm.tm_year + 1900) << 16) | ((tm.tm_mon + 1) << 8) | tm.tm_mday;
-        if (address == DATETIME_PORT + 12)
-            return (tm.tm_hour << 16) | (tm.tm_min << 8) | tm.tm_sec;
-        return 0; // milli: not tracked
-    }
-
-    // Fallback: return mirrored memory for other device-region addresses.
-    if (address >= DEVICE_MEMORY_OFFSET && address + 4 <= sys->memory_size) {
+    if (address == SCI_CMD_ADDR || address == SCI_ARG1_ADDR ||
+        address == SCI_ARG2_ADDR || address == SCI_ARG3_ADDR) {
         *success = true;
         return (int32_t)read_mem32(sys, address);
     }
@@ -189,6 +154,23 @@ static void handle_sci(System* sys) {
                 length = (int32_t)(sys->memory_size - (uint32_t)arg2);
             }
             sys->sci_result = vfs_read(sys, fd, &sys->memory[arg2], length);
+            break;
+        }
+        case SCI_VFS_READ_NOYIELD: {
+            int32_t fd = (arg1 >> 16) & 0xFFFF;
+            int32_t length = arg1 & 0xFFFF;
+            if (arg3 != 0) {
+                fd = arg1;
+                length = arg3;
+            }
+            if (arg2 < 0 || (uint32_t)arg2 >= sys->memory_size || length < 0) {
+                sys->sci_result = -1;
+                break;
+            }
+            if ((uint32_t)length > sys->memory_size - (uint32_t)arg2) {
+                length = (int32_t)(sys->memory_size - (uint32_t)arg2);
+            }
+            sys->sci_result = vfs_read_noyield(sys, fd, &sys->memory[arg2], length);
             break;
         }
         case SCI_VFS_WRITE: {
@@ -336,30 +318,7 @@ static void handle_sci(System* sys) {
 
 static bool system_write(DeviceBus* bus, uint32_t address, int32_t value) {
     System* sys = (System*)bus->user_data;
-    
-    if (address >= DEVICE_MEMORY_OFFSET && address < DEVICE_MEMORY_OFFSET + 0x1000) {
-        uint32_t offset = address - DEVICE_MEMORY_OFFSET;
-        if (offset % 16 == 0 && sys->set_vector != NULL) {
-            int index = offset / 16;
-            sys->set_vector(sys, index, value);
-            return true;
-        }
-    }
-
-    if (address == TEXT_PORT + 4) {
-        sys->text_attr = value;
-        return true;
-    }
-
-    // Audio control port: writing the sound ID triggers playback (matches Go behavior)
-    if (address == AUDIO_PORT + 4) {
-        if (sys->play_sound) sys->play_sound(value);
-        return true;
-    }
-    if (address == TEXT_PORT + 8) {
-        sys->text_cursor = value;
-        return true;
-    }
+    (void)value;
 
     if (address == SCI_ARG2_ADDR) {
         handle_sci(sys);
@@ -421,12 +380,6 @@ void system_set_memory(System* sys, uint8_t* mem, uint32_t mem_size) {
     } else {
         sys->screen_pixels = NULL;
     }
-}
-
-void system_set_vector_callbacks(System* sys, uint32_t (*get)(System*, int), void (*set)(System*, int, uint32_t), void* vm) {
-    sys->get_vector = get;
-    sys->set_vector = set;
-    sys->vm_ptr = vm;
 }
 
 void system_set_resolution(System* sys, int32_t width, int32_t height) {
@@ -682,6 +635,7 @@ void system_end_frame(System* sys) {
     if (sys->screen_pixels && sys->back_pixels) {
         memcpy(sys->screen_pixels, sys->back_pixels, (size_t)sys->screen_width * (size_t)sys->screen_height * 4);
     }
+    sys->frame_commits++;
 }
 
 void system_set_sandbox_root(System* sys, const char* root) {
@@ -800,4 +754,38 @@ void system_draw_cff(System* sys, const uint8_t* font_data, int nbytes, char c, 
         }
     }
     (void)width;
+}
+
+void system_draw_tile(System* sys, const uint8_t* pixels, int size, int32_t x, int32_t y, int use_key, uint32_t key) {
+    if (!sys || !pixels || size <= 0) return;
+    if (!sys->screen_pixels) return;
+
+    int32_t sw = sys->screen_width;
+    int32_t sh = sys->screen_height;
+
+    uint8_t kr = (key >> 16) & 0xFF;
+    uint8_t kg = (key >> 8) & 0xFF;
+    uint8_t kb = key & 0xFF;
+
+    uint8_t* fb = sys->back_pixels ? sys->back_pixels : sys->screen_pixels;
+    if (!fb) return;
+
+    for (int py = 0; py < size; py++) {
+        int pixel_y = y + py;
+        if (pixel_y < 0 || pixel_y >= sh) continue;
+        for (int px = 0; px < size; px++) {
+            int pixel_x = x + px;
+            if (pixel_x < 0 || pixel_x >= sw) continue;
+            int src = (py * size + px) * 3;
+            uint8_t r = pixels[src];
+            uint8_t g = pixels[src + 1];
+            uint8_t b = pixels[src + 2];
+            if (use_key && r == kr && g == kg && b == kb) continue;
+            int idx = (pixel_y * sw + pixel_x) * 4;
+            fb[idx + 0] = 0xFF;
+            fb[idx + 1] = r;
+            fb[idx + 2] = g;
+            fb[idx + 3] = b;
+        }
+    }
 }

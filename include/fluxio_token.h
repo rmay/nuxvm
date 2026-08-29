@@ -23,6 +23,7 @@ typedef enum {
     FXTOK_KW_EXTERN,
     FXTOK_KW_VOID,
     FXTOK_KW_BYTE,
+    FXTOK_KW_VERSION,
 
     /* punctuation */
     FXTOK_LPAREN,

@@ -9,6 +9,7 @@
 #include <string.h>
 #include <assert.h>
 #include <math.h>
+#include <time.h>
 
 static System* make_test_screen(int w, int h) {
     System* sys = (System*)calloc(1, sizeof(System));
@@ -145,6 +146,44 @@ static void test_kbd_vfs(void) {
     vfs_close(sys, fd);
     system_free(sys);
     printf("  kbd VFS: OK\n");
+}
+
+static uint32_t le32(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void test_time_vfs(void) {
+    printf("Testing /sys/time VFS...\n");
+    System* sys = system_create();
+    assert(sys != NULL);
+
+    int32_t fd = vfs_open(sys, "/sys/time", 0);
+    assert(fd >= 100);
+    uint8_t buf[16] = {0};
+    int n = vfs_read(sys, fd, buf, 16);
+    assert(n == 16);
+    uint32_t unix_ts = le32(buf);
+    time_t now = time(NULL);
+    assert(unix_ts + 2 >= (uint32_t)now);
+    assert((uint32_t)now + 2 >= unix_ts);
+
+    uint32_t date = le32(buf + 4);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    assert(((date >> 16) & 0xFFFF) == (uint32_t)(tm.tm_year + 1900));
+    assert(((date >> 8) & 0xFF) == (uint32_t)(tm.tm_mon + 1));
+    assert((date & 0xFF) == (uint32_t)tm.tm_mday);
+
+    int32_t fd2 = vfs_open(sys, "/dev/time", 0);
+    assert(fd2 >= 100);
+    uint8_t buf2[16] = {0};
+    assert(vfs_read(sys, fd2, buf2, 16) == 16);
+
+    vfs_close(sys, fd);
+    vfs_close(sys, fd2);
+    system_free(sys);
+    printf("  time VFS: OK\n");
 }
 
 static void test_draw_file() {
@@ -481,6 +520,61 @@ static void test_draw_cff_cmd9(void) {
     free(sys->memory);
     free_test_screen(sys);
     printf("  cmd 9 Chicago A: OK\n");
+}
+
+static void test_draw_tile_cmd10(void) {
+    printf("Testing /sys/draw cmd 10 tile blit...\n");
+    System* sys = make_test_screen(32, 32);
+    const int size = 4;
+    const uint32_t tile_ptr = 0;
+    const uint32_t nbytes = (uint32_t)(size * size * 3);
+    sys->memory = (uint8_t*)calloc(1, (size_t)nbytes);
+    sys->memory_size = nbytes;
+    assert(sys->memory != NULL);
+
+    /* Fill the whole tile red, except pixel (0,0) which is the key color. */
+    for (int p = 0; p < size * size; p++) {
+        sys->memory[p * 3 + 0] = 0xFF;
+        sys->memory[p * 3 + 1] = 0x00;
+        sys->memory[p * 3 + 2] = 0x00;
+    }
+    sys->memory[0] = 0xFF; /* pixel (0,0): key color, magenta */
+    sys->memory[1] = 0x00;
+    sys->memory[2] = 0xFF;
+
+    fill_screen_white(sys);
+    int32_t fd = vfs_open(sys, "/sys/draw", 0x02);
+    assert(fd >= 100);
+
+    uint8_t cmd[17];
+    memset(cmd, 0, sizeof(cmd));
+    cmd[0] = 10;
+    cmd[1] = 10; cmd[2] = 0;  /* x = 10 */
+    cmd[3] = 10; cmd[4] = 0;  /* y = 10 */
+    cmd[5] = (uint8_t)size;
+    cmd[6] = 1;               /* use_key */
+    cmd[7] = 0xFF; cmd[8] = 0x00; cmd[9] = 0xFF; cmd[10] = 0x00; /* key = magenta */
+    cmd[11] = (uint8_t)(tile_ptr & 0xFF);
+    cmd[12] = (uint8_t)((tile_ptr >> 8) & 0xFF);
+    cmd[13] = (uint8_t)((tile_ptr >> 16) & 0xFF);
+    cmd[14] = (uint8_t)((tile_ptr >> 24) & 0xFF);
+    cmd[15] = (uint8_t)(nbytes & 0xFF);
+    cmd[16] = (uint8_t)((nbytes >> 8) & 0xFF);
+
+    assert(vfs_write(sys, fd, cmd, 17) == 17);
+    vfs_close(sys, fd);
+
+    /* Key-colored source pixel must stay untouched (still white). */
+    assert(!pixel_is_ink(sys, 10, 10));
+    /* A non-key pixel must be painted red. */
+    assert(pixel_is_ink(sys, 11, 10));
+    assert(sys->screen_pixels[(10 * sys->screen_width + 11) * 4 + 1] == 0xFF);
+    assert(sys->screen_pixels[(10 * sys->screen_width + 11) * 4 + 2] == 0x00);
+    assert(sys->screen_pixels[(10 * sys->screen_width + 11) * 4 + 3] == 0x00);
+
+    free(sys->memory);
+    free_test_screen(sys);
+    printf("  cmd 10 tile blit: OK\n");
 }
 
 static void test_draw_cff_uf1(void) {
@@ -1449,6 +1543,7 @@ int main() {
     test_host_file();
     test_dummy_file();
     test_kbd_vfs();
+    test_time_vfs();
     test_snarf_roundtrip();
     test_snarf_shared();
     test_host_seek_stat();
@@ -1461,6 +1556,7 @@ int main() {
     test_system_fonts();
     test_cff_tile_size();
     test_draw_cff_cmd9();
+    test_draw_tile_cmd10();
     test_draw_cff_uf1();
     test_bind_mount_aliasing();
     test_chan_lifecycle();

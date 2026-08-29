@@ -155,6 +155,16 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    /* Every app build must declare `version <n>;` (Kelvin versioning,
+     * AGENTS.md). fluxioc has no library-build mode (that's a luxc -base
+     * concept -- Fluxio only produces apps, linking against already-
+     * compiled Lux libraries via fluxlink), so this check is unconditional. */
+    if (!program->version_seen) {
+        fprintf(stderr, "fluxioc: %s: missing required 'version <n>;' directive\n", filename);
+        fx_program_free(program);
+        return 1;
+    }
+
     size_t code_len = 0;
     uint8_t* bytecode = fx_codegen(program, base_address, &code_len);
     fx_program_free(program);

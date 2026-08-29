@@ -23,6 +23,8 @@
  *   bin/nux examples/fluxio/hello_cloister.bin
  */
 
+version 400000;
+
 /** entry point */
 int main() {
     int fd = vfs_open("/dev/draw");

@@ -7,11 +7,10 @@
 // Forward declaration (full definition comes from vm.h when needed)
 struct VM;
 
-// Bus defines the interface for communicating with external devices via MMIO.
+// DeviceBus is the SCI trap: LOAD/STORE in the 0x10000 band reach the
+// System so VFS syscalls can run. It is not a Varvara-style device HAL.
 typedef struct DeviceBus {
-    // Read returns the value at the specified device address.
     int32_t (*read)(struct DeviceBus* bus, uint32_t address, bool* success);
-    // Write sets the value at the specified device address.
     bool (*write)(struct DeviceBus* bus, uint32_t address, int32_t value);
     
     // User data for the implementation (e.g., pointer to System)

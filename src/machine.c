@@ -2,33 +2,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-static uint32_t get_vector_cb(System* sys, int index) {
-    if (!sys->vm_ptr) return 0;
-    VM* vm = (VM*)sys->vm_ptr;
-    // Assuming vector addresses are mapped to DEVICE_MEMORY_OFFSET + index * 16.
-    // In vm.c, it's just a memory read if we don't intercept it.
-    // We'll just read from VM memory at that location.
-    uint32_t addr = DEVICE_MEMORY_OFFSET + (index * 16);
-    if (addr + 4 > vm->memory_size) return 0;
-    uint32_t val = 0;
-    val |= (uint32_t)vm->memory[addr] << 24;
-    val |= (uint32_t)vm->memory[addr+1] << 16;
-    val |= (uint32_t)vm->memory[addr+2] << 8;
-    val |= (uint32_t)vm->memory[addr+3];
-    return val;
-}
-
-static void set_vector_cb(System* sys, int index, uint32_t addr) {
-    if (!sys->vm_ptr) return;
-    VM* vm = (VM*)sys->vm_ptr;
-    uint32_t mem_addr = DEVICE_MEMORY_OFFSET + (index * 16);
-    if (mem_addr + 4 > vm->memory_size) return;
-    vm->memory[mem_addr] = (addr >> 24) & 0xFF;
-    vm->memory[mem_addr+1] = (addr >> 16) & 0xFF;
-    vm->memory[mem_addr+2] = (addr >> 8) & 0xFF;
-    vm->memory[mem_addr+3] = addr & 0xFF;
-}
-
 Machine* machine_create(const uint8_t* program, uint32_t program_size, uint32_t base_address, uint32_t mem_size, bool trace) {
     Machine* machine = (Machine*)calloc(1, sizeof(Machine));
     if (!machine) return NULL;
@@ -47,10 +20,6 @@ Machine* machine_create(const uint8_t* program, uint32_t program_size, uint32_t 
     }
 
     system_set_memory(machine->system, machine->cpu->memory, machine->cpu->memory_size);
-    system_set_vector_callbacks(machine->system, get_vector_cb, set_vector_cb, machine->cpu);
-
-    // Attach system bus to VM
-    // We need to implement this in vm.h and vm.c
     vm_set_bus(machine->cpu, &machine->system->bus);
 
     return machine;
@@ -74,7 +43,7 @@ bool machine_tick(Machine* machine) {
     machine->system->yielded = false;
 
     int cycles = 0;
-    while (machine->cpu->running && !vm_yielded(machine->cpu) && !machine->system->yielded && cycles < 100000) {
+    while (machine->cpu->running && !vm_yielded(machine->cpu) && !machine->system->yielded && cycles < 1000000) {
         vm_tick(machine->cpu);
         if (machine->cpu->halted) {
             break;
@@ -84,6 +53,7 @@ bool machine_tick(Machine* machine) {
         }
         cycles++;
     }
+    machine->system->last_tick_cycles = cycles;
 
     // Tick children after the parent's slice, including the tick where the
     // parent halts (Go: Machine.Tick ticks childMachines before returning).

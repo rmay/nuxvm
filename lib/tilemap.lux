@@ -1,0 +1,236 @@
+( --- Tile Games Toolkit ---
+  Grid<->pixel layout, a per-cell tileset registry (solid color / dither
+  pattern / multi-color bitmap tile), and a generic ring-buffer entity list
+  for chains of grid positions (snake bodies, projectile trails, ...).
+
+  The tilemap's bulk data — the cols*rows tile-ID array, any bitmap tile
+  pixel data, and any entity-list buffer — is owned by the calling app
+  (docs/memory-map.md: bulk buffers belong to individual apps, not shared
+  libraries). This library only owns its own small layout/tileset state. )
+
+INCLUDE "lib/draw.lux"
+
+MODULE TILEMAP
+
+IMPORT DRAW
+
+@COLS     0x8D1000 ;
+@ROWS     0x8D1004 ;
+@TILE_PX  0x8D1008 ;
+@OFF_X    0x8D100C ;
+@OFF_Y    0x8D1010 ;
+@MAP_BUF  0x8D1014 ;
+@CUR_FD   0x8D1018 ;
+@KIND_TAB 0x8D1100 ; ( 32 kinds * 32 bytes = 0x8D1100-0x8D1500 )
+
+@K_NONE    0 ;
+@K_COLOR   1 ;
+@K_PATTERN 2 ;
+@K_BITMAP  3 ;
+
+( --- Layout --- )
+
+@layout ( cols rows max-w max-h -- )
+    4 frame! ( 0:max-h 1:max-w 2:rows 3:cols )
+    3 local@ COLS STOREI
+    2 local@ ROWS STOREI
+    1 local@ 3 local@ /
+    0 local@ 2 local@ /
+    MIN TILE_PX STOREI
+    1 local@ TILE_PX LOADI 3 local@ * - 2 / OFF_X STOREI
+    0 local@ TILE_PX LOADI 2 local@ * - 2 / OFF_Y STOREI
+    4 unframe!
+;
+
+( Shift the already-computed origin, e.g. to leave room for a title bar. )
+@nudge ( dx dy -- )
+    2 frame! ( 0:dy 1:dx )
+    OFF_X LOADI 1 local@ + OFF_X STOREI
+    OFF_Y LOADI 0 local@ + OFF_Y STOREI
+    2 unframe!
+;
+
+@cols     ( -- n ) COLS LOADI ;
+@rows     ( -- n ) ROWS LOADI ;
+@tile-px  ( -- n ) TILE_PX LOADI ;
+@offx     ( -- n ) OFF_X LOADI ;
+@offy     ( -- n ) OFF_Y LOADI ;
+
+( Pixel rect of a cell, inset 1px (border-friendly, matches solid/pattern
+  cell painting). )
+@cell-box ( gx gy -- x y w h )
+    2 frame! ( 0:gy 1:gx )
+    1 local@ TILE_PX LOADI * OFF_X LOADI + 1 +
+    0 local@ TILE_PX LOADI * OFF_Y LOADI + 1 +
+    TILE_PX LOADI 2 -
+    TILE_PX LOADI 2 -
+    2 unframe!
+;
+
+( Top-left pixel of a cell, no inset — for full-cell bitmap tile blits. )
+@cell-origin ( gx gy -- x y )
+    2 frame! ( 0:gy 1:gx )
+    1 local@ TILE_PX LOADI * OFF_X LOADI +
+    0 local@ TILE_PX LOADI * OFF_Y LOADI +
+    2 unframe!
+;
+
+( Inverse mapping for mouse picking. gx/gy are meaningless when valid?=0. )
+@pixel-to-cell ( px py -- gx gy valid? )
+    0 0 4 frame! ( 0:gy 1:gx 2:py 3:px )
+    3 local@ OFF_X LOADI - TILE_PX LOADI / 1 local!
+    2 local@ OFF_Y LOADI - TILE_PX LOADI / 0 local!
+    3 local@ OFF_X LOADI >=
+    2 local@ OFF_Y LOADI >= AND
+    1 local@ 0 >= AND
+    0 local@ 0 >= AND
+    1 local@ COLS LOADI < AND
+    0 local@ ROWS LOADI < AND
+    1 local@ 0 local@ ROT
+    4 unframe!
+;
+
+( --- Tile-ID map (caller-owned byte array, row-major cols*rows) --- )
+
+@map-use ( buf-addr -- ) MAP_BUF STOREI ;
+
+@cell-addr ( gx gy -- addr )
+    2 frame! ( 0:gy 1:gx )
+    0 local@ COLS LOADI * 1 local@ + MAP_BUF LOADI +
+    2 unframe!
+;
+
+@get ( gx gy -- tile-id ) cell-addr load-byte ;
+
+@set ( gx gy tile-id -- )
+    3 frame! ( 0:tile-id 1:gy 2:gx )
+    0 local@ 2 local@ 1 local@ cell-addr store-byte
+    3 unframe!
+;
+
+( --- Tileset registry: up to 32 tile-IDs, each a color/pattern/bitmap --- )
+
+@kind-rec ( id -- addr ) 32 * KIND_TAB + ;
+
+@kind-color ( id color -- )
+    0 3 frame! ( 0:addr 1:color 2:id )
+    2 local@ kind-rec 0 local!
+    K_COLOR 0 local@ STOREI
+    1 local@ 0 local@ 4 + STOREI
+    3 unframe!
+;
+
+@kind-pattern ( id color pat -- )
+    0 4 frame! ( 0:addr 1:pat 2:color 3:id )
+    3 local@ kind-rec 0 local!
+    K_PATTERN 0 local@ STOREI
+    2 local@ 0 local@ 4 + STOREI
+    1 local@ 0 local@ 8 + STOREI
+    4 unframe!
+;
+
+@kind-bitmap ( id tile-ptr nbytes use-key key size -- )
+    0 7 frame! ( 0:addr 1:size 2:key 3:use-key 4:nbytes 5:tile-ptr 6:id )
+    6 local@ kind-rec 0 local!
+    K_BITMAP 0 local@ STOREI
+    5 local@ 0 local@ 12 + STOREI
+    4 local@ 0 local@ 16 + STOREI
+    3 local@ 0 local@ 20 + STOREI
+    2 local@ 0 local@ 24 + STOREI
+    1 local@ 0 local@ 28 + STOREI
+    7 unframe!
+;
+
+( --- Rendering --- )
+
+@render-bitmap ( rec gx gy -- )
+    0 0 0 0 0 8 frame! ( 0:size 1:key 2:usekey 3:nbytes 4:tileptr 5:gy 6:gx 7:rec )
+    7 local@ 12 + LOADI 4 local!
+    7 local@ 16 + LOADI 3 local!
+    7 local@ 20 + LOADI 2 local!
+    7 local@ 24 + LOADI 1 local!
+    7 local@ 28 + LOADI 0 local!
+    CUR_FD LOADI 6 local@ 5 local@ cell-origin
+    0 local@ 2 local@ 1 local@ 4 local@ 3 local@
+    DRAW::blit-tile
+    8 unframe!
+;
+
+@render-cell ( gx gy -- )
+    0 0 4 frame! ( 0:s2 1:s1 2:gy 3:gx )
+    3 local@ 2 local@ get
+    dup 0 = [
+        drop
+    ] [
+        kind-rec
+        dup LOADI
+        dup K_COLOR = [
+            drop
+            4 + LOADI 1 local!
+            CUR_FD LOADI 3 local@ 2 local@ cell-box 1 local@ DRAW::fill-rect
+        ] [
+            dup K_PATTERN = [
+                drop
+                dup 4 + LOADI 1 local!
+                8 + LOADI 0 local!
+                CUR_FD LOADI 3 local@ 2 local@ cell-box 1 local@ 0 local@ DRAW::fill-pat
+            ] [
+                dup K_BITMAP = [
+                    drop
+                    3 local@ 2 local@ render-bitmap
+                ] [
+                    drop drop
+                ] ?:
+            ] ?:
+        ] ?:
+    ] ?:
+    4 unframe!
+;
+
+( Paints every non-empty cell in the map buffer via its registered kind. )
+@render ( fd -- )
+    CUR_FD STOREI
+    0 ( gx )
+    [ dup COLS LOADI < ] [
+        0 ( gx gy )
+        [ dup ROWS LOADI < ] [
+            TWO-DUP render-cell
+            1 +
+        ] |:
+        drop
+        1 +
+    ] |:
+    drop
+;
+
+( --- Generic entity list: a ring buffer of (x,y) grid positions.
+  Caller supplies capacity and buffer address each call — mirrors Snake's
+  original @body/@seg-addr/@get-seg/@set-seg, generalized. --- )
+
+@ent-wrap ( i cap -- i' )
+    2 frame! ( 0:cap 1:i )
+    1 local@ 0 local@ MOD
+    dup 0 < [ 0 local@ + ] ?
+    2 unframe!
+;
+
+@ent-addr ( i cap buf -- addr )
+    3 frame! ( 0:buf 1:cap 2:i )
+    2 local@ 1 local@ ent-wrap 8 * 0 local@ +
+    3 unframe!
+;
+
+@ent-get ( i cap buf -- x y )
+    3 frame! ( 0:buf 1:cap 2:i )
+    2 local@ 1 local@ 0 local@ ent-addr
+    dup LOADI
+    SWAP 4 + LOADI
+    3 unframe!
+;
+
+@ent-set ( x y i cap buf -- )
+    5 frame! ( 0:buf 1:cap 2:i 3:y 4:x )
+    4 local@ 2 local@ 1 local@ 0 local@ ent-addr STOREI
+    3 local@ 2 local@ 1 local@ 0 local@ ent-addr 4 + STOREI
+    5 unframe!
+;
