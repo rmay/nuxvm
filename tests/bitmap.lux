@@ -38,7 +38,7 @@ IMPORT BITMAP
             T"set/get clear" A i 3 BITMAP::get 0 = check!
             i 1 + i!
         ] |:
-    }
+    UNGIRD
 ;
 
 ( hspan with both edges partial, spanning multiple words )
@@ -57,8 +57,8 @@ IMPORT BITMAP
                 k 1 + k!
             ] |:
             T"hspan interior fully set" flag 1 = check!
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 ( blit with overlapping source and destination, shift right by 3 within one row )
@@ -74,8 +74,8 @@ IMPORT BITMAP
                 k 1 + k!
             ] |:
             T"blit overlap shifts span intact" flag 1 = check!
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 ( invert twice = identity )
@@ -92,8 +92,8 @@ IMPORT BITMAP
                 k 1 + k!
             ] |:
             T"invert twice = identity (painted span)" flag 1 = check!
-        }
-    }
+        UNGIRD
+    UNGIRD
     T"invert twice = identity (past span stays clear)" A 50 0 BITMAP::get 0 = check!
 ;
 
@@ -112,8 +112,8 @@ IMPORT BITMAP
                 k 1 + k!
             ] |:
             T"copy+invert+invert = original" flag 1 = check!
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 ( hspan-pat: a word-aligned span (32..63, one full word plus a partial one)
@@ -128,7 +128,7 @@ IMPORT BITMAP
             0xAA PAT r + store-byte
             r 1 + r!
         ] |:
-    }
+    UNGIRD
     A 32 0 31 PAT 3 BITMAP::hspan-pat ( x=32, y=0, n=31, py=3 -- pattern row-phase irrelevant, all rows equal )
     T"hspan-pat left edge untouched" A 31 0 BITMAP::get 0 = check!
     T"hspan-pat right edge untouched" A 63 0 BITMAP::get 0 = check!
@@ -138,12 +138,12 @@ IMPORT BITMAP
             [
                 k 32 + 7 AND 1 AND 0 = { want }
                     A k 32 + 0 BITMAP::get want = 0 = [ 0 flag! ] ?
-                }
+                UNGIRD
                 k 1 + k!
             ] |:
             T"hspan-pat matches expected bits across a word boundary" flag 1 = check!
-        }
-    }
+        UNGIRD
+    UNGIRD
 ;
 
 @main ( -- )

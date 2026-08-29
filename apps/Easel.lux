@@ -1186,7 +1186,9 @@ IMPORT TIME
                             x0 { x }
                                 [ x x1 <= ]
                                 [
-                                    CANVAS x y BITMAP::get TMP x y BITMAP::set
+                                    CANVAS x y BITMAP::get { bit }
+                                        TMP x y bit BITMAP::set
+                                    UNGIRD
                                     x 1 + x!
                                 ] |:
                             UNGIRD
@@ -1231,7 +1233,9 @@ IMPORT TIME
                     x0 { x }
                         [ x x1 <= ]
                         [
-                            CANVAS x y BITMAP::get TMP x y BITMAP::set
+                            CANVAS x y BITMAP::get { bit }
+                                TMP x y bit BITMAP::set
+                            UNGIRD
                             x 1 + x!
                         ] |:
                     UNGIRD
@@ -1262,7 +1266,9 @@ IMPORT TIME
                             x0 { x }
                                 [ x x1 <= ]
                                 [
-                                    CANVAS x y BITMAP::get TMP x y BITMAP::set
+                                    CANVAS x y BITMAP::get { bit }
+                                        TMP x y bit BITMAP::set
+                                    UNGIRD
                                     x 1 + x!
                                 ] |:
                             UNGIRD
@@ -1305,7 +1311,9 @@ IMPORT TIME
                     ox0 { x }
                         [ x ox1 <= ]
                         [
-                            CANVAS x y BITMAP::get TMP x y BITMAP::set
+                            CANVAS x y BITMAP::get { bit }
+                                TMP x y bit BITMAP::set
+                            UNGIRD
                             x 1 + x!
                         ] |:
                     UNGIRD

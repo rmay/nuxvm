@@ -3559,41 +3559,6 @@ static int easel_save_and_read(Machine* m, int32_t mc, int32_t kc, uint8_t* body
     return n;
 }
 
-static void test_easel_debug_paint_only(void) {
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
-    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
-    assert(m != NULL);
-    int32_t mc, kc;
-    quill_lux_bind(m, &mc, &kc);
-    quill_lux_pump(m, 40);
-    quill_lux_click(m, mc, 95, 43);
-    quill_lux_pump(m, 20);
-    uint8_t body[25000];
-    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
-    fprintf(stderr, "DEBUG paint-only: (15,23)=%d\n", easel_bit_set(body, n, 15, 23));
-    int cnt = 0;
-    for (int i = 8; i < n; i++) if (body[i]) cnt++;
-    fprintf(stderr, "DEBUG paint-only: nonzero bytes=%d\n", cnt);
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
-}
-
-static void test_easel_debug_paint_select(void) {
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
-    int32_t mc, kc;
-    Machine* m = easel_transform_setup(&mc, &kc);
-    uint8_t body[25000];
-    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
-    fprintf(stderr, "DEBUG paint-select: (15,23)=%d\n", easel_bit_set(body, n, 15, 23));
-    int cnt = 0;
-    for (int i = 8; i < n; i++) if (body[i]) cnt++;
-    fprintf(stderr, "DEBUG paint-select: nonzero bytes=%d\n", cnt);
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
-}
-
 static void test_easel_flip_h(void) {
     printf("Testing apps/Easel.lux: Flip Horizontal transforms the selection...\n");
     size_t backup_len = 0;
@@ -3607,16 +3572,6 @@ static void test_easel_flip_h(void) {
 
     uint8_t body[25000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
-
-    fprintf(stderr, "DEBUG flip-h: (15,23)=%d (55,23)=%d\n",
-            easel_bit_set(body, n, 15, 23), easel_bit_set(body, n, 55, 23));
-    for (int yy = 18; yy <= 37; yy++) {
-        fprintf(stderr, "row %2d: ", yy);
-        for (int xx = 8; xx <= 62; xx++) {
-            fprintf(stderr, "%d", easel_bit_set(body, n, xx, yy) > 0 ? 1 : 0);
-        }
-        fprintf(stderr, "\n");
-    }
 
     assert(easel_bit_set(body, n, 15, 23) == 0);   /* source now blank */
     assert(easel_bit_set(body, n, 55, 23) == 1);   /* x0+x1-x = 10+60-15 */
@@ -3822,8 +3777,6 @@ int main(void) {
     test_easel_marquee_move();
     test_easel_lasso_move();
     test_easel_copy_paste();
-    test_easel_debug_paint_only();
-    test_easel_debug_paint_select();
     test_easel_flip_h();
     test_easel_flip_v();
     test_easel_rotate90();
