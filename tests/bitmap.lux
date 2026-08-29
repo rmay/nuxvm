@@ -11,6 +11,7 @@ IMPORT BITMAP
 
 @A 0x900000 ;
 @B 0x910000 ;
+@PAT 0x920000 ; ( 8-byte, one row per byte, vertical-stripe pattern 0xAA )
 
 @n-fail 0x8A0000 ;
 
@@ -115,10 +116,41 @@ IMPORT BITMAP
     }
 ;
 
+( hspan-pat: a word-aligned span (32..63, one full word plus a partial one)
+  tiled with an 8-row-identical vertical-stripe pattern (0xAA -- even columns
+  of each 8-wide period set). Checks the span against a computed pattern bit
+  per pixel and confirms both edges outside the span stay untouched. )
+@test-hspan-pat ( -- )
+    A BITMAP::clear
+    0 { r }
+        [ r 8 < ]
+        [
+            0xAA PAT r + store-byte
+            r 1 + r!
+        ] |:
+    }
+    A 32 0 31 PAT 3 BITMAP::hspan-pat ( x=32, y=0, n=31, py=3 -- pattern row-phase irrelevant, all rows equal )
+    T"hspan-pat left edge untouched" A 31 0 BITMAP::get 0 = check!
+    T"hspan-pat right edge untouched" A 63 0 BITMAP::get 0 = check!
+    0 { k }
+        1 { flag }
+            [ k 31 < ]
+            [
+                k 32 + 7 AND 1 AND 0 = { want }
+                    A k 32 + 0 BITMAP::get want = 0 = [ 0 flag! ] ?
+                }
+                k 1 + k!
+            ] |:
+            T"hspan-pat matches expected bits across a word boundary" flag 1 = check!
+        }
+    }
+;
+
 @main ( -- )
     0 n-fail STOREI
     test-set-get
     test-hspan-edges
+    test-hspan-pat
     test-blit-overlap
     test-invert-identity
     test-copy-invert-invert

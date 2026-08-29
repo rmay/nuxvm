@@ -240,14 +240,13 @@ IMPORT BITMAP
     }
 ;
 
+( Delegates to BITMAP::hspan-pat (word-at-a-time, no per-pixel pix! bounds
+  check) instead of looping plot-pat one column at a time. Safe without extra
+  clipping here: both callers (fill-rect-pat, fill-oval-pat, via
+  commit-shape) only ever pass spans whose endpoints came from mouse
+  positions already clamped into canvas bounds by clip-can. )
 @hspan-pat { x y n -- }
-    0 { k }
-        [ k n < ]
-        [
-            x k + y plot-pat
-            k 1 + k!
-        ] |:
-    }
+    CANVAS x y n PATTERNS pat-id LOADI 8 * + y BITMAP::hspan-pat
 ;
 
 @brush-at { cx cy -- }
