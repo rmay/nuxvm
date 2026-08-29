@@ -9,6 +9,7 @@ INCLUDE "lib/str.lux"
 INCLUDE "lib/ui.lux"
 INCLUDE "lib/sf.lux"
 INCLUDE "lib/geom.lux"
+INCLUDE "lib/bitmap.lux"
 
 MODULE MAIN
 VERSION 400000
@@ -21,6 +22,7 @@ IMPORT STR
 IMPORT UI
 IMPORT SF
 IMPORT GEOM
+IMPORT BITMAP
 
 ( --- Geometry --- )
 @WIN_W         600 ;
@@ -33,7 +35,7 @@ IMPORT GEOM
 @CANVAS_Y       36 ;
 @CANVAS_W      512 ;
 @CANVAS_H      342 ;
-@CANVAS_BYTES 175104 ;
+@CANVAS_WORDS   16 ; ( CANVAS_W / 32 -- exact for now; partial-word edges land with Step 9's resize )
 @STATUS_Y      424 ;
 @FONT_SIZE      16 ;
 @GRID           8 ;
@@ -90,10 +92,15 @@ IMPORT GEOM
 @CLR_CONFIRM_TEXT   0xFFFFFF ;
 @CLR_CONFIRM_BTN    0x505050 ;
 
-( --- Bulk buffers (MM_APP_BULK_BUFFER 0x900000..0xA00000) --- )
+( --- Bulk buffers (MM_APP_BULK_BUFFER 0x900000..0xA00000) ---
+  CANVAS/UNDO/TMP are now packed 1bpp BITMAP::PAGE_BYTES (51840) pages, not
+  one-byte-per-pixel CANVAS_BYTES (175104) -- see lib/bitmap.lux. TMP sits at
+  the address the rewrite plan reserves for a general page-sized SCRATCH
+  buffer (Step 5/6 will reuse it for selection transforms, never concurrently
+  with do-undo's swap use here). )
 @CANVAS        0x900000 ;
-@UNDO          0x92B000 ;
-@TMP           0x956000 ;
+@UNDO          0x90D000 ;
+@TMP           0x934000 ;
 @PACK          0x981000 ;
 @STK           0x987000 ;
 @PATH          0x990000 ;
@@ -182,44 +189,32 @@ IMPORT GEOM
 ( --- Canvas --- )
 
 @copy-buf { src dest -- }
-    dest CANVAS_BYTES + { end }
-        [ dest end < ]
-        [
-            src LOADI dest STOREI
-            src 4 + src!
-            dest 4 + dest!
-        ] |:
-    }
+    src dest BITMAP::copy
 ;
 
 @clear-buf { dest -- }
-    dest CANVAS_BYTES + { end }
-        [ dest end < ]
-        [
-            0 dest STOREI
-            dest 4 + dest!
-        ] |:
-    }
+    dest BITMAP::clear
 ;
 
 @in-can? { x y -- f }
     x 0 >= y 0 >= AND x CANVAS_W < AND y CANVAS_H < AND
 ;
 
-@pix-addr { x y -- addr }
-    y CANVAS_W * x + CANVAS +
-;
-
 @pix@ { x y -- v }
     x y in-can? [
-        x y pix-addr load-byte
+        CANVAS x y BITMAP::get
     ] [ 0 ] ?:
 ;
 
+( The old false branch here was `[ drop ]` -- a latent stack-underflow bug:
+  v/x/y are already popped into named locals by the frame declaration above,
+  so there was nothing left on the stack for that drop to consume. An
+  out-of-bounds pix! (e.g. a brush stamp clipped at the canvas edge) would
+  have faulted the VM. `?` -- no else branch -- just skips the write. )
 @pix! { v x y -- }
     x y in-can? [
-        v x y pix-addr store-byte
-    ] [ drop ] ?:
+        CANVAS x y v BITMAP::set
+    ] ?
 ;
 
 @pat-bit { x y -- b }
@@ -566,15 +561,7 @@ IMPORT GEOM
 
 @do-invert ( -- )
     snapshot
-    CANVAS { p }
-        CANVAS CANVAS_BYTES + { end }
-            [ p end < ]
-            [
-                p LOADI 0x01010101 XOR p STOREI
-                p 4 + p!
-            ] |:
-        }
-    }
+    CANVAS BITMAP::invert
     mark-dirty
 ;
 
@@ -1164,28 +1151,38 @@ IMPORT GEOM
     }
 ;
 
-( Row-address arithmetic and byte loads are inlined here (instead of going
-  through pix@ / in-can? / pix-addr) because these scans touch every one
-  of the CANVAS_W*CANVAS_H pixels every redraw; the per-pixel call overhead
-  of the framed helper words was the difference between an instant redraw
-  and one taking on the order of a minute. )
-
+( Word-at-a-time: an all-white 32-pixel word is skipped in one word@ + compare
+  instead of 32 pixel tests. CANVAS_W is exactly CANVAS_WORDS*32 for now, so
+  every word is fully in-bounds -- no edge masking needed here (unlike
+  BITMAP::hspan, which does need it for arbitrary spans). )
 @draw-canvas-1x ( -- )
-    0 0 0 { y x x0 }
+    0 { y }
         [ y CANVAS_H < ]
         [
-            y CANVAS_W * CANVAS + { row }
-                0 x!
-                [ x CANVAS_W < ]
+            0 { wx }
+                [ wx CANVAS_WORDS < ]
                 [
-                    row x + load-byte [
-                        x x0!
-                        [ x CANVAS_W < row x + load-byte AND ]
-                        [ x 1 + x! ] |:
-                        APP::draw-fd CANVAS_X x0 + CANVAS_Y y + x x0 - 1 CLR_FG DRAW::fill-rect
-                    ] [
-                        x 1 + x!
-                    ] ?:
+                    CANVAS wx y BITMAP::word@ { w }
+                        w 0 = [
+                        ] [
+                            0 { bit }
+                                [ bit 32 < ]
+                                [
+                                    w 31 bit - RSHIFT 1 AND [
+                                        bit { rstart }
+                                            [ bit 32 < w 31 bit - RSHIFT 1 AND AND ]
+                                            [ bit 1 + bit! ] |:
+                                            APP::draw-fd CANVAS_X wx 32 * rstart + +
+                                                CANVAS_Y y + bit rstart - 1 CLR_FG DRAW::fill-rect
+                                        }
+                                    ] [
+                                        bit 1 + bit!
+                                    ] ?:
+                                ] |:
+                            }
+                        ] ?:
+                    }
+                    wx 1 + wx!
                 ] |:
             }
             y 1 + y!
@@ -1193,18 +1190,21 @@ IMPORT GEOM
     }
 ;
 
+( FAT_VW x FAT_VH (64x42) is small and fat-ox is not generally word-aligned,
+  so this stays a plain per-pixel scan through pix@ -- correct and cheap
+  enough at this size; the word-skip optimization above is what matters for
+  the full CANVAS_W x CANVAS_H repaint. )
 @draw-canvas-fat ( -- )
     0 0 0 0 { vy cy vx vx0 }
         [ vy FAT_VH < ]
         [
             fat-oy LOADI vy + cy!
-            cy CANVAS_W * CANVAS + fat-ox LOADI + { row }
-                0 vx!
+            0 vx!
                 [ vx FAT_VW < ]
                 [
-                    row vx + load-byte [
+                    fat-ox LOADI vx + cy pix@ [
                         vx vx0!
-                        [ vx FAT_VW < row vx + load-byte AND ]
+                        [ vx FAT_VW < fat-ox LOADI vx + cy pix@ AND ]
                         [ vx 1 + vx! ] |:
                         APP::draw-fd CANVAS_X vx0 FAT_Z * + CANVAS_Y vy FAT_Z * +
                             vx vx0 - FAT_Z * FAT_Z CLR_FG DRAW::fill-rect
@@ -1212,7 +1212,6 @@ IMPORT GEOM
                         vx 1 + vx!
                     ] ?:
                 ] |:
-            }
             vy 1 + vy!
         ] |:
     }
