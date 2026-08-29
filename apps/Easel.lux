@@ -1,8 +1,9 @@
 ( Easel: a MacPaint clone in progress -- see easel_plan.md for the full plan.
   File > New/Open/Save/Save As | Quit, Edit > Undo / Invert / Clear,
   Goodies > Grid / FatBits. 20-tool palette (10 wired so far), 38 pattern
-  slots (16 real patterns so far), pen-width strip (not yet consumed by
-  drawing). Canvas is 440x280, 1-bit, in a 512x342 window. Save is EAS1.
+  slots (16 real patterns so far), pen-width strip driving line/rect/oval
+  outline thickness. Canvas is 480x416, 1-bit, in a 560x492 window (geometry
+  sized to the tools, not a fixed window size). Save is EAS1.
   ./bin/cloister apps/Easel.bin )
 
 INCLUDE "lib/app.lux"
@@ -168,7 +169,7 @@ IMPORT BITMAP
 @save-as           0x8A005C ;
 @last-pat-id       0x8A0060 ; ( previously drawn pattern selection, -1 = none yet )
 @damage            0x8A0064 ; ( bitmask of DIRTY_* below: what changed since the last draw )
-@pen-width         0x8A0068 ; ( index into LW_VALUES, not yet consumed by any stroke/outline drawing )
+@pen-width         0x8A0068 ; ( index into LW_VALUES; drives line/rect/oval outline thickness )
 
 ( Explicit damage bits, replacing the old single pat-full flag (whose narrow
   meaning -- "must draw-patterns redraw all swatches" -- was the exact bug: a
@@ -477,6 +478,147 @@ IMPORT BITMAP
                 }
                 py 1 + py!
             ] |:
+        }
+    ] ?:
+;
+
+( --- pen-width-aware line/outline stroking (rest of Step 4) --- )
+
+@vspan-black { x y n -- }
+    0 { k }
+        [ k n < ]
+        [
+            1 x y k + pix!
+            k 1 + k!
+        ] |:
+    }
+;
+
+( Thickens a 1px black horizontal span into w rows, growing downward from y. )
+@hspan-black-w { x y n w -- }
+    0 { r }
+        [ r w < ]
+        [
+            x y r + n hspan-black
+            r 1 + r!
+        ] |:
+    }
+;
+
+( Thickens a 1px black vertical span into w columns, growing rightward from x. )
+@vspan-black-w { x y n w -- }
+    0 { r }
+        [ r w < ]
+        [
+            x r + y n vspan-black
+            r 1 + r!
+        ] |:
+    }
+;
+
+( w x w black square centered at (x,y); w<=1 is a single pixel. )
+@plot-black-w { x y w -- }
+    w 1 <= [
+        1 x y pix!
+    ] [
+        w 2 / { half }
+            x half - { sx }
+                y half - { sy }
+                    0 { dy }
+                        [ dy w < ]
+                        [
+                            sx sy dy + w hspan-black
+                            dy 1 + dy!
+                        ] |:
+                    }
+                }
+            }
+        }
+    ] ?:
+;
+
+( Bresenham line stamped with a w x w square per step instead of stroke-to's
+  single pixel. w<=1 falls back to stroke-to (via plot-at, so it still
+  respects the pencil/eraser mode split there is none for TOOL_LINE -- always
+  black). )
+@stroke-to-w { x0 y0 x1 y1 w -- }
+    w 1 <= [
+        MODE_BLACK plot-mode STOREI
+        x0 y0 x1 y1 stroke-to
+    ] [
+        x1 x0 - ABS
+        y1 y0 - ABS NEGATE
+        x0 x1 < [ 1 ] [ -1 ] ?:
+        y0 y1 < [ 1 ] [ -1 ] ?:
+        { adx ady sx sy }
+            adx ady + { err }
+                x0 y0 w plot-black-w
+                [ x0 x1 = y0 y1 = AND 0 = ]
+                [
+                    err 2 * { e2 }
+                        e2 ady >= [
+                            err ady + err!
+                            x0 sx + x0!
+                        ] ?
+                        e2 adx <= [
+                            err adx + err!
+                            y0 sy + y0!
+                        ] ?
+                    }
+                    x0 y0 w plot-black-w
+                ] |:
+            }
+        }
+    ] ?:
+;
+
+( Thick rectangle outline: w bands centered on the canonical border, growing
+  from a bounding box inset by w/2 on each side. w<=1 falls back to the
+  original 1px frame-rect-pix. )
+@frame-rect-pix-w { x0 y0 x1 y1 w -- }
+    w 1 <= [
+        x0 y0 x1 y1 frame-rect-pix
+    ] [
+        x0 y0 x1 y1 canon-xy { minx miny maxx maxy }
+            w 2 / { half }
+                maxx minx - 1 + half 2 * + { fullw }
+                    maxy miny - 1 + half 2 * + { fullh }
+                        minx half - miny half - fullw w hspan-black-w
+                        minx half - maxy half - fullw w hspan-black-w
+                        minx half - miny half - fullh w vspan-black-w
+                        maxx half - miny half - fullh w vspan-black-w
+                    }
+                }
+            }
+        }
+    ] ?:
+;
+
+( Thick oval outline built from `w` nested single-pixel oval outlines grown
+  outward from a bounding box inset by w/2, approximating a centered ring.
+  w<=1 falls back to the original frame-oval-pix. )
+@frame-oval-pix-w { x y w h pw -- }
+    pw 1 <= [
+        x y w h frame-oval-pix
+    ] [
+        pw 2 / { half }
+            0 { i }
+                [ i pw < ]
+                [
+                    x half - i + { ox }
+                        y half - i + { oy }
+                            w half 2 * + i 2 * - { ow }
+                                h half 2 * + i 2 * - { oh }
+                                    ow 1 >= oh 1 >= AND [
+                                        ox oy ow oh frame-oval-pix
+                                    ] ?
+                                }
+                            }
+                        }
+                    }
+                    i 1 + i!
+                ] |:
+            }
         }
     ] ?:
 ;
@@ -1168,10 +1310,10 @@ IMPORT BITMAP
 ( No in-window status bar (Step 9): filename/dirty state lives in the window
   title via sync-title, already wired to every file-dirty change. )
 
-( LW_VALUES: none (dotted line, drawn as a thin hint-colored bar), then
-  1/2/3/4/8 px. Not yet consumed by any stroke/outline drawing -- pen-width
-  is stored and selectable, but line/shape rendering is still always 1px;
-  wiring it in is the rest of Step 4. )
+( LW_VALUES: 0 (hairline, 1px -- authentic MacPaint's dotted-line style for
+  this slot is not implemented), then 1/2/3/4/8 px. Consumed by
+  stroke-to-w/frame-rect-pix-w/frame-oval-pix-w for TOOL_LINE and the
+  rect/oval outline in commit-shape. )
 @lw-value { i -- w }
     i 0 = [ 0 ] [
     i 1 = [ 1 ] [
@@ -1399,18 +1541,17 @@ IMPORT BITMAP
         shape-x0 LOADI { x0 }
             shape-y0 LOADI { y0 }
                 tool LOADI TOOL_LINE = [
-                    MODE_BLACK plot-mode STOREI
-                    x0 y0 x1 y1 stroke-to
+                    x0 y0 x1 y1 pen-width LOADI lw-value stroke-to-w
                 ] [
                     x0 y0 x1 y1 canon-xy { minx miny maxx maxy }
                         maxx minx - 1 + { w }
                             maxy miny - 1 + { h }
                                 shape-is-oval? [
                                     shape-filled? [ minx miny w h fill-oval-pat ] ?
-                                    minx miny w h frame-oval-pix
+                                    minx miny w h pen-width LOADI lw-value frame-oval-pix-w
                                 ] [
                                     shape-filled? [ minx miny maxx maxy fill-rect-pat ] ?
-                                    minx miny maxx maxy frame-rect-pix
+                                    minx miny maxx maxy pen-width LOADI lw-value frame-rect-pix-w
                                 ] ?:
                             }
                         }
