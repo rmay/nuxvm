@@ -1,0 +1,132 @@
+( Headless correctness tests for lib/bitmap.lux, run under bin/nux. Prints PASS/FAIL
+  lines via VFS::debug-print and a final summary; no GUI required. )
+
+INCLUDE "lib/vfs.lux"
+INCLUDE "lib/bitmap.lux"
+
+MODULE MAIN
+VERSION 400000
+IMPORT VFS
+IMPORT BITMAP
+
+@A 0x900000 ;
+@B 0x910000 ;
+
+@n-fail 0x8A0000 ;
+
+@check! { name-ptr cond -- }
+    cond 0 = [
+        name-ptr VFS::debug-print
+        T" FAIL" VFS::debug-print
+        n-fail LOADI 1 + n-fail STOREI
+    ] [
+        name-ptr VFS::debug-print
+        T" ok" VFS::debug-print
+    ] ?:
+;
+
+( set/get round-trip at every bit position in a byte )
+@test-set-get ( -- )
+    A BITMAP::clear
+    0 { i }
+        [ i 8 < ]
+        [
+            A i 3 1 BITMAP::set
+            T"set/get roundtrip" A i 3 BITMAP::get 1 = check!
+            A i 3 0 BITMAP::set
+            T"set/get clear" A i 3 BITMAP::get 0 = check!
+            i 1 + i!
+        ] |:
+    }
+;
+
+( hspan with both edges partial, spanning multiple words )
+@test-hspan-edges ( -- )
+    A BITMAP::clear
+    A 5 0 40 1 BITMAP::hspan
+    T"hspan left edge stays clear" A 4 0 BITMAP::get 0 = check!
+    T"hspan first painted pixel" A 5 0 BITMAP::get 1 = check!
+    T"hspan last painted pixel" A 44 0 BITMAP::get 1 = check!
+    T"hspan right edge stays clear" A 45 0 BITMAP::get 0 = check!
+    0 { k }
+        1 { flag }
+            [ k 40 < ]
+            [
+                A k 5 + 0 BITMAP::get 0 = [ 0 flag! ] ?
+                k 1 + k!
+            ] |:
+            T"hspan interior fully set" flag 1 = check!
+        }
+    }
+;
+
+( blit with overlapping source and destination, shift right by 3 within one row )
+@test-blit-overlap ( -- )
+    A BITMAP::clear
+    A 0 0 20 1 BITMAP::hspan
+    A 0 0 A 3 0 20 1 BITMAP::BLIT_SRC BITMAP::blit
+    0 { k }
+        1 { flag }
+            [ k 20 < ]
+            [
+                A k 3 + 0 BITMAP::get 1 = 0 = [ 0 flag! ] ?
+                k 1 + k!
+            ] |:
+            T"blit overlap shifts span intact" flag 1 = check!
+        }
+    }
+;
+
+( invert twice = identity )
+@test-invert-identity ( -- )
+    A BITMAP::clear
+    A 0 0 50 1 BITMAP::hspan
+    A BITMAP::invert
+    A BITMAP::invert
+    0 { k }
+        1 { flag }
+            [ k 50 < ]
+            [
+                A k 0 BITMAP::get 1 = 0 = [ 0 flag! ] ?
+                k 1 + k!
+            ] |:
+            T"invert twice = identity (painted span)" flag 1 = check!
+        }
+    }
+    T"invert twice = identity (past span stays clear)" A 50 0 BITMAP::get 0 = check!
+;
+
+( copy then invert then invert = original )
+@test-copy-invert-invert ( -- )
+    A BITMAP::clear
+    A 10 10 33 1 BITMAP::hspan
+    A B BITMAP::copy
+    B BITMAP::invert
+    B BITMAP::invert
+    0 { k }
+        1 { flag }
+            [ k 33 < ]
+            [
+                B k 10 + 10 BITMAP::get A k 10 + 10 BITMAP::get = 0 = [ 0 flag! ] ?
+                k 1 + k!
+            ] |:
+            T"copy+invert+invert = original" flag 1 = check!
+        }
+    }
+;
+
+@main ( -- )
+    0 n-fail STOREI
+    test-set-get
+    test-hspan-edges
+    test-blit-overlap
+    test-invert-identity
+    test-copy-invert-invert
+    n-fail LOADI 0 = [
+        T"bitmap.lux: all tests passed" VFS::debug-print
+    ] [
+        T"bitmap.lux: FAILURES seen, see above" VFS::debug-print
+    ] ?:
+;
+
+main

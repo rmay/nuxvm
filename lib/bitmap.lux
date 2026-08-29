@@ -1,0 +1,252 @@
+( Packed 1bpp bitmap page primitives, shared by CANVAS / UNDO / SEL_MASK / SEL_BITS /
+  SCRATCH. Every word takes a caller-supplied `base` address so one implementation
+  serves all page-shaped buffers. Rows are MSB-first: bit 7 of a byte is the
+  leftmost pixel; within a 32-bit word (4 big-endian bytes), word-bit 31 is the
+  leftmost pixel of that word and word-bit 0 is the rightmost. )
+
+INCLUDE "lib/core.lux"
+
+MODULE BITMAP
+
+@ROW_BYTES   72 ;
+@PAGE_W     576 ;
+@PAGE_H     720 ;
+@PAGE_BYTES 51840 ;
+
+@BLIT_SRC    0 ; ( dst := src )
+@BLIT_OR     1 ; ( dst |= src )
+@BLIT_XOR    2 ; ( dst ^= src )
+@BLIT_MASKED 3 ; ( dst &= src -- clip dst to src's shape )
+
+( --- single pixel --- )
+
+@addr { base x y -- addr }
+    base y ROW_BYTES * + x 8 / +
+;
+
+@mask { x -- m }
+    128 x 7 AND RSHIFT
+;
+
+@get { base x y -- bit }
+    base x y addr load-byte
+    x mask AND 0 = [ 0 ] [ 1 ] ?:
+;
+
+@set { base x y bit -- }
+    base x y addr { a }
+        a load-byte { byte }
+            bit 0 = [
+                byte x mask NOT AND
+            ] [
+                byte x mask OR
+            ] ?:
+            a store-byte
+        }
+    }
+;
+
+( --- whole 32-bit words (4 bytes = 32 pixels), wx is the word index within the row --- )
+
+@word@ { base wx y -- w }
+    base y ROW_BYTES * + wx 4 * + LOADI
+;
+
+@word! { base wx y w -- }
+    w base y ROW_BYTES * + wx 4 * + STOREI
+;
+
+( q = v / 32, r = v mod 32 )
+@qr32 { v -- q r }
+    v 32 / v 31 AND
+;
+
+( Word-bit mask selecting pixel columns [bo0..bo1] of word `wx`, given the span's
+  first word index `wx0`/first bit-offset `bo0` and last word index `wx1`/last
+  bit-offset `bo1`. Interior words (wx != wx0 and wx != wx1) are fully selected. )
+@span-mask { wx wx0 wx1 bo0 bo1 -- mask }
+    wx wx0 = [
+        0xFFFFFFFF bo0 RSHIFT { left }
+            wx wx1 = [
+                left 0xFFFFFFFF 31 bo1 - LSHIFT AND
+            ] [
+                left
+            ] ?:
+        }
+    ] [
+        wx wx1 = [
+            0xFFFFFFFF 31 bo1 - LSHIFT
+        ] [
+            0xFFFFFFFF
+        ] ?:
+    ] ?:
+;
+
+( Set n consecutive pixels starting at (x,y) to `bit` (0 or 1), word-at-a-time. )
+@hspan { base x y n bit -- }
+    n 0 >
+    [
+        x { x0 }
+            x0 n + 1 - { xlast }
+                x0 qr32 { wx0 bo0 }
+                    xlast qr32 { wx1 bo1 }
+                        wx0 { wx }
+                            [ wx wx1 <= ]
+                            [
+                                base wx y
+                                base wx y word@
+                                bit 0 = [
+                                    wx wx0 wx1 bo0 bo1 span-mask NOT AND
+                                ] [
+                                    wx wx0 wx1 bo0 bo1 span-mask OR
+                                ] ?:
+                                word!
+                                wx 1 + wx!
+                            ] |:
+                        }
+                    }
+                }
+            }
+        }
+    ] ?
+;
+
+( One 32-bit word built from 4 repeats of pattern row `py mod 8`'s byte at
+  `pat-addr` (8 bytes, one per row, same MSB-first bit order as the page). A
+  word-aligned span is always exactly this, since 32 (word width) is a
+  multiple of 8 (pattern width), so no x-phase shift is needed. )
+@pat-word { pat-addr py -- fullpat }
+    pat-addr py 7 AND + load-byte { prow }
+        prow 24 LSHIFT prow 16 LSHIFT OR prow 8 LSHIFT OR prow OR
+    }
+;
+
+( Paint n consecutive pixels starting at (x,y) from the 8x8 pattern described
+  by pat-word above. )
+@hspan-pat { base x y n pat-addr py -- }
+    n 0 > [
+        pat-addr py pat-word { fullpat }
+            x { x0 }
+                x0 n + 1 - { xlast }
+                    x0 qr32 { wx0 bo0 }
+                        xlast qr32 { wx1 bo1 }
+                            wx0 { wx }
+                                [ wx wx1 <= ]
+                                [
+                                    base wx y
+                                    base wx y word@ wx wx0 wx1 bo0 bo1 span-mask NOT AND
+                                    fullpat wx wx0 wx1 bo0 bo1 span-mask AND
+                                    OR
+                                    word!
+                                    wx 1 + wx!
+                                ] |:
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    ] ?
+;
+
+( --- whole-page operations --- )
+
+@fill { base bit -- }
+    bit 0 = [ 0 ] [ 0xFFFFFFFF ] ?: { w }
+        base { p }
+            base PAGE_BYTES + { end }
+                [ p end < ]
+                [
+                    w p STOREI
+                    p 4 + p!
+                ] |:
+            }
+        }
+    }
+;
+
+@clear { base -- }
+    base 0 fill
+;
+
+@copy { src dst -- }
+    src { s }
+        dst { d }
+            dst PAGE_BYTES + { end }
+                [ d end < ]
+                [
+                    s LOADI d STOREI
+                    s 4 + s!
+                    d 4 + d!
+                ] |:
+            }
+        }
+    }
+;
+
+@invert { base -- }
+    base { p }
+        base PAGE_BYTES + { end }
+            [ p end < ]
+            [
+                p LOADI 0xFFFFFFFF XOR p STOREI
+                p 4 + p!
+            ] |:
+        }
+    }
+;
+
+( --- rectangular blit, overlap-safe (like memmove) when src = dst --- )
+
+@blit-px { src sx sy dst dx dy op -- }
+    src sx sy get { sv }
+        op BLIT_SRC = [
+            dst dx dy sv set
+        ] [
+            dst dx dy get { dv }
+                op BLIT_OR = [ dv sv OR ] [
+                op BLIT_XOR = [ dv sv XOR ] [
+                    dv sv AND
+                ] ?: ] ?: { nv }
+                    dst dx dy nv set
+                }
+            }
+        ] ?:
+    }
+;
+
+@blit { src sx sy dst dx dy w h op -- }
+    w 0 > h 0 > AND [
+        dy sy > dy sy = dx sx > AND OR src dst = AND { reverse }
+            reverse [
+                h 1 - { row }
+                    [ row 0 >= ]
+                    [
+                        w 1 - { col }
+                            [ col 0 >= ]
+                            [
+                                src sx col + sy row + dst dx col + dy row + op blit-px
+                                col 1 - col!
+                            ] |:
+                        }
+                        row 1 - row!
+                    ] |:
+                }
+            ] [
+                0 { row }
+                    [ row h < ]
+                    [
+                        0 { col }
+                            [ col w < ]
+                            [
+                                src sx col + sy row + dst dx col + dy row + op blit-px
+                                col 1 + col!
+                            ] |:
+                        }
+                        row 1 + row!
+                    ] |:
+                }
+            ] ?:
+        }
+    ] ?
+;
