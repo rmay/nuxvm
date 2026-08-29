@@ -14,6 +14,63 @@ MODULE DRAW
 @ST_FONT   0x8F8010 ;
 @WIDTHS    0x8F8100 ;
 
+( --- /dev/draw command batching: accumulate into BATCH_BUF and flush with one
+  VFS::write instead of one write per command. Off by default; existing callers
+  are unaffected until batch-begin is called. `send` (not `emit` -- that token
+  is hardcoded by the compiler to always mean char-output, shadowing any word
+  definition of that name) is the shared tail every packer word calls. )
+@BATCH_BUF     0x8F1000 ; ( 8KB accumulation buffer, clear of BUF/ST_*/WIDTHS )
+@BATCH_CAP     8192 ;
+@ST_BATCH_ON   0x8F8200 ;
+@ST_BATCH_FD   0x8F8204 ;
+@ST_BATCH_LEN  0x8F8208 ;
+
+@copy-bytes { src dst len -- }
+    0 { i }
+        [ i len < ]
+        [
+            src i + load-byte dst i + store-byte
+            i 1 + i!
+        ] |:
+    }
+;
+
+@batch-on? ( -- f )
+    ST_BATCH_ON LOADI
+;
+
+@batch-begin ( fd -- )
+    1 frame!
+    1 ST_BATCH_ON STOREI
+    0 local@ ST_BATCH_FD STOREI
+    0 ST_BATCH_LEN STOREI
+    1 unframe!
+;
+
+@batch-flush ( -- )
+    batch-on? [
+        ST_BATCH_LEN LOADI 0 > [
+            ST_BATCH_FD LOADI BATCH_BUF ST_BATCH_LEN LOADI VFS::write drop
+        ] ?
+        0 ST_BATCH_LEN STOREI
+    ] ?
+;
+
+( Send the `len` bytes already packed into BUF, either straight to /dev/draw or
+  appended to the pending batch. `fd` is unused when batching (the batch's fd
+  was captured by batch-begin) but kept in the signature so call sites don't
+  need to change shape between batched and direct writes. )
+@send { fd len -- }
+    batch-on? len BATCH_CAP <= AND [
+        ST_BATCH_LEN LOADI len + BATCH_CAP > [ batch-flush ] ?
+        BUF BATCH_BUF ST_BATCH_LEN LOADI + len copy-bytes
+        ST_BATCH_LEN LOADI len + ST_BATCH_LEN STOREI
+    ] [
+        batch-on? [ batch-flush ] ?
+        fd BUF len VFS::write drop
+    ] ?:
+;
+
 @store-word-le ( val addr -- )
     2 frame!
     1 local@ 255 AND 0 local@ store-byte
@@ -46,7 +103,7 @@ MODULE DRAW
     2 local@ BUF 7 + store-word-le
     1 local@ BUF 9 + store-int-le
     0 local@ BUF 13 + store-byte
-    6 local@ BUF 14 VFS::write drop
+    6 local@ 14 send
     7 unframe!
 ;
 
@@ -60,8 +117,8 @@ MODULE DRAW
     1 local@ BUF 7 + store-word-le
     0 local@ BUF 9 + store-int-le
     
-    5 local@ BUF 13 VFS::write drop ( 1 type + 8 coords + 4 color = 13 bytes )
-    
+    5 local@ 13 send ( 1 type + 8 coords + 4 color = 13 bytes )
+
     6 unframe!
 ;
 
@@ -75,7 +132,7 @@ MODULE DRAW
     1 local@ BUF 7 + store-word-le
     0 local@ BUF 9 + store-int-le
 
-    5 local@ BUF 13 VFS::write drop ( 1 type + 8 coords + 4 color = 13 bytes )
+    5 local@ 13 send ( 1 type + 8 coords + 4 color = 13 bytes )
 
     6 unframe!
 ;
@@ -91,7 +148,7 @@ MODULE DRAW
     1 local@ BUF 6 + store-int-le
     0 local@ BUF 10 + store-byte
 
-    5 local@ BUF 11 VFS::write drop ( 1 type + 4 coords + 1 char + 4 color + 1 scale = 11 bytes )
+    5 local@ 11 send ( 1 type + 4 coords + 1 char + 4 color + 1 scale = 11 bytes )
 
     6 unframe!
 ;
@@ -120,7 +177,7 @@ MODULE DRAW
     ] |:
     drop
 
-    6 local@ BUF 12 2 local@ + VFS::write drop
+    6 local@ 12 2 local@ + send
 
     7 unframe!
 ;
@@ -156,6 +213,7 @@ MODULE DRAW
 
 @begin-frame ( fd -- )
     1 frame!
+    batch-on? [ batch-flush ] ?
     6 BUF store-byte
     0 local@ BUF 1 VFS::write drop
     1 unframe!
@@ -163,6 +221,7 @@ MODULE DRAW
 
 @end-frame ( fd -- )
     1 frame!
+    batch-on? [ batch-flush ] ?
     7 BUF store-byte
     0 local@ BUF 1 VFS::write drop
     1 unframe!
