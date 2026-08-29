@@ -1,7 +1,7 @@
 ( Easel: a MacPaint clone in progress -- see easel_plan.md for the full plan.
   File > New/Open/Save/Save As | Quit, Edit > Undo / Invert / Clear,
-  Goodies > Grid / FatBits. 20-tool palette (10 wired so far), 38 pattern
-  slots (all 38 filled in), pen-width strip driving line/rect/oval
+  Goodies > Grid / FatBits. 20-tool palette (12 wired so far), 38 pattern
+  slots (all 38 filled in), pen-width strip driving line/rect/roundrect/oval
   outline thickness. Canvas is 480x416, 1-bit, in a 560x492 window (geometry
   sized to the tools, not a fixed window size). Save is EAS1.
   ./bin/cloister apps/Easel.bin )
@@ -67,13 +67,14 @@ IMPORT BITMAP
 @WIN_H         PAT_Y PAT_CELL_H PAT_ROWS * + ;
 
 ( Authentic MacPaint tool order, row-major in the 2x10 palette (see
-  easel_plan.md's target layout list). Only PENCIL/ERASER/BRUSH/FILL/LINE/
-  SPRAY/RECT/RECT_FILLED/OVAL/OVAL_FILLED have real behavior so far -- the
-  rest (LASSO/MARQUEE/HAND/TEXT/ROUNDRECT*/FREEFORM*/POLYGON*) are visible,
-  correctly positioned, and inert, pending Steps 5/7/8 and the rest of
-  Step 4's shape work. RECT_FILLED/OVAL_FILLED are their own tool slots, not
-  a filled-f toggle -- see shape-filled? below -- since MacPaint puts filled
-  variants on their own palette buttons rather than a Goodies checkbox. )
+  easel_plan.md's target layout list). PENCIL/ERASER/BRUSH/FILL/LINE/SPRAY/
+  RECT/RECT_FILLED/OVAL/OVAL_FILLED/ROUNDRECT/ROUNDRECT_FILLED have real
+  behavior so far -- the rest (LASSO/MARQUEE/HAND/TEXT/FREEFORM*/POLYGON*)
+  are visible, correctly positioned, and inert, pending Steps 5/7/8 and the
+  rest of Step 4's shape work. RECT_FILLED/OVAL_FILLED/ROUNDRECT_FILLED are
+  their own tool slots, not a filled-f toggle -- see shape-filled? below --
+  since MacPaint puts filled variants on their own palette buttons rather
+  than a Goodies checkbox. )
 @TOOL_LASSO             0 ;
 @TOOL_MARQUEE            1 ;
 @TOOL_HAND               2 ;
@@ -611,6 +612,106 @@ IMPORT BITMAP
                                 h half 2 * + i 2 * - { oh }
                                     ow 1 >= oh 1 >= AND [
                                         ox oy ow oh frame-oval-pix
+                                    ] ?
+                                }
+                            }
+                        }
+                    }
+                    i 1 + i!
+                ] |:
+            }
+        }
+    ] ?:
+;
+
+( --- Roundrect: fixed corner radius (capped by half the shorter side),
+  corners built from DRAW::oval-span against a 2r x 2r bounding circle. --- )
+
+@roundrect-r { w h -- r }
+    8 w 2 / MIN h 2 / MIN
+;
+
+@fill-roundrect-pat { x0 y0 x1 y1 -- }
+    x0 y0 x1 y1 canon-xy { minx miny maxx maxy }
+        maxx minx - 1 +
+        maxy miny - 1 +
+        over over roundrect-r
+        { w h r }
+            r 2 * { d }
+                0 { py }
+                    [ py h < ]
+                    [
+                        py r < [
+                            d d py DRAW::oval-span { xoff spanw }
+                                spanw 0 > [
+                                    minx xoff + miny py + w xoff 2 * - hspan-pat
+                                ] ?
+                            }
+                        ] [
+                            py h r - >= [
+                                d d py d + h - DRAW::oval-span { xoff spanw }
+                                    spanw 0 > [
+                                        minx xoff + miny py + w xoff 2 * - hspan-pat
+                                    ] ?
+                                }
+                            ] [
+                                minx miny py + w hspan-pat
+                            ] ?:
+                        ] ?:
+                        py 1 + py!
+                    ] |:
+                }
+            }
+        }
+    }
+;
+
+@frame-roundrect-pix { x0 y0 x1 y1 -- }
+    x0 y0 x1 y1 canon-xy { minx miny maxx maxy }
+        maxx minx - 1 +
+        maxy miny - 1 +
+        over over roundrect-r
+        { w h r }
+            r 2 * { d }
+                minx r + miny w r 2 * - hspan-black
+                minx r + maxy w r 2 * - hspan-black
+                minx miny r + h r 2 * - vspan-black
+                maxx miny r + h r 2 * - vspan-black
+                0 { py }
+                    [ py r < ]
+                    [
+                        d d py DRAW::oval-span { xoff spanw }
+                            spanw 0 > [
+                                1 minx xoff + miny py + pix!
+                                1 maxx xoff - miny py + pix!
+                                1 minx xoff + maxy py - pix!
+                                1 maxx xoff - maxy py - pix!
+                            ] ?
+                        }
+                        py 1 + py!
+                    ] |:
+                }
+            }
+        }
+    }
+;
+
+( Thick roundrect outline: same nested-ring approach as frame-oval-pix-w,
+  growing/shrinking the corner box symmetrically around the original edge. )
+@frame-roundrect-pix-w { x0 y0 x1 y1 pw -- }
+    pw 1 <= [
+        x0 y0 x1 y1 frame-roundrect-pix
+    ] [
+        pw 2 / { half }
+            0 { i }
+                [ i pw < ]
+                [
+                    x0 half - i + { nx0 }
+                        y0 half - i + { ny0 }
+                            x1 half + i - { nx1 }
+                                y1 half + i - { ny1 }
+                                    nx1 nx0 > ny1 ny0 > AND [
+                                        nx0 ny0 nx1 ny1 frame-roundrect-pix
                                     ] ?
                                 }
                             }
@@ -1212,6 +1313,12 @@ IMPORT BITMAP
     i TOOL_OVAL_FILLED = [
         APP::draw-fd x 5 + y 4 + 15 13 color DRAW::paint-oval
     ] [
+    i TOOL_ROUNDRECT = [
+        APP::draw-fd x 6 + y 5 + 13 11 color DRAW::frame-rect
+    ] [
+    i TOOL_ROUNDRECT_FILLED = [
+        APP::draw-fd x 6 + y 5 + 13 11 color DRAW::paint-rect
+    ] [
     i TOOL_SPRAY = [
         APP::draw-fd x 8 + y 6 + color DRAW::pix
         APP::draw-fd x 13 + y 4 + color DRAW::pix
@@ -1222,7 +1329,7 @@ IMPORT BITMAP
         APP::draw-fd x 17 + y 12 + color DRAW::pix
     ] [
         APP::draw-fd x 12 + y 5 + i color 0 DRAW::draw-int
-    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
 ;
 
 @draw-palette ( -- )
@@ -1548,9 +1655,15 @@ IMPORT BITMAP
     tool LOADI TOOL_OVAL_FILLED = OR
 ;
 
+@shape-is-roundrect? ( -- f )
+    tool LOADI TOOL_ROUNDRECT =
+    tool LOADI TOOL_ROUNDRECT_FILLED = OR
+;
+
 @shape-filled? ( -- f )
     tool LOADI TOOL_RECT_FILLED =
     tool LOADI TOOL_OVAL_FILLED = OR
+    tool LOADI TOOL_ROUNDRECT_FILLED = OR
 ;
 
 @commit-shape ( -- )
@@ -1568,9 +1681,13 @@ IMPORT BITMAP
                                     shape-filled? [ minx miny w h fill-oval-pat ] ?
                                     minx miny w h pen-width LOADI lw-value frame-oval-pix-w
                                 ] [
+                                shape-is-roundrect? [
+                                    shape-filled? [ minx miny maxx maxy fill-roundrect-pat ] ?
+                                    minx miny maxx maxy pen-width LOADI lw-value frame-roundrect-pix-w
+                                ] [
                                     shape-filled? [ minx miny maxx maxy fill-rect-pat ] ?
                                     minx miny maxx maxy pen-width LOADI lw-value frame-rect-pix-w
-                                ] ?:
+                                ] ?: ] ?:
                             }
                         }
                     }
@@ -1607,17 +1724,20 @@ IMPORT BITMAP
     tool LOADI TOOL_RECT_FILLED = OR
     tool LOADI TOOL_OVAL = OR
     tool LOADI TOOL_OVAL_FILLED = OR
+    tool LOADI TOOL_ROUNDRECT = OR
+    tool LOADI TOOL_ROUNDRECT_FILLED = OR
 ;
 
-( Gates hit-tool's palette clicks: LASSO/MARQUEE/HAND/TEXT/ROUNDRECT*/
-  FREEFORM*/POLYGON* are visible in the palette but not wired to anything
-  yet, so clicking them is a no-op rather than leaving `tool` pointing at a
-  slot nothing else recognizes. )
+( Gates hit-tool's palette clicks: LASSO/MARQUEE/HAND/TEXT/FREEFORM*/
+  POLYGON* are visible in the palette but not wired to anything yet, so
+  clicking them is a no-op rather than leaving `tool` pointing at a slot
+  nothing else recognizes. )
 @tool-implemented? { t -- f }
     t TOOL_FILL = t TOOL_SPRAY = OR t TOOL_BRUSH = OR t TOOL_PENCIL = OR
     t TOOL_LINE = OR t TOOL_ERASER = OR
     t TOOL_RECT = OR t TOOL_RECT_FILLED = OR
     t TOOL_OVAL = OR t TOOL_OVAL_FILLED = OR
+    t TOOL_ROUNDRECT = OR t TOOL_ROUNDRECT_FILLED = OR
 ;
 
 @page-down { mx my -- }
