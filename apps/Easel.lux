@@ -1,11 +1,12 @@
 ( Easel: a MacPaint clone in progress -- see easel_plan.md for the full plan.
   File > New/Open/Save/Save As | Quit, Edit > Undo / Cut / Copy / Paste /
   Invert / Clear / Fill / Trace Edges / Flip H / Flip V / Rotate 90,
-  Goodies > Grid / FatBits / Edit Pattern / Brush Shape. 20-tool palette (14
-  wired so far, including Marquee/Lasso selection), 38 pattern slots (all
-  filled in), 32 preset brush shapes (double-click the Brush tool, or
-  Goodies > Brush Shape...), pen-width strip driving line/rect/roundrect/
-  oval outline thickness. Canvas is 480x416, 1-bit, in a 560x492 window
+  Goodies > Grid / FatBits / Edit Pattern / Brush Shape. 20-tool palette (18
+  wired so far, including Marquee/Lasso selection and Freeform/Polygon --
+  only Hand and Text remain), 38 pattern slots (all filled in), 32 preset
+  brush shapes (double-click the Brush tool, or Goodies > Brush Shape...),
+  pen-width strip driving line/rect/roundrect/oval/freeform/polygon outline
+  thickness. Canvas is 480x416, 1-bit, in a 560x492 window
   (geometry sized to the tools, not a
   fixed window size). Save is EAS1.
   ./bin/cloister apps/Easel.bin )
@@ -108,6 +109,7 @@ IMPORT TIME
 @DRAG_MARQUEE    3 ; ( rubber-banding out a new marquee selection )
 @DRAG_MOVE       4 ; ( dragging an already-lifted selection to a new spot )
 @DRAG_LASSO      5 ; ( freehand-tracing a lasso path )
+@DRAG_FREEFORM   6 ; ( freehand-tracing a freeform shape; commits straight to CANVAS )
 
 @MODE_BLACK      0 ;
 @MODE_WHITE      1 ;
@@ -240,6 +242,11 @@ IMPORT TIME
 @lasso-maxy        0x8A00B8 ;
 @lasso-start-cx    0x8A00BC ; ( first point of the path, to close the loop on mouse-up )
 @lasso-start-cy    0x8A00C0 ;
+@poly-active       0x8A00C4 ; ( 0/1: polygon vertex-collection in progress )
+@poly-n            0x8A00C8 ; ( vertices placed so far, into POLY_VERTS )
+@poly-last-time    0x8A00CC ; ( last vertex click, for double-click-to-close )
+@poly-hover-cx     0x8A00D0 ; ( live cursor position, for the rubber-band preview segment )
+@poly-hover-cy     0x8A00D4 ;
 
 ( Explicit damage bits, replacing the old single pat-full flag (whose narrow
   meaning -- "must draw-patterns redraw all swatches" -- was the exact bug: a
@@ -328,8 +335,13 @@ IMPORT TIME
     0 = [ 0 ] [ 1 ] ?:
 ;
 
+( pat-bit consumes its own x/y off the stack, leaving nothing for pix! to
+  reuse -- bind the result to a local first so pix!'s {v x y} gets pushed in
+  its own declared order, rather than landing on x/y left over underneath. )
 @plot-pat { x y -- }
-    x y x y pat-bit pix!
+    x y pat-bit { bit }
+        bit x y pix!
+    UNGIRD
 ;
 
 @plot-black { x y -- } 1 x y pix! ;
@@ -1700,6 +1712,8 @@ IMPORT TIME
 
 @lasso-plot { x y -- } SEL_MASK x y 1 BITMAP::set ;
 
+@POLY_MAX 256 ; ( sanity cap on how many vertices a polygon can grow to )
+
 ( 1px Bresenham into SEL_MASK, mirroring stroke-to but plotting into the
   selection mask instead of CANVAS. clip-can already clamps every mouse
   position to canvas bounds before this is called, and SEL_MASK's page
@@ -1731,13 +1745,13 @@ IMPORT TIME
     UNGIRD
 ;
 
-( On mouse-up: scanline-fill the traced outline's interior (even-odd rule,
-  one toggle per contiguous run of outline pixels on a row rather than per
-  pixel, so a 1px-thick traced line doesn't double-toggle), then shrink the
-  selection to the tight bbox of actual CANVAS ink inside the filled mask
-  -- falling back to the full lasso bbox if the loop enclosed no ink, so a
-  selection is never silently dropped. )
-@lasso-finish ( -- )
+( Scanline-fill the traced outline's interior, in place, within the running
+  lasso-min/max bbox (even-odd rule, one toggle per contiguous run of outline
+  pixels on a row rather than per pixel, so a 1px-thick traced line doesn't
+  double-toggle). Shared by lasso-finish (selection) and the freeform/polygon
+  tools (straight into CANVAS via commit-traced) -- both trace into SEL_MASK
+  the same way via lasso-plot/lasso-line. )
+@mask-scanfill ( -- )
     lasso-miny LOADI { y }
         [ y lasso-maxy LOADI <= ]
         [
@@ -1763,6 +1777,14 @@ IMPORT TIME
             y 1 + y!
         ] |:
     UNGIRD
+;
+
+( On mouse-up: fill the mask's interior, then shrink the selection to the
+  tight bbox of actual CANVAS ink inside it -- falling back to the full
+  lasso bbox if the loop enclosed no ink, so a selection is never silently
+  dropped. )
+@lasso-finish ( -- )
+    mask-scanfill
     0 { found }
         CANVAS_W { minx }
             -1 { maxx }
@@ -1825,6 +1847,34 @@ IMPORT TIME
             y 1 + y!
         ] |:
     UNGIRD
+;
+
+( --- Freeform / polygon (Step 4): trace into SEL_MASK exactly like the
+  lasso (lasso-plot/lasso-line/lasso-min/maxx/y, mask-scanfill), but the
+  outline is also stroked straight into CANVAS as it's traced -- so it
+  behaves like a freehand pencil stroke rather than a selection -- and on
+  close, a filled variant additionally fills the interior with the current
+  pattern. Nothing here creates a selection; sel-mask-clear at the end
+  always leaves SEL_MASK ready for the next lasso or traced shape. )
+@commit-traced ( -- )
+    traced-filled? [
+        mask-scanfill
+        lasso-miny LOADI { y }
+            [ y lasso-maxy LOADI <= ]
+            [
+                lasso-minx LOADI { x }
+                    [ x lasso-maxx LOADI <= ]
+                    [
+                        SEL_MASK x y BITMAP::get 0 > [ x y plot-pat ] ?
+                        x 1 + x!
+                    ] |:
+                UNGIRD
+                y 1 + y!
+            ] |:
+        UNGIRD
+    ] ?
+    sel-mask-clear
+    mark-dirty
 ;
 
 ( FatBits isn't wired up to selection coordinates yet, so the overlay is
@@ -2428,9 +2478,9 @@ IMPORT TIME
 
 ( --- Draw --- )
 
-( Tools with real behavior get a proper icon; the ten not yet implemented
-  (Steps 5/7/8 and the rest of Step 4) get their index number so the
-  palette is legible without pretending they work. )
+( Tools with real behavior get a proper icon; Hand and Text (Steps 7/8, not
+  yet implemented) get their index number so the palette is legible without
+  pretending they work. )
 @draw-tool-icon { i x y color -- }
     i TOOL_LASSO = [
         APP::draw-fd x 6 + y 6 + 12 8 color DRAW::frame-oval
@@ -2483,8 +2533,26 @@ IMPORT TIME
         APP::draw-fd x 14 + y 15 + color DRAW::pix
         APP::draw-fd x 17 + y 12 + color DRAW::pix
     ] [
+    i TOOL_FREEFORM = i TOOL_FREEFORM_FILLED = OR [
+        APP::draw-fd x 5 + y 14 + x 10 + y 6 + color DRAW::line
+        APP::draw-fd x 10 + y 6 + x 15 + y 15 + color DRAW::line
+        APP::draw-fd x 15 + y 15 + x 5 + y 14 + color DRAW::line
+        i TOOL_FREEFORM_FILLED = [
+            APP::draw-fd x 8 + y 6 + x 15 + y 12 + 5 3 color DRAW::paint-oval
+        ] ?
+    ] [
+    i TOOL_POLYGON = i TOOL_POLYGON_FILLED = OR [
+        APP::draw-fd x 11 + y 4 + x 18 + y 9 + color DRAW::line
+        APP::draw-fd x 18 + y 9 + x 15 + y 16 + color DRAW::line
+        APP::draw-fd x 15 + y 16 + x 7 + y 16 + color DRAW::line
+        APP::draw-fd x 7 + y 16 + x 4 + y 9 + color DRAW::line
+        APP::draw-fd x 4 + y 9 + x 11 + y 4 + color DRAW::line
+        i TOOL_POLYGON_FILLED = [
+            APP::draw-fd x 8 + y 8 + 8 6 color DRAW::fill-rect
+        ] ?
+    ] [
         APP::draw-fd x 12 + y 5 + i color 0 DRAW::draw-int
-    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
 ;
 
 @draw-palette ( -- )
@@ -2771,6 +2839,15 @@ IMPORT TIME
             UNGIRD
         UNGIRD
     ] ?
+    ( polygon's committed edges are already real CANVAS pixels; only the
+      tentative last-vertex-to-cursor segment is preview-only. )
+    poly-active LOADI [
+        last-cx LOADI last-cy LOADI can>scr { x0 y0 }
+            poly-hover-cx LOADI poly-hover-cy LOADI can>scr { x1 y1 }
+                APP::draw-fd x0 y0 x1 y1 CLR_FG DRAW::line
+            UNGIRD
+        UNGIRD
+    ] ?
 ;
 
 ( The rule that fixes bug 1 (swatches vanishing): the blanket background wipe
@@ -2886,10 +2963,21 @@ IMPORT TIME
     tool LOADI TOOL_ROUNDRECT_FILLED = OR
 ;
 
-( Gates hit-tool's palette clicks: HAND/TEXT/FREEFORM*/POLYGON* are
-  visible in the palette but not wired to anything yet, so clicking them
-  is a no-op rather than leaving `tool` pointing at a slot
-  nothing else recognizes. )
+@freeform-tool? ( -- f )
+    tool LOADI TOOL_FREEFORM = tool LOADI TOOL_FREEFORM_FILLED = OR
+;
+
+@polygon-tool? ( -- f )
+    tool LOADI TOOL_POLYGON = tool LOADI TOOL_POLYGON_FILLED = OR
+;
+
+@traced-filled? ( -- f )
+    tool LOADI TOOL_FREEFORM_FILLED = tool LOADI TOOL_POLYGON_FILLED = OR
+;
+
+( Gates hit-tool's palette clicks: HAND/TEXT are visible in the palette
+  but not wired to anything yet, so clicking them is a no-op rather than
+  leaving `tool` pointing at a slot nothing else recognizes. )
 @tool-implemented? { t -- f }
     t TOOL_FILL = t TOOL_SPRAY = OR t TOOL_BRUSH = OR t TOOL_PENCIL = OR
     t TOOL_LINE = OR t TOOL_ERASER = OR
@@ -2897,6 +2985,8 @@ IMPORT TIME
     t TOOL_OVAL = OR t TOOL_OVAL_FILLED = OR
     t TOOL_ROUNDRECT = OR t TOOL_ROUNDRECT_FILLED = OR
     t TOOL_MARQUEE = OR t TOOL_LASSO = OR
+    t TOOL_FREEFORM = OR t TOOL_FREEFORM_FILLED = OR
+    t TOOL_POLYGON = OR t TOOL_POLYGON_FILLED = OR
 ;
 
 @page-down { mx my -- }
@@ -2949,6 +3039,74 @@ IMPORT TIME
             ] ?:
             APP::dirty!
         ] [
+        freeform-tool? [
+            snapshot
+            sel-mask-clear
+            cx lasso-start-cx STOREI
+            cy lasso-start-cy STOREI
+            cx lasso-minx STOREI
+            cx lasso-maxx STOREI
+            cy lasso-miny STOREI
+            cy lasso-maxy STOREI
+            cx last-cx STOREI
+            cy last-cy STOREI
+            cx cy lasso-plot
+            1 cx cy pix!
+            DRAG_FREEFORM drag STOREI
+            APP::dirty!
+        ] [
+        polygon-tool? [
+            poly-active LOADI 0 = [
+                snapshot
+                sel-mask-clear
+                1 poly-n STOREI
+                1 poly-active STOREI
+                cx lasso-start-cx STOREI
+                cy lasso-start-cy STOREI
+                cx lasso-minx STOREI
+                cx lasso-maxx STOREI
+                cy lasso-miny STOREI
+                cy lasso-maxy STOREI
+                cx cy lasso-plot
+                1 cx cy pix!
+                cx last-cx STOREI
+                cy last-cy STOREI
+                TIME::milli@ poly-last-time STOREI
+            ] [
+                TIME::milli@ { now }
+                    cx last-cx LOADI - ABS 6 <=
+                    cy last-cy LOADI - ABS 6 <= AND
+                    now poly-last-time LOADI - 400 < AND
+                    poly-n LOADI 2 >= AND
+                    cx lasso-start-cx LOADI - ABS 6 <=
+                    cy lasso-start-cy LOADI - ABS 6 <= AND
+                    poly-n LOADI 3 >= AND
+                    OR [
+                        last-cx LOADI last-cy LOADI lasso-start-cx LOADI lasso-start-cy LOADI lasso-line
+                        last-cx LOADI last-cy LOADI lasso-start-cx LOADI lasso-start-cy LOADI pen-width LOADI lw-value stroke-to-w
+                        commit-traced
+                        0 poly-active STOREI
+                        0 poly-n STOREI
+                    ] [
+                        poly-n LOADI POLY_MAX < [
+                            last-cx LOADI last-cy LOADI cx cy lasso-line
+                            last-cx LOADI last-cy LOADI cx cy pen-width LOADI lw-value stroke-to-w
+                            cx lasso-minx LOADI MIN lasso-minx STOREI
+                            cx lasso-maxx LOADI MAX lasso-maxx STOREI
+                            cy lasso-miny LOADI MIN lasso-miny STOREI
+                            cy lasso-maxy LOADI MAX lasso-maxy STOREI
+                            poly-n LOADI 1 + poly-n STOREI
+                            cx last-cx STOREI
+                            cy last-cy STOREI
+                        ] ?
+                    ] ?:
+                    now poly-last-time STOREI
+                UNGIRD
+            ] ?:
+            cx poly-hover-cx STOREI
+            cy poly-hover-cy STOREI
+            APP::dirty!
+        ] [
         paint-tool? [
             snapshot
             set-plot-mode
@@ -2966,7 +3124,7 @@ IMPORT TIME
             cy shape-y1 STOREI
             DRAG_SHAPE drag STOREI
             APP::dirty!
-        ] ? ] ?: ] ?: ] ?: ] ?:
+        ] ? ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
     UNGIRD
 ;
 
@@ -3004,6 +3162,17 @@ IMPORT TIME
             cy lasso-maxy LOADI MAX lasso-maxy STOREI
             APP::dirty!
         ] ?
+        drag LOADI DRAG_FREEFORM = [
+            last-cx LOADI last-cy LOADI cx cy lasso-line
+            last-cx LOADI last-cy LOADI cx cy pen-width LOADI lw-value stroke-to-w
+            cx last-cx STOREI
+            cy last-cy STOREI
+            cx lasso-minx LOADI MIN lasso-minx STOREI
+            cx lasso-maxx LOADI MAX lasso-maxx STOREI
+            cy lasso-miny LOADI MIN lasso-miny STOREI
+            cy lasso-maxy LOADI MAX lasso-maxy STOREI
+            mark-dirty
+        ] ?
     UNGIRD
 ;
 
@@ -3036,6 +3205,13 @@ IMPORT TIME
                 t tool-implemented? [
                     t TOOL_MARQUEE = t TOOL_LASSO = OR 0 = sel-active LOADI AND [
                         0 sel-active STOREI
+                    ] ?
+                    ( switching tools abandons an in-progress polygon rather than
+                      leaving poly-active stuck with no way to finish it )
+                    t TOOL_POLYGON = t TOOL_POLYGON_FILLED = OR 0 = poly-active LOADI AND [
+                        0 poly-active STOREI
+                        0 poly-n STOREI
+                        sel-mask-clear
                     ] ?
                     t tool STOREI
                     DRAG_NONE drag STOREI
@@ -3088,6 +3264,16 @@ IMPORT TIME
     mpkt EVENT::mouse-type EVENT::MOUSE_MOVE = mouse-held LOADI AND [
         mx my page-drag
     ] ?
+    ( polygon's rubber-band preview tracks the cursor between clicks, while
+      the mouse isn't held -- the only page-drag-style update that needs to
+      run outside a drag. )
+    mpkt EVENT::mouse-type EVENT::MOUSE_MOVE = mouse-held LOADI 0 = AND poly-active LOADI AND [
+        mx my scr>can clip-can { hx hy }
+            hx poly-hover-cx STOREI
+            hy poly-hover-cy STOREI
+        UNGIRD
+        APP::dirty!
+    ] ?
     mpkt EVENT::mouse-type EVENT::MOUSE_UP = [
         0 mouse-held STOREI
         drag LOADI DRAG_SHAPE = [ commit-shape ] ?
@@ -3100,6 +3286,11 @@ IMPORT TIME
             last-cx LOADI last-cy LOADI lasso-start-cx LOADI lasso-start-cy LOADI lasso-line
             lasso-finish
             mark-dirty
+        ] ?
+        drag LOADI DRAG_FREEFORM = [
+            last-cx LOADI last-cy LOADI lasso-start-cx LOADI lasso-start-cy LOADI lasso-line
+            last-cx LOADI last-cy LOADI lasso-start-cx LOADI lasso-start-cy LOADI pen-width LOADI lw-value stroke-to-w
+            commit-traced
         ] ?
         DRAG_NONE drag STOREI
         APP::dirty!

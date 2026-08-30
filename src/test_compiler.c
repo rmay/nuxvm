@@ -3681,6 +3681,150 @@ static void test_easel_trace_edges(void) {
     quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
+/* Freeform tool (Step 4): a right triangle canvas (50,50)-(50,100)-(100,100),
+ * drawn as a single mouse-down/drag/drag/up (screen = canvas + (80,20), the
+ * CANVAS_X/CANVAS_Y offset). The outline variant strokes the path live and
+ * closes it on mouse-up; the interior stays untouched. */
+static void test_easel_freeform_outline(void) {
+    printf("Testing apps/Easel.lux: Freeform tool strokes an outline and closes on mouse-up...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 20, 292); /* Freeform tool (index 16) */
+    quill_lux_pump(m, 20);
+
+    lux_mouse(m, mc, 3, 1, 130, 70);  /* down: canvas (50,50) */
+    lux_mouse(m, mc, 2, 1, 130, 120); /* move: canvas (50,100) */
+    lux_mouse(m, mc, 2, 1, 180, 120); /* move: canvas (100,100) */
+    lux_mouse(m, mc, 4, 1, 180, 120); /* up -- closes the loop back to (50,50) */
+    quill_lux_pump(m, 20);
+
+    uint8_t body[25000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    assert(easel_bit_set(body, n, 50, 75) == 1);   /* on the traced A-B edge */
+    assert(easel_bit_set(body, n, 70, 90) == 0);   /* interior, untouched */
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
+/* Same triangle, Freeform Filled: the interior is painted with the current
+ * pattern (default pattern 1 = solid black) once the loop closes. */
+static void test_easel_freeform_filled(void) {
+    printf("Testing apps/Easel.lux: Freeform Filled tool fills the closed interior...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 60, 292); /* Freeform Filled tool (index 17) */
+    quill_lux_pump(m, 20);
+
+    lux_mouse(m, mc, 3, 1, 130, 70);
+    lux_mouse(m, mc, 2, 1, 130, 120);
+    lux_mouse(m, mc, 2, 1, 180, 120);
+    lux_mouse(m, mc, 4, 1, 180, 120);
+    quill_lux_pump(m, 20);
+
+    uint8_t body[25000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    assert(easel_bit_set(body, n, 70, 90) == 1);   /* interior, now filled */
+    assert(easel_bit_set(body, n, 10, 10) == 0);   /* well outside the triangle */
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
+/* Polygon tool (Step 4): click-to-add-vertex, closing by clicking back on the
+ * first vertex once at least 3 are placed. Triangle canvas (50,50)-(100,50)-
+ * (100,100); closing click lands back on (50,50). Filled variant checked
+ * here since it also exercises the vertex-count-gated close path. */
+static void test_easel_polygon_filled(void) {
+    printf("Testing apps/Easel.lux: Polygon tool closes on click-near-start and fills...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 60, 324); /* Polygon Filled tool (index 19) */
+    quill_lux_pump(m, 20);
+
+    quill_lux_click(m, mc, 130, 70);  /* vertex 0: canvas (50,50) */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 180, 70);  /* vertex 1: canvas (100,50) */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 180, 120); /* vertex 2: canvas (100,100) */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 130, 70);  /* click back on vertex 0 -- closes */
+    quill_lux_pump(m, 20);
+
+    uint8_t body[25000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    assert(easel_bit_set(body, n, 83, 67) == 1);   /* triangle centroid, filled */
+    assert(easel_bit_set(body, n, 10, 10) == 0);   /* well outside the triangle */
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
+/* Same tool, but closing via a double-click on the last-placed vertex
+ * instead of clicking back near the first one -- the other half of the
+ * close condition in the "already active" polygon branch -- and the
+ * unfilled variant, so only the traced edges should be black. */
+static void test_easel_polygon_outline_double_click_close(void) {
+    printf("Testing apps/Easel.lux: Polygon tool closes on a double-click and strokes only the outline...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 20, 324); /* Polygon tool, unfilled (index 18) */
+    quill_lux_pump(m, 20);
+
+    quill_lux_click(m, mc, 130, 70);  /* vertex 0: canvas (50,50) */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 180, 70);  /* vertex 1: canvas (100,50) */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 180, 120); /* vertex 2: canvas (100,100) */
+    quill_lux_pump(m, 5);
+    quill_lux_click(m, mc, 180, 120); /* double-click on vertex 2 -- closes back to vertex 0 */
+    quill_lux_pump(m, 20);
+
+    uint8_t body[25000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    assert(easel_bit_set(body, n, 75, 75) == 1);   /* midpoint of the v2->v0 closing edge */
+    assert(easel_bit_set(body, n, 83, 67) == 0);   /* triangle centroid, unfilled */
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
 // -----------------------------------------------------------------------------
 // main
 // -----------------------------------------------------------------------------
@@ -3782,6 +3926,10 @@ int main(void) {
     test_easel_rotate90();
     test_easel_fill();
     test_easel_trace_edges();
+    test_easel_freeform_outline();
+    test_easel_freeform_filled();
+    test_easel_polygon_filled();
+    test_easel_polygon_outline_double_click_close();
 
     printf("\n=== ALL COMPILER TESTS PASSED ===\n\n");
     return 0;
