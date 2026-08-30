@@ -3825,6 +3825,68 @@ static void test_easel_polygon_outline_double_click_close(void) {
     quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
+static int easel_any_bit_in_rect(const uint8_t* body, int n, int x0, int y0, int x1, int y1) {
+    for (int y = y0; y <= y1; y++) {
+        for (int x = x0; x <= x1; x++) {
+            if (easel_bit_set(body, n, x, y) == 1) return 1;
+        }
+    }
+    return 0;
+}
+
+/* Text tool (Step 7): click to place a caret, type a couple of characters
+ * (floating -- drawn to the framebuffer only, not yet part of CANVAS),
+ * then switch tools, which commits the block by rasterizing it through
+ * CFF::pixel@ into CANVAS. */
+static void test_easel_text_tool(void) {
+    printf("Testing apps/Easel.lux: Text tool types a caption and commits it on tool switch...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 60, 68);   /* Text tool (index 3) */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 180, 120); /* caret at canvas (100,100) */
+    quill_lux_pump(m, 20);
+
+    quill_lux_key(m, kc, 'h', 0);
+    quill_lux_pump(m, 10);
+    quill_lux_key(m, kc, 'i', 0);
+    quill_lux_pump(m, 10);
+
+    /* Nothing committed to CANVAS yet -- still floating. */
+    quill_lux_key(m, kc, 's', 8); /* Cmd+S */
+    int n0 = pump_until_file(m, "untitled.eas", 24968, 2000);
+    assert(n0 == 24968);
+    uint8_t body0[25000];
+    n0 = lux_file_read("/sys/file/untitled.eas", body0, (int) sizeof(body0));
+    assert(n0 == 24968);
+    assert(easel_any_bit_in_rect(body0, n0, 100, 100, 140, 116) == 0);
+
+    /* Both saves write a fixed 24968-byte EAS1 file, so pump_until_file's
+     * size check can't tell "still the old save" from "the new one landed" --
+     * remove it first so the next save is unambiguously fresh. */
+    remove("untitled.eas");
+
+    quill_lux_click(m, mc, 60, 132);  /* Pencil tool (index 7) -- commits the text */
+    quill_lux_pump(m, 20);
+
+    uint8_t body[25000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    assert(easel_any_bit_in_rect(body, n, 100, 100, 140, 116) == 1);   /* "hi" landed */
+    assert(easel_any_bit_in_rect(body, n, 0, 0, 50, 50) == 0);         /* elsewhere untouched */
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
 // -----------------------------------------------------------------------------
 // main
 // -----------------------------------------------------------------------------
@@ -3930,6 +3992,7 @@ int main(void) {
     test_easel_freeform_filled();
     test_easel_polygon_filled();
     test_easel_polygon_outline_double_click_close();
+    test_easel_text_tool();
 
     printf("\n=== ALL COMPILER TESTS PASSED ===\n\n");
     return 0;

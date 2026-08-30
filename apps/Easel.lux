@@ -1,9 +1,10 @@
 ( Easel: a MacPaint clone in progress -- see easel_plan.md for the full plan.
   File > New/Open/Save/Save As | Quit, Edit > Undo / Cut / Copy / Paste /
   Invert / Clear / Fill / Trace Edges / Flip H / Flip V / Rotate 90,
-  Goodies > Grid / FatBits / Edit Pattern / Brush Shape. 20-tool palette (18
-  wired so far, including Marquee/Lasso selection and Freeform/Polygon --
-  only Hand and Text remain), 38 pattern slots (all filled in), 32 preset
+  Goodies > Grid / FatBits / Edit Pattern / Brush Shape. 20-tool palette (19
+  wired so far, including Marquee/Lasso selection, Freeform/Polygon, and a
+  single-font Text tool -- only Hand remains, since it needs a scrollable
+  page Step 8 hasn't built yet), 38 pattern slots (all filled in), 32 preset
   brush shapes (double-click the Brush tool, or Goodies > Brush Shape...),
   pen-width strip driving line/rect/roundrect/oval/freeform/polygon outline
   thickness. Canvas is 480x416, 1-bit, in a 560x492 window
@@ -19,6 +20,7 @@ INCLUDE "lib/sf.lux"
 INCLUDE "lib/geom.lux"
 INCLUDE "lib/bitmap.lux"
 INCLUDE "lib/time.lux"
+INCLUDE "lib/cff.lux"
 
 MODULE MAIN
 VERSION 500000
@@ -33,6 +35,7 @@ IMPORT SF
 IMPORT GEOM
 IMPORT BITMAP
 IMPORT TIME
+IMPORT CFF
 
 ( --- Geometry: sized for the full 20-tool / 38-pattern layout to be
   comfortable at its own natural size, then the window fits that -- not the
@@ -191,6 +194,10 @@ IMPORT TIME
 @SNARF_BUF     0x9A0000 ; ( EASS clipboard payload; max real selection is ~24968 bytes, well
                             under SYS_SNARF_MAX (include/system.h) for the current canvas size )
 @SNARF_CAP     0x8000 ;
+@FONT          0x9A8000 ; ( Chicago system font, a CFF_LEN_UF2 (16x16-tile) blob loaded at start )
+@TEXT_BUF      0x9AA200 ; ( source bytes of the in-progress floating text block, up to TEXT_MAX;
+                            a newline byte (10) marks a Return rather than a glyph )
+@TEXT_MAX          2048 ;
 
 ( --- Small state (MM_APP_SMALL_STATE) --- )
 @tool              0x8A0000 ;
@@ -247,6 +254,10 @@ IMPORT TIME
 @poly-last-time    0x8A00CC ; ( last vertex click, for double-click-to-close )
 @poly-hover-cx     0x8A00D0 ; ( live cursor position, for the rubber-band preview segment )
 @poly-hover-cy     0x8A00D4 ;
+@text-active       0x8A00D8 ; ( 0/1: a floating, uncommitted text block is being edited )
+@text-x0           0x8A00DC ; ( insertion origin -- left edge of line 1 )
+@text-y0           0x8A00E0 ;
+@text-len          0x8A00E4 ; ( bytes used in TEXT_BUF; a newline byte (10) starts a new line )
 
 ( Explicit damage bits, replacing the old single pat-full flag (whose narrow
   meaning -- "must draw-patterns redraw all swatches" -- was the exact bug: a
@@ -551,6 +562,22 @@ IMPORT TIME
     20 0 adiag-mask    21 1 adiag-mask    22 2 adiag-mask    23 3 adiag-mask
     24 3 ring-mask     25 5 ring-mask     26 7 ring-mask     27 8 ring-mask
     28 3 1 cross-mask  29 5 1 cross-mask  30 7 2 cross-mask  31 8 2 cross-mask
+;
+
+( --- Text (Step 7): a single system font, Chicago, at its native 16x16
+  tile size -- no Font/Size/Style menu yet. /dev/draw's DrawCFFGlyph paints
+  the framebuffer directly, not a guest bitmap, so a committed text block
+  has to be rasterized pixel-by-pixel through CFF::pixel@ + pix! (see
+  text-commit); the live, uncommitted block is drawn straight to the
+  framebuffer each frame instead (draw-text-live), matching every other
+  drag preview in this file. )
+@load-font ( -- )
+    T"/sys/font/chicago" VFS::open { fd }
+        fd 0 >= [
+            fd FONT CFF::LEN16 VFS::read drop
+            fd VFS::close drop
+        ] ?
+    UNGIRD
 ;
 
 @brush-at { cx cy -- }
@@ -1877,6 +1904,116 @@ IMPORT TIME
     mark-dirty
 ;
 
+( Appends one key to the floating text block: Backspace trims a byte
+  (including a trailing newline, so Backspace un-does a Return too),
+  Return records a line break, anything else STR::printable? is appended
+  as-is -- Shift/case is already folded into the raw key by the host, same
+  as every other typed-character consumer in this codebase (Quill's
+  type-char). )
+@text-key { key -- }
+    key EVENT::KEY_BACKSPACE = [
+        text-len LOADI 0 > [
+            text-len LOADI 1 - text-len STOREI
+        ] ?
+    ] [
+    key EVENT::KEY_ENTER = [
+        text-len LOADI TEXT_MAX < [
+            10 TEXT_BUF text-len LOADI + store-byte
+            text-len LOADI 1 + text-len STOREI
+        ] ?
+    ] [
+    key STR::printable? text-len LOADI TEXT_MAX < AND [
+        key TEXT_BUF text-len LOADI + store-byte
+        text-len LOADI 1 + text-len STOREI
+    ] ?
+    ] ?: ] ?:
+    APP::dirty!
+;
+
+( Rasterizes the floating text block into CANVAS one glyph at a time via
+  CFF::pixel@ -- DrawCFFGlyph only paints the framebuffer, not a guest
+  bitmap (see the module comment above), so this is the only way text ever
+  actually lands on the page. )
+@text-commit ( -- )
+    text-active LOADI [
+        snapshot
+        FONT 16 CFF::use
+        text-x0 LOADI { ox }
+            text-x0 LOADI { cx }
+                text-y0 LOADI { cy }
+                    0 { i }
+                        [ i text-len LOADI < ]
+                        [
+                            TEXT_BUF i + load-byte { ch }
+                                ch 10 = [
+                                    ox cx!
+                                    cy 16 + cy!
+                                ] [
+                                    0 { gy }
+                                        [ gy 16 < ]
+                                        [
+                                            0 { gx }
+                                                [ gx 16 < ]
+                                                [
+                                                    ch gx gy CFF::pixel@ 0 > [
+                                                        1 cx gx + cy gy + pix!
+                                                    ] ?
+                                                    gx 1 + gx!
+                                                ] |:
+                                            UNGIRD
+                                            gy 1 + gy!
+                                        ] |:
+                                    UNGIRD
+                                    cx ch CFF::width@ + cx!
+                                ] ?:
+                            UNGIRD
+                            i 1 + i!
+                        ] |:
+                    UNGIRD
+                UNGIRD
+            UNGIRD
+        UNGIRD
+        0 text-active STOREI
+        0 text-len STOREI
+        mark-dirty
+    ] ?
+;
+
+( Draws the still-editing text block straight to the framebuffer each
+  frame -- floating, not yet part of CANVAS/UNDO -- plus a caret bar at the
+  insertion point. )
+@draw-text-live ( -- )
+    text-active LOADI [
+        FONT 16 CFF::use
+        text-x0 LOADI { ox }
+            text-x0 LOADI { cx }
+                text-y0 LOADI { cy }
+                    0 { i }
+                        [ i text-len LOADI < ]
+                        [
+                            TEXT_BUF i + load-byte { ch }
+                                ch 10 = [
+                                    ox cx!
+                                    cy 16 + cy!
+                                ] [
+                                    cx cy can>scr { sx sy }
+                                        APP::draw-fd sx sy ch CLR_FG 1 FONT CFF::bytes DRAW::cff-glyph
+                                    UNGIRD
+                                    cx ch CFF::width@ + cx!
+                                ] ?:
+                            UNGIRD
+                            i 1 + i!
+                        ] |:
+                    UNGIRD
+                    cx cy can>scr { sx sy }
+                        APP::draw-fd sx sy sx sy 16 + CLR_FG DRAW::line
+                    UNGIRD
+                UNGIRD
+            UNGIRD
+        UNGIRD
+    ] ?
+;
+
 ( FatBits isn't wired up to selection coordinates yet, so the overlay is
   1x-view only for now. )
 @draw-selection ( -- )
@@ -2478,9 +2615,9 @@ IMPORT TIME
 
 ( --- Draw --- )
 
-( Tools with real behavior get a proper icon; Hand and Text (Steps 7/8, not
-  yet implemented) get their index number so the palette is legible without
-  pretending they work. )
+( Tools with real behavior get a proper icon; Hand (Step 8, not yet
+  implemented) gets its index number so the palette is legible without
+  pretending it works. )
 @draw-tool-icon { i x y color -- }
     i TOOL_LASSO = [
         APP::draw-fd x 6 + y 6 + 12 8 color DRAW::frame-oval
@@ -2551,8 +2688,13 @@ IMPORT TIME
             APP::draw-fd x 8 + y 8 + 8 6 color DRAW::fill-rect
         ] ?
     ] [
+    i TOOL_TEXT = [
+        APP::draw-fd x 11 + y 5 + x 6 + y 17 + color DRAW::line
+        APP::draw-fd x 11 + y 5 + x 16 + y 17 + color DRAW::line
+        APP::draw-fd x 8 + y 13 + x 14 + y 13 + color DRAW::line
+    ] [
         APP::draw-fd x 12 + y 5 + i color 0 DRAW::draw-int
-    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
 ;
 
 @draw-palette ( -- )
@@ -2848,6 +2990,7 @@ IMPORT TIME
             UNGIRD
         UNGIRD
     ] ?
+    draw-text-live
 ;
 
 ( The rule that fixes bug 1 (swatches vanishing): the blanket background wipe
@@ -2975,9 +3118,10 @@ IMPORT TIME
     tool LOADI TOOL_FREEFORM_FILLED = tool LOADI TOOL_POLYGON_FILLED = OR
 ;
 
-( Gates hit-tool's palette clicks: HAND/TEXT are visible in the palette
-  but not wired to anything yet, so clicking them is a no-op rather than
-  leaving `tool` pointing at a slot nothing else recognizes. )
+( Gates hit-tool's palette clicks: HAND is visible in the palette but not
+  wired to anything yet (Step 8's viewport doesn't exist), so clicking it
+  is a no-op rather than leaving `tool` pointing at a slot nothing else
+  recognizes. )
 @tool-implemented? { t -- f }
     t TOOL_FILL = t TOOL_SPRAY = OR t TOOL_BRUSH = OR t TOOL_PENCIL = OR
     t TOOL_LINE = OR t TOOL_ERASER = OR
@@ -2987,6 +3131,7 @@ IMPORT TIME
     t TOOL_MARQUEE = OR t TOOL_LASSO = OR
     t TOOL_FREEFORM = OR t TOOL_FREEFORM_FILLED = OR
     t TOOL_POLYGON = OR t TOOL_POLYGON_FILLED = OR
+    t TOOL_TEXT = OR
 ;
 
 @page-down { mx my -- }
@@ -3107,6 +3252,14 @@ IMPORT TIME
             cy poly-hover-cy STOREI
             APP::dirty!
         ] [
+        tool LOADI TOOL_TEXT = [
+            text-active LOADI [ text-commit ] ?
+            1 text-active STOREI
+            0 text-len STOREI
+            cx text-x0 STOREI
+            cy text-y0 STOREI
+            APP::dirty!
+        ] [
         paint-tool? [
             snapshot
             set-plot-mode
@@ -3124,7 +3277,7 @@ IMPORT TIME
             cy shape-y1 STOREI
             DRAG_SHAPE drag STOREI
             APP::dirty!
-        ] ? ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+        ] ? ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
     UNGIRD
 ;
 
@@ -3213,6 +3366,9 @@ IMPORT TIME
                         0 poly-n STOREI
                         sel-mask-clear
                     ] ?
+                    ( switching away from Text commits the floating block, same as
+                      MacPaint clicking away from an in-progress caption )
+                    t TOOL_TEXT = 0 = text-active LOADI AND [ text-commit ] ?
                     t tool STOREI
                     DRAG_NONE drag STOREI
                     t TOOL_BRUSH = [
@@ -3390,6 +3546,9 @@ IMPORT TIME
                 1 local@ EVENT::MOD_CMD AND 1 local@ EVENT::MOD_CTRL AND OR [
                     0 local@ 1 local@ handle-cmd
                 ] [
+                    tool LOADI TOOL_TEXT = text-active LOADI AND [
+                        0 local@ text-key
+                    ] [
                     0 local@ EVENT::KEY_LEFT_ARROW = [
                         fat-f LOADI [ -1 0 pan-fat ] ?
                     ] [
@@ -3408,7 +3567,7 @@ IMPORT TIME
                     0 local@ 93 = [
                         1 cycle-pat
                     ] [
-                    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+                    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
                 ] ?:
                 2 unframe!
             ] ?:
@@ -3476,6 +3635,9 @@ IMPORT TIME
     [ on-cancel ] SF::on-cancel!
     init-pats
     init-brushes
+    load-font
+    0 text-active STOREI
+    0 text-len STOREI
     0 grid-f STOREI
     0 fat-f STOREI
     0 pen-width STOREI
