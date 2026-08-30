@@ -1,10 +1,12 @@
 ( Easel: a MacPaint clone in progress -- see easel_plan.md for the full plan.
   File > New/Open/Save/Save As | Quit, Edit > Undo / Cut / Copy / Paste /
   Invert / Clear / Fill / Trace Edges / Flip H / Flip V / Rotate 90,
-  Goodies > Grid / FatBits / Edit Pattern / Brush Shape. 20-tool palette (19
-  wired so far, including Marquee/Lasso selection, Freeform/Polygon, and a
-  single-font Text tool -- only Hand remains, since it needs a scrollable
-  page Step 8 hasn't built yet), 38 pattern slots (all filled in), 32 preset
+  Goodies > Grid / FatBits / Edit Pattern / Brush Shape, Font > Chicago /
+  Geneva / Monaco, Size > 12 / 24 / 36, Style > Bold / Underline (Italic /
+  Outline / Shadow not implemented). 20-tool palette (19 wired so far,
+  including Marquee/Lasso selection, Freeform/Polygon, and Text -- only
+  Hand remains, since it needs a scrollable page Step 8 hasn't built yet),
+  38 pattern slots (all filled in), 32 preset
   brush shapes (double-click the Brush tool, or Goodies > Brush Shape...),
   pen-width strip driving line/rect/roundrect/oval/freeform/polygon outline
   thickness. Canvas is 480x416, 1-bit, in a 560x492 window
@@ -114,6 +116,12 @@ IMPORT CFF
 @DRAG_LASSO      5 ; ( freehand-tracing a lasso path )
 @DRAG_FREEFORM   6 ; ( freehand-tracing a freeform shape; commits straight to CANVAS )
 
+( Text style bits (combinable). Italic/Outline/Shadow are not implemented --
+  Bold and Underline are the two that don't need per-row shearing or a
+  second dilated pass, so they're the ones worth the pixel-stamping cost. )
+@STYLE_BOLD       1 ;
+@STYLE_UNDERLINE  2 ;
+
 @MODE_BLACK      0 ;
 @MODE_WHITE      1 ;
 @MODE_PAT        2 ;
@@ -194,8 +202,10 @@ IMPORT CFF
 @SNARF_BUF     0x9A0000 ; ( EASS clipboard payload; max real selection is ~24968 bytes, well
                             under SYS_SNARF_MAX (include/system.h) for the current canvas size )
 @SNARF_CAP     0x8000 ;
-@FONT          0x9A8000 ; ( Chicago system font, a CFF_LEN_UF2 (16x16-tile) blob loaded at start )
-@TEXT_BUF      0x9AA200 ; ( source bytes of the in-progress floating text block, up to TEXT_MAX;
+@FONT_CHICAGO  0x9A8000 ; ( 3 system fonts, each a CFF_LEN_UF2 (16x16-tile) blob loaded at start )
+@FONT_GENEVA   0x9AA200 ;
+@FONT_MONACO   0x9AC400 ;
+@TEXT_BUF      0x9AE600 ; ( source bytes of the in-progress floating text block, up to TEXT_MAX;
                             a newline byte (10) marks a Return rather than a glyph )
 @TEXT_MAX          2048 ;
 
@@ -258,6 +268,11 @@ IMPORT CFF
 @text-x0           0x8A00DC ; ( insertion origin -- left edge of line 1 )
 @text-y0           0x8A00E0 ;
 @text-len          0x8A00E4 ; ( bytes used in TEXT_BUF; a newline byte (10) starts a new line )
+@text-font         0x8A00E8 ; ( 0=Chicago, 1=Geneva, 2=Monaco )
+@text-size         0x8A00EC ; ( 0/1/2 -- point size index; text-scale below turns it into 1/2/3 )
+@text-style        0x8A00F0 ; ( STYLE_BOLD/STYLE_UNDERLINE bitmask; combinable )
+@font-grp          0x8A00F4 ; ( UI radio-group ids, allocated once at @start )
+@size-grp          0x8A00F8 ;
 
 ( Explicit damage bits, replacing the old single pat-full flag (whose narrow
   meaning -- "must draw-patterns redraw all swatches" -- was the exact bug: a
@@ -571,14 +586,29 @@ IMPORT CFF
   text-commit); the live, uncommitted block is drawn straight to the
   framebuffer each frame instead (draw-text-live), matching every other
   drag preview in this file. )
-@load-font ( -- )
-    T"/sys/font/chicago" VFS::open { fd }
+@load-one-font { path-ptr buf -- }
+    path-ptr VFS::open { fd }
         fd 0 >= [
-            fd FONT CFF::LEN16 VFS::read drop
+            fd buf CFF::LEN16 VFS::read drop
             fd VFS::close drop
         ] ?
     UNGIRD
 ;
+
+@load-font ( -- )
+    T"/sys/font/chicago" FONT_CHICAGO load-one-font
+    T"/sys/font/geneva"  FONT_GENEVA  load-one-font
+    T"/sys/font/monaco"  FONT_MONACO  load-one-font
+;
+
+@active-font ( -- addr )
+    text-font LOADI 0 = [ FONT_CHICAGO ] [
+    text-font LOADI 1 = [ FONT_GENEVA ] [
+        FONT_MONACO
+    ] ?: ] ?:
+;
+
+@text-scale ( -- n ) text-size LOADI 1 + ;
 
 @brush-at { cx cy -- }
     0 { row }
@@ -1930,14 +1960,55 @@ IMPORT CFF
     APP::dirty!
 ;
 
-( Rasterizes the floating text block into CANVAS one glyph at a time via
-  CFF::pixel@ -- DrawCFFGlyph only paints the framebuffer, not a guest
+( Stamps one glyph into CANVAS at its already-scaled origin (cx,cy), each
+  source pixel expanded to a text-scale x text-scale block. Bold synthesizes
+  by OR-ing each source pixel with the one to its left before expanding --
+  CFF::pixel@ 0 for a negative column, so gx=0 is unaffected. Assumes
+  active-font is already CFF::use'd by the caller. )
+@stamp-glyph { ch cx cy -- }
+    text-scale { sc }
+        0 { gy }
+            [ gy 16 < ]
+            [
+                0 { gx }
+                    [ gx 16 < ]
+                    [
+                        ch gx gy CFF::pixel@
+                        text-style LOADI STYLE_BOLD AND 0 > [
+                            ch gx 1 - gy CFF::pixel@ OR
+                        ] ?
+                        0 > [
+                            0 { oy }
+                                [ oy sc < ]
+                                [
+                                    0 { ox }
+                                        [ ox sc < ]
+                                        [
+                                            1 cx gx sc * ox + + cy gy sc * oy + + pix!
+                                            ox 1 + ox!
+                                        ] |:
+                                    UNGIRD
+                                    oy 1 + oy!
+                                ] |:
+                            UNGIRD
+                        ] ?
+                        gx 1 + gx!
+                    ] |:
+                UNGIRD
+                gy 1 + gy!
+            ] |:
+        UNGIRD
+    UNGIRD
+;
+
+( Rasterizes the floating text block into CANVAS glyph by glyph via
+  stamp-glyph -- DrawCFFGlyph only paints the framebuffer, not a guest
   bitmap (see the module comment above), so this is the only way text ever
   actually lands on the page. )
 @text-commit ( -- )
     text-active LOADI [
         snapshot
-        FONT 16 CFF::use
+        active-font 16 CFF::use
         text-x0 LOADI { ox }
             text-x0 LOADI { cx }
                 text-y0 LOADI { cy }
@@ -1947,24 +2018,21 @@ IMPORT CFF
                             TEXT_BUF i + load-byte { ch }
                                 ch 10 = [
                                     ox cx!
-                                    cy 16 + cy!
+                                    cy 16 text-scale * + cy!
                                 ] [
-                                    0 { gy }
-                                        [ gy 16 < ]
-                                        [
-                                            0 { gx }
-                                                [ gx 16 < ]
+                                    ch cx cy stamp-glyph
+                                    ch CFF::width@ text-scale * { w }
+                                        text-style LOADI STYLE_UNDERLINE AND 0 > [
+                                            0 { ux }
+                                                [ ux w < ]
                                                 [
-                                                    ch gx gy CFF::pixel@ 0 > [
-                                                        1 cx gx + cy gy + pix!
-                                                    ] ?
-                                                    gx 1 + gx!
+                                                    1 cx ux + cy 16 text-scale * + 1 - + pix!
+                                                    ux 1 + ux!
                                                 ] |:
                                             UNGIRD
-                                            gy 1 + gy!
-                                        ] |:
+                                        ] ?
+                                        cx w + cx!
                                     UNGIRD
-                                    cx ch CFF::width@ + cx!
                                 ] ?:
                             UNGIRD
                             i 1 + i!
@@ -1979,12 +2047,15 @@ IMPORT CFF
     ] ?
 ;
 
-( Draws the still-editing text block straight to the framebuffer each
-  frame -- floating, not yet part of CANVAS/UNDO -- plus a caret bar at the
-  insertion point. )
+( Draws the still-editing text block straight to the framebuffer each frame
+  -- floating, not yet part of CANVAS/UNDO -- plus a caret bar at the
+  insertion point. DRAW::cff-glyph handles scale itself; Bold is
+  approximated with a second 1px-offset draw (no per-source-pixel access to
+  the framebuffer to OR properly, unlike stamp-glyph's CANVAS write), and
+  Underline is one line per glyph's advance width. )
 @draw-text-live ( -- )
     text-active LOADI [
-        FONT 16 CFF::use
+        active-font 16 CFF::use
         text-x0 LOADI { ox }
             text-x0 LOADI { cx }
                 text-y0 LOADI { cy }
@@ -1994,19 +2065,27 @@ IMPORT CFF
                             TEXT_BUF i + load-byte { ch }
                                 ch 10 = [
                                     ox cx!
-                                    cy 16 + cy!
+                                    cy 16 text-scale * + cy!
                                 ] [
                                     cx cy can>scr { sx sy }
-                                        APP::draw-fd sx sy ch CLR_FG 1 FONT CFF::bytes DRAW::cff-glyph
+                                        APP::draw-fd sx sy ch CLR_FG text-scale active-font CFF::bytes DRAW::cff-glyph
+                                        text-style LOADI STYLE_BOLD AND 0 > [
+                                            APP::draw-fd sx 1 + sy ch CLR_FG text-scale active-font CFF::bytes DRAW::cff-glyph
+                                        ] ?
+                                        text-style LOADI STYLE_UNDERLINE AND 0 > [
+                                            ch CFF::width@ text-scale * { w }
+                                                APP::draw-fd sx sy 16 text-scale * + sx w + sy 16 text-scale * + CLR_FG DRAW::line
+                                            UNGIRD
+                                        ] ?
                                     UNGIRD
-                                    cx ch CFF::width@ + cx!
+                                    cx ch CFF::width@ text-scale * + cx!
                                 ] ?:
                             UNGIRD
                             i 1 + i!
                         ] |:
                     UNGIRD
                     cx cy can>scr { sx sy }
-                        APP::draw-fd sx sy sx sy 16 + CLR_FG DRAW::line
+                        APP::draw-fd sx sy sx sy 16 text-scale * + CLR_FG DRAW::line
                     UNGIRD
                 UNGIRD
             UNGIRD
@@ -2610,6 +2689,31 @@ IMPORT CFF
 @menu-fat ( val -- )
     fat-f STOREI
     clamp-fat
+    APP::dirty!
+;
+
+@menu-font-chicago ( val -- ) drop 0 text-font STOREI APP::dirty! ;
+@menu-font-geneva  ( val -- ) drop 1 text-font STOREI APP::dirty! ;
+@menu-font-monaco  ( val -- ) drop 2 text-font STOREI APP::dirty! ;
+@menu-size-12      ( val -- ) drop 0 text-size STOREI APP::dirty! ;
+@menu-size-24      ( val -- ) drop 1 text-size STOREI APP::dirty! ;
+@menu-size-36      ( val -- ) drop 2 text-size STOREI APP::dirty! ;
+
+@menu-style-bold { val -- }
+    val 0 > [
+        text-style LOADI STYLE_BOLD OR
+    ] [
+        text-style LOADI STYLE_BOLD NOT AND
+    ] ?: text-style STOREI
+    APP::dirty!
+;
+
+@menu-style-underline { val -- }
+    val 0 > [
+        text-style LOADI STYLE_UNDERLINE OR
+    ] [
+        text-style LOADI STYLE_UNDERLINE NOT AND
+    ] ?: text-style STOREI
     APP::dirty!
 ;
 
@@ -3629,6 +3733,21 @@ IMPORT CFF
     UI::sep
     T"Edit Pattern..." [ menu-edit-pat ] UI::item
     T"Brush Shape..." [ menu-brush-pick ] UI::item
+    T"font" font-grp STOREI
+    T"Font" UI::menu
+    T"Chicago" font-grp LOADI [ menu-font-chicago ] UI::radio-item
+    T"Geneva"  font-grp LOADI [ menu-font-geneva ]  UI::radio-item
+    T"Monaco"  font-grp LOADI [ menu-font-monaco ]  UI::radio-item
+    T"size" size-grp STOREI
+    T"Size" UI::menu
+    T"12" size-grp LOADI [ menu-size-12 ] UI::radio-item
+    T"24" size-grp LOADI [ menu-size-24 ] UI::radio-item
+    T"36" size-grp LOADI [ menu-size-36 ] UI::radio-item
+    T"Style" UI::menu
+    T"Bold"      [ menu-style-bold ]      UI::check-item
+    T"Underline" [ menu-style-underline ] UI::check-item
+    T"Chicago" 1 UI::item-set
+    T"12" 1 UI::item-set
     T"Grid" 0 UI::item-set
     T"FatBits" 0 UI::item-set
     [ on-pick ] SF::on-ok!
@@ -3638,6 +3757,9 @@ IMPORT CFF
     load-font
     0 text-active STOREI
     0 text-len STOREI
+    0 text-font STOREI
+    0 text-size STOREI
+    0 text-style STOREI
     0 grid-f STOREI
     0 fat-f STOREI
     0 pen-width STOREI

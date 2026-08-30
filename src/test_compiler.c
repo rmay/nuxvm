@@ -3887,6 +3887,115 @@ static void test_easel_text_tool(void) {
     quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
+static int easel_count_bits_in_rect(const uint8_t* body, int n, int x0, int y0, int x1, int y1) {
+    int c = 0;
+    for (int y = y0; y <= y1; y++) {
+        for (int x = x0; x <= x1; x++) {
+            if (easel_bit_set(body, n, x, y) == 1) c++;
+        }
+    }
+    return c;
+}
+
+/* Style menu (Step 7): Bold ORs each source column with the one to its left
+ * before stamping, so a bold 'A' should never have less ink than a plain
+ * one, and for a letter with any interior column not already covered by the
+ * shift, strictly more. Menu title x's (File/Edit/Goodies/Font/Size/Style =
+ * 10/58/106/177/226/274) come from MN_X, +10 to land inside the title the
+ * way every other menu test in this file clicks File at (20,10); dropdown
+ * item rows are BAR_H + row*18 + 9, same formula as lux_file_item. */
+static void test_easel_text_style_bold(void) {
+    printf("Testing apps/Easel.lux: Style > Bold thickens committed glyphs...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 60, 68);   /* Text tool */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 180, 120); /* caret at canvas (100,100) */
+    quill_lux_pump(m, 20);
+    quill_lux_key(m, kc, 'A', 0);
+    quill_lux_pump(m, 10);
+    quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
+    quill_lux_pump(m, 20);
+
+    uint8_t plain_body[25000];
+    int plain_n = easel_save_and_read(m, mc, kc, plain_body, (int) sizeof(plain_body));
+    int plain_count = easel_count_bits_in_rect(plain_body, plain_n, 100, 100, 116, 116);
+    assert(plain_count > 0);
+
+    remove("untitled.eas");
+    m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+
+    quill_lux_click(m, mc, 284, 10);  /* Style menu */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 284, 29);  /* Bold */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 60, 68);   /* Text tool */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 180, 120); /* caret at canvas (100,100) */
+    quill_lux_pump(m, 20);
+    quill_lux_key(m, kc, 'A', 0);
+    quill_lux_pump(m, 10);
+    quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
+    quill_lux_pump(m, 20);
+
+    uint8_t bold_body[25000];
+    int bold_n = easel_save_and_read(m, mc, kc, bold_body, (int) sizeof(bold_body));
+    int bold_count = easel_count_bits_in_rect(bold_body, bold_n, 100, 100, 116, 116);
+
+    assert(bold_count > plain_count);
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
+/* Size menu (Step 7): "24" is scale 2, so a committed glyph should be ~32px
+ * tall instead of CFF's native 16px -- check ink reaches a row only scale=2
+ * could reach. */
+static void test_easel_text_size_24(void) {
+    printf("Testing apps/Easel.lux: Size > 24 doubles committed glyph scale...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 236, 10);  /* Size menu */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 236, 47);  /* "24" (row 1) */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 60, 68);   /* Text tool */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 180, 120); /* caret at canvas (100,100) */
+    quill_lux_pump(m, 20);
+    quill_lux_key(m, kc, 'A', 0);
+    quill_lux_pump(m, 10);
+    quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
+    quill_lux_pump(m, 20);
+
+    uint8_t body[25000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    assert(easel_any_bit_in_rect(body, n, 100, 116, 132, 131) == 1);  /* only reachable at scale 2 */
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
 // -----------------------------------------------------------------------------
 // main
 // -----------------------------------------------------------------------------
@@ -3993,6 +4102,8 @@ int main(void) {
     test_easel_polygon_filled();
     test_easel_polygon_outline_double_click_close();
     test_easel_text_tool();
+    test_easel_text_style_bold();
+    test_easel_text_size_24();
 
     printf("\n=== ALL COMPILER TESTS PASSED ===\n\n");
     return 0;

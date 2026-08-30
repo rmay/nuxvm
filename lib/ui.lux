@@ -1702,7 +1702,9 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 @MN_SLAB   0x8E2A00 ;
 @MI_SLAB   0x8E2C00 ;
 @MN_MAX    8 ;
-@MI_MAX    32 ;
+@MI_MAX    48 ; ( Easel's 6-menu bar -- File/Edit/Goodies/Font/Size/Style -- needs
+                  33 items+seps; MI_SLAB (16 bytes/entry) still fits well under
+                  MB_XBUF at 0x8E3000 at this size )
 @MN_SIZE   20 ;
 @MN_X       0 ;
 @MN_W       4 ;
@@ -1717,7 +1719,9 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 
 @COMP_TAB 0x8E2000 ;
 @COMP_N   0x8E0F2C ;
-@COMP_MAX 32 ;
+@COMP_MAX 48 ; ( shared cap across every component kind -- menus, items, buttons,
+                 checkboxes, radios, sliders, scrollbars, lists; COMP_TAB
+                 (24 bytes/entry) still fits well under MN_SLAB at 0x8E2A00 )
 @C_SIZE   24 ;
 @C_TEXT    0 ;
 @C_KIND    4 ;
