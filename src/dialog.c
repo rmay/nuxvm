@@ -1,5 +1,5 @@
 #include "dialog.h"
-#include "chicago.h"
+#include "host_fonts.h"
 #include "cff.h"
 
 #include <stdio.h>
@@ -127,7 +127,8 @@ static int dlg_draw_char(System* sys, int32_t x, int32_t y, char c, uint32_t col
     uint8_t* fb = sys->screen_pixels;
     if (!fb) return 0;
     int32_t sw = sys->screen_width, sh = sys->screen_height;
-    unsigned char* data = chicago12x12_cff;
+    const uint8_t* data = host_font_chicago();
+    if (!data) return 0;
     int width = data[(uint8_t)c];
     if (width == 0) {
         if (c == ' ') return 7;
@@ -135,7 +136,7 @@ static int dlg_draw_char(System* sys, int32_t x, int32_t y, char c, uint32_t col
     }
 
     uint8_t r = (color >> 16) & 0xFF, g = (color >> 8) & 0xFF, b = color & 0xFF;
-    int tile_size = cff_tile_size((int)chicago12x12_cff_len);
+    int tile_size = cff_tile_size((int)host_font_chicago_len());
     if (tile_size <= 0) tile_size = 16;
     int num_h = tile_size / 8;
     int num_v = tile_size / 8;

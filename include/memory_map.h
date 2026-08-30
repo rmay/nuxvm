@@ -8,10 +8,11 @@
  * (see docs/memory-map.md for the incident list). New bands must be added
  * here, not invented locally.
  *
- * Total address space: 32MB (see the `total_memory` constant passed to
- * machine_create() in src/nux.c / src/cloister.c). Bands below are laid out
- * with generous headroom so unrelated categories of data are never
- * adjacent enough to collide by a rounding error.
+ * Reserved address space ends at MM_TOTAL_MEMORY (16MB). Hosts size the
+ * contiguous guest buffer with nux_guest_memory_size() in vm.h: graphical
+ * machines get this full map; headless machines get [0, base+program).
+ * Bands below are laid out with generous headroom so unrelated categories
+ * of data are never adjacent enough to collide by a rounding error.
  */
 
 /* --- Fluxio small-scalar globals: MM_FX_GLOBALS_BASE .. MM_FX_GLOBALS_END ---
@@ -105,8 +106,12 @@
 #define MM_FX_BULK_GLOBALS_BASE 0x0D00000
 #define MM_FX_BULK_GLOBALS_END  0x1000000
 
-/* Everything above MM_FX_BULK_GLOBALS_END, up to the 32MB ceiling, is
- * unreserved -- available for future bands. Add them here, with a comment
- * explaining what they're for, rather than picking an address locally. */
+/* Exclusive end of the reserved map -- the guest RAM size for a machine
+ * that must be able to STORE into every named band (Cloister, child VMs). */
+#define MM_TOTAL_MEMORY         MM_FX_BULK_GLOBALS_END
+
+/* Everything above MM_TOTAL_MEMORY is unreserved -- available for future
+ * bands. Add them here, with a comment explaining what they're for, rather
+ * than picking an address locally. */
 
 #endif /* MEMORY_MAP_H */

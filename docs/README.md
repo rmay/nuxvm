@@ -14,7 +14,7 @@ A simple stack-based virtual machine written in C, with two front-end languages:
 ## Installation
 
 ```bash
-# From the repo root; needs a C compiler, pkg-config, and SDL2
+# From the repo root; needs a C compiler. Cloister also needs pkg-config and SDL2.
 make
 ```
 
@@ -56,7 +56,7 @@ make test
 ## Architecture
 
 - **Stack**: 8192 x 32-bit integers
-- **Memory**: Byte-addressable (program + data)
+- **Memory**: Byte-addressable (program + data). Headless `nux` sizes guest RAM to the ROM (~68 KB for hello, ~1.4 MB process RSS on macOS). Cloister uses the 16 MB reserved map.
 - **PC**: 32-bit program counter
 - **Encoding**: Big-endian
 
@@ -77,7 +77,7 @@ uint8_t program[] = {
 
 // Run it
 VM* vm = vm_create(program, sizeof(program), HEADLESS_BASE_ADDRESS,
-                   4 * 1024 * 1024, false);
+                   nux_guest_memory_size(HEADLESS_BASE_ADDRESS, sizeof(program)), false);
 vm_run(vm);   // Outputs: 8
 vm_free(vm);
 ```

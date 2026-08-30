@@ -310,7 +310,7 @@ static bool load_app(const char* path, uint8_t** program_out, Machine** machine_
     }
 
     Machine* machine = machine_create(program, (uint32_t)code_len, GRAPHICAL_BASE_ADDRESS,
-                                      32 * 1024 * 1024, false);
+                                      nux_guest_memory_size(GRAPHICAL_BASE_ADDRESS, (uint32_t)code_len), false);
     if (!machine) {
         free(program);
         fprintf(stderr, "Failed to create machine for %s\n", path);

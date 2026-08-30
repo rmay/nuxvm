@@ -7,8 +7,11 @@ a name here — new bands get added to `memory_map.h` with a comment
 explaining what they're for, not hand-picked locally in some app or library
 file. That ad hoc practice is exactly what produced the collisions below.
 
-Total address space: 32MB (`total_memory` passed to `machine_create()` in
-`src/nux.c` / `src/cloister.c`).
+Reserved address space ends at `MM_TOTAL_MEMORY` (16 MB,
+`MM_FX_BULK_GLOBALS_END`). Hosts size the contiguous guest buffer with
+`nux_guest_memory_size()` in `include/vm.h`: graphical machines (Cloister,
+child VMs) get this full map; headless `nux` / `luxrepl` get
+`[0, base + program)` — about 68 KB for `examples/lux/hello.bin`.
 
 | Band | Range | Owner | Purpose |
 |---|---|---|---|
@@ -22,7 +25,7 @@ Total address space: 32MB (`total_memory` passed to `machine_create()` in
 | App bulk-buffer band | `0x900000`–`0xA00000` | individual Lux apps | Large hand-authored buffers: font glyph data, paste buffers, line caches, path scratch buffers. Whittle's sprite editor reserves `0x900000`–`0x9C0000` (`FRAME_BANK`: 256 fixed 3072-byte RGB tile-pixel slots) and `0x9C0000`–`0x9C0600` (`SPRITE_TAB`: 16 fixed 96-byte sprite records, each holding a name, frame count/speed, and up to 16 frame-bank slot indices) — saved to disk as CSF (Cloister Sprite File, magic `"CSF1"`). |
 | `lib/mem.lux` heap | `0xA00000`–`0xC00000` | `lib/mem.lux` exclusively | Bump-allocator heap + its own `HERE_ADDR` metadata (first 0x100 bytes). Nothing else may place a global in this range. |
 | Fluxio bulk-array globals | `0xD00000`–`0x1000000` | `fluxio_codegen.c` (planned, `docs/quill_fluxio.md` Phase 0 deliverable 4) | Bump allocator for large global `byte[]`/`int[]` arrays that don't fit the small-scalar budget (e.g. a 1MB text-editor file buffer). |
-| Unreserved | `0x1000000`+, up to the 32MB ceiling | — | Available for future bands — add them to `memory_map.h`, not locally. |
+| Unreserved | `0x1000000`+ (`MM_TOTAL_MEMORY` and above) | — | Available for future bands — add them to `memory_map.h`, not locally. |
 
 ## Collisions found and fixed
 

@@ -929,7 +929,8 @@ static int vm_write(VFSFile* file, const uint8_t* buf, int len) {
 
     int32_t id = d->sys->next_vm_id++;
     if (id >= 0 && id < SYS_MAX_CHILD_VMS) {
-        Machine* child = machine_create(program, (uint32_t)prog_len, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
+        Machine* child = machine_create(program, (uint32_t)prog_len, GRAPHICAL_BASE_ADDRESS,
+                                        nux_guest_memory_size(GRAPHICAL_BASE_ADDRESS, (uint32_t)prog_len), false);
         if (child) {
             if (child->system) {
                 // Children inherit the parent's sandbox, sound, and canvas size

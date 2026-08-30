@@ -180,7 +180,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    uint32_t total_memory = 32 * 1024 * 1024;
+    uint32_t total_memory = nux_guest_memory_size(HEADLESS_BASE_ADDRESS, (uint32_t)fsize);
     Machine* machine = machine_create(program, (uint32_t)fsize, HEADLESS_BASE_ADDRESS, total_memory, trace);
     if (!machine) {
         fprintf(stderr, "Failed to create VM\n");

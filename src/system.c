@@ -1,9 +1,7 @@
 #include "system.h"
 #include "vfs.h"
 #include "machine.h"
-#include "chicago.h"
-#include "geneva.h"
-#include "monaco.h"
+#include "host_fonts.h"
 #include "cff.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -254,13 +252,14 @@ static void handle_sci(System* sys) {
             char ch = (char)((uint32_t)arg2 >> 24);
             int32_t x = (int32_t)(((uint32_t)arg2 >> 12) & 0xFFF);
             int32_t y = (int32_t)((uint32_t)arg2 & 0xFFF);
-            const uint8_t* font = chicago12x12_cff;
+            const uint8_t* builtin = host_font_chicago();
+            const uint8_t* font = builtin;
             if (arg1 != 0 && (uint32_t)arg1 < sys->memory_size) {
                 font = &sys->memory[arg1];
             }
             int scale = sys->font_size ? sys->font_size : 12;
             uint32_t color = sys->text_color ? sys->text_color : 0xFFFFFF;
-            int nbytes = (font == chicago12x12_cff) ? (int)chicago12x12_cff_len : CFF_LEN_UF2;
+            int nbytes = (builtin && font == builtin) ? (int)host_font_chicago_len() : CFF_LEN_UF2;
             system_draw_cff(sys, font, nbytes, ch, x, y, color, scale);
             sys->sci_result = 0;
             break;
@@ -338,13 +337,11 @@ System* system_create(void) {
     sys->bus.user_data = sys;
     sys->rng_state = 12345;
     
-    // Defaults for screen
+    /* Logical size only. Pixel buffers are allocated when something draws:
+     * screen_pixels aliases guest RAM in system_set_memory (if the image is
+     * large enough); back_pixels is allocated in system_set_resolution. */
     sys->screen_width = 640;
     sys->screen_height = 480;
-    sys->screen_pixels = (uint8_t*)malloc(sys->screen_width * sys->screen_height * 4);
-    sys->back_pixels = (uint8_t*)malloc(sys->screen_width * sys->screen_height * 4);
-    if (sys->screen_pixels) memset(sys->screen_pixels, 0, sys->screen_width * sys->screen_height * 4);
-    if (sys->back_pixels) memset(sys->back_pixels, 0, sys->screen_width * sys->screen_height * 4);
     sys->play_sound = NULL;
     sys->font_id = FONT_CHICAGO;
     sys->font_size = 12;
@@ -354,6 +351,14 @@ System* system_create(void) {
     strncpy(sys->sandbox_root, ".", sizeof(sys->sandbox_root) - 1);
 
     return sys;
+}
+
+static void release_owned_screen_pixels(System* sys) {
+    if (sys->screen_pixels_owned) {
+        free(sys->screen_pixels);
+        sys->screen_pixels_owned = false;
+    }
+    sys->screen_pixels = NULL;
 }
 
 void system_free(System* sys) {
@@ -366,6 +371,7 @@ void system_free(System* sys) {
         }
     }
     free(sys->snarf_buf);
+    release_owned_screen_pixels(sys);
     if (sys->back_pixels) free(sys->back_pixels);
     free(sys);
 }
@@ -373,12 +379,14 @@ void system_free(System* sys) {
 void system_set_memory(System* sys, uint8_t* mem, uint32_t mem_size) {
     sys->memory = mem;
     sys->memory_size = mem_size;
-    
+
+    /* Drop a System-owned buffer before aliasing into guest RAM (or
+     * clearing). The aliased pointer is not freed in system_free. */
+    release_owned_screen_pixels(sys);
+
     // Alias screen_pixels to the VideoFramebuffer region so VM memory writes automatically show up
     if (mem_size >= 0x200000) {
         sys->screen_pixels = &mem[0x100000];
-    } else {
-        sys->screen_pixels = NULL;
     }
 }
 
@@ -386,15 +394,15 @@ void system_set_resolution(System* sys, int32_t width, int32_t height) {
     if (!sys) return;
     sys->screen_width = width;
     sys->screen_height = height;
-    
-    // NOTE: screen_pixels is usually aliased to vm memory by system_set_memory.
-    // However, if it was allocated, we'd need to reallocate. 
-    // Usually cloister will call this AFTER machine_create, so screen_pixels points to mem[0x100000].
-    // The back_pixels must be reallocated.
+
+    /* Front buffer stays an alias of guest RAM (system_set_memory). Only the
+     * host back buffer is allocated here — and only for a real canvas. */
     if (sys->back_pixels) {
         free(sys->back_pixels);
+        sys->back_pixels = NULL;
     }
-    sys->back_pixels = (uint8_t*)calloc(1, width * height * 4);
+    if (width <= 0 || height <= 0) return;
+    sys->back_pixels = (uint8_t*)calloc(1, (size_t)width * (size_t)height * 4);
 }
 
 // --- /sys/draw support (initial rect implementation) ---
@@ -486,19 +494,11 @@ void system_draw_rect(System* sys, int32_t x, int32_t y, int32_t w, int32_t h, u
 }
 
 const uint8_t* system_font_data_id(int font_id) {
-    switch (font_id) {
-        case FONT_GENEVA: return geneva12_cff;
-        case FONT_MONACO: return monaco12_cff;
-        default:          return chicago12x12_cff; /* Chicago + legacy basic */
-    }
+    return host_font_data_id(font_id);
 }
 
 int system_font_nbytes_id(int font_id) {
-    switch (font_id) {
-        case FONT_GENEVA: return (int)geneva12_cff_len;
-        case FONT_MONACO: return (int)monaco12_cff_len;
-        default:          return (int)chicago12x12_cff_len;
-    }
+    return host_font_nbytes_id(font_id);
 }
 
 const uint8_t* system_font_data(const System* sys) {
@@ -693,8 +693,8 @@ void system_set_pixel(System* sys, int32_t x, int32_t y, uint32_t color) {
 
 void system_draw_cff(System* sys, const uint8_t* font_data, int nbytes, char c, int32_t x, int32_t y, uint32_t color, int scale) {
     if (!sys || !font_data) return;
-    if (nbytes <= 0 && font_data == chicago12x12_cff) {
-        nbytes = (int)chicago12x12_cff_len;
+    if (nbytes <= 0 && font_data && font_data == host_font_chicago()) {
+        nbytes = (int)host_font_chicago_len();
     }
     int tile_size = cff_tile_size(nbytes);
     if (tile_size <= 0) return;

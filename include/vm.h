@@ -18,6 +18,20 @@
 #define HEADLESS_BASE_ADDRESS MM_HEADLESS_CODE_BASE
 #define GRAPHICAL_BASE_ADDRESS MM_GRAPHICAL_CODE_BASE
 
+/* Size of the host buffer covering guest addresses [0, size). Graphical
+ * ROMs write reserved bands via STOREI, so they get MM_TOTAL_MEMORY.
+ * Headless ROMs only need the loaded image (and everything below it). */
+static inline uint32_t nux_guest_memory_size(uint32_t base_address, uint32_t program_size) {
+    uint64_t need = (uint64_t)base_address + (uint64_t)program_size;
+    if (base_address >= MM_GRAPHICAL_CODE_BASE && need < (uint64_t)MM_TOTAL_MEMORY) {
+        need = MM_TOTAL_MEMORY;
+    }
+    if (need > 0xffffffffu) {
+        need = 0xffffffffu;
+    }
+    return (uint32_t)need;
+}
+
 #define VIDEO_FRAMEBUFFER_START HEADLESS_BASE_ADDRESS
 #define VIDEO_FRAMEBUFFER_MAX_SIZE (1280 * 1024 * 4)
 #define VIDEO_FRAMEBUFFER_END (VIDEO_FRAMEBUFFER_START + VIDEO_FRAMEBUFFER_MAX_SIZE)

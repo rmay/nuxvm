@@ -2,7 +2,7 @@
 #include "system.h"
 #include "machine.h"
 #include "compiler.h"
-#include "chicago.h"
+#include "host_fonts.h"
 #include "cff.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -367,7 +367,7 @@ static void test_draw_small_scale_multiplier(void) {
     sys->font_id = FONT_CHICAGO;
 
     int advance = system_measure_char(sys, 'x', 1);
-    unsigned char* data = chicago12x12_cff;
+    const uint8_t* data = host_font_chicago();
     int raw_width = data[(uint8_t)'x'];
     if (raw_width == 0) raw_width = 6;
     assert(advance == raw_width);
@@ -414,7 +414,7 @@ static void test_system_fonts(void) {
     assert(fd >= 100);
     assert(vfs_read(sys, fd, widths, 256) == 256);
     vfs_close(sys, fd);
-    assert(memcmp(widths, chicago12x12_cff, 256) == 0);
+    assert(memcmp(widths, host_font_chicago(), 256) == 0);
 
     fd = vfs_open(sys, "/sys/font/monaco", 0);
     assert(fd >= 100);
@@ -472,7 +472,7 @@ static void test_cff_tile_size(void) {
     assert(cff_tile_size(CFF_LEN_UF1) == 8);
     assert(cff_tile_size(CFF_LEN_UF2) == 16);
     assert(cff_tile_size(CFF_LEN_UF3) == 24);
-    assert(cff_tile_size((int)chicago12x12_cff_len) == 16);
+    assert(cff_tile_size((int)host_font_chicago_len()) == 16);
     assert(cff_tile_size(0) == 0);
     assert(cff_tile_size(100) == 0);
     assert(cff_glyph_bytes(8) == 8);
@@ -488,7 +488,7 @@ static void test_draw_cff_cmd9(void) {
     sys->memory = (uint8_t*)calloc(1, (size_t)CFF_LEN_UF2);
     sys->memory_size = (uint32_t)CFF_LEN_UF2;
     assert(sys->memory != NULL);
-    memcpy(sys->memory, chicago12x12_cff, (size_t)CFF_LEN_UF2);
+    memcpy(sys->memory, host_font_chicago(), (size_t)CFF_LEN_UF2);
 
     fill_screen_white(sys);
     int32_t fd = vfs_open(sys, "/sys/draw", 0x02);
@@ -595,6 +595,41 @@ static void test_draw_cff_uf1(void) {
     free(sys->memory);
     free_test_screen(sys);
     printf("  uf1 pixel: OK\n");
+}
+
+static void test_screen_pixels_ownership(void) {
+    printf("Testing screen_pixels ownership...\n");
+
+    System* sys = system_create();
+    assert(sys != NULL);
+    assert(sys->screen_pixels == NULL);
+    assert(!sys->screen_pixels_owned);
+    assert(sys->back_pixels == NULL);
+
+    uint8_t* guest = (uint8_t*)calloc(1, 0x200000);
+    assert(guest != NULL);
+    system_set_memory(sys, guest, 0x200000);
+    assert(!sys->screen_pixels_owned);
+    assert(sys->screen_pixels == guest + 0x100000);
+    assert(sys->back_pixels == NULL);
+
+    system_set_resolution(sys, 64, 32);
+    assert(sys->back_pixels != NULL);
+    assert(!sys->screen_pixels_owned);
+    assert(sys->screen_pixels == guest + 0x100000);
+
+    system_free(sys);
+    guest[0x100000] = 0xAB; /* guest RAM still live; system_free must not free it */
+    free(guest);
+
+    sys = system_create();
+    assert(sys != NULL);
+    system_set_memory(sys, NULL, 0); /* small / missing RAM: no alias */
+    assert(!sys->screen_pixels_owned);
+    assert(sys->screen_pixels == NULL);
+    system_free(sys);
+
+    printf("  screen_pixels ownership: OK\n");
 }
 
 static void test_snarf_roundtrip(void) {
@@ -1544,6 +1579,7 @@ int main() {
     test_dummy_file();
     test_kbd_vfs();
     test_time_vfs();
+    test_screen_pixels_ownership();
     test_snarf_roundtrip();
     test_snarf_shared();
     test_host_seek_stat();

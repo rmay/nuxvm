@@ -10,8 +10,11 @@ CC = gcc
 # test_fluxio_compiler that a full rebuild (`make clean && make`) fixed --
 # exactly this class of bug. The -include below wires the generated .d
 # files back into the dependency graph so incremental builds are safe.
-CFLAGS = -Wall -Wextra -Iinclude -O2 -g -MMD -MP $(shell pkg-config --cflags sdl2)
-LDFLAGS = $(shell pkg-config --libs sdl2)
+CFLAGS = -Wall -Wextra -Iinclude -O2 -g -MMD -MP
+# SDL is only for Cloister (src/cloister.c, src/dialog.c). Headless tools
+# must not link it -- that was most of nux's process RSS.
+SDL_CFLAGS := $(shell pkg-config --cflags sdl2)
+SDL_LIBS := $(shell pkg-config --libs sdl2)
 
 SRC_DIR = src
 INC_DIR = include
@@ -23,15 +26,15 @@ SYS_SRCS = $(SRC_DIR)/system.c $(SRC_DIR)/machine.c $(SRC_DIR)/display.c
 COMPILER_SRCS = $(SRC_DIR)/lexer.c $(SRC_DIR)/compiler.c
 
 COMPILER_OBJS = $(OBJ_DIR)/lexer.o $(OBJ_DIR)/compiler.o
-NUX_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(SRC_DIR)/nux.c
-LUXC_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(SRC_DIR)/luxc.c
-REPL_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(SRC_DIR)/repl.c
+NUX_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(SRC_DIR)/nux.c $(SRC_DIR)/fonts_stub.c
+LUXC_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(SRC_DIR)/luxc.c $(SRC_DIR)/fonts_stub.c
+REPL_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(SRC_DIR)/repl.c $(SRC_DIR)/fonts_stub.c
 
 NUX_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(NUX_SRCS))
 LUXC_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(LUXC_SRCS))
 REPL_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(REPL_SRCS))
 
-CLOISTER_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(SRC_DIR)/dialog.c $(SRC_DIR)/cloister.c
+CLOISTER_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(SRC_DIR)/dialog.c $(SRC_DIR)/cloister.c $(SRC_DIR)/fonts.c
 CLOISTER_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(CLOISTER_SRCS))
 
 FLUXIO_COMPILER_SRCS = $(SRC_DIR)/fluxio_lexer.c $(SRC_DIR)/fluxio_ast.c \
@@ -39,7 +42,7 @@ FLUXIO_COMPILER_SRCS = $(SRC_DIR)/fluxio_lexer.c $(SRC_DIR)/fluxio_ast.c \
 FLUXIO_COMPILER_OBJS = $(OBJ_DIR)/fluxio_lexer.o $(OBJ_DIR)/fluxio_ast.o \
                        $(OBJ_DIR)/fluxio_parser.o $(OBJ_DIR)/fluxio_codegen.o $(OBJ_DIR)/fluxio_include.o
 
-FLUXIOC_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(FLUXIO_COMPILER_SRCS) $(SRC_DIR)/fluxioc.c
+FLUXIOC_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(FLUXIO_COMPILER_SRCS) $(SRC_DIR)/fluxioc.c $(SRC_DIR)/fonts_stub.c
 FLUXIOC_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(FLUXIOC_SRCS))
 
 TARGETS = $(BIN_DIR)/nux $(BIN_DIR)/luxc $(BIN_DIR)/luxrepl $(BIN_DIR)/cloister $(BIN_DIR)/fluxioc $(BIN_DIR)/fluxlink \
@@ -125,7 +128,7 @@ $(BIN_DIR)/luxrepl: $(REPL_OBJS)
 
 $(BIN_DIR)/cloister: $(CLOISTER_OBJS)
 	@echo "Linking cloister..."
-	$(CC) $(CLOISTER_OBJS) -o $@ $(LDFLAGS)
+	$(CC) $(CLOISTER_OBJS) -o $@ $(LDFLAGS) $(SDL_LIBS)
 	@echo "Built bin/cloister successfully!"
 
 $(BIN_DIR)/fluxlink: $(OBJ_DIR)/fluxlink.o
@@ -142,30 +145,40 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	@echo "Compiling $<..."
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BIN_DIR)/test_vfs: $(OBJ_DIR)/test_vfs.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/vm.o $(COMPILER_OBJS)
+$(OBJ_DIR)/cloister.o: $(SRC_DIR)/cloister.c
+	@echo "Compiling $<..."
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/dialog.o: $(SRC_DIR)/dialog.c
+	@echo "Compiling $<..."
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -c $< -o $@
+
+FONT_OBJ = $(OBJ_DIR)/fonts.o
+
+$(BIN_DIR)/test_vfs: $(OBJ_DIR)/test_vfs.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/vm.o $(COMPILER_OBJS) $(FONT_OBJ)
 	@echo "Linking test_vfs..."
-	$(CC) $(OBJ_DIR)/test_vfs.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/vm.o $(COMPILER_OBJS) -o $@ $(LDFLAGS)
+	$(CC) $(OBJ_DIR)/test_vfs.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/vm.o $(COMPILER_OBJS) $(FONT_OBJ) -o $@ $(LDFLAGS)
 	@echo "Built bin/test_vfs successfully!"
 
-$(BIN_DIR)/test_vm: $(OBJ_DIR)/test_vm.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(COMPILER_OBJS)
+$(BIN_DIR)/test_vm: $(OBJ_DIR)/test_vm.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(COMPILER_OBJS) $(FONT_OBJ)
 	@echo "Linking test_vm..."
-	$(CC) $(OBJ_DIR)/test_vm.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(COMPILER_OBJS) -o $@ $(LDFLAGS)
+	$(CC) $(OBJ_DIR)/test_vm.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(COMPILER_OBJS) $(FONT_OBJ) -o $@ $(LDFLAGS)
 	@echo "Built bin/test_vm successfully!"
 
-$(BIN_DIR)/test_compiler: $(OBJ_DIR)/test_compiler.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o
+$(BIN_DIR)/test_compiler: $(OBJ_DIR)/test_compiler.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ)
 	@echo "Linking test_compiler..."
-	$(CC) $(OBJ_DIR)/test_compiler.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o -o $@ $(LDFLAGS)
+	$(CC) $(OBJ_DIR)/test_compiler.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ) -o $@ $(LDFLAGS)
 	@echo "Built bin/test_compiler successfully!"
 
 $(BIN_DIR)/test_fluxio_compiler: $(OBJ_DIR)/test_fluxio_compiler.o $(FLUXIO_COMPILER_OBJS) $(COMPILER_OBJS) \
-    $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o
+    $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ)
 	@echo "Linking test_fluxio_compiler..."
-	$(CC) $(OBJ_DIR)/test_fluxio_compiler.o $(FLUXIO_COMPILER_OBJS) $(COMPILER_OBJS) $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o -o $@ $(LDFLAGS)
+	$(CC) $(OBJ_DIR)/test_fluxio_compiler.o $(FLUXIO_COMPILER_OBJS) $(COMPILER_OBJS) $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ) -o $@ $(LDFLAGS)
 	@echo "Built bin/test_fluxio_compiler successfully!"
 
-$(BIN_DIR)/test_abi_conformance: $(OBJ_DIR)/test_abi_conformance.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o
+$(BIN_DIR)/test_abi_conformance: $(OBJ_DIR)/test_abi_conformance.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ)
 	@echo "Linking test_abi_conformance..."
-	$(CC) $(OBJ_DIR)/test_abi_conformance.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o -o $@ $(LDFLAGS)
+	$(CC) $(OBJ_DIR)/test_abi_conformance.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ) -o $@ $(LDFLAGS)
 	@echo "Built bin/test_abi_conformance successfully!"
 
 test: $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler $(BIN_DIR)/test_fluxio_compiler $(BIN_DIR)/test_abi_conformance
@@ -191,6 +204,6 @@ clean:
 
 asan:
 	$(MAKE) clean
-	$(MAKE) all CFLAGS="$(CFLAGS) -O1 -fsanitize=address,undefined" LDFLAGS="$(LDFLAGS) -fsanitize=address,undefined"
+	$(MAKE) all CFLAGS="$(CFLAGS) -O1 -fsanitize=address,undefined" LDFLAGS="-fsanitize=address,undefined"
 
 .PHONY: all clean dir test apps uilib asan

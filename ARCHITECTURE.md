@@ -64,12 +64,27 @@ Dual-stack, big-endian bytecode, interpreted (no JIT).
 
 | Resource | Size |
 |---|---|
-| Data stack | 8192 × int32 |
+| Data stack | 8192 × int32 (~32 KB) |
 | Return stack | 1024 × uint32 |
 | Locals / frames | 4096 slots; `FRAME` / `UNFRAME` / `LOCALGET` / `LOCALSET` |
 | Loop stack | 1024 (`PUSHR` / `POPR` / `PEEKR` / `PEEKR2`) |
-| Graphical memory | 32 MB (`cloister` / `nux` graphical path) |
-| Headless memory | typically 4 MB |
+| `VM` struct (stacks + locals) | ~57 KB, always `calloc`'d |
+| Headless guest RAM | `nux_guest_memory_size(base, program)` = `base + program` (~68 KB for hello) |
+| Graphical guest RAM | `MM_TOTAL_MEMORY` (16 MB reserved map) |
+
+Hosts size the contiguous guest buffer with `nux_guest_memory_size()` in
+`include/vm.h`. Headless `nux` / `luxrepl` only cover `[0, load address +
+ROM)`. Cloister and child VMs get the full reserved map because apps
+`STOREI` into 0x8xxxxx–0xDxxxxx. A headless ROM that writes the heap or
+Fluxio bulk bands (`0xA00000` / `0xD00000`) faults unless the host passes
+`MM_TOTAL_MEMORY`.
+
+Headless **process** RSS is mostly the OS, not the VM. On macOS,
+`./bin/nux examples/lux/hello.bin` is about **1.4 MB** resident (~1.2 MB
+peak footprint). An empty C `main` is already ~1.2 MB; Nux adds roughly
+250 KB (guest image + `VM`/`System` + the 116 KB `bin/nux`). `nux` links
+only `libSystem` — no SDL2, no CFF font blobs (`src/fonts_stub.c`).
+Cloister links SDL2 and `src/fonts.c`.
 
 Execution is confined to a single contiguous image `[image_base, image_end)`.
 Jumps, calls, and writes into that range fault; reads (string literals) are
@@ -253,7 +268,8 @@ modal on the picker.
 File dialogs (`src/dialog.c`) are a host overlay: while they are open,
 Cloister routes input to the dialog instead of the ROM.
 
-`nux` is the same machine without SDL: console `OUT`, no framebuffer.
+`nux` is the same machine without SDL: console `OUT`, no framebuffer,
+no pixel buffers, guest RAM sized to the ROM.
 
 ## Guest programming model
 

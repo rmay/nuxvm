@@ -54,7 +54,7 @@ uint8_t prog[] = {
 };
 
 VM* vm = vm_create(prog, sizeof(prog), HEADLESS_BASE_ADDRESS,
-                   4 * 1024 * 1024, false);
+                   nux_guest_memory_size(HEADLESS_BASE_ADDRESS, sizeof(prog)), false);
 vm_run(vm);
 vm_free(vm);
 ```

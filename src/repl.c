@@ -93,7 +93,7 @@ static void evaluate(const char* line) {
         return;
     }
 
-    uint32_t total_memory = 32 * 1024 * 1024;
+    uint32_t total_memory = nux_guest_memory_size(HEADLESS_BASE_ADDRESS, (uint32_t)code_len);
     VM* vm = vm_create(bytecode, code_len, HEADLESS_BASE_ADDRESS, total_memory, false);
     if (vm) {
         vm_run(vm);

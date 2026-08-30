@@ -546,6 +546,31 @@ void test_memory_faults() {
     printf("  memory faults: OK\n");
 }
 
+void test_guest_memory_size() {
+    printf("Testing nux_guest_memory_size...\n");
+    uint32_t headless = nux_guest_memory_size(HEADLESS_BASE_ADDRESS, 100);
+    assert(headless == HEADLESS_BASE_ADDRESS + 100);
+
+    uint32_t graphical = nux_guest_memory_size(GRAPHICAL_BASE_ADDRESS, 100);
+    assert(graphical == MM_TOTAL_MEMORY);
+
+    uint8_t prog[] = { OP_HALT };
+    VM* vm = vm_create(prog, sizeof(prog), HEADLESS_BASE_ADDRESS,
+                       nux_guest_memory_size(HEADLESS_BASE_ADDRESS, sizeof(prog)), false);
+    assert(vm != NULL);
+    assert(vm->memory_size == HEADLESS_BASE_ADDRESS + sizeof(prog));
+    vm_run(vm);
+    assert(vm->halted);
+    vm_free(vm);
+
+    Machine* m = machine_create(prog, sizeof(prog), GRAPHICAL_BASE_ADDRESS,
+                                nux_guest_memory_size(GRAPHICAL_BASE_ADDRESS, sizeof(prog)), false);
+    assert(m != NULL);
+    assert(m->cpu->memory_size == MM_TOTAL_MEMORY);
+    machine_free(m);
+    printf("  guest memory size: OK\n");
+}
+
 int main() {
     test_push_pop();
     test_stack_manipulation();
@@ -562,6 +587,7 @@ int main() {
     test_time_scratch_is_ram();
     test_yield();
     test_memory_faults();
+    test_guest_memory_size();
     printf("All VM opcode tests passed!\n");
     return 0;
 }

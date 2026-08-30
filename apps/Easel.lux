@@ -151,11 +151,15 @@ IMPORT CFF
 @CONFIRM_BTN_W   180 ;
 @CONFIRM_BTN_H    30 ;
 @CONFIRM_BTN_GAP  10 ;
-@CLR_CONFIRM_DIM    0x000000 ;
-@CLR_CONFIRM_PANEL  0x303030 ;
-@CLR_CONFIRM_BORDER 0xAAAAAA ;
-@CLR_CONFIRM_TEXT   0xFFFFFF ;
-@CLR_CONFIRM_BTN    0x505050 ;
+( System 6 modal dialog palette: white body, black border/text, and a
+  solid drop shadow instead of dimming the desktop -- no screen-wide
+  scrim, matching lib/sf.lux's Standard File dialog. )
+@CLR_CONFIRM_DIM    0x000000 ; ( drop-shadow color, offset behind the panel )
+@CLR_CONFIRM_PANEL  0xFFFFFF ;
+@CLR_CONFIRM_BORDER 0x000000 ;
+@CLR_CONFIRM_TEXT   0x000000 ;
+@CLR_CONFIRM_BTN    0xCCCCCC ; ( selection highlight on a white panel )
+@CONFIRM_SHADOW      4 ;
 
 ( Edit Pattern modal: an 8x8 grid of clickable cells, reusing the confirm
   dialog's dim/panel/border/text/btn palette. )
@@ -2381,34 +2385,18 @@ IMPORT CFF
 @confirm-btn-x ( -- x ) confirm-panel-x CONFIRM_PANEL_W CONFIRM_BTN_W - 2 / + ;
 @confirm-btn-y ( i -- y ) confirm-panel-y 46 + swap CONFIRM_BTN_H CONFIRM_BTN_GAP + * + ;
 
-@confirm-hit-btn ( i px py -- flag )
-    3 frame! ( 0:py 1:px 2:i )
-    1 local@ confirm-btn-x < [ 0 ] [
-    1 local@ confirm-btn-x CONFIRM_BTN_W + >= [ 0 ] [
-    0 local@ 2 local@ confirm-btn-y < [ 0 ] [
-    0 local@ 2 local@ confirm-btn-y CONFIRM_BTN_H + >= [ 0 ] [
-    1
-    ] ?: ] ?: ] ?: ] ?:
-    3 unframe!
-;
-
 @confirm-dirty-draw ( -- )
     confirm-dirty-open LOADI [
-        APP::draw-fd 0 0 WIN_W WIN_H CLR_CONFIRM_DIM DRAW::fill-rect
         confirm-panel-x confirm-panel-y confirm-btn-x 3 frame! ( 0:bx 1:py 2:px )
+        APP::draw-fd 2 local@ CONFIRM_SHADOW + 1 local@ CONFIRM_SHADOW + CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_DIM DRAW::fill-rect
         APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
         APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
         APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_H + 1 - CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
         APP::draw-fd 2 local@ 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
         APP::draw-fd 2 local@ CONFIRM_PANEL_W + 1 - 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
         APP::draw-fd 2 local@ 26 + 1 local@ 16 + T"Save changes?" CLR_CONFIRM_TEXT 16 DRAW::draw-str
-        APP::draw-fd 0 local@ 0 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
-        APP::draw-fd 0 local@ 68 + 0 confirm-btn-y 9 + T"Save" CLR_CONFIRM_TEXT 16 DRAW::draw-str
-        APP::draw-fd 0 local@ 1 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
-        APP::draw-fd 0 local@ 34 + 1 confirm-btn-y 9 + T"Don't Save" CLR_CONFIRM_TEXT 16 DRAW::draw-str
-        APP::draw-fd 0 local@ 2 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
-        APP::draw-fd 0 local@ 52 + 2 confirm-btn-y 9 + T"Cancel" CLR_CONFIRM_TEXT 16 DRAW::draw-str
         3 unframe!
+        UI::overlay-draw
     ] ?
 ;
 
@@ -2426,29 +2414,40 @@ IMPORT CFF
 ( Save/Don't Save both resolve to whatever menu-new/menu-open/menu-quit
   parked in confirm-pending before opening this sheet -- see
   confirm-run-pending. )
+@confirm-dirty-save ( val -- )
+    drop
+    save-file
+    0 confirm-dirty-open STOREI
+    0 APP::modal!
+    confirm-run-pending
+;
+
+@confirm-dirty-dont-save ( val -- )
+    drop
+    0 confirm-dirty-open STOREI
+    0 APP::modal!
+    confirm-run-pending
+;
+
+@confirm-dirty-cancel ( val -- )
+    drop
+    0 confirm-dirty-open STOREI
+    0 APP::modal!
+    APP::dirty!
+;
+
+@confirm-dirty-build ( -- )
+    UI::overlay-clear
+    T"Save" confirm-btn-x 0 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H [ confirm-dirty-save ] UI::overlay-button
+    T"Don't Save" confirm-btn-x 1 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H [ confirm-dirty-dont-save ] UI::overlay-button
+    T"Cancel" confirm-btn-x 2 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H [ confirm-dirty-cancel ] UI::overlay-button
+    T"Save" UI::overlay-default
+;
+
 @confirm-dirty-mouse ( mpkt -- )
-    1 frame! ( 0:mpkt )
-    0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
-        0 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
-            save-file
-            0 confirm-dirty-open STOREI
-            0 APP::modal!
-            confirm-run-pending
-        ] [
-            1 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
-                0 confirm-dirty-open STOREI
-                0 APP::modal!
-                confirm-run-pending
-            ] [
-                2 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
-                    0 confirm-dirty-open STOREI
-                    0 APP::modal!
-                    APP::dirty!
-                ] ?
-            ] ?:
-        ] ?:
-    ] ?
-    1 unframe!
+    dup UI::overlay-feed
+    UI::overlay-handle
+    drop
 ;
 
 @confirm-dirty-kbd ( kpkt -- )
@@ -2469,43 +2468,47 @@ IMPORT CFF
 @io-alert-open  0x8A0104 ; ( 0/1 )
 @io-alert-text  0x8A0108 ; ( T-string ptr shown in the panel )
 
-@io-alert! { msg -- }
-    msg io-alert-text STOREI
-    1 io-alert-open STOREI
-    1 APP::modal!
-    APP::dirty!
-;
-
 @io-alert-dismiss ( -- )
     0 io-alert-open STOREI
     0 APP::modal!
     APP::dirty!
 ;
 
+@io-alert-ok ( val -- ) drop io-alert-dismiss ;
+
+@io-alert-build ( -- )
+    UI::overlay-clear
+    T"OK" confirm-btn-x 1 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H [ io-alert-ok ] UI::overlay-button
+    T"OK" UI::overlay-default
+;
+
+@io-alert! { msg -- }
+    msg io-alert-text STOREI
+    1 io-alert-open STOREI
+    1 APP::modal!
+    io-alert-build
+    APP::dirty!
+;
+
 @io-alert-draw ( -- )
     io-alert-open LOADI [
-        APP::draw-fd 0 0 WIN_W WIN_H CLR_CONFIRM_DIM DRAW::fill-rect
         confirm-panel-x confirm-panel-y confirm-btn-x 3 frame! ( 0:bx 1:py 2:px )
+        APP::draw-fd 2 local@ CONFIRM_SHADOW + 1 local@ CONFIRM_SHADOW + CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_DIM DRAW::fill-rect
         APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
         APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
         APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_H + 1 - CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
         APP::draw-fd 2 local@ 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
         APP::draw-fd 2 local@ CONFIRM_PANEL_W + 1 - 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
         APP::draw-fd 2 local@ 26 + 1 local@ 16 + io-alert-text LOADI CLR_CONFIRM_TEXT 16 DRAW::draw-str
-        APP::draw-fd 0 local@ 1 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
-        APP::draw-fd 0 local@ 82 + 1 confirm-btn-y 9 + T"OK" CLR_CONFIRM_TEXT 16 DRAW::draw-str
         3 unframe!
+        UI::overlay-draw
     ] ?
 ;
 
 @io-alert-mouse ( mpkt -- )
-    1 frame! ( 0:mpkt )
-    0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
-        1 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
-            io-alert-dismiss
-        ] ?
-    ] ?
-    1 unframe!
+    dup UI::overlay-feed
+    UI::overlay-handle
+    drop
 ;
 
 @io-alert-kbd ( kpkt -- )
@@ -2565,7 +2568,7 @@ IMPORT CFF
 
 @edit-pat-draw ( -- )
     edit-pat-open LOADI [
-        APP::draw-fd 0 0 WIN_W WIN_H CLR_CONFIRM_DIM DRAW::fill-rect
+        APP::draw-fd EPAT_PANEL_X CONFIRM_SHADOW + EPAT_PANEL_Y CONFIRM_SHADOW + EPAT_PANEL_W EPAT_PANEL_H CLR_CONFIRM_DIM DRAW::fill-rect
         APP::draw-fd EPAT_PANEL_X EPAT_PANEL_Y EPAT_PANEL_W EPAT_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
         APP::draw-fd EPAT_PANEL_X EPAT_PANEL_Y EPAT_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
         APP::draw-fd EPAT_PANEL_X EPAT_PANEL_Y EPAT_PANEL_H + 1 - EPAT_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
@@ -2591,10 +2594,7 @@ IMPORT CFF
             ] |:
         UNGIRD
         APP::draw-fd EPAT_GRID_X EPAT_GRID_Y EPAT_GRID EPAT_GRID CLR_CONFIRM_BORDER DRAW::frame-rect
-        APP::draw-fd EPAT_OK_X EPAT_BTN_Y EPAT_BTN_W EPAT_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
-        APP::draw-fd EPAT_OK_X 24 + EPAT_BTN_Y 6 + T"OK" CLR_CONFIRM_TEXT 16 DRAW::draw-str
-        APP::draw-fd EPAT_CANCEL_X EPAT_BTN_Y EPAT_BTN_W EPAT_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
-        APP::draw-fd EPAT_CANCEL_X 10 + EPAT_BTN_Y 6 + T"Cancel" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        UI::overlay-draw
     ] ?
 ;
 
@@ -2605,25 +2605,36 @@ IMPORT CFF
 
 ( OK and Cancel both just close the modal -- every toggle already wrote
   straight into PATTERNS, so there is nothing to commit/discard. )
+@edit-pat-close ( val -- )
+    drop
+    0 edit-pat-open STOREI
+    0 APP::modal!
+    APP::dirty!
+;
+
+@edit-pat-build ( -- )
+    UI::overlay-clear
+    T"OK" EPAT_OK_X EPAT_BTN_Y EPAT_BTN_W EPAT_BTN_H [ edit-pat-close ] UI::overlay-button
+    T"Cancel" EPAT_CANCEL_X EPAT_BTN_Y EPAT_BTN_W EPAT_BTN_H [ edit-pat-close ] UI::overlay-button
+    T"OK" UI::overlay-default
+;
+
 @edit-pat-mouse { mpkt -- }
+    mpkt UI::overlay-feed
+    UI::overlay-handle
     mpkt EVENT::mouse-type EVENT::MOUSE_DOWN = [
         mpkt EVENT::mouse-x { mx }
             mpkt EVENT::mouse-y { my }
-                EPAT_OK_X EPAT_BTN_Y mx my epat-in-btn?
-                EPAT_CANCEL_X EPAT_BTN_Y mx my epat-in-btn? OR [
-                    0 edit-pat-open STOREI
-                    0 APP::modal!
+                EPAT_OK_X EPAT_BTN_Y mx my epat-in-btn? 0 =
+                EPAT_CANCEL_X EPAT_BTN_Y mx my epat-in-btn? 0 = AND
+                mx EPAT_GRID_X >= AND mx EPAT_GRID_X EPAT_GRID + < AND
+                my EPAT_GRID_Y >= AND my EPAT_GRID_Y EPAT_GRID + < AND [
+                    edit-pat-id LOADI
+                    mx EPAT_GRID_X - EPAT_CELL /
+                    my EPAT_GRID_Y - EPAT_CELL /
+                    epat-toggle
                     APP::dirty!
-                ] [
-                    mx EPAT_GRID_X >= mx EPAT_GRID_X EPAT_GRID + < AND
-                    my EPAT_GRID_Y >= AND my EPAT_GRID_Y EPAT_GRID + < AND [
-                        edit-pat-id LOADI
-                        mx EPAT_GRID_X - EPAT_CELL /
-                        my EPAT_GRID_Y - EPAT_CELL /
-                        epat-toggle
-                        APP::dirty!
-                    ] ?
-                ] ?:
+                ] ?
             UNGIRD
         UNGIRD
     ] ?
@@ -2645,6 +2656,7 @@ IMPORT CFF
     pat-id LOADI edit-pat-id STOREI
     1 edit-pat-open STOREI
     1 APP::modal!
+    edit-pat-build
     APP::dirty!
 ;
 
@@ -2655,7 +2667,7 @@ IMPORT CFF
 
 @brush-pick-draw ( -- )
     brush-pick-open LOADI [
-        APP::draw-fd 0 0 WIN_W WIN_H CLR_CONFIRM_DIM DRAW::fill-rect
+        APP::draw-fd BR_PANEL_X CONFIRM_SHADOW + BR_PANEL_Y CONFIRM_SHADOW + BR_PANEL_W BR_PANEL_H CLR_CONFIRM_DIM DRAW::fill-rect
         APP::draw-fd BR_PANEL_X BR_PANEL_Y BR_PANEL_W BR_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
         APP::draw-fd BR_PANEL_X BR_PANEL_Y BR_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
         APP::draw-fd BR_PANEL_X BR_PANEL_Y BR_PANEL_H + 1 - BR_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
@@ -2750,6 +2762,7 @@ IMPORT CFF
         action confirm-pending STOREI
         1 confirm-dirty-open STOREI
         1 APP::modal!
+        confirm-dirty-build
         APP::dirty!
     ] [
         action confirm-pending STOREI
@@ -3586,6 +3599,7 @@ IMPORT CFF
                                     pi edit-pat-id STOREI
                                     1 edit-pat-open STOREI
                                     1 APP::modal!
+                                    edit-pat-build
                                 ] ?
                                 now epat-last-time STOREI
                             UNGIRD

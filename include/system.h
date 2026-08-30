@@ -44,6 +44,7 @@ typedef struct System {
     int32_t screen_width;
     int32_t screen_height;
     uint8_t* screen_pixels;
+    bool screen_pixels_owned; /* true if screen_pixels was malloc'd by System */
     uint8_t* back_pixels;
     uint32_t rng_state;
 

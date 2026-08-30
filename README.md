@@ -24,7 +24,7 @@ While I did write code, I also argued with LLMs, especially Grok and Claude, to 
 
 NUXVM started life in Go, but the whole system is now pure C:
 
-- Minimal dependencies (a C compiler, pkg-config, and SDL2)
+- Minimal dependencies (a C compiler; Cloister also needs pkg-config and SDL2)
 - Full control over memory layout and the framebuffer
 - One small `Makefile` builds every tool and test
 
@@ -78,7 +78,7 @@ NUX uses a dual-stack architecture:
 
 - **Data Stack**: Primary stack for computation (32-bit signed integers, max 8192)
 - **Return Stack**: Dedicated stack for subroutine return addresses (max 1024)
-- **Memory**: Unified space for program code and runtime data (default 32MB in cloister)
+- **Memory**: Unified space for program code and runtime data. Headless `nux` sizes guest RAM to the ROM (~68 KB for hello). Cloister uses the 16 MB reserved map.
 - **Program Counter (PC)**: 32-bit address pointer
 
 ### Execution Model
@@ -96,7 +96,7 @@ NUX uses a dual-stack architecture:
 ### Prerequisites
 
 - A C compiler (gcc or clang)
-- pkg-config and SDL2 development headers (`brew install sdl2` / `apt install libsdl2-dev`)
+- For Cloister only: pkg-config and SDL2 development headers (`brew install sdl2` / `apt install libsdl2-dev`)
 - Basic understanding of stack-based computing
 
 ### Installation
@@ -495,7 +495,7 @@ int main(void) {
     };
 
     VM* vm = vm_create(program, sizeof(program), HEADLESS_BASE_ADDRESS,
-                       4 * 1024 * 1024, false);
+                       nux_guest_memory_size(HEADLESS_BASE_ADDRESS, sizeof(program)), false);
     vm_run(vm);
     vm_free(vm);
     return 0;
@@ -940,6 +940,20 @@ Contributions welcome! Areas for improvement:
 - Memory is byte-addressed
 - LOAD/STORE use 32-bit addresses
 - Out-of-bounds access causes runtime error
+- Hosts call `nux_guest_memory_size()` (`include/vm.h`): headless = `base + program`; graphical = 16 MB (`MM_TOTAL_MEMORY`)
+
+### Headless host memory (`bin/nux`)
+
+The VM is small. On macOS, `./bin/nux examples/lux/hello.bin` uses about **1.4 MB** resident (~1.2 MB peak). An empty C process is already ~1.2 MB; Nux adds roughly 250 KB:
+
+| Piece | Size |
+|---|---|
+| Guest RAM (`0x11000` + ROM) | ~68 KB for hello |
+| `VM` stacks / locals | ~57 KB |
+| `System` + VFS tables | ~20 KB |
+| `bin/nux` | 116 KB (`libSystem` only; no SDL2, no CFF fonts) |
+
+A headless ROM that stores into the heap or Fluxio bulk bands (`0xA00000` / `0xD00000`) faults unless the host passes `MM_TOTAL_MEMORY` (16 MB). Typical console programs do not. Cloister always gets the 16 MB map, plus a 960×720 back buffer and SDL2.
 
 ### Performance
 
