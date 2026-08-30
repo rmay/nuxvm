@@ -1,5 +1,8 @@
 ( Easel: a MacPaint clone in progress -- see easel_plan.md for the full plan.
-  File > New/Open/Save/Save As | Quit, Edit > Undo / Cut / Copy / Paste /
+  File > New/Open/Save/Save As/Quit, all routed through one dirty-confirm
+  sheet (Save/Don't Save/Cancel) when there are unsaved changes -- no Revert
+  yet. A failed save or a load that isn't a valid EAS1 file raises a
+  one-button alert instead of failing silently. Edit > Undo / Cut / Copy / Paste /
   Invert / Clear / Fill / Trace Edges / Flip H / Flip V / Rotate 90,
   Goodies > Grid / FatBits / Edit Pattern / Brush Shape, Font > Chicago /
   Geneva / Monaco, Size > 12 / 24 / 36, Style > Bold / Underline (Italic /
@@ -122,6 +125,10 @@ IMPORT CFF
 @STYLE_BOLD       1 ;
 @STYLE_UNDERLINE  2 ;
 
+@CONFIRM_ACT_NEW   0 ; ( what the dirty-confirm sheet runs after Save/Don't Save )
+@CONFIRM_ACT_OPEN  1 ;
+@CONFIRM_ACT_QUIT  2 ;
+
 @MODE_BLACK      0 ;
 @MODE_WHITE      1 ;
 @MODE_PAT        2 ;
@@ -215,7 +222,7 @@ IMPORT CFF
 @drag              0x8A0008 ;
 @mouse-held        0x8A000C ;
 @file-dirty        0x8A0010 ;
-@confirm-new-open  0x8A0014 ;
+@confirm-dirty-open  0x8A0014 ;
 @grid-f            0x8A0018 ;
 @fat-f             0x8A001C ;
 ( 0x8A0020 formerly filled-f -- removed, see shape-filled? )
@@ -273,6 +280,7 @@ IMPORT CFF
 @text-style        0x8A00F0 ; ( STYLE_BOLD/STYLE_UNDERLINE bitmask; combinable )
 @font-grp          0x8A00F4 ; ( UI radio-group ids, allocated once at @start )
 @size-grp          0x8A00F8 ;
+@confirm-pending   0x8A00FC ; ( CONFIRM_ACT_* -- what the dirty-confirm sheet runs on Save/Don't Save )
 
 ( Explicit damage bits, replacing the old single pat-full flag (whose narrow
   meaning -- "must draw-patterns redraw all swatches" -- was the exact bug: a
@@ -2345,50 +2353,11 @@ IMPORT CFF
     PACK 6 + DRAW::load-word-le CANVAS_H = AND
 ;
 
-@save-file ( -- )
-    pack-bits
-    PATH make-vfs-path 6 VFS::open-mode
-    dup 0 >= [
-        dup PACK PACK_BYTES VFS::write drop
-        VFS::close drop
-        0 file-dirty STOREI
-        sync-title
-        APP::dirty!
-    ] [ drop ] ?:
-;
-
-@load-path ( path -- )
-    dup load-byte 47 = [ 1 + ] ?
-    PATH STR::strcpy
-    PATH make-vfs-path 0 VFS::open-mode
-    dup 0 >= [
-        dup PACK PACK_BYTES VFS::read { n }
-            VFS::close drop
-            n PACK_BYTES < [
-            ] [
-                magic-ok? [
-                    unpack-bits
-                    0 file-dirty STOREI
-                    0 undo-ok STOREI
-                    0 fat-ox STOREI
-                    0 fat-oy STOREI
-                    0 sel-active STOREI
-                    0 sel-mask-active STOREI
-                    0 move-dx STOREI
-                    0 move-dy STOREI
-                ] ?
-            ] ?:
-        UNGIRD
-        sync-title
-    ] [ drop ] ?:
-    APP::dirty!
-;
-
 @new-document ( -- )
     CANVAS clear-buf
     T"untitled.eas" PATH STR::strcpy
     0 file-dirty STOREI
-    0 confirm-new-open STOREI
+    0 confirm-dirty-open STOREI
     0 APP::modal!
     0 undo-ok STOREI
     DRAG_NONE drag STOREI
@@ -2423,8 +2392,8 @@ IMPORT CFF
     3 unframe!
 ;
 
-@confirm-new-draw ( -- )
-    confirm-new-open LOADI [
+@confirm-dirty-draw ( -- )
+    confirm-dirty-open LOADI [
         APP::draw-fd 0 0 WIN_W WIN_H CLR_CONFIRM_DIM DRAW::fill-rect
         confirm-panel-x confirm-panel-y confirm-btn-x 3 frame! ( 0:bx 1:py 2:px )
         APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
@@ -2443,22 +2412,36 @@ IMPORT CFF
     ] ?
 ;
 
-@confirm-new-mouse ( mpkt -- )
+@confirm-run-pending ( -- )
+    confirm-pending LOADI CONFIRM_ACT_NEW = [
+        new-document
+    ] [
+    confirm-pending LOADI CONFIRM_ACT_OPEN = [
+        SF::show
+    ] [
+        HALT
+    ] ?: ] ?:
+;
+
+( Save/Don't Save both resolve to whatever menu-new/menu-open/menu-quit
+  parked in confirm-pending before opening this sheet -- see
+  confirm-run-pending. )
+@confirm-dirty-mouse ( mpkt -- )
     1 frame! ( 0:mpkt )
     0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
         0 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
             save-file
-            0 confirm-new-open STOREI
+            0 confirm-dirty-open STOREI
             0 APP::modal!
-            new-document
+            confirm-run-pending
         ] [
             1 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
-                0 confirm-new-open STOREI
+                0 confirm-dirty-open STOREI
                 0 APP::modal!
-                new-document
+                confirm-run-pending
             ] [
                 2 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
-                    0 confirm-new-open STOREI
+                    0 confirm-dirty-open STOREI
                     0 APP::modal!
                     APP::dirty!
                 ] ?
@@ -2468,15 +2451,116 @@ IMPORT CFF
     1 unframe!
 ;
 
-@confirm-new-kbd ( kpkt -- )
+@confirm-dirty-kbd ( kpkt -- )
     dup EVENT::kbd-type EVENT::KEY_DOWN = [
         dup EVENT::kbd-key EVENT::KEY_ESC = [
-            0 confirm-new-open STOREI
+            0 confirm-dirty-open STOREI
             0 APP::modal!
             APP::dirty!
         ] ?
     ] ?
     drop
+;
+
+( One-button alert for save-file/load-path's I/O failures -- opening the
+  destination, or (for load) reading a full/valid EAS1 file. Reuses the
+  confirm sheet's panel geometry with a single centered OK button instead
+  of three. )
+@io-alert-open  0x8A0104 ; ( 0/1 )
+@io-alert-text  0x8A0108 ; ( T-string ptr shown in the panel )
+
+@io-alert! { msg -- }
+    msg io-alert-text STOREI
+    1 io-alert-open STOREI
+    1 APP::modal!
+    APP::dirty!
+;
+
+@io-alert-dismiss ( -- )
+    0 io-alert-open STOREI
+    0 APP::modal!
+    APP::dirty!
+;
+
+@io-alert-draw ( -- )
+    io-alert-open LOADI [
+        APP::draw-fd 0 0 WIN_W WIN_H CLR_CONFIRM_DIM DRAW::fill-rect
+        confirm-panel-x confirm-panel-y confirm-btn-x 3 frame! ( 0:bx 1:py 2:px )
+        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
+        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_H + 1 - CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ CONFIRM_PANEL_W + 1 - 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ 26 + 1 local@ 16 + io-alert-text LOADI CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        APP::draw-fd 0 local@ 1 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
+        APP::draw-fd 0 local@ 82 + 1 confirm-btn-y 9 + T"OK" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        3 unframe!
+    ] ?
+;
+
+@io-alert-mouse ( mpkt -- )
+    1 frame! ( 0:mpkt )
+    0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
+        1 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
+            io-alert-dismiss
+        ] ?
+    ] ?
+    1 unframe!
+;
+
+@io-alert-kbd ( kpkt -- )
+    dup EVENT::kbd-type EVENT::KEY_DOWN = [
+        dup EVENT::kbd-key EVENT::KEY_ESC = [ io-alert-dismiss ] ?
+    ] ?
+    drop
+;
+
+@save-file ( -- )
+    pack-bits
+    PATH make-vfs-path 6 VFS::open-mode
+    dup 0 >= [
+        dup PACK PACK_BYTES VFS::write drop
+        VFS::close drop
+        0 file-dirty STOREI
+        sync-title
+        APP::dirty!
+    ] [
+        drop
+        T"Couldn't save the file." io-alert!
+    ] ?:
+;
+
+@load-path ( path -- )
+    dup load-byte 47 = [ 1 + ] ?
+    PATH STR::strcpy
+    PATH make-vfs-path 0 VFS::open-mode
+    dup 0 >= [
+        dup PACK PACK_BYTES VFS::read { n }
+            VFS::close drop
+            n PACK_BYTES < [
+                T"That file is too short to be a MacPaint file." io-alert!
+            ] [
+                magic-ok? [
+                    unpack-bits
+                    0 file-dirty STOREI
+                    0 undo-ok STOREI
+                    0 fat-ox STOREI
+                    0 fat-oy STOREI
+                    0 sel-active STOREI
+                    0 sel-mask-active STOREI
+                    0 move-dx STOREI
+                    0 move-dy STOREI
+                ] [
+                    T"That doesn't look like a MacPaint file." io-alert!
+                ] ?:
+            ] ?:
+        UNGIRD
+        sync-title
+    ] [
+        drop
+        T"Couldn't open the file." io-alert!
+    ] ?:
+    APP::dirty!
 ;
 
 @edit-pat-draw ( -- )
@@ -2661,22 +2745,25 @@ IMPORT CFF
     APP::dirty!
 ;
 
-@menu-new ( -- )
+@confirm-dirty-or { action -- }
     file-dirty LOADI [
-        1 confirm-new-open STOREI
+        action confirm-pending STOREI
+        1 confirm-dirty-open STOREI
         1 APP::modal!
         APP::dirty!
     ] [
-        new-document
+        action confirm-pending STOREI
+        confirm-run-pending
     ] ?:
 ;
 
-@menu-open ( -- ) SF::show ;
+@menu-new  ( -- ) CONFIRM_ACT_NEW  confirm-dirty-or ;
+@menu-open ( -- ) CONFIRM_ACT_OPEN confirm-dirty-or ;
+@menu-quit ( -- ) CONFIRM_ACT_QUIT confirm-dirty-or ;
 @menu-save-as ( -- )
     1 save-as STOREI
     PATH SF::show-save
 ;
-@menu-quit ( -- ) HALT ;
 @menu-undo ( val -- ) drop do-undo ;
 @menu-invert ( val -- ) drop do-invert ;
 @menu-clear ( val -- ) drop do-clear ;
@@ -3113,9 +3200,10 @@ IMPORT CFF
     draw-patterns
     UI::draw
     SF::open? [ SF::draw ] ?
-    confirm-new-draw
+    confirm-dirty-draw
     edit-pat-draw
     brush-pick-draw
+    io-alert-draw
     0 damage STOREI
 ;
 
@@ -3558,8 +3646,11 @@ IMPORT CFF
 ;
 
 @on-mouse ( mpkt -- )
-    confirm-new-open LOADI [
-        confirm-new-mouse
+    io-alert-open LOADI [
+        io-alert-mouse
+    ] [
+    confirm-dirty-open LOADI [
+        confirm-dirty-mouse
     ] [
     edit-pat-open LOADI [
         edit-pat-mouse
@@ -3579,6 +3670,7 @@ IMPORT CFF
                 handle-page-mouse
             ] ?:
         UNGIRD
+    ] ?:
     ] ?:
     ] ?:
     ] ?:
@@ -3623,8 +3715,11 @@ IMPORT CFF
 ;
 
 @on-kbd ( kpkt -- )
-    confirm-new-open LOADI [
-        confirm-new-kbd
+    io-alert-open LOADI [
+        io-alert-kbd
+    ] [
+    confirm-dirty-open LOADI [
+        confirm-dirty-kbd
     ] [
     edit-pat-open LOADI [
         edit-pat-kbd
@@ -3682,20 +3777,22 @@ IMPORT CFF
     ] ?:
     ] ?:
     ] ?:
+    ] ?:
 ;
 
 @on-frame ( -- )
     UI::handle
-    APP::dirty? SF::open? OR confirm-new-open LOADI OR edit-pat-open LOADI OR
-    brush-pick-open LOADI OR [
+    APP::dirty? SF::open? OR confirm-dirty-open LOADI OR edit-pat-open LOADI OR
+    brush-pick-open LOADI OR io-alert-open LOADI OR [
         draw-damaged
         APP::dirty-off
     ] [
         UI::draw
         SF::open? [ SF::draw ] ?
-        confirm-new-draw
+        confirm-dirty-draw
         edit-pat-draw
         brush-pick-draw
+        io-alert-draw
     ] ?:
 ;
 
@@ -3769,6 +3866,7 @@ IMPORT CFF
     0 epat-last-time STOREI
     0 brush-index STOREI
     0 brush-pick-open STOREI
+    0 io-alert-open STOREI
     -1 br-last-idx STOREI
     0 br-last-time STOREI
     0 sel-active STOREI
