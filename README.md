@@ -43,6 +43,7 @@ NUXVM started life in Go, but the whole system is now pure C:
 - [Development](#development)
 - [Cloister](#cloister)
 - [The Why](#the-why)
+- [AI](#AI)
 
 Guest apps (Quill, Illumos, Tabula, Nib, Easel): **[docs/user-manual.md](docs/user-manual.md)**
 
@@ -966,7 +967,7 @@ A headless ROM that stores into the heap or Fluxio bulk bands (`0xA00000` / `0xD
 
 # Cloister
 
-Cloister is the graphical host for NUX — a Varvara-shaped fantasy machine, not a multi-app OS. One program owns the screen, `/dev/draw`, `/dev/mouse`, and `/dev/kbd`. Run `./bin/cloister` to pick a ROM: the picker is itself a Lux app (`apps/Picker.lux`) with two group-box columns, Lux sources on the left (compiled on the fly) and compiled Fluxio bins from `apps/fluxio/` on the right. **Cloister > About Cloister** is a modal info box; **Cloister > Quit** leaves the host. Pass a `.bin` / `.lux` path to boot that ROM directly. Esc is Continue / Restart / Quit inside an app (and closes About on the picker).
+Cloister is the graphical host for NUX — a fantasy machine, not a multi-app OS. One program owns the screen, `/dev/draw`, `/dev/mouse`, and `/dev/kbd`. Run `./bin/cloister` to pick a ROM: the picker is itself a Lux app (`apps/Picker.lux`) with two group-box columns, Lux sources on the left (compiled on the fly) and compiled Fluxio bins from `apps/fluxio/` on the right. **Cloister > About Cloister** is a modal info box; **Cloister > Quit** leaves the host. Pass a `.bin` / `.lux` path to boot that ROM directly. Esc is Continue / Restart / Quit inside an app (and closes About on the picker).
 
 The five guest apps — **Quill** (text), **Illumos** (bitmap fonts), **Tabula** (spreadsheet), **Nib** (object drawing), and **Easel** (pixel painting) — are documented in **[docs/user-manual.md](docs/user-manual.md)**. Menus and buttons are Chicago. Quill, Tabula, and Nib have **Font > Chicago / Geneva / Monaco** for document text.
 
@@ -1010,10 +1011,26 @@ I’m not standing against the world, against tides and trends, opposing this ph
 
 ---
 
+# AI
+
+I didn't use AI until I had the entire Nux VM working with the original 32 opcodes and Lux compiling. Then I started using it to help with documentation and I had some success with that. I used it for debugging, and at first, it was terrible. I refined my approach to have AI do analysis and breakdown of the bug, then I fixed said bug.
+
+This was all fine and dandy until I decided to play "what if?" with the project, and AI helped me speed run through different design patterns and targets until I found things I liked. I went down a bunch of blind alleys, rewrote everything in C, added a C-like language, Fluxio, to the mix, tinkered with a couple of tiny desktop concepts, and rejected them to focus on single-app implementation of Cloister, started working on small apps, and refactored aspects of Lux, all on the cheap subscriptions from a couple of AI companies. 
+
+AI helped me try out designs and code far faster than I ever could by myself. Yeah, the code is a bit sprawling now; I need to do a couple of passes to clean the code, tighten the structure, tidy up documentation, etc. But those were all things I would have to do anyway, and I couldn't have attempted several major concepts as quickly as I did. We're talking months as a solo hobby project, not years with a team.
+
+I expanded the opcodes from 32 to 55 as I worked on making the system responsive instead of holding to an arbitary number I liked. I'm clamping down on 55, though; if I can't get something done without needing a new opcode, that's a clear signal I need to rethink what I'm trying to accomplish. 
+
+A few years ago, I would have laughed at the idea of AI being useful for coding. I have no idea if any of this is sustainable, or if the entire AI sector will collapse to a fraction of what it is now, or anything. As of 2026, AI agents are actually useful enough to explore ideas and implement concepts, as janky as those implementations might be, in a short amount of time.
+
+I still own the code, it's all right there, and it's still understandable to a human reading it. Along the way, I switched from handcarving each piece, to using still-unproven industrial-sized tools.
+
+---
+
 ## Acknowledgments
 
 - Inspired by **Forth** and other stack-based languages
-- Test suite written with the help of Claude Sonnet 4.5 and Gemini 3.
+- Test suite written with the help of Claude, Gemini, and Grok.
 - Code written by me, but enhanced and expanded through using Grok 3.5, Claude Sonnet 4.5, and Gemini 3.
 - Designed for learning and experimentation
 - Documentation rewritten by Claude Sonnet 4.5 and Gemini 3.
@@ -1038,7 +1055,7 @@ A: Yes, with word definitions, conditionals (via jumps), and recursion.
 
 I'm using the Kelvin versioning system as defined here: https://jtobin.io/kelvin-versioning 
 
-Currently at 280K.
+Currently at 300K for Nux and OPCODES. Everything else is hotter.
 
 ---
 

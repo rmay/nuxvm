@@ -218,7 +218,7 @@ Jump to an address from the main stack without pushing a return address. Useful 
 
 ## Memory (0x28–0x2B)
 
-The VM has a flat 32-bit address space. The band `0x10000`–`0x11000` is the SCI trap that implements Plan 9 VFS syscalls and is routed through the DeviceBus. It is not a Varvara MMIO device map. Guest I/O is files (`/dev/draw`, `/dev/mouse`, `/dev/kbd`, `/dev/time`, …).
+The VM has a flat 32-bit address space. The band `0x10000`–`0x11000` is the SCI trap that implements Plan 9 VFS syscalls and is routed through the DeviceBus. It is not a MMIO device map. Guest I/O is files (`/dev/draw`, `/dev/mouse`, `/dev/kbd`, `/dev/time`, …).
 
 #### 0x28 — LOAD
 **Format**: `LOAD address` (5 bytes)  

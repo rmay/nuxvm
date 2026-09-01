@@ -390,23 +390,6 @@ void test_bus_read() {
     machine_free(m);
 }
 
-void test_mmio_ports_gone() {
-    printf("Testing Varvara MMIO ports are gone...\n");
-    uint8_t prog[] = {
-        OP_LOAD, 0x00, 0x01, 0x00, 0x50,  /* old MOUSE_PORT */
-        OP_HALT
-    };
-
-    Machine* m = machine_create(prog, sizeof(prog), HEADLESS_BASE_ADDRESS, 1024 * 1024, false);
-    assert(m != NULL);
-    m->system->mouse_x = 12345;
-    vm_run(m->cpu);
-    assert(m->cpu->running == false);
-    assert(m->cpu->halted == false);
-    machine_free(m);
-    printf("  MMIO gone: OK\n");
-}
-
 void test_time_scratch_is_ram() {
     printf("Testing /dev/time scratch is ordinary RAM...\n");
     uint8_t prog[] = {

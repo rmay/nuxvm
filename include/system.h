@@ -8,7 +8,7 @@
 #include "vfs.h"
 
 /* Guest I/O is Plan 9 VFS files. This band is only the SCI trap that
- * implements open/read/write/close/bind — not Varvara device ports. */
+ * implements open/read/write/close/bind — not device ports. */
 #define SCI_PORT         (DEVICE_MEMORY_OFFSET + 0x00D0)
 #define SCI_CMD_ADDR     (SCI_PORT + 4)
 #define SCI_ARG1_ADDR    (SCI_PORT + 8)

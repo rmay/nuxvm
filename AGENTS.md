@@ -1,7 +1,7 @@
 # Important
 Never add new opcodes.
 
-Cloister is a single-app fantasy machine (Varvara/uxn-shaped): one program owns the screen. I/O is Plan 9 VFS files, not Varvara MMIO device ports. Apps look like Macintosh System 6. Do not add a window manager or multi-app rio.
+Cloister is a single-app fantasy machine: one program owns the screen. I/O is Plan 9 VFS files, not MMIO device ports. Apps look like Macintosh System 6. Do not add a window manager or multi-app rio.
 
 # Versioning
 We use the Kelvin versioning system (spec: https://jtobin.io/kelvin-versioning). Anything hotter can run something just as hot or colder as itself, but no guarantees something colder will run on hotter. Nux opcodes and implementation is 300K, everything else is 400K unless otherwise specified.

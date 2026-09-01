@@ -1,9 +1,8 @@
 # Architecture
 
 NUX is a 32-bit stack VM. Lux and Fluxio compile to the same 55 opcodes.
-Cloister is the graphical host: a Varvara/uxn-shaped fantasy machine, not a
-multi-app OS. One ROM owns the 960×720 screen. I/O is Plan 9 VFS files, not
-Varvara MMIO device ports. Apps look like Macintosh System 6.
+Cloister is the graphical host: a fantasy machine, not a
+multi-app OS. One ROM owns the screen.
 
 This document describes the system as it exists. Invariants that must not
 drift live in `AGENTS.md`. Address bands live in `include/memory_map.h`.
@@ -14,10 +13,10 @@ The Lux↔Fluxio calling contract lives in `abi/nux-abi.json`.
 1. **Never add opcodes.** The ISA is 55 instructions (`include/opcodes.h`).
    New capability goes through VFS files and `/dev/draw` command bytes, not
    new VM ops.
-2. **One program owns the screen.** Cloister is uxnemu, not rio. Do not add
+2. **One program owns the screen.** Cloister is single app, not rio. Do not add
    a window manager or a multi-app shell.
 3. **I/O is Plan 9 VFS.** Guests open `/dev/draw`, `/dev/mouse`, `/dev/kbd`,
-   `/dev/time`, `/sys/file/…`. There are no Varvara device ports and no
+   `/dev/time`, `/sys/file/…`. There are no device ports and no
    interrupt vectors. SCI (`0x100D0`) is a private trap that implements
    those file operations — not a guest-facing HAL.
 4. **Kelvin versioning.** Nux opcodes and VM implementation are **300K**.
@@ -28,7 +27,7 @@ Settled choices:
 
 | Question | Decision |
 |---|---|
-| Guest I/O | Plan 9 VFS files. Varvara MMIO ports are gone |
+| Guest I/O | Plan 9 VFS files. |
 | Event format | Binary packets, not Plan 9 text lines |
 | Namespaces | Per-System mount table; `bind` attaches an fd to a path |
 | Concurrency | No `fork` opcode. Child VMs via `/sys/vm/new` for experiments |
@@ -105,7 +104,7 @@ small trap in the `0x10000` band:
    returns the result.
 
 That is the whole DeviceBus: only `0x10000`–`0x11000` is bus-mapped. LOAD
-of an old Varvara port (mouse, datetime, controller, …) faults. The
+of an old MMIO port (mouse, datetime, controller, …) faults. The
 framebuffer is ordinary RAM on the host side; guests draw through
 `/dev/draw`. Audio is `/dev/audio`. Time is `/dev/time`. Input is
 `/dev/mouse` and `/dev/kbd`.

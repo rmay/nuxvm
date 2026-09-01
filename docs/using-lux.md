@@ -219,7 +219,7 @@ main
 
 The first tick after launch runs until `YIELD` or `HALT`. Cloister is a
 fixed 960×720 window. Guests draw with `/dev/draw` and read input from
-`/dev/mouse` and `/dev/kbd` — see `ARCHITECTURE.md`. There are no Varvara
+`/dev/mouse` and `/dev/kbd` — see `ARCHITECTURE.md`. There are no
 MMIO device ports.
 
 ### Using the system library

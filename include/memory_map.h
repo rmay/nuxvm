@@ -26,7 +26,7 @@
 
 /* --- SCI trap: MM_DEVICE_BASE .. MM_DEVICE_END ---
  * System-call registers for the Plan 9 VFS (SCI_PORT / CMD / ARGs).
- * Guest I/O is files under /dev and /sys — not Varvara MMIO device ports. */
+ * Guest I/O is files under /dev and /sys — not a MMIO device ports. */
 #define MM_DEVICE_BASE        0x010000
 #define MM_DEVICE_END          0x011000
 

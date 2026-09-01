@@ -16,7 +16,7 @@ child VMs) get this full map; headless `nux` / `luxrepl` get
 | Band | Range | Owner | Purpose |
 |---|---|---|---|
 | Fluxio small-scalar globals | `0x001000`–`0x010000` | `fluxio_codegen.c` (`FX_GLOBALS_BASE`/`FX_DEVICE_BOUNDARY`) | Bump-allocated ordinary `int`/`byte` scalars and small arrays for Fluxio programs. ~60KB budget — not for large buffers. |
-| SCI trap | `0x010000`–`0x011000` | `include/system.h` | VFS syscall registers (`SCI_PORT` / CMD / ARGs). Not Varvara device ports. |
+| SCI trap | `0x010000`–`0x011000` | `include/system.h` | VFS syscall registers (`SCI_PORT` / CMD / ARGs). Not device ports. |
 | Headless program code | starts at `0x011000` | `nux` | Where a compiled `.bin` loads for `-target headless`. |
 | Shared small Lux flags/state | `0x500000`–`0x510000` | small cross-cutting Lux library state | `lib/log.lux` at `0x500000`; `lib/time.lux` 16-byte `/dev/time` scratch at `0x500100`. Kept separate from `lib/memory.lux`'s dialog-state block (`0x520000`+). |
 | Graphical program code | starts at `0x600000` | `cloister` | Where a compiled `.bin` loads for `-target graphical` (both Lux and Fluxio). |
