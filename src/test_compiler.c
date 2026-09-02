@@ -4055,6 +4055,61 @@ static void test_easel_show_page(void) {
     quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
+/* Goodies > Grid snapping (Step 8): dragging Rect Filled from screen
+ * (83,23) to (137,57) is canvas (3,3)..(57,37) (CANVAS_X=80, CANVAS_Y=20).
+ * With Grid off that's the exact bounding box. With Grid on, snap-coord
+ * rounds each endpoint to the nearest GRID=8 multiple: (3,3)->(0,0),
+ * (57,37)->(56,40) (57+4=61, 61/8=7*8=56; 37+4=41, 41/8=5*8=40). Grid is
+ * row 0 of the Goodies menu (y=BAR_H+9=29); Rect Filled is palette cell 11
+ * (PAL_X+1*PAL_CELL_W=40, PAL_Y+5*PAL_CELL_H=180, center (60,196)). */
+static void test_easel_grid_snap(void) {
+    printf("Testing apps/Easel.lux: Goodies > Grid snaps shape-tool drags...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    /* Baseline: Grid off, drag reaches the unsnapped corner (57,37). */
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 60, 196);  /* Rect Filled tool */
+    quill_lux_pump(m, 20);
+    lux_drag(m, mc, 83, 23, 137, 57);
+    quill_lux_pump(m, 20);
+
+    uint8_t off_body[52000];
+    int off_n = easel_save_and_read(m, mc, kc, off_body, (int) sizeof(off_body));
+    assert(easel_bit_set(off_body, off_n, 57, 37) == 1);
+
+    remove("untitled.eas");
+    m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+
+    quill_lux_click(m, mc, 116, 10);  /* Goodies menu */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 116, 29);  /* Grid */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 60, 196);  /* Rect Filled tool */
+    quill_lux_pump(m, 20);
+    lux_drag(m, mc, 83, 23, 137, 57);
+    quill_lux_pump(m, 20);
+
+    uint8_t on_body[52000];
+    int on_n = easel_save_and_read(m, mc, kc, on_body, (int) sizeof(on_body));
+
+    assert(easel_bit_set(on_body, on_n, 57, 37) == 0);  /* snapped past this corner */
+    assert(easel_bit_set(on_body, on_n, 56, 40) == 1);  /* the snapped corner instead */
+    assert(easel_bit_set(on_body, on_n, 0, 0) == 1);    /* snapped top-left too */
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
 /* File > Open/Quit with unsaved changes (Step 9): both now route through the
  * same dirty-confirm sheet New already used, instead of Open silently
  * discarding changes and Quit being a bare HALT. Button centers come from
@@ -4241,6 +4296,7 @@ int main(void) {
     test_easel_text_style_bold();
     test_easel_text_size_24();
     test_easel_show_page();
+    test_easel_grid_snap();
     test_easel_open_with_unsaved_changes_prompts();
     test_easel_quit_with_unsaved_changes_prompts();
 

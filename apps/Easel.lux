@@ -4,7 +4,8 @@
   yet. A failed save or a load that isn't a valid EAS2 file raises a
   one-button alert instead of failing silently. Edit > Undo / Cut / Copy / Paste /
   Invert / Clear / Fill / Trace Edges / Flip H / Flip V / Rotate 90,
-  Goodies > Grid / FatBits / Edit Pattern / Brush Shape / Show Page, Font >
+  Goodies > Grid (draws dots and snaps shape-tool drags to the 8px grid) /
+  FatBits / Edit Pattern / Brush Shape / Show Page, Font >
   Chicago / Geneva / Monaco, Size > 12 / 24 / 36, Style > Bold / Underline
   (Italic / Outline / Shadow not implemented). All 20 tools are wired,
   including Marquee/Lasso selection, Freeform/Polygon, Text, and Hand
@@ -1583,6 +1584,26 @@ IMPORT CFF
     UNGIRD
 ;
 
+( Step 8's grid snapping: rounds to the nearest GRID (8px) multiple, applied
+  to a shape tool's drag endpoint only when Goodies > Grid is checked. Round-
+  to-nearest rather than floor so a point already near a line lands on it in
+  either direction. )
+@snap-coord { v -- v' }
+    v GRID 2 / + GRID / GRID *
+;
+
+( Rounding can push a coordinate near the last column/row past PAGE_W-1 /
+  PAGE_H-1 (e.g. 575 -> 576) -- clamp back onto the page rather than teach
+  every caller about the overshoot. )
+@snap-xy { x y -- x y }
+    grid-f LOADI [
+        x snap-coord 0 MAX PAGE_W 1 - MIN
+        y snap-coord 0 MAX PAGE_H 1 - MIN
+    ] [
+        x y
+    ] ?:
+;
+
 @apply-shift { x0 y0 x1 y1 ty -- x1 y1 }
     shift-mod LOADI [
         ty TOOL_LINE = [
@@ -1596,9 +1617,9 @@ IMPORT CFF
 ;
 
 ( FatBits can roam the whole page, not just the region the un-panned viewport
-  used to cover -- it always starts back at the page origin on entry (see
-  menu-fat / start-fatbits), a known asymmetry with the Hand tool's own
-  position, left as a follow-up. )
+  used to cover -- menu-fat centers fat-ox/fat-oy on the Hand tool's current
+  view-x/view-y on entry, so the two track each other at the moment you
+  switch, then pan independently from there. )
 @clamp-fat ( -- )
     fat-ox LOADI 0 MAX PAGE_W FAT_VW - MIN fat-ox STOREI
     fat-oy LOADI 0 MAX PAGE_H FAT_VH - MIN fat-oy STOREI
@@ -3686,10 +3707,12 @@ IMPORT CFF
         ] [
         shape-tool? [
             snapshot
-            cx shape-x0 STOREI
-            cy shape-y0 STOREI
-            cx shape-x1 STOREI
-            cy shape-y1 STOREI
+            cx cy snap-xy { sx sy }
+                sx shape-x0 STOREI
+                sy shape-y0 STOREI
+                sx shape-x1 STOREI
+                sy shape-y1 STOREI
+            UNGIRD
             DRAG_SHAPE drag STOREI
             APP::dirty!
         ] ? ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
@@ -3712,9 +3735,11 @@ IMPORT CFF
             mark-dirty
         ] ?
         drag LOADI DRAG_SHAPE = [
-            shape-x0 LOADI shape-y0 LOADI cx cy tool LOADI apply-shift
-            shape-y1 STOREI
-            shape-x1 STOREI
+            cx cy snap-xy { sx sy }
+                shape-x0 LOADI shape-y0 LOADI sx sy tool LOADI apply-shift
+                shape-y1 STOREI
+                shape-x1 STOREI
+            UNGIRD
             APP::dirty!
         ] ?
         drag LOADI DRAG_MARQUEE = [
