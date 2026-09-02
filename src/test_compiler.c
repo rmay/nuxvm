@@ -4264,8 +4264,8 @@ static void test_easel_dbl_click_hand_show_page(void) {
  * centers panel-x at 150, +panel-relative button math -> x=280;
  * y = 207 + row*40 + 15 for Save/Don't Save/Cancel). File menu title is at
  * MN_X=10 (+10, same as every other menu-title click in this file); Open is
- * item row 1 (y=47), Quit is row 5 after the New/Open/Save/Save As/sep run
- * (y=119), both via BAR_H + row*18 + 9. */
+ * item row 1 (y=47), Quit is row 6 after the New/Open/Save/Save As/Revert/
+ * sep run (y=137), both via BAR_H + row*18 + 9. */
 static void test_easel_open_with_unsaved_changes_prompts(void) {
     printf("Testing apps/Easel.lux: File > Open with unsaved changes prompts, and Save routes it through...\n");
     size_t backup_len = 0;
@@ -4302,6 +4302,59 @@ static void test_easel_open_with_unsaved_changes_prompts(void) {
     quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
+/* File > Revert: reload from disk, discarding in-memory edits made since
+ * the last save, gated by the same dirty-confirm sheet as New/Open/Quit.
+ * Revert is item row 4 (New/Open/Save/Save As/Revert, y=BAR_H+4*18+9=101);
+ * "Don't Save" is confirm row 1 (x=280,y=262, same as the Quit test). */
+static void test_easel_revert_discards_unsaved_edits(void) {
+    printf("Testing apps/Easel.lux: File > Revert reloads the saved document...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 100, 50);  /* pencil paints canvas (20,30) */
+    quill_lux_pump(m, 20);
+
+    quill_lux_key(m, kc, 's', 8);     /* Cmd+S: this pixel is what's on disk */
+    int n = pump_until_file(m, "untitled.eas", 51848, 2000);
+    assert(n == 51848);
+
+    quill_lux_click(m, mc, 150, 50);  /* pencil paints canvas (70,30), unsaved */
+    quill_lux_pump(m, 20);
+
+    quill_lux_click(m, mc, 20, 10);   /* File menu */
+    quill_lux_pump(m, 10);
+    quill_lux_click(m, mc, 20, 101);  /* Revert -- dirty, so this must prompt */
+    quill_lux_pump(m, 20);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 280, 262); /* Don't Save -- reload from disk */
+    quill_lux_pump(m, 20);
+
+    quill_lux_key(m, kc, 's', 8);     /* Cmd+S again to inspect the reloaded canvas */
+    n = pump_until_file(m, "untitled.eas", 51848, 2000);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+
+    assert(n == 51848);
+    uint8_t body[52000];
+    n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
+    assert(n == 51848);
+
+    assert(easel_bit_set(body, n, 20, 30) == 1);  /* saved edit survived the revert */
+    assert(easel_bit_set(body, n, 70, 30) == 0);  /* unsaved edit was discarded */
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
 static void test_easel_quit_with_unsaved_changes_prompts(void) {
     printf("Testing apps/Easel.lux: File > Quit with unsaved changes prompts, and Don't Save still quits...\n");
     size_t backup_len = 0;
@@ -4320,7 +4373,7 @@ static void test_easel_quit_with_unsaved_changes_prompts(void) {
 
     quill_lux_click(m, mc, 20, 10);   /* File menu */
     quill_lux_pump(m, 10);
-    quill_lux_click(m, mc, 20, 119);  /* Quit -- dirty, so this must prompt, not halt outright */
+    quill_lux_click(m, mc, 20, 137);  /* Quit -- dirty, so this must prompt, not halt outright */
     quill_lux_pump(m, 20);
     assert(!m->cpu->halted);
 
@@ -4449,6 +4502,7 @@ int main(void) {
     test_easel_dbl_click_marquee_select_all();
     test_easel_dbl_click_hand_show_page();
     test_easel_open_with_unsaved_changes_prompts();
+    test_easel_revert_discards_unsaved_edits();
     test_easel_quit_with_unsaved_changes_prompts();
 
     printf("\n=== ALL COMPILER TESTS PASSED ===\n\n");

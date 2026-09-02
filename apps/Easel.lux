@@ -1,7 +1,7 @@
 ( Easel: a MacPaint clone in progress -- see easel_plan.md for the full plan.
-  File > New/Open/Save/Save As/Quit, all routed through one dirty-confirm
-  sheet (Save/Don't Save/Cancel) when there are unsaved changes -- no Revert
-  yet. A failed save or a load that isn't a valid EAS2 file raises a
+  File > New/Open/Save/Save As/Revert/Quit, all routed through one dirty-
+  confirm sheet (Save/Don't Save/Cancel) when there are unsaved changes.
+  A failed save or a load that isn't a valid EAS2 file raises a
   one-button alert instead of failing silently. Edit > Undo / Cut / Copy / Paste /
   Invert / Clear / Fill / Trace Edges / Flip H / Flip V / Rotate 90,
   Goodies > Grid (draws dots and snaps shape-tool drags to the 8px grid) /
@@ -139,9 +139,10 @@ IMPORT CFF
 @STYLE_BOLD       1 ;
 @STYLE_UNDERLINE  2 ;
 
-@CONFIRM_ACT_NEW   0 ; ( what the dirty-confirm sheet runs after Save/Don't Save )
-@CONFIRM_ACT_OPEN  1 ;
-@CONFIRM_ACT_QUIT  2 ;
+@CONFIRM_ACT_NEW    0 ; ( what the dirty-confirm sheet runs after Save/Don't Save )
+@CONFIRM_ACT_OPEN   1 ;
+@CONFIRM_ACT_QUIT   2 ;
+@CONFIRM_ACT_REVERT 3 ;
 
 @MODE_BLACK      0 ;
 @MODE_WHITE      1 ;
@@ -2467,8 +2468,11 @@ IMPORT CFF
     confirm-pending LOADI CONFIRM_ACT_OPEN = [
         SF::show
     ] [
+    confirm-pending LOADI CONFIRM_ACT_REVERT = [
+        do-revert
+    ] [
         HALT
-    ] ?: ] ?:
+    ] ?: ] ?: ] ?:
 ;
 
 ( Save/Don't Save both resolve to whatever menu-new/menu-open/menu-quit
@@ -2627,6 +2631,12 @@ IMPORT CFF
     ] ?:
     APP::dirty!
 ;
+
+( File > Revert: reload PATH from disk, discarding the in-memory canvas.
+  load-path's first move is `PATH STR::strcpy` from whatever path it's
+  given -- passing PATH itself makes that a no-op self-copy and everything
+  after it (open/read/unpack) reloads the document already open. )
+@do-revert ( -- ) PATH load-path ;
 
 @edit-pat-draw ( -- )
     edit-pat-open LOADI [
@@ -2983,9 +2993,10 @@ IMPORT CFF
     ] ?:
 ;
 
-@menu-new  ( -- ) CONFIRM_ACT_NEW  confirm-dirty-or ;
-@menu-open ( -- ) CONFIRM_ACT_OPEN confirm-dirty-or ;
-@menu-quit ( -- ) CONFIRM_ACT_QUIT confirm-dirty-or ;
+@menu-new    ( -- ) CONFIRM_ACT_NEW    confirm-dirty-or ;
+@menu-open   ( -- ) CONFIRM_ACT_OPEN   confirm-dirty-or ;
+@menu-quit   ( -- ) CONFIRM_ACT_QUIT   confirm-dirty-or ;
+@menu-revert ( -- ) CONFIRM_ACT_REVERT confirm-dirty-or ;
 @menu-save-as ( -- )
     1 save-as STOREI
     PATH SF::show-save
@@ -4118,6 +4129,7 @@ IMPORT CFF
     T"Open" [ drop menu-open ] UI::item
     T"Save" [ drop save-file ] UI::item
     T"Save As" [ drop menu-save-as ] UI::item
+    T"Revert" [ drop menu-revert ] UI::item
     UI::sep
     T"Quit" [ drop menu-quit ] UI::item
     T"Edit" UI::menu
