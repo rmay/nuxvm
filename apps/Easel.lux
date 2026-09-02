@@ -1,20 +1,25 @@
 ( Easel: a MacPaint clone in progress -- see easel_plan.md for the full plan.
   File > New/Open/Save/Save As/Quit, all routed through one dirty-confirm
   sheet (Save/Don't Save/Cancel) when there are unsaved changes -- no Revert
-  yet. A failed save or a load that isn't a valid EAS1 file raises a
+  yet. A failed save or a load that isn't a valid EAS2 file raises a
   one-button alert instead of failing silently. Edit > Undo / Cut / Copy / Paste /
   Invert / Clear / Fill / Trace Edges / Flip H / Flip V / Rotate 90,
   Goodies > Grid / FatBits / Edit Pattern / Brush Shape, Font > Chicago /
   Geneva / Monaco, Size > 12 / 24 / 36, Style > Bold / Underline (Italic /
-  Outline / Shadow not implemented). 20-tool palette (19 wired so far,
-  including Marquee/Lasso selection, Freeform/Polygon, and Text -- only
-  Hand remains, since it needs a scrollable page Step 8 hasn't built yet),
-  38 pattern slots (all filled in), 32 preset
-  brush shapes (double-click the Brush tool, or Goodies > Brush Shape...),
-  pen-width strip driving line/rect/roundrect/oval/freeform/polygon outline
-  thickness. Canvas is 480x416, 1-bit, in a 560x492 window
-  (geometry sized to the tools, not a
-  fixed window size). Save is EAS1.
+  Outline / Shadow not implemented). All 20 tools are wired, including
+  Marquee/Lasso selection, Freeform/Polygon, Text, and now Hand (drags a
+  480x416 viewport around a 576x720 page -- Step 8's "Show Page" overview
+  goodie isn't built yet, and FatBits can pan anywhere on the page but,
+  unlike Hand, always opens back at the page origin rather than wherever
+  the viewport was last panned to). 38 pattern slots (all filled in), 32
+  preset brush shapes (double-click the Brush tool, or Goodies > Brush
+  Shape...), pen-width strip driving line/rect/roundrect/oval/freeform/
+  polygon outline thickness. Undo/Invert/Fill/Trace Edges/Flip/flood-fill
+  (with no selection) all act on the whole page, not just what's currently
+  scrolled into view. Viewport is 480x416, 1-bit, in a 560x492 window
+  (geometry sized to the tools, not a fixed window size). Save is EAS2 (whole
+  576x720 page, no EAS1 back-compat reader -- see the EAS2 comment at the
+  file-format section).
   ./bin/cloister apps/Easel.bin )
 
 INCLUDE "lib/app.lux"
@@ -65,6 +70,10 @@ IMPORT CFF
 @CANVAS_WORDS   15 ; ( CANVAS_W / 32, exact )
 @FONT_SIZE      16 ;
 @GRID            8 ;
+@PAGE_W    BITMAP::PAGE_W ; ( 576 -- full page width; CANVAS_W is only the viewport )
+@PAGE_H    BITMAP::PAGE_H ; ( 720 -- full page height; CANVAS_H is only the viewport )
+@VIEW_MAX_X   PAGE_W CANVAS_W - ; ( 96 -- max horizontal Hand-tool pan )
+@VIEW_MAX_Y   PAGE_H CANVAS_H - ; ( 304 -- max vertical Hand-tool pan )
 @PAT_Y         CANVAS_Y CANVAS_H + ;
 @PAT_COLS       19 ;
 @PAT_CELL_W     26 ;
@@ -76,8 +85,7 @@ IMPORT CFF
 @FAT_VW         60 ; ( CANVAS_W / FAT_Z, exact -- Step 8's FatBits zoom window )
 @FAT_VH         52 ; ( CANVAS_H / FAT_Z, exact )
 @STK_MAX      4096 ;
-@ROW_BYTES      60 ; ( CANVAS_W / 8, for the EAS1 pack )
-@PACK_BYTES  24968 ; ( 8-byte header + ROW_BYTES * CANVAS_H )
+@PACK_BYTES  BITMAP::PAGE_BYTES 8 + ; ( 8-byte header + one full packed page -- EAS2 )
 @WIN_W         CANVAS_X CANVAS_W + ;
 @WIN_H         PAT_Y PAT_CELL_H PAT_ROWS * + ;
 
@@ -118,6 +126,7 @@ IMPORT CFF
 @DRAG_MOVE       4 ; ( dragging an already-lifted selection to a new spot )
 @DRAG_LASSO      5 ; ( freehand-tracing a lasso path )
 @DRAG_FREEFORM   6 ; ( freehand-tracing a freeform shape; commits straight to CANVAS )
+@DRAG_HAND       7 ; ( panning the viewport; view-x/view-y move, CANVAS is untouched )
 
 ( Text style bits (combinable). Italic/Outline/Shadow are not implemented --
   Bold and Underline are the two that don't need per-row shearing or a
@@ -203,15 +212,17 @@ IMPORT CFF
 @CANVAS        0x900000 ;
 @UNDO          0x90D000 ;
 @TMP           0x934000 ;
-@PACK          0x981000 ;
+@PACK          0x920000 ; ( EAS2 save/load staging: 8-byte header + BITMAP::PAGE_BYTES,
+                            51848 bytes -- fits the 0x919A80..0x934000 gap after UNDO with
+                            room to spare; must not reach STK at 0x987000 )
 @STK           0x987000 ;
 @PATH          0x990000 ;
 @VFS_PATH      0x990100 ;
 @PATTERNS      0x990300 ; ( 38 * 8 bytes, one row per byte -- see init-pats )
 @BRUSHES       0x990500 ; ( 32 * 32 bytes, 16x16 1bpp masks, 2 bytes/row -- see init-brushes )
 @SEL_MASK      0x991000 ; ( BITMAP::PAGE_BYTES page: lasso's filled-interior selection mask )
-@SNARF_BUF     0x9A0000 ; ( EASS clipboard payload; max real selection is ~24968 bytes, well
-                            under SYS_SNARF_MAX (include/system.h) for the current canvas size )
+@SNARF_BUF     0x9A0000 ; ( EASS clipboard payload; a full-page selection packs to ~51.8 KB,
+                            over SNARF_CAP below -- snarf-copy refuses rather than overrun it )
 @SNARF_CAP     0x8000 ;
 @FONT_CHICAGO  0x9A8000 ; ( 3 system fonts, each a CFF_LEN_UF2 (16x16-tile) blob loaded at start )
 @FONT_GENEVA   0x9AA200 ;
@@ -285,6 +296,10 @@ IMPORT CFF
 @font-grp          0x8A00F4 ; ( UI radio-group ids, allocated once at @start )
 @size-grp          0x8A00F8 ;
 @confirm-pending   0x8A00FC ; ( CONFIRM_ACT_* -- what the dirty-confirm sheet runs on Save/Don't Save )
+@view-x            0x8A0100 ; ( Hand tool: top-left of the viewport within the 576x720 page )
+@view-y            0x8A010C ;
+@hand-last-mx      0x8A0110 ; ( raw screen x/y at the last Hand-drag sample )
+@hand-last-my      0x8A0114 ;
 
 ( Explicit damage bits, replacing the old single pat-full flag (whose narrow
   meaning -- "must draw-patterns redraw all swatches" -- was the exact bug: a
@@ -346,8 +361,11 @@ IMPORT CFF
     dest BITMAP::clear
 ;
 
+( Bounds against the whole 576x720 page, not just the current viewport --
+  drawing can land anywhere on the page regardless of what's scrolled into
+  view. )
 @in-can? { x y -- f }
-    x 0 >= y 0 >= AND x CANVAS_W < AND y CANVAS_H < AND
+    x 0 >= y 0 >= AND x PAGE_W < AND y PAGE_H < AND
 ;
 
 @pix@ { x y -- v }
@@ -1081,7 +1099,7 @@ IMPORT CFF
 ;
 
 @seed-span { y x0 x1 old -- }
-    y 0 < y CANVAS_H >= OR [
+    y 0 < y PAGE_H >= OR [
     ] [
         0 { inside }
             x0 { i }
@@ -1104,10 +1122,10 @@ IMPORT CFF
 
 @apply-pat-over-twos ( -- )
     0 { y }
-        [ y CANVAS_H < ]
+        [ y PAGE_H < ]
         [
             0 { x }
-                [ x CANVAS_W < ]
+                [ x PAGE_W < ]
                 [
                     x y pix@ 2 = [
                         x y plot-pat
@@ -1131,13 +1149,13 @@ IMPORT CFF
                 [ stk-n LOADI 0 > ]
                 [
                     stk-pop y! x!
-                    y 0 < y CANVAS_H >= OR [
+                    y 0 < y PAGE_H >= OR [
                     ] [
                         x x0!
                         [ x0 0 > x0 1 - y pix@ old = AND ]
                         [ x0 1 - x0! ] |:
                         x x1!
-                        [ x1 CANVAS_W 1 - < x1 1 + y pix@ old = AND ]
+                        [ x1 PAGE_W 1 - < x1 1 + y pix@ old = AND ]
                         [ x1 1 + x1! ] |:
                         x0 i!
                         [ i x1 <= ]
@@ -1228,8 +1246,8 @@ IMPORT CFF
 
 @op-x0 ( -- x ) sel-active LOADI [ sel-x0 LOADI ] [ 0 ] ?: ;
 @op-y0 ( -- y ) sel-active LOADI [ sel-y0 LOADI ] [ 0 ] ?: ;
-@op-x1 ( -- x ) sel-active LOADI [ sel-x1 LOADI ] [ CANVAS_W 1 - ] ?: ;
-@op-y1 ( -- y ) sel-active LOADI [ sel-y1 LOADI ] [ CANVAS_H 1 - ] ?: ;
+@op-x1 ( -- x ) sel-active LOADI [ sel-x1 LOADI ] [ PAGE_W 1 - ] ?: ;
+@op-y1 ( -- y ) sel-active LOADI [ sel-y1 LOADI ] [ PAGE_H 1 - ] ?: ;
 
 @do-fill ( -- )
     snapshot
@@ -1412,7 +1430,7 @@ IMPORT CFF
                             ox0 oy1 y - +
                             oy0 x ox0 - +
                             { bit dx dy }
-                                dx 0 >= dx CANVAS_W < AND dy 0 >= AND dy CANVAS_H < AND [
+                                dx 0 >= dx PAGE_W < AND dy 0 >= AND dy PAGE_H < AND [
                                     bit dx dy pix!
                                 ] ?
                             UNGIRD
@@ -1424,8 +1442,8 @@ IMPORT CFF
             UNGIRD
             ox0 sel-x0 STOREI
             oy0 sel-y0 STOREI
-            ox0 oy1 oy0 - + CANVAS_W 1 - MIN sel-x1 STOREI
-            oy0 ox1 ox0 - + CANVAS_H 1 - MIN sel-y1 STOREI
+            ox0 oy1 oy0 - + PAGE_W 1 - MIN sel-x1 STOREI
+            oy0 ox1 ox0 - + PAGE_H 1 - MIN sel-y1 STOREI
         UNGIRD
         0 sel-mask-active STOREI
         mark-dirty
@@ -1549,9 +1567,13 @@ IMPORT CFF
     ] ?:
 ;
 
+( FatBits can roam the whole page, not just the region the un-panned viewport
+  used to cover -- it always starts back at the page origin on entry (see
+  menu-fat / start-fatbits), a known asymmetry with the Hand tool's own
+  position, left as a follow-up. )
 @clamp-fat ( -- )
-    fat-ox LOADI 0 MAX CANVAS_W FAT_VW - MIN fat-ox STOREI
-    fat-oy LOADI 0 MAX CANVAS_H FAT_VH - MIN fat-oy STOREI
+    fat-ox LOADI 0 MAX PAGE_W FAT_VW - MIN fat-ox STOREI
+    fat-oy LOADI 0 MAX PAGE_H FAT_VH - MIN fat-oy STOREI
 ;
 
 @pan-fat { dx dy -- }
@@ -1559,6 +1581,20 @@ IMPORT CFF
     fat-oy LOADI dy + fat-oy STOREI
     clamp-fat
     APP::dirty!
+;
+
+( Hand tool: view-x/view-y are the page-space top-left of the viewport.
+  view-x is not word-aligned -- draw-canvas-1x below combines two adjacent
+  page words per screen word to handle the shift. )
+@clamp-view ( -- )
+    view-x LOADI 0 MAX VIEW_MAX_X MIN view-x STOREI
+    view-y LOADI 0 MAX VIEW_MAX_Y MIN view-y STOREI
+;
+
+@pan-view { dx dy -- }
+    view-x LOADI dx + view-x STOREI
+    view-y LOADI dy + view-y STOREI
+    clamp-view
 ;
 
 ( --- Screen mapping --- )
@@ -1608,8 +1644,8 @@ IMPORT CFF
         mx CANVAS_X - FAT_Z / fat-ox LOADI +
         my CANVAS_Y - FAT_Z / fat-oy LOADI +
     ] [
-        mx CANVAS_X -
-        my CANVAS_Y -
+        mx CANVAS_X - view-x LOADI +
+        my CANVAS_Y - view-y LOADI +
     ] ?:
 ;
 
@@ -1618,8 +1654,8 @@ IMPORT CFF
         cx fat-ox LOADI - FAT_Z * CANVAS_X +
         cy fat-oy LOADI - FAT_Z * CANVAS_Y +
     ] [
-        cx CANVAS_X +
-        cy CANVAS_Y +
+        cx view-x LOADI - CANVAS_X +
+        cy view-y LOADI - CANVAS_Y +
     ] ?:
 ;
 
@@ -1683,7 +1719,7 @@ IMPORT CFF
                         TMP x y BITMAP::get { bit }
                             x move-dx LOADI + { nx }
                                 y move-dy LOADI + { ny }
-                                    nx 0 >= nx CANVAS_W < AND ny 0 >= AND ny CANVAS_H < AND [
+                                    nx 0 >= nx PAGE_W < AND ny 0 >= AND ny PAGE_H < AND [
                                         bit nx ny pix!
                                     ] ?
                                 UNGIRD
@@ -1756,10 +1792,14 @@ IMPORT CFF
                         TMP x y BITMAP::get { bit }
                             x move-dx LOADI + { nx }
                                 y move-dy LOADI + { ny }
-                                    nx 0 >= nx CANVAS_W < AND ny 0 >= AND ny CANVAS_H < AND [
+                                    ( only draw what's actually inside the current viewport --
+                                      nx/ny are page-space, so the screen position is can>scr's
+                                      transform, not a raw CANVAS_X/Y offset. )
+                                    nx view-x LOADI >= nx view-x LOADI CANVAS_W + < AND
+                                    ny view-y LOADI >= AND ny view-y LOADI CANVAS_H + < AND [
                                         APP::draw-fd
-                                        CANVAS_X nx +
-                                        CANVAS_Y ny +
+                                        nx view-x LOADI - CANVAS_X +
+                                        ny view-y LOADI - CANVAS_Y +
                                         bit 0 = [ CLR_WHITE ] [ CLR_FG ] ?:
                                         DRAW::pix
                                     ] ?
@@ -1855,9 +1895,9 @@ IMPORT CFF
 @lasso-finish ( -- )
     mask-scanfill
     0 { found }
-        CANVAS_W { minx }
+        PAGE_W { minx }
             -1 { maxx }
-                CANVAS_H { miny }
+                PAGE_H { miny }
                     -1 { maxy }
                         lasso-miny LOADI { y2 }
                             [ y2 lasso-maxy LOADI <= ]
@@ -2182,13 +2222,18 @@ IMPORT CFF
     8 snarf-rb snarf-h * +
 ;
 
+( A selection can now span the whole 576x720 page (up to ~51.8 KB packed),
+  which exceeds SNARF_CAP -- refuse rather than overrun SNARF_BUF; the page
+  and the existing clipboard are both left untouched. )
 @snarf-copy ( -- )
     sel-active LOADI [
         snarf-pack { len }
-            T"/sys/snarf" VFS::open dup 0 >= [
-                dup SNARF_BUF len VFS::write drop
-                VFS::close drop
-            ] [ drop ] ?:
+            len SNARF_CAP <= [
+                T"/sys/snarf" VFS::open dup 0 >= [
+                    dup SNARF_BUF len VFS::write drop
+                    VFS::close drop
+                ] [ drop ] ?:
+            ] ?
         UNGIRD
     ] ?
 ;
@@ -2217,10 +2262,12 @@ IMPORT CFF
 
 @snarf-in-w ( -- w ) SNARF_BUF 4 + DRAW::load-word-le ;
 @snarf-in-h ( -- h ) SNARF_BUF 6 + DRAW::load-word-le ;
-@snarf-in-cw ( -- cw ) snarf-in-w CANVAS_W MIN ;
-@snarf-in-ch ( -- ch ) snarf-in-h CANVAS_H MIN ;
-@snarf-in-ox ( -- ox ) CANVAS_W snarf-in-cw - 2 / ;
-@snarf-in-oy ( -- oy ) CANVAS_H snarf-in-ch - 2 / ;
+@snarf-in-cw ( -- cw ) snarf-in-w PAGE_W MIN ;
+@snarf-in-ch ( -- ch ) snarf-in-h PAGE_H MIN ;
+( Centers in the currently visible viewport, not the whole page, so a paste
+  always lands somewhere the user can see without having to pan for it. )
+@snarf-in-ox ( -- ox ) view-x LOADI CANVAS_W snarf-in-cw - 2 / + ;
+@snarf-in-oy ( -- oy ) view-y LOADI CANVAS_H snarf-in-ch - 2 / + ;
 @snarf-in-rb ( -- rb ) snarf-in-w 7 + 8 / ;
 
 @snarf-in-bit { cx ry -- bit }
@@ -2271,90 +2318,46 @@ IMPORT CFF
 
 @menu-paste ( val -- ) drop snarf-paste ;
 
+( Clamps to the currently visible viewport, not the whole page -- the mouse
+  can only ever point at what's on screen. )
 @clip-can { x y -- x' y' }
-    x 0 MAX CANVAS_W 1 - MIN
-    y 0 MAX CANVAS_H 1 - MIN
+    x view-x LOADI MAX view-x LOADI CANVAS_W + 1 - MIN
+    y view-y LOADI MAX view-y LOADI CANVAS_H + 1 - MIN
 ;
 
-( --- File format EAS1 --- )
+( --- File format EAS2 ---
+  CANVAS is already a packed-1bpp BITMAP page, laid out byte-for-byte the way
+  the plan's EAS2 format wants, so save/load is a header plus one whole-page
+  BITMAP::copy -- no per-pixel packing loop needed. Drops the old EAS1 reader
+  (it was sized to CANVAS_W x CANVAS_H, which has already changed shape once
+  before as the app's geometry moved; there's no shipped EAS1 content to stay
+  compatible with). )
 
 @write-magic { d -- }
     69 d store-byte
     65 d 1 + store-byte
     83 d 2 + store-byte
-    49 d 3 + store-byte
-    CANVAS_W d 4 + DRAW::store-word-le
-    CANVAS_H d 6 + DRAW::store-word-le
+    50 d 3 + store-byte ( '2' -- EAS2 )
+    PAGE_W d 4 + DRAW::store-word-le
+    PAGE_H d 6 + DRAW::store-word-le
 ;
 
 @pack-bits ( -- )
     PACK write-magic
-    PACK 8 + { d }
-        0 { y }
-            [ y CANVAS_H < ]
-            [
-                0 { bx }
-                    [ bx ROW_BYTES < ]
-                    [
-                        0 { b }
-                            0 { bit }
-                                [ bit 8 < ]
-                                [
-                                    bx 8 * bit + y pix@ [
-                                        b 128 bit RSHIFT OR b!
-                                    ] ?
-                                    bit 1 + bit!
-                                ] |:
-                            UNGIRD
-                            b d store-byte
-                            d 1 + d!
-                        UNGIRD
-                        bx 1 + bx!
-                    ] |:
-                UNGIRD
-                y 1 + y!
-            ] |:
-        UNGIRD
-    UNGIRD
+    CANVAS PACK 8 + BITMAP::copy
 ;
 
 @unpack-bits ( -- )
-    CANVAS clear-buf
-    PACK 8 + { s }
-        0 { y }
-            [ y CANVAS_H < ]
-            [
-                0 { bx }
-                    [ bx ROW_BYTES < ]
-                    [
-                        s load-byte { b }
-                            0 { bit }
-                                [ bit 8 < ]
-                                [
-                                    b 128 bit RSHIFT AND [
-                                        1 bx 8 * bit + y pix!
-                                    ] ?
-                                    bit 1 + bit!
-                                ] |:
-                            UNGIRD
-                            s 1 + s!
-                        UNGIRD
-                        bx 1 + bx!
-                    ] |:
-                UNGIRD
-                y 1 + y!
-            ] |:
-        UNGIRD
-    UNGIRD
+    PACK 8 + CANVAS BITMAP::copy
 ;
 
 @magic-ok? ( -- f )
     PACK load-byte 69 =
     PACK 1 + load-byte 65 = AND
     PACK 2 + load-byte 83 = AND
-    PACK 3 + load-byte 49 = AND
-    PACK 4 + DRAW::load-word-le CANVAS_W = AND
-    PACK 6 + DRAW::load-word-le CANVAS_H = AND
+    PACK 3 + load-byte 50 = AND
+    PACK 4 + DRAW::load-word-le PAGE_W = AND
+    PACK 6 + DRAW::load-word-le PAGE_H = AND
 ;
 
 @new-document ( -- )
@@ -2367,6 +2370,8 @@ IMPORT CFF
     DRAG_NONE drag STOREI
     0 fat-ox STOREI
     0 fat-oy STOREI
+    0 view-x STOREI
+    0 view-y STOREI
     TOOL_PENCIL tool STOREI
     1 pat-id STOREI
     1 rng STOREI
@@ -2549,6 +2554,8 @@ IMPORT CFF
                     0 undo-ok STOREI
                     0 fat-ox STOREI
                     0 fat-oy STOREI
+                    0 view-x STOREI
+                    0 view-y STOREI
                     0 sel-active STOREI
                     0 sel-mask-active STOREI
                     0 move-dx STOREI
@@ -3050,12 +3057,15 @@ IMPORT CFF
     ] [ -1 ] ?:
 ;
 
+( Dots are page-locked, not viewport-locked -- their phase shifts with
+  view-x/view-y so a dot always sits at the same page position regardless of
+  how the Hand tool has panned. )
 @draw-grid-dots ( -- )
     grid-f LOADI fat-f LOADI 0 = AND [
-        0 { x }
+        GRID view-x LOADI GRID MOD - GRID MOD { x }
             [ x CANVAS_W < ]
             [
-                0 { y }
+                GRID view-y LOADI GRID MOD - GRID MOD { y }
                     [ y CANVAS_H < ]
                     [
                         APP::draw-fd CANVAS_X x + CANVAS_Y y + CLR_GRID DRAW::pix
@@ -3086,43 +3096,55 @@ IMPORT CFF
 ;
 
 ( Word-at-a-time: an all-white 32-pixel word is skipped in one word@ + compare
-  instead of 32 pixel tests. CANVAS_W is exactly CANVAS_WORDS*32 for now, so
-  every word is fully in-bounds -- no edge masking needed here (unlike
-  BITMAP::hspan, which does need it for arbitrary spans). )
-( CANVAS_W is a multiple of 32 (word width), so every word in a row is fully
-  in-bounds -- no edge masking needed, unlike BITMAP::hspan's general case. )
+  instead of 32 pixel tests. CANVAS_W is exactly CANVAS_WORDS*32, and view-x's
+  bit-shift into the page (0..31, constant for the whole scan since view-x's
+  low 5 bits don't depend on wx) is the same for every screen word, so each
+  screen word is built from at most two adjacent page words: vwx + wx and,
+  when shift > 0, vwx + wx + 1. view-x is clamped to VIEW_MAX_X (PAGE_W -
+  CANVAS_W), so that "+1" word index never runs past the page's last word in
+  a row -- see VIEW_MAX_X's definition. No edge masking is needed beyond
+  that, unlike BITMAP::hspan's general case. )
 @draw-canvas-1x ( -- )
-    0 { y }
-        [ y CANVAS_H < ]
-        [
-            0 { wx }
-                [ wx CANVAS_WORDS < ]
-                [
-                    CANVAS wx y BITMAP::word@ { w }
-                        w 0 = [
-                        ] [
-                            0 { bit }
-                                [ bit 32 < ]
-                                [
-                                    w 31 bit - RSHIFT 1 AND [
-                                        bit { rstart }
-                                            [ bit 32 < w 31 bit - RSHIFT 1 AND AND ]
-                                            [ bit 1 + bit! ] |:
-                                            APP::draw-fd CANVAS_X wx 32 * rstart + +
-                                                CANVAS_Y y + bit rstart - 1 CLR_FG DRAW::fill-rect
-                                        UNGIRD
-                                    ] [
-                                        bit 1 + bit!
-                                    ] ?:
-                                ] |:
-                            UNGIRD
-                        ] ?:
-                    UNGIRD
-                    wx 1 + wx!
-                ] |:
-            UNGIRD
-            y 1 + y!
-        ] |:
+    view-x LOADI 32 / view-x LOADI 32 MOD view-y LOADI { vwx shift vy }
+        0 { y }
+            [ y CANVAS_H < ]
+            [
+                0 { wx }
+                    [ wx CANVAS_WORDS < ]
+                    [
+                        CANVAS wx vwx + y vy + BITMAP::word@ { w0 }
+                            shift 0 = [
+                                w0
+                            ] [
+                                CANVAS wx vwx + 1 + y vy + BITMAP::word@
+                                w0 shift LSHIFT swap 32 shift - RSHIFT OR
+                            ] ?: { w }
+                            w 0 = [
+                            ] [
+                                0 { bit }
+                                    [ bit 32 < ]
+                                    [
+                                        w 31 bit - RSHIFT 1 AND [
+                                            bit { rstart }
+                                                [ bit 32 < w 31 bit - RSHIFT 1 AND AND ]
+                                                [ bit 1 + bit! ] |:
+                                                APP::draw-fd CANVAS_X wx 32 * rstart + +
+                                                    CANVAS_Y y + bit rstart - 1 CLR_FG DRAW::fill-rect
+                                            UNGIRD
+                                        ] [
+                                            bit 1 + bit!
+                                        ] ?:
+                                    ] |:
+                                UNGIRD
+                            ] ?:
+                        UNGIRD
+                        UNGIRD
+                        wx 1 + wx!
+                    ] |:
+                UNGIRD
+                y 1 + y!
+            ] |:
+        UNGIRD
     UNGIRD
 ;
 
@@ -3323,10 +3345,6 @@ IMPORT CFF
     tool LOADI TOOL_FREEFORM_FILLED = tool LOADI TOOL_POLYGON_FILLED = OR
 ;
 
-( Gates hit-tool's palette clicks: HAND is visible in the palette but not
-  wired to anything yet (Step 8's viewport doesn't exist), so clicking it
-  is a no-op rather than leaving `tool` pointing at a slot nothing else
-  recognizes. )
 @tool-implemented? { t -- f }
     t TOOL_FILL = t TOOL_SPRAY = OR t TOOL_BRUSH = OR t TOOL_PENCIL = OR
     t TOOL_LINE = OR t TOOL_ERASER = OR
@@ -3336,10 +3354,15 @@ IMPORT CFF
     t TOOL_MARQUEE = OR t TOOL_LASSO = OR
     t TOOL_FREEFORM = OR t TOOL_FREEFORM_FILLED = OR
     t TOOL_POLYGON = OR t TOOL_POLYGON_FILLED = OR
-    t TOOL_TEXT = OR
+    t TOOL_TEXT = OR t TOOL_HAND = OR
 ;
 
 @page-down { mx my -- }
+    tool LOADI TOOL_HAND = [
+        mx hand-last-mx STOREI
+        my hand-last-my STOREI
+        DRAG_HAND drag STOREI
+    ] [
     mx my scr>can clip-can { cx cy }
         tool LOADI TOOL_FILL = [
             snapshot
@@ -3484,9 +3507,16 @@ IMPORT CFF
             APP::dirty!
         ] ? ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
     UNGIRD
+    ] ?:
 ;
 
 @page-drag { mx my -- }
+    drag LOADI DRAG_HAND = [
+        hand-last-mx LOADI mx - hand-last-my LOADI my - pan-view
+        mx hand-last-mx STOREI
+        my hand-last-my STOREI
+        APP::dirty!
+    ] ?
     mx my scr>can clip-can { cx cy }
         drag LOADI DRAG_PAINT = [
             last-cx LOADI last-cy LOADI cx cy stroke-to

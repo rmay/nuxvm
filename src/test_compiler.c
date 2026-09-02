@@ -3326,24 +3326,24 @@ static void test_easel_paint_save(void) {
     quill_lux_click(m, mc, 100, 50);
     quill_lux_pump(m, 20);
 
-    /* pack-bits walks 480x416 pixels; machine_tick caps at 100k ops, so
-     * the save spans many frames. */
+    /* pack-bits is now one whole-page BITMAP::copy rather than a per-pixel
+     * scan, but the save can still straddle a frame boundary. */
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 24968, 2000);
+    int n = pump_until_file(m, "untitled.eas", 51848, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
     uint8_t got[64];
     memset(got, 0, sizeof(got));
-    assert(n == 24968);
+    assert(n == 51848);
     n = lux_file_read("/sys/file/untitled.eas", got, (int) sizeof(got));
     assert(n >= 8);
-    assert(got[0] == 'E' && got[1] == 'A' && got[2] == 'S' && got[3] == '1');
+    assert(got[0] == 'E' && got[1] == 'A' && got[2] == 'S' && got[3] == '2');
 
-    uint8_t body[25000];
+    uint8_t body[52000];
     n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
-    assert(n == 24968);
+    assert(n == 51848);
     int nonzero = 0;
     for (int i = 8; i < n; i++) {
         if (body[i]) nonzero++;
@@ -3354,9 +3354,12 @@ static void test_easel_paint_save(void) {
 }
 
 static int easel_bit_set(const uint8_t* body, int n, int col, int row) {
-    /* EAS1 body starts after the 8-byte header; ROW_BYTES=60 for
-     * CANVAS_W=480, MSB-first bit order (see lib/bitmap.lux). */
-    int off = 8 + row * 60 + col / 8;
+    /* EAS2 body starts after the 8-byte header and is a raw dump of the
+     * BITMAP page: ROW_BYTES=72 for PAGE_W=576, MSB-first bit order (see
+     * lib/bitmap.lux). col/row here are still canvas/page-space pixel
+     * coordinates -- the viewport sits at page origin (0,0) in every test
+     * below (none of them pan with the Hand tool). */
+    int off = 8 + row * 72 + col / 8;
     if (off < 0 || off >= n) return -1;
     return (body[off] & (128 >> (col % 8))) != 0;
 }
@@ -3398,15 +3401,15 @@ static void test_easel_marquee_move(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 24968, 2000);
+    int n = pump_until_file(m, "untitled.eas", 51848, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
-    assert(n == 24968);
-    uint8_t body[25000];
+    assert(n == 51848);
+    uint8_t body[52000];
     n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
-    assert(n == 24968);
+    assert(n == 51848);
 
     assert(easel_bit_set(body, n, 20, 30) == 0);   /* source now blank */
     assert(easel_bit_set(body, n, 70, 30) == 1);   /* destination now set */
@@ -3455,15 +3458,15 @@ static void test_easel_lasso_move(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 24968, 2000);
+    int n = pump_until_file(m, "untitled.eas", 51848, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
-    assert(n == 24968);
-    uint8_t body[25000];
+    assert(n == 51848);
+    uint8_t body[52000];
     n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
-    assert(n == 24968);
+    assert(n == 51848);
 
     assert(easel_bit_set(body, n, 20, 30) == 0);   /* source now blank */
     assert(easel_bit_set(body, n, 70, 30) == 1);   /* destination now set */
@@ -3505,15 +3508,15 @@ static void test_easel_copy_paste(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 24968, 2000);
+    int n = pump_until_file(m, "untitled.eas", 51848, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
-    assert(n == 24968);
-    uint8_t body[25000];
+    assert(n == 51848);
+    uint8_t body[52000];
     n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
-    assert(n == 24968);
+    assert(n == 51848);
 
     /* Original pixel untouched by Copy. */
     assert(easel_bit_set(body, n, 20, 30) == 1);
@@ -3549,13 +3552,13 @@ static Machine* easel_transform_setup(int32_t* mc, int32_t* kc) {
 
 static int easel_save_and_read(Machine* m, int32_t mc, int32_t kc, uint8_t* body, int cap) {
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 24968, 2000);
+    int n = pump_until_file(m, "untitled.eas", 51848, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
-    assert(n == 24968);
+    assert(n == 51848);
     n = lux_file_read("/sys/file/untitled.eas", body, cap);
-    assert(n == 24968);
+    assert(n == 51848);
     return n;
 }
 
@@ -3570,7 +3573,7 @@ static void test_easel_flip_h(void) {
     quill_lux_key(m, kc, 'h', 8); /* Cmd+H: Flip Horizontal */
     quill_lux_pump(m, 20);
 
-    uint8_t body[25000];
+    uint8_t body[52000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 15, 23) == 0);   /* source now blank */
@@ -3590,7 +3593,7 @@ static void test_easel_flip_v(void) {
     quill_lux_key(m, kc, 'j', 8); /* Cmd+J: Flip Vertical */
     quill_lux_pump(m, 20);
 
-    uint8_t body[25000];
+    uint8_t body[52000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 15, 23) == 0);   /* source now blank */
@@ -3610,7 +3613,7 @@ static void test_easel_rotate90(void) {
     quill_lux_key(m, kc, 'r', 8); /* Cmd+R: Rotate 90 */
     quill_lux_pump(m, 20);
 
-    uint8_t body[25000];
+    uint8_t body[52000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 15, 23) == 0);   /* source now blank */
@@ -3631,7 +3634,7 @@ static void test_easel_fill(void) {
     quill_lux_key(m, kc, 'f', 8); /* Cmd+F: Fill (pattern 1 = solid black) */
     quill_lux_pump(m, 20);
 
-    uint8_t body[25000];
+    uint8_t body[52000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     /* (12,22) was never painted -- Fill must have set it, not just the
@@ -3672,7 +3675,7 @@ static void test_easel_trace_edges(void) {
     quill_lux_key(m, kc, 'g', 8); /* Cmd+G: Trace Edges */
     quill_lux_pump(m, 20);
 
-    uint8_t body[25000];
+    uint8_t body[52000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 25, 25) == 0);   /* square's interior, cleared */
@@ -3707,7 +3710,7 @@ static void test_easel_freeform_outline(void) {
     lux_mouse(m, mc, 4, 1, 180, 120); /* up -- closes the loop back to (50,50) */
     quill_lux_pump(m, 20);
 
-    uint8_t body[25000];
+    uint8_t body[52000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 50, 75) == 1);   /* on the traced A-B edge */
@@ -3740,7 +3743,7 @@ static void test_easel_freeform_filled(void) {
     lux_mouse(m, mc, 4, 1, 180, 120);
     quill_lux_pump(m, 20);
 
-    uint8_t body[25000];
+    uint8_t body[52000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 70, 90) == 1);   /* interior, now filled */
@@ -3778,7 +3781,7 @@ static void test_easel_polygon_filled(void) {
     quill_lux_click(m, mc, 130, 70);  /* click back on vertex 0 -- closes */
     quill_lux_pump(m, 20);
 
-    uint8_t body[25000];
+    uint8_t body[52000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 83, 67) == 1);   /* triangle centroid, filled */
@@ -3816,7 +3819,7 @@ static void test_easel_polygon_outline_double_click_close(void) {
     quill_lux_click(m, mc, 180, 120); /* double-click on vertex 2 -- closes back to vertex 0 */
     quill_lux_pump(m, 20);
 
-    uint8_t body[25000];
+    uint8_t body[52000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 75, 75) == 1);   /* midpoint of the v2->v0 closing edge */
@@ -3863,14 +3866,14 @@ static void test_easel_text_tool(void) {
 
     /* Nothing committed to CANVAS yet -- still floating. */
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n0 = pump_until_file(m, "untitled.eas", 24968, 2000);
-    assert(n0 == 24968);
-    uint8_t body0[25000];
+    int n0 = pump_until_file(m, "untitled.eas", 51848, 2000);
+    assert(n0 == 51848);
+    uint8_t body0[52000];
     n0 = lux_file_read("/sys/file/untitled.eas", body0, (int) sizeof(body0));
-    assert(n0 == 24968);
+    assert(n0 == 51848);
     assert(easel_any_bit_in_rect(body0, n0, 100, 100, 140, 116) == 0);
 
-    /* Both saves write a fixed 24968-byte EAS1 file, so pump_until_file's
+    /* Both saves write a fixed 51848-byte EAS2 file, so pump_until_file's
      * size check can't tell "still the old save" from "the new one landed" --
      * remove it first so the next save is unambiguously fresh. */
     remove("untitled.eas");
@@ -3878,7 +3881,7 @@ static void test_easel_text_tool(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool (index 7) -- commits the text */
     quill_lux_pump(m, 20);
 
-    uint8_t body[25000];
+    uint8_t body[52000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_any_bit_in_rect(body, n, 100, 100, 140, 116) == 1);   /* "hi" landed */
@@ -3926,7 +3929,7 @@ static void test_easel_text_style_bold(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t plain_body[25000];
+    uint8_t plain_body[52000];
     int plain_n = easel_save_and_read(m, mc, kc, plain_body, (int) sizeof(plain_body));
     int plain_count = easel_count_bits_in_rect(plain_body, plain_n, 100, 100, 116, 116);
     assert(plain_count > 0);
@@ -3950,7 +3953,7 @@ static void test_easel_text_style_bold(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t bold_body[25000];
+    uint8_t bold_body[52000];
     int bold_n = easel_save_and_read(m, mc, kc, bold_body, (int) sizeof(bold_body));
     int bold_count = easel_count_bits_in_rect(bold_body, bold_n, 100, 100, 116, 116);
 
@@ -3988,7 +3991,7 @@ static void test_easel_text_size_24(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t body[25000];
+    uint8_t body[52000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_any_bit_in_rect(body, n, 100, 116, 132, 131) == 1);  /* only reachable at scale 2 */
@@ -4027,15 +4030,15 @@ static void test_easel_open_with_unsaved_changes_prompts(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_click(m, mc, 280, 222); /* Save */
-    int n = pump_until_file(m, "untitled.eas", 24968, 2000);
-    assert(n == 24968);
+    int n = pump_until_file(m, "untitled.eas", 51848, 2000);
+    assert(n == 51848);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
-    uint8_t body[25000];
+    uint8_t body[52000];
     n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
-    assert(n == 24968);
+    assert(n == 51848);
     assert(easel_bit_set(body, n, 20, 30) == 1);
 
     quill_lux_restore_file("untitled.eas", backup, backup_len);
