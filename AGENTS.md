@@ -3,6 +3,8 @@ Never add new opcodes.
 
 Cloister is a single-app fantasy machine: one program owns the screen. I/O is Plan 9 VFS files, not MMIO device ports. Apps look like Macintosh System 6. Do not add a window manager or multi-app rio.
 
+Never commit unless asked.
+
 # Versioning
 We use the Kelvin versioning system (spec: https://jtobin.io/kelvin-versioning). Anything hotter can run something just as hot or colder as itself, but no guarantees something colder will run on hotter. Nux opcodes and implementation is 300K, everything else is 400K unless otherwise specified.
 
@@ -38,3 +40,4 @@ We use the Kelvin versioning system (spec: https://jtobin.io/kelvin-versioning).
 9. A stack MAY be "reindexed" to a different primary component, provided the new primary is either colder than the old one or reaches version 0 together with it.
 
 **Caveat (release candidates).** Starting a component too close to 0K risks running out of room to iterate before freezing. The spec's answer: release candidates are unlimited at any given temperature, suffixed `.rc1`, `.rc2`, etc., and should be used liberally while iterating before committing to an actual (numbered) cooldown.
+

@@ -87,7 +87,12 @@
  * 0x800000-0xA10000 (font glyph data, file buffers, paste buffers, line
  * caches, path scratch buffers). Consolidated here specifically so they
  * stop colliding with lib/mem.lux's heap (which used to start right where
- * a paste buffer was also parked -- see docs/memory-map.md). */
+ * a paste buffer was also parked -- see docs/memory-map.md).
+ *
+ * apps/Easel.lux packs its 576x720 page 1bpp via lib/bitmap.lux and parks
+ * CANVAS/UNDO/EAS2-staging/transform-scratch/SEL_MASK/PATTERNS/BRUSHES/
+ * SNARF_BUF/fonts/TEXT_BUF across 0x900000-0x9B0000 -- see docs/memory-map.md
+ * for the full layout. */
 #define MM_APP_BULK_BUFFER_BASE 0x900000
 #define MM_APP_BULK_BUFFER_END  0x0A00000
 

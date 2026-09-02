@@ -753,50 +753,70 @@ There is no Undo. **Open** and **Quit** do not ask about unsaved work.
 
 ## 9. Easel — pixel painting
 
-Easel is a MacPaint-style painting program: you draw onto a bitmap, not onto objects. Nib remains the place to select and rearrange shapes.
+Easel is a MacPaint clone: you draw onto a 1-bit bitmap page, not onto objects. Nib remains the place to select and rearrange shapes.
 
 ```bash
 ./bin/cloister apps/Easel.bin
 ```
 
-On launch it opens a blank 512×342 page named `untitled.eas`. The window title is **Easel** or **Easel \***.
+On launch it opens a blank page named `untitled.eas`. The window title is **Easel** or **Easel \***. The page itself is 576×720 (a full MacPaint-sized sheet); the window shows a 480×416 viewport onto it, panned with the Hand tool or Goodies > Show Page.
 
 ### Window
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│ File   Edit   Goodies                                      │  menu bar
-├────┬───────────────────────────────────────────────────────┤
-│ ✎ ░│                                                       │
-│ ● ▓│                   512×342 page                        │
-│ / ▢│                   on a dithered desk                  │
-│ ○ *│                                                       │
-├────┴───────────────────────────────────────────────────────┤
-│ [pattern swatches]                                         │
-├────────────────────────────────────────────────────────────┤
-│ untitled.eas *  Pencil                                     │  status
-└────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ File  Edit  Goodies  Font  Size  Style                    │  menu bar
+├────┬────┬───────────────────────────────────────────────┤
+│ ⌒  │ ▭  │                                                │
+│ ✋ │ A  │                                                │
+│ ▓  │ ✳  │        480×416 viewport                       │
+│ ●  │ ✎  │        onto the 576×720 page                  │
+│ /  │ ▤  │                                                │
+│ □  │ ■  │                                                │
+│ ▢  │ ▤  │                                                │
+│ ○  │ ●  │                                                │
+│ ϟ  │ ϟ  │                                                │
+│ ⬠  │ ⬟  │                                                │
+├────┴────┤                                                │
+│ pen width│                                                │
+├──────────┴────────────────────────────────────────────────┤
+│ [current] [38 pattern swatches]                            │
+└──────────────────────────────────────────────────────────┘
 ```
 
-- **Tool palette** (left, two columns): pencil, eraser, brush, fill, line, rect, oval, spray. The current tool is inverted.
-- **Page**: a white 512×342 bitmap, the original Macintosh screen size, sitting on a dithered desktop.
-- **Patterns** (under the page): sixteen 8×8 MacPaint-style patterns. The current one is inverted.
-- **Status**: file name, `*` if dirty, current tool, and `FatBits` when zoomed.
+There is no in-window status bar — the file name and dirty `*` are in the host window title bar instead.
+
+- **Tool palette** (left, two columns, 20 tools): lasso, marquee, hand, text, fill, spray, brush, pencil, line, eraser, rect/filled rect, roundrect/filled roundrect, oval/filled oval, freeform/filled freeform, polygon/filled polygon. The current tool is inverted.
+- **Pen-width strip** (below the palette): none (dotted), 1, 2, 3, 4, 8 px — sets the outline thickness for line, the shape tools, and stroked brush drags.
+- **Patterns** (bottom strip): a current-pattern preview box, then 38 swatches (19 across, 2 rows). The current one is inverted.
 
 ### Tools
 
 | Tool | Mouse |
 | --- | --- |
-| **Pencil** | 1-pixel black. Right-click or Ctrl+left paints white. |
-| **Eraser** | 8×8 white stamp. |
-| **Brush** | 5×5 stamp of the current pattern. |
-| **Fill** | Flood-fill the connected region of the same color with the current pattern. |
-| **Line** | Drag endpoints. Shift constrains to 0° / 45° / 90°. |
-| **Rect** | Drag a box. Shift makes a square. **Goodies > Filled** fills with the pattern, then frames in black. |
-| **Oval** | Drag a box. Shift makes a circle. Filled works the same as Rect. |
+| **Lasso** | Freehand-trace a selection; the selection shrinks to the tight bounding box of the ink it enclosed. |
+| **Marquee** | Drag a rectangular selection. Shift constrains to a square. |
+| **Hand** | Drag to pan the viewport around the 576×720 page. |
+| **Text** | Click to place a caret, type to insert; see Font/Size/Style below. |
+| **Fill** (bucket) | Flood-fill the connected region of the same color with the current pattern. |
 | **Spray** | Scatter of the current pattern in a small radius. |
+| **Brush** | Stamp of the current preset brush shape (32 available), in the current pattern. |
+| **Pencil** | 1-pixel black. Right-click or Ctrl+left paints white. |
+| **Line** | Drag endpoints. Shift constrains to 0° / 45° / 90°. Outline thickness follows the pen-width strip. |
+| **Eraser** | White stamp. |
+| **Rect / Filled Rect** | Drag a box; Shift makes a square. Filled fills with the current pattern, then frames black at the current pen width. |
+| **Roundrect / Filled Roundrect** | Same as Rect, with rounded corners. |
+| **Oval / Filled Oval** | Drag a box; Shift makes a circle. |
+| **Freeform / Filled Freeform** | Freehand-trace a closed shape; filled scanline-fills the traced outline. |
+| **Polygon / Filled Polygon** | Click to add vertices; double-click, or click the first vertex again, to close. |
 
-Pencil, eraser, brush, and spray interpolate as you drag so fast strokes do not skip pixels. Line, rect, and oval rubber-band until you release.
+Pencil, eraser, brush, and spray interpolate as you drag so fast strokes do not skip pixels. Shape and line tools rubber-band until you release, and snap to the 8px grid when Goodies > Grid is on.
+
+**Double-click shortcuts** (mirroring MacPaint): Pencil toggles FatBits · Eraser clears the whole page · Lasso/Marquee selects all · Brush opens Brush Shape · Hand opens Show Page · a pattern swatch opens Edit Pattern.
+
+### Selection
+
+With Lasso or Marquee active and a selection made: drag inside it to move; Option-drag to drag a copy instead. Cut/Copy/Paste go through `/sys/snarf` and clip to the selection's tight bounds (a full-page selection is too big for the snarf buffer and is refused rather than silently truncated). Esc, choosing another tool, or clicking outside the selection commits a move/copy. Clear erases the selected region (or the whole page, with no selection).
 
 ### Menus
 
@@ -805,32 +825,50 @@ Pencil, eraser, brush, and spray interpolate as you drag so fast strokes do not 
 | Item | What it does |
 | --- | --- |
 | **New** | Empty page named `untitled.eas`. Dirty pages get the Save changes? panel. |
-| **Open** | Standard File picker. Does not ask about unsaved work. |
-| **Save** | Write the current path as EAS1. |
+| **Open** | Standard File picker. Dirty pages get the Save changes? panel first. |
+| **Save** | Write the current path as EAS2. |
 | **Save As** | Put-file picker: choose a folder and name, then write. |
-| **Quit** | Halt Easel. |
+| **Revert** | Reload the current path from disk, discarding unsaved changes (with the Save changes? panel first). |
+| **Quit** | Dirty pages get the Save changes? panel, then halts Easel. |
+
+A failed save, or opening a file that isn't a valid EAS2 page, raises a one-button alert rather than failing silently.
 
 **Edit**
 
 | Item | What it does |
 | --- | --- |
-| **Undo** | One level. A second Undo restores the stroke (MacPaint toggle). |
-| **Invert** | Flip black and white on the whole page. |
-| **Clear** | Erase the whole page to white. |
+| **Undo** | One level. A second Undo restores the change (MacPaint toggle). |
+| **Cut / Copy / Paste** | Via `/sys/snarf`; see Selection above. |
+| **Invert** | Flip black and white on the selection, or the whole page. |
+| **Clear** | Erase the selection, or the whole page, to white. |
+| **Fill** | Fill the selection, or the whole page, with the current pattern. |
+| **Trace Edges** | Replace each pixel with the OR of its 4-neighbour differences — an edge-detect outline. |
+| **Flip Horizontal / Flip Vertical** | Mirror the selection, or the whole page. |
+| **Rotate 90** | Rotate the selection, or the whole page, 90° clockwise. |
 
-Undo, Invert, and Clear snapshot the page first (except Undo itself, which swaps). There is no selection marquee.
+All Edit operations snapshot first (except Undo itself, which swaps), so a second Undo always reverses the last one.
 
 **Goodies**
 
 | Item | What it does |
 | --- | --- |
-| **Grid** | 8-pixel dot grid on the 1× page |
-| **FatBits** | 8× zoom of a 64×42 window into the page, with a cell grid. Arrow keys pan. |
-| **Filled** | Rect and oval fill with the current pattern before framing |
+| **Grid** | 8-pixel dot grid on the page, and snaps shape-tool drags to it. |
+| **FatBits** | 8× zoom for pixel editing, centered on wherever the Hand tool currently has in view. Arrow keys pan. |
+| **Edit Pattern...** | 8×8 modal editor for the current pattern swatch. |
+| **Brush Shape...** | Picker over the 32 preset brush shapes. |
+| **Show Page...** | Reduced whole-page mini-map with a draggable rectangle marking the viewport. |
+
+**Font / Size / Style** (apply to the Text tool)
+
+| Menu | Choices |
+| --- | --- |
+| **Font** | Chicago, Geneva, Monaco |
+| **Size** | 12, 24, 36 |
+| **Style** | Bold, Underline (combinable; Italic/Outline/Shadow are not implemented) |
 
 ### Patterns
 
-Click a swatch under the page. **[** and **]** cycle. Pattern 0 is white, 1 is black (the default); the rest are checkers, lines, bricks, and hatch. Brush, fill, spray, and filled shapes use the current pattern. Pencil and shape frames stay black (or white, for a right-click pencil).
+Click a swatch in the pattern strip. **[** and **]** cycle. Double-click a swatch to edit it. Brush, fill, spray, and filled shapes use the current pattern; pencil and shape outlines stay black (or white, for a right-click pencil).
 
 ### Keyboard
 
@@ -841,8 +879,13 @@ Click a swatch under the page. **[** and **]** cycle. Pattern 0 is white, 1 is b
 | **Cmd/Ctrl+N / O / S** | New / Open / Save |
 | **Cmd/Ctrl+Shift+S** | Save As |
 | **Cmd/Ctrl+Z** | Undo |
-
-**Open** and **Quit** do not ask about unsaved work.
+| **Cmd/Ctrl+X / C / V** | Cut / Copy / Paste |
+| **Cmd/Ctrl+F** | Fill |
+| **Cmd/Ctrl+G** | Trace Edges |
+| **Cmd/Ctrl+H** | Flip Horizontal |
+| **Cmd/Ctrl+J** | Flip Vertical |
+| **Cmd/Ctrl+R** | Rotate 90 |
+| **Esc** | Cancels an active selection, or raises Continue / Restart / Quit |
 
 ### Startup and new files
 
@@ -853,6 +896,7 @@ Click a swatch under the page. **[** and **]** cycle. Pattern 0 is white, 1 is b
 | File > Open | the path you pick |
 | File > Save | the current path |
 | File > Save As | the path you name |
+| File > Revert | the current path, reloaded |
 
 ---
 

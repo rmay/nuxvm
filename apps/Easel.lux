@@ -336,6 +336,8 @@ IMPORT CFF
 @tool-dbl-idx      0x8A0128 ; ( tool-palette double-click tracking for the Pencil/Eraser/
                                  Lasso/Marquee/Hand shortcuts below, separate from br-last-* )
 @tool-dbl-time     0x8A012C ;
+@mirror-h          0x8A0130 ; ( Goodies > Mirror H/V: brush dabs also stamp reflected about )
+@mirror-v          0x8A0134 ; ( the page center -- see brush-at )
 
 ( Explicit damage bits, replacing the old single pat-full flag (whose narrow
   meaning -- "must draw-patterns redraw all swatches" -- was the exact bug: a
