@@ -4,19 +4,20 @@
   yet. A failed save or a load that isn't a valid EAS2 file raises a
   one-button alert instead of failing silently. Edit > Undo / Cut / Copy / Paste /
   Invert / Clear / Fill / Trace Edges / Flip H / Flip V / Rotate 90,
-  Goodies > Grid / FatBits / Edit Pattern / Brush Shape, Font > Chicago /
-  Geneva / Monaco, Size > 12 / 24 / 36, Style > Bold / Underline (Italic /
-  Outline / Shadow not implemented). All 20 tools are wired, including
-  Marquee/Lasso selection, Freeform/Polygon, Text, and now Hand (drags a
-  480x416 viewport around a 576x720 page -- Step 8's "Show Page" overview
-  goodie isn't built yet, and FatBits can pan anywhere on the page but,
-  unlike Hand, always opens back at the page origin rather than wherever
-  the viewport was last panned to). 38 pattern slots (all filled in), 32
-  preset brush shapes (double-click the Brush tool, or Goodies > Brush
-  Shape...), pen-width strip driving line/rect/roundrect/oval/freeform/
-  polygon outline thickness. Undo/Invert/Fill/Trace Edges/Flip/flood-fill
-  (with no selection) all act on the whole page, not just what's currently
-  scrolled into view. Viewport is 480x416, 1-bit, in a 560x492 window
+  Goodies > Grid / FatBits / Edit Pattern / Brush Shape / Show Page, Font >
+  Chicago / Geneva / Monaco, Size > 12 / 24 / 36, Style > Bold / Underline
+  (Italic / Outline / Shadow not implemented). All 20 tools are wired,
+  including Marquee/Lasso selection, Freeform/Polygon, Text, and Hand
+  (drags a 480x416 viewport around a 576x720 page). Show Page opens a
+  reduced whole-page mini-map with a draggable rect marking the viewport;
+  entering FatBits centers it on whatever Hand currently has in view, since
+  the two otherwise track completely independent page positions. 38
+  pattern slots (all filled in), 32 preset brush shapes (double-click the
+  Brush tool, or Goodies > Brush Shape...), pen-width strip driving
+  line/rect/roundrect/oval/freeform/polygon outline thickness.
+  Undo/Invert/Fill/Trace Edges/Flip/flood-fill (with no selection) all act
+  on the whole page, not just what's currently scrolled into view. Viewport
+  is 480x416, 1-bit, in a 560x492 window
   (geometry sized to the tools, not a fixed window size). Save is EAS2 (whole
   576x720 page, no EAS1 back-compat reader -- see the EAS2 comment at the
   file-format section).
@@ -203,6 +204,28 @@ IMPORT CFF
 @BR_GRID_X        BR_PANEL_X 10 + ;
 @BR_GRID_Y        BR_PANEL_Y 30 + ;
 
+( Show Page modal: the whole 576x720 page reduced 3x to a 192x240 mini-map
+  (both exact), with a draggable rect marking the current viewport. Reduced
+  once into TMP (a free scratch page while this modal is open, one byte per
+  mini-pixel) on open, not re-sampled every frame -- only the draggable rect
+  needs to redraw live. )
+@SP_Z              3 ;
+@SP_MAP_W          PAGE_W SP_Z / ; ( 192 )
+@SP_MAP_H          PAGE_H SP_Z / ; ( 240 )
+@SP_PANEL_W        SP_MAP_W 20 + ;
+@SP_PANEL_H        SP_MAP_H 60 + ;
+@SP_PANEL_X        WIN_W SP_PANEL_W - 2 / ;
+@SP_PANEL_Y        WIN_H SP_PANEL_H - 2 / ;
+@SP_MAP_X          SP_PANEL_X 10 + ;
+@SP_MAP_Y          SP_PANEL_Y 30 + ;
+@SP_BTN_W          70 ;
+@SP_BTN_H          20 ;
+@SP_BTN_Y          SP_MAP_Y SP_MAP_H + 14 + ;
+@SP_OK_X           SP_PANEL_X SP_PANEL_W + 20 - SP_BTN_W - ;
+@SP_CANCEL_X       SP_PANEL_X 20 + ;
+@SP_VIEW_W         CANVAS_W SP_Z / ;
+@SP_VIEW_H         CANVAS_H SP_Z / ;
+
 ( --- Bulk buffers (MM_APP_BULK_BUFFER 0x900000..0xA00000) ---
   CANVAS/UNDO/TMP are now packed 1bpp BITMAP::PAGE_BYTES (51840) pages, not
   one-byte-per-pixel CANVAS_BYTES (175104) -- see lib/bitmap.lux. TMP sits at
@@ -300,6 +323,11 @@ IMPORT CFF
 @view-y            0x8A010C ;
 @hand-last-mx      0x8A0110 ; ( raw screen x/y at the last Hand-drag sample )
 @hand-last-my      0x8A0114 ;
+@show-page-open    0x8A0118 ; ( 0/1: Goodies > Show Page modal open )
+@sp-x              0x8A011C ; ( pending viewport origin while the modal is open -- OK commits
+                                 it into view-x/view-y, Cancel/Esc discards it )
+@sp-y              0x8A0120 ;
+@sp-drag           0x8A0124 ; ( 0/1: dragging the viewport rect on the mini-map )
 
 ( Explicit damage bits, replacing the old single pat-full flag (whose narrow
   meaning -- "must draw-patterns redraw all swatches" -- was the exact bug: a
@@ -2749,6 +2777,157 @@ IMPORT CFF
     APP::dirty!
 ;
 
+( --- Goodies > Show Page --- )
+
+( One bit per page pixel, OR'd into one byte per SP_Z x SP_Z block -- "any
+  ink in this block" is enough for a page overview. Reuses TMP, which
+  nothing else touches while a modal is open. )
+@sp-reduce ( -- )
+    0 { my }
+        [ my SP_MAP_H < ]
+        [
+            0 { mx }
+                [ mx SP_MAP_W < ]
+                [
+                    0 { any }
+                        0 { ry }
+                            [ ry SP_Z < ]
+                            [
+                                0 { rx }
+                                    [ rx SP_Z < ]
+                                    [
+                                        CANVAS mx SP_Z * rx + my SP_Z * ry + BITMAP::get 0 > any OR any!
+                                        rx 1 + rx!
+                                    ] |:
+                                UNGIRD
+                                ry 1 + ry!
+                            ] |:
+                        UNGIRD
+                        any TMP my SP_MAP_W * mx + + store-byte
+                    UNGIRD
+                    mx 1 + mx!
+                ] |:
+            UNGIRD
+            my 1 + my!
+        ] |:
+    UNGIRD
+;
+
+@sp-clamp ( -- )
+    sp-x LOADI 0 MAX VIEW_MAX_X MIN sp-x STOREI
+    sp-y LOADI 0 MAX VIEW_MAX_Y MIN sp-y STOREI
+;
+
+( Centers the viewport rect on the clicked/dragged mini-map point, in page
+  space, then clamps to the page. )
+@sp-jump-to { mx my -- }
+    mx SP_MAP_X - SP_Z * CANVAS_W 2 / - sp-x STOREI
+    my SP_MAP_Y - SP_Z * CANVAS_H 2 / - sp-y STOREI
+    sp-clamp
+;
+
+@sp-draw ( -- )
+    show-page-open LOADI [
+        APP::draw-fd SP_PANEL_X CONFIRM_SHADOW + SP_PANEL_Y CONFIRM_SHADOW + SP_PANEL_W SP_PANEL_H CLR_CONFIRM_DIM DRAW::fill-rect
+        APP::draw-fd SP_PANEL_X SP_PANEL_Y SP_PANEL_W SP_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
+        APP::draw-fd SP_PANEL_X SP_PANEL_Y SP_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd SP_PANEL_X SP_PANEL_Y SP_PANEL_H + 1 - SP_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd SP_PANEL_X SP_PANEL_Y 1 SP_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd SP_PANEL_X SP_PANEL_W + 1 - SP_PANEL_Y 1 SP_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd SP_PANEL_X 12 + SP_PANEL_Y 8 + T"Show Page" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        APP::draw-fd SP_MAP_X SP_MAP_Y SP_MAP_W SP_MAP_H CLR_WHITE DRAW::fill-rect
+        0 { my }
+            [ my SP_MAP_H < ]
+            [
+                0 { mx }
+                    [ mx SP_MAP_W < ]
+                    [
+                        TMP my SP_MAP_W * mx + + load-byte 0 > [
+                            APP::draw-fd SP_MAP_X mx + SP_MAP_Y my + CLR_FG DRAW::pix
+                        ] ?
+                        mx 1 + mx!
+                    ] |:
+                UNGIRD
+                my 1 + my!
+            ] |:
+        UNGIRD
+        APP::draw-fd SP_MAP_X SP_MAP_Y SP_MAP_W SP_MAP_H CLR_CONFIRM_BORDER DRAW::frame-rect
+        APP::draw-fd SP_MAP_X sp-x LOADI SP_Z / + SP_MAP_Y sp-y LOADI SP_Z / +
+            SP_VIEW_W SP_VIEW_H CLR_CONFIRM_BTN DRAW::frame-rect
+        UI::overlay-draw
+    ] ?
+;
+
+@sp-close ( -- )
+    0 show-page-open STOREI
+    0 sp-drag STOREI
+    0 APP::modal!
+    APP::dirty!
+;
+
+@sp-ok ( val -- )
+    drop
+    sp-x LOADI view-x STOREI
+    sp-y LOADI view-y STOREI
+    clamp-view
+    sp-close
+;
+
+@sp-cancel ( val -- ) drop sp-close ;
+
+@sp-build ( -- )
+    UI::overlay-clear
+    T"OK" SP_OK_X SP_BTN_Y SP_BTN_W SP_BTN_H [ sp-ok ] UI::overlay-button
+    T"Cancel" SP_CANCEL_X SP_BTN_Y SP_BTN_W SP_BTN_H [ sp-cancel ] UI::overlay-button
+    T"OK" UI::overlay-default
+;
+
+@sp-in-map? { mx my -- f }
+    mx SP_MAP_X >= mx SP_MAP_X SP_MAP_W + < AND
+    my SP_MAP_Y >= AND my SP_MAP_Y SP_MAP_H + < AND
+;
+
+@sp-mouse { mpkt -- }
+    mpkt UI::overlay-feed
+    UI::overlay-handle
+    mpkt EVENT::mouse-type EVENT::MOUSE_DOWN = [
+        mpkt EVENT::mouse-x { mx }
+            mpkt EVENT::mouse-y { my }
+                mx my sp-in-map? [
+                    mx my sp-jump-to
+                    1 sp-drag STOREI
+                    APP::dirty!
+                ] ?
+            UNGIRD
+        UNGIRD
+    ] ?
+    mpkt EVENT::mouse-type EVENT::MOUSE_MOVE = sp-drag LOADI AND [
+        mpkt EVENT::mouse-x mpkt EVENT::mouse-y sp-jump-to
+        APP::dirty!
+    ] ?
+    mpkt EVENT::mouse-type EVENT::MOUSE_UP = [
+        0 sp-drag STOREI
+    ] ?
+;
+
+@sp-kbd ( kpkt -- )
+    dup EVENT::kbd-type EVENT::KEY_DOWN = [
+        dup EVENT::kbd-key EVENT::KEY_ESC = [ sp-close ] ?
+    ] ?
+    drop
+;
+
+@menu-show-page ( val -- )
+    drop
+    view-x LOADI sp-x STOREI
+    view-y LOADI sp-y STOREI
+    sp-reduce
+    1 show-page-open STOREI
+    1 APP::modal!
+    sp-build
+    APP::dirty!
+;
+
 @on-pick ( path -- )
     save-as LOADI [
         0 save-as STOREI
@@ -2793,7 +2972,14 @@ IMPORT CFF
 @menu-flip-v ( val -- ) drop do-flip-v ;
 @menu-rotate90 ( val -- ) drop do-rotate90 ;
 @menu-grid ( val -- ) grid-f STOREI APP::dirty! ;
+( Turning FatBits on centers it on whatever the Hand tool currently has in
+  view, rather than wherever fat-ox/fat-oy last were -- the two coordinate
+  systems are otherwise completely independent. )
 @menu-fat ( val -- )
+    dup [
+        view-x LOADI CANVAS_W FAT_VW - 2 / + fat-ox STOREI
+        view-y LOADI CANVAS_H FAT_VH - 2 / + fat-oy STOREI
+    ] ?
     fat-f STOREI
     clamp-fat
     APP::dirty!
@@ -3239,6 +3425,7 @@ IMPORT CFF
     edit-pat-draw
     brush-pick-draw
     io-alert-draw
+    sp-draw
     0 damage STOREI
 ;
 
@@ -3702,6 +3889,9 @@ IMPORT CFF
     brush-pick-open LOADI [
         brush-pick-mouse
     ] [
+    show-page-open LOADI [
+        sp-mouse
+    ] [
     SF::open? [
         SF::mouse
     ] [
@@ -3714,6 +3904,7 @@ IMPORT CFF
                 handle-page-mouse
             ] ?:
         UNGIRD
+    ] ?:
     ] ?:
     ] ?:
     ] ?:
@@ -3771,6 +3962,9 @@ IMPORT CFF
     brush-pick-open LOADI [
         brush-pick-kbd
     ] [
+    show-page-open LOADI [
+        sp-kbd
+    ] [
     SF::open? [
         SF::kbd
     ] [
@@ -3822,12 +4016,13 @@ IMPORT CFF
     ] ?:
     ] ?:
     ] ?:
+    ] ?:
 ;
 
 @on-frame ( -- )
     UI::handle
     APP::dirty? SF::open? OR confirm-dirty-open LOADI OR edit-pat-open LOADI OR
-    brush-pick-open LOADI OR io-alert-open LOADI OR [
+    brush-pick-open LOADI OR io-alert-open LOADI OR show-page-open LOADI OR [
         draw-damaged
         APP::dirty-off
     ] [
@@ -3837,6 +4032,7 @@ IMPORT CFF
         edit-pat-draw
         brush-pick-draw
         io-alert-draw
+        sp-draw
     ] ?:
 ;
 
@@ -3874,6 +4070,7 @@ IMPORT CFF
     UI::sep
     T"Edit Pattern..." [ menu-edit-pat ] UI::item
     T"Brush Shape..." [ menu-brush-pick ] UI::item
+    T"Show Page..." [ menu-show-page ] UI::item
     T"font" font-grp STOREI
     T"Font" UI::menu
     T"Chicago" font-grp LOADI [ menu-font-chicago ] UI::radio-item

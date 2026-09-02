@@ -3999,6 +3999,62 @@ static void test_easel_text_size_24(void) {
     quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
+/* Goodies > Show Page (Step 8): clicking the mini-map's bottom-right corner
+ * and OK should pan the viewport to the page's bottom-right corner, clamped
+ * at VIEW_MAX_X=96/VIEW_MAX_Y=304 (PAGE_W-CANVAS_W=576-480,
+ * PAGE_H-CANVAS_H=720-416) -- clamping to the extreme means the exact
+ * click-to-page arithmetic inside sp-jump-to doesn't need to be replicated
+ * here. Goodies title is at MN_X=106 (+10=116, same convention as every
+ * other menu click in this file); Show Page is item row 5 (Grid, FatBits,
+ * sep, Edit Pattern, Brush Shape, Show Page), y=BAR_H+5*18+9=119. Panel/map/
+ * button geometry mirrors SP_PANEL_X/Y, SP_MAP_X/Y, SP_BTN_Y, SP_OK_X in
+ * apps/Easel.lux (WIN_W=560, WIN_H=492): panel 212x300 centers at (174,96),
+ * map at (184,126) sized 192x240 so its bottom-right pixel is (375,365); OK
+ * sits at (296,380) sized 70x20. After panning, the viewport's own top-left
+ * pixel is screen (CANVAS_X,CANVAS_Y)=(80,20), which should now read back
+ * as page (96,304) once painted. */
+static void test_easel_show_page(void) {
+    printf("Testing apps/Easel.lux: Goodies > Show Page pans the viewport...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 116, 10);  /* Goodies menu */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 116, 119); /* Show Page... */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 375, 365); /* mini-map bottom-right corner */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 320, 390); /* OK */
+    quill_lux_pump(m, 20);
+
+    quill_lux_click(m, mc, 80, 20);   /* Pencil paints the viewport's own top-left pixel */
+    quill_lux_pump(m, 20);
+
+    quill_lux_key(m, kc, 's', 8); /* Cmd+S */
+    int n = pump_until_file(m, "untitled.eas", 51848, 2000);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+
+    assert(n == 51848);
+    uint8_t body[52000];
+    n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
+    assert(n == 51848);
+
+    assert(easel_bit_set(body, n, 96, 304) == 1);  /* painted at the panned viewport's origin */
+    assert(easel_bit_set(body, n, 0, 0) == 0);     /* unpanned origin untouched */
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
 /* File > Open/Quit with unsaved changes (Step 9): both now route through the
  * same dirty-confirm sheet New already used, instead of Open silently
  * discarding changes and Quit being a bare HALT. Button centers come from
@@ -4184,6 +4240,7 @@ int main(void) {
     test_easel_text_tool();
     test_easel_text_style_bold();
     test_easel_text_size_24();
+    test_easel_show_page();
     test_easel_open_with_unsaved_changes_prompts();
     test_easel_quit_with_unsaved_changes_prompts();
 

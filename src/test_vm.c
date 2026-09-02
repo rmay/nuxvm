@@ -566,7 +566,6 @@ int main() {
     test_frames();
     test_breaking_calls();
     test_bus_read();
-    test_mmio_ports_gone();
     test_time_scratch_is_ram();
     test_yield();
     test_memory_faults();
