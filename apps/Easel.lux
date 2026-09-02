@@ -17,7 +17,10 @@
   Brush tool, or Goodies > Brush Shape...), pen-width strip driving
   line/rect/roundrect/oval/freeform/polygon outline thickness.
   Undo/Invert/Fill/Trace Edges/Flip/flood-fill (with no selection) all act
-  on the whole page, not just what's currently scrolled into view. Viewport
+  on the whole page, not just what's currently scrolled into view.
+  Double-click shortcuts: Pencil toggles FatBits, Eraser clears the whole
+  page, Lasso/Marquee selects all, Brush opens Brush Shape, Hand opens Show
+  Page, a pattern swatch opens Edit Pattern. Viewport
   is 480x416, 1-bit, in a 560x492 window
   (geometry sized to the tools, not a fixed window size). Save is EAS2 (whole
   576x720 page, no EAS1 back-compat reader -- see the EAS2 comment at the
@@ -329,6 +332,9 @@ IMPORT CFF
                                  it into view-x/view-y, Cancel/Esc discards it )
 @sp-y              0x8A0120 ;
 @sp-drag           0x8A0124 ; ( 0/1: dragging the viewport rect on the mini-map )
+@tool-dbl-idx      0x8A0128 ; ( tool-palette double-click tracking for the Pencil/Eraser/
+                                 Lasso/Marquee/Hand shortcuts below, separate from br-last-* )
+@tool-dbl-time     0x8A012C ;
 
 ( Explicit damage bits, replacing the old single pat-full flag (whose narrow
   meaning -- "must draw-patterns redraw all swatches" -- was the exact bug: a
@@ -3006,6 +3012,35 @@ IMPORT CFF
     APP::dirty!
 ;
 
+( --- Double-click tool shortcuts (Step 4), authentic MacPaint: Pencil ->
+  toggle FatBits, Eraser -> erase the whole page, Lasso/Marquee -> select
+  all, Hand -> Show Page. Brush (br-last-idx) and pattern swatches
+  (epat-last-idx) already have their own double-click opens; handle-page-
+  mouse's tool-dbl-idx/-time below drives these five. )
+@toggle-fatbits ( -- )
+    fat-f LOADI 0 = { newf }
+        newf menu-fat
+        T"FatBits" newf UI::item-set
+    UNGIRD
+;
+
+@erase-whole-page ( -- )
+    snapshot
+    CANVAS clear-buf
+    0 sel-active STOREI
+    mark-dirty
+;
+
+@select-all-page ( -- )
+    0 sel-x0 STOREI
+    0 sel-y0 STOREI
+    PAGE_W 1 - sel-x1 STOREI
+    PAGE_H 1 - sel-y1 STOREI
+    1 sel-active STOREI
+    0 sel-mask-active STOREI
+    APP::dirty!
+;
+
 @menu-font-chicago ( val -- ) drop 0 text-font STOREI APP::dirty! ;
 @menu-font-geneva  ( val -- ) drop 1 text-font STOREI APP::dirty! ;
 @menu-font-monaco  ( val -- ) drop 2 text-font STOREI APP::dirty! ;
@@ -3829,6 +3864,17 @@ IMPORT CFF
                         UNGIRD
                     ] ?
                     t br-last-idx STOREI
+                    TIME::milli@ { now }
+                        t tool-dbl-idx LOADI =
+                        now tool-dbl-time LOADI - 400 < AND [
+                            t TOOL_PENCIL = [ toggle-fatbits ] ?
+                            t TOOL_ERASER = [ erase-whole-page ] ?
+                            t TOOL_LASSO = t TOOL_MARQUEE = OR [ select-all-page ] ?
+                            t TOOL_HAND = [ 0 menu-show-page ] ?
+                        ] ?
+                        now tool-dbl-time STOREI
+                    UNGIRD
+                    t tool-dbl-idx STOREI
                     APP::dirty!
                 ] ?
             ] [
@@ -4135,6 +4181,8 @@ IMPORT CFF
     0 io-alert-open STOREI
     -1 br-last-idx STOREI
     0 br-last-time STOREI
+    -1 tool-dbl-idx STOREI
+    0 tool-dbl-time STOREI
     0 sel-active STOREI
     0 sel-mask-active STOREI
     0 move-dx STOREI

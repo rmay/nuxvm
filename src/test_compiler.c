@@ -4110,6 +4110,153 @@ static void test_easel_grid_snap(void) {
     quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
+/* Double-click tool shortcuts (Step 4). Pencil -> toggle FatBits: scr>can
+ * scales by FAT_Z=8 and offsets by fat-ox/fat-oy once FatBits is on, so a
+ * click at the canvas's own top-left corner screen (CANVAS_X,CANVAS_Y)=
+ * (80,20) lands on page (fat-ox,fat-oy) instead of page (0,0). toggle-
+ * fatbits centers fat-ox/fat-oy the same way menu-fat's own centering does,
+ * on view-x/view-y=(0,0) at boot: fat-ox = (CANVAS_W-FAT_VW)/2 = (480-60)/2
+ * = 210, fat-oy = (CANVAS_H-FAT_VH)/2 = (416-52)/2 = 182. Pencil is palette
+ * cell 7 (PAL_X+1*PAL_CELL_W=40, PAL_Y+3*PAL_CELL_H=116, center (60,132)). */
+static void test_easel_dbl_click_pencil_fatbits(void) {
+    printf("Testing apps/Easel.lux: double-click Pencil toggles FatBits...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 60, 132);  /* Pencil (already the default tool) */
+    quill_lux_pump(m, 5);
+    quill_lux_click(m, mc, 60, 132);  /* double-click: toggles FatBits on */
+    quill_lux_pump(m, 20);
+
+    quill_lux_click(m, mc, 80, 20);   /* paints through the FatBits mapping */
+    quill_lux_pump(m, 20);
+
+    uint8_t body[52000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    assert(easel_bit_set(body, n, 210, 182) == 1);  /* FatBits-mapped pixel */
+    assert(easel_bit_set(body, n, 0, 0) == 0);       /* not the plain 1:1 mapping */
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
+/* Eraser -> erase the whole page, regardless of any selection. Eraser is
+ * palette cell 9 (PAL_X+1*PAL_CELL_W=40, PAL_Y+4*PAL_CELL_H=148, center
+ * (60,164)). */
+static void test_easel_dbl_click_eraser_clears_page(void) {
+    printf("Testing apps/Easel.lux: double-click Eraser clears the whole page...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 100, 50);  /* Pencil paints canvas (20,30) */
+    quill_lux_pump(m, 20);
+
+    quill_lux_click(m, mc, 60, 164);  /* Eraser tool */
+    quill_lux_pump(m, 5);
+    quill_lux_click(m, mc, 60, 164);  /* double-click: erases the whole page */
+    quill_lux_pump(m, 20);
+
+    uint8_t body[52000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    assert(easel_bit_set(body, n, 20, 30) == 0);
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
+/* Marquee -> select all. Distinguished from "no selection" by dragging from
+ * inside the selection afterward: with a real page-covering selection, that
+ * drag moves the painted pixel (DRAG_MOVE); with no selection it would start
+ * a brand new marquee rect instead and leave the pixel untouched. Marquee is
+ * palette cell 1 (PAL_X+1*PAL_CELL_W=40, PAL_Y, center (60,36)). */
+static void test_easel_dbl_click_marquee_select_all(void) {
+    printf("Testing apps/Easel.lux: double-click Marquee selects the whole page...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 100, 50);  /* Pencil paints canvas (20,30) */
+    quill_lux_pump(m, 20);
+
+    quill_lux_click(m, mc, 60, 36);   /* Marquee tool */
+    quill_lux_pump(m, 5);
+    quill_lux_click(m, mc, 60, 36);   /* double-click: selects the whole page */
+    quill_lux_pump(m, 20);
+
+    lux_drag(m, mc, 100, 50, 150, 50); /* drag from inside the selection, +50px */
+    quill_lux_pump(m, 20);
+
+    uint8_t body[52000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    assert(easel_bit_set(body, n, 20, 30) == 0);  /* source now blank */
+    assert(easel_bit_set(body, n, 70, 30) == 1);  /* destination now set */
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
+/* Hand -> Show Page. Same panning check as menu-show-page's own test, just
+ * opened via double-click instead of Goodies > Show Page. Hand is palette
+ * cell 2 (PAL_X, PAL_Y+1*PAL_CELL_H=52, center (20,68)). */
+static void test_easel_dbl_click_hand_show_page(void) {
+    printf("Testing apps/Easel.lux: double-click Hand opens Show Page...\n");
+    size_t backup_len = 0;
+    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
+    remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 20, 68);   /* Hand tool */
+    quill_lux_pump(m, 5);
+    quill_lux_click(m, mc, 20, 68);   /* double-click: opens Show Page */
+    quill_lux_pump(m, 20);
+
+    quill_lux_click(m, mc, 375, 365); /* mini-map bottom-right corner */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 320, 390); /* OK */
+    quill_lux_pump(m, 20);
+
+    quill_lux_click(m, mc, 60, 132);  /* Pencil tool (current tool is still Hand) */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 80, 20);   /* paints the viewport's own top-left pixel */
+    quill_lux_pump(m, 20);
+
+    uint8_t body[52000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    assert(easel_bit_set(body, n, 96, 304) == 1);
+
+    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
 /* File > Open/Quit with unsaved changes (Step 9): both now route through the
  * same dirty-confirm sheet New already used, instead of Open silently
  * discarding changes and Quit being a bare HALT. Button centers come from
@@ -4297,6 +4444,10 @@ int main(void) {
     test_easel_text_size_24();
     test_easel_show_page();
     test_easel_grid_snap();
+    test_easel_dbl_click_pencil_fatbits();
+    test_easel_dbl_click_eraser_clears_page();
+    test_easel_dbl_click_marquee_select_all();
+    test_easel_dbl_click_hand_show_page();
     test_easel_open_with_unsaved_changes_prompts();
     test_easel_quit_with_unsaved_changes_prompts();
 
