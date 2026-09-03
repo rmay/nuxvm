@@ -984,144 +984,127 @@ static int draw_read(VFSFile* file, uint8_t* buf, int len) {
     return 4;
 }
 
+/* /dev/draw wire format: a stream of 32-bit VM words. Word 0 of each command
+ * is its tag, and every field is its own word, so a guest packs a command with
+ * plain aligned STOREI stores instead of decomposing each field into bytes --
+ * byte access is not a VM opcode (see AGENTS.md: no new opcodes), so
+ * lib/core.lux has to synthesize it as a load/mask/shift/store sequence, and
+ * that marshalling measured ~44% of the cost of a full Easel repaint.
+ *
+ * Words are in VM byte order, which is big-endian: write_mem32 in src/vm.c
+ * stores the MSB at the lowest address. These are guest words read back out of
+ * a copy of guest memory, so they must be decoded the way the VM wrote them --
+ * not as little-endian, which is what the old byte-packed fields used and what
+ * DRAW::store-int-le still produces for file formats.
+ *
+ * DrawString's text bytes follow its header still packed as bytes (they are a
+ * byte string, and store-byte addresses bytes directly), but the command as a
+ * whole is padded to a word boundary so the next tag stays aligned.
+ * Coordinates are full i32 now rather than i16.
+ *
+ * Both encoders must match this exactly: lib/draw.lux (Lux) and
+ * codegen_builtin_call() in src/fluxio_codegen.c (Fluxio). */
+#define DRAW_W(n) ((int32_t)(((uint32_t)buf[(n)*4] << 24) | ((uint32_t)buf[(n)*4+1] << 16) | \
+                             ((uint32_t)buf[(n)*4+2] << 8) | (uint32_t)buf[(n)*4+3]))
+
 static int draw_write(VFSFile* file, const uint8_t* buf, int len) {
     System* sys = (System*)file->private_data;
     if (!sys || len <= 0) return len;
 
-    int i = 0;
-    while (i < len) {
-        uint8_t cmd = buf[i++];
+    int consumed = 0;
+    /* `buf` is advanced per command so DRAW_W(n) always indexes the current
+     * command's word n; `consumed` tracks the offset for the return value. */
+    while (len - consumed >= 4) {
+        int avail = len - consumed;
+        int32_t cmd = DRAW_W(0);
+        int need;
         switch (cmd) {
-            case 0: {
-                if (i + 12 > len) return i - 1;
-                int16_t x  = (int16_t)(buf[i]   | (buf[i+1]<<8));
-                int16_t y  = (int16_t)(buf[i+2] | (buf[i+3]<<8));
-                int16_t w  = (int16_t)(buf[i+4] | (buf[i+5]<<8));
-                int16_t h  = (int16_t)(buf[i+6] | (buf[i+7]<<8));
-                uint32_t color = (uint32_t)buf[i+8] | ((uint32_t)buf[i+9]<<8) |
-                                 ((uint32_t)buf[i+10]<<16) | ((uint32_t)buf[i+11]<<24);
-                system_fill_rect(sys, x, y, w, h, color);
-                i += 12;
+            case 0:   /* FillRect  */
+            case 3:   /* DrawRect  */ need = 24; break;
+            case 1:   /* DrawChar  */ need = 24; break;
+            case 2:   /* DrawString: header only; text length checked below */
+                      need = 24; break;
+            case 4:   /* SetFontSize */
+            case 5:   /* SetFont     */ need = 8;  break;
+            case 6:   /* BeginFrame  */
+            case 7:   /* EndFrame    */ need = 4;  break;
+            case 8:   /* FillPat     */ need = 28; break;
+            case 9:   /* DrawCFFGlyph */
+            case 10:  /* BlitTile     */ need = 32; break;
+            default:  return consumed;
+        }
+        if (avail < need) return consumed;
+
+        switch (cmd) {
+            case 0:
+                system_fill_rect(sys, DRAW_W(1), DRAW_W(2), DRAW_W(3), DRAW_W(4),
+                                 (uint32_t)DRAW_W(5));
                 break;
-            }
+            case 3:
+                system_draw_rect(sys, DRAW_W(1), DRAW_W(2), DRAW_W(3), DRAW_W(4),
+                                 (uint32_t)DRAW_W(5));
+                break;
             case 1: {
-                if (i + 10 > len) return i - 1;
-                int16_t x = (int16_t)(buf[i] | (buf[i+1]<<8));
-                int16_t y = (int16_t)(buf[i+2] | (buf[i+3]<<8));
-                char c = (char)buf[i+4];
-                uint32_t color = (uint32_t)buf[i+5] | ((uint32_t)buf[i+6]<<8) |
-                                 ((uint32_t)buf[i+7]<<16) | ((uint32_t)buf[i+8]<<24);
-                uint8_t scale = buf[i+9];
+                int32_t scale = DRAW_W(5);
                 if (scale == 0) scale = sys->font_size ? sys->font_size : 12;
-                system_draw_char(sys, x, y, c, color, scale);
-                i += 10;
+                system_draw_char(sys, DRAW_W(1), DRAW_W(2), (char)DRAW_W(3),
+                                 (uint32_t)DRAW_W(4), scale);
                 break;
             }
             case 2: {
-                if (i + 11 > len) return i - 1;
-                int16_t x = (int16_t)(buf[i] | (buf[i+1]<<8));
-                int16_t y = (int16_t)(buf[i+2] | (buf[i+3]<<8));
-                uint32_t color = (uint32_t)buf[i+4] | ((uint32_t)buf[i+5]<<8) |
-                                 ((uint32_t)buf[i+6]<<16) | ((uint32_t)buf[i+7]<<24);
-                uint8_t scale = buf[i+8];
+                int32_t x = DRAW_W(1), y = DRAW_W(2);
+                uint32_t color = (uint32_t)DRAW_W(3);
+                int32_t scale = DRAW_W(4);
+                int32_t slen = DRAW_W(5);
                 if (scale == 0) scale = sys->font_size ? sys->font_size : 12;
-                int16_t strLen = (int16_t)(buf[i+9] | (buf[i+10]<<8));
-                i += 11;
-                if (i + strLen > len) return i - 11;
-                system_draw_text_len(sys, x, y, (const char*)(buf + i), strLen, color, scale);
-                i += strLen;
+                if (slen < 0) return consumed;
+                /* Header + text, rounded up so the next command stays aligned. */
+                need = 24 + ((slen + 3) & ~3);
+                if (avail < need) return consumed;
+                system_draw_text_len(sys, x, y, (const char*)(buf + 24), slen, color, scale);
                 break;
             }
-            case 3: {
-                if (i + 12 > len) return i - 1;
-                int16_t x  = (int16_t)(buf[i]   | (buf[i+1]<<8));
-                int16_t y  = (int16_t)(buf[i+2] | (buf[i+3]<<8));
-                int16_t w  = (int16_t)(buf[i+4] | (buf[i+5]<<8));
-                int16_t h  = (int16_t)(buf[i+6] | (buf[i+7]<<8));
-                uint32_t color = (uint32_t)buf[i+8] | ((uint32_t)buf[i+9]<<8) |
-                                 ((uint32_t)buf[i+10]<<16) | ((uint32_t)buf[i+11]<<24);
-                system_draw_rect(sys, x, y, w, h, color);
-                i += 12;
-                break;
-            }
-            case 4:
-                if (i + 1 > len) return i - 1;
-                sys->font_size = buf[i++];
-                break;
-            case 5:
-                if (i + 1 > len) return i - 1;
-                sys->font_id = buf[i++];
-                break;
-            case 6:
-                system_begin_frame(sys);
-                break;
-            case 8: {
-                if (i + 13 > len) return i - 1;
-                int16_t x  = (int16_t)(buf[i]   | (buf[i+1]<<8));
-                int16_t y  = (int16_t)(buf[i+2] | (buf[i+3]<<8));
-                int16_t w  = (int16_t)(buf[i+4] | (buf[i+5]<<8));
-                int16_t h  = (int16_t)(buf[i+6] | (buf[i+7]<<8));
-                uint32_t color = (uint32_t)buf[i+8] | ((uint32_t)buf[i+9]<<8) |
-                                 ((uint32_t)buf[i+10]<<16) | ((uint32_t)buf[i+11]<<24);
-                uint8_t pat = buf[i+12];
-                system_fill_pat(sys, x, y, w, h, color, pat);
-                i += 13;
-                break;
-            }
-            case 7:
-                system_end_frame(sys);
+            case 4: sys->font_size = (uint8_t)DRAW_W(1); break;
+            case 5: sys->font_id   = (uint8_t)DRAW_W(1); break;
+            case 6: system_begin_frame(sys); break;
+            case 7: system_end_frame(sys); break;
+            case 8:
+                system_fill_pat(sys, DRAW_W(1), DRAW_W(2), DRAW_W(3), DRAW_W(4),
+                                (uint32_t)DRAW_W(5), (uint8_t)DRAW_W(6));
                 break;
             case 9: {
-                /* DrawCFFGlyph: x i16, y i16, color u32, scale u8, ch u8,
-                   font_ptr u32, nbytes u16. 17 bytes including cmd. */
-                if (i + 16 > len) return i - 1;
-                int16_t x = (int16_t)(buf[i] | (buf[i+1] << 8));
-                int16_t y = (int16_t)(buf[i+2] | (buf[i+3] << 8));
-                uint32_t color = (uint32_t)buf[i+4] | ((uint32_t)buf[i+5] << 8) |
-                                 ((uint32_t)buf[i+6] << 16) | ((uint32_t)buf[i+7] << 24);
-                uint8_t scale = buf[i+8];
-                uint8_t ch = buf[i+9];
-                uint32_t font_ptr = (uint32_t)buf[i+10] | ((uint32_t)buf[i+11] << 8) |
-                                    ((uint32_t)buf[i+12] << 16) | ((uint32_t)buf[i+13] << 24);
-                uint16_t nbytes = (uint16_t)(buf[i+14] | (buf[i+15] << 8));
-                i += 16;
-                if (!sys->memory || font_ptr >= sys->memory_size) break;
-                uint32_t avail = sys->memory_size - font_ptr;
-                if ((uint32_t)nbytes > avail) nbytes = (uint16_t)avail;
+                uint32_t font_ptr = (uint32_t)DRAW_W(6);
+                int32_t nbytes = DRAW_W(7);
+                if (!sys->memory || font_ptr >= sys->memory_size || nbytes <= 0) break;
+                uint32_t avail_mem = sys->memory_size - font_ptr;
+                if ((uint32_t)nbytes > avail_mem) nbytes = (int32_t)avail_mem;
                 if (nbytes == 0) break;
                 system_draw_cff(sys, sys->memory + font_ptr, (int)nbytes,
-                                (char)ch, x, y, color, (int)scale);
+                                (char)DRAW_W(5), DRAW_W(1), DRAW_W(2),
+                                (uint32_t)DRAW_W(3), (int)DRAW_W(4));
                 break;
             }
             case 10: {
-                /* BlitTile: x i16, y i16, size u8, use_key u8, key u32,
-                   tile_ptr u32, nbytes u16. 17 bytes including cmd. */
-                if (i + 16 > len) return i - 1;
-                int16_t x = (int16_t)(buf[i] | (buf[i+1] << 8));
-                int16_t y = (int16_t)(buf[i+2] | (buf[i+3] << 8));
-                uint8_t size = buf[i+4];
-                uint8_t use_key = buf[i+5];
-                uint32_t key = (uint32_t)buf[i+6] | ((uint32_t)buf[i+7] << 8) |
-                               ((uint32_t)buf[i+8] << 16) | ((uint32_t)buf[i+9] << 24);
-                uint32_t tile_ptr = (uint32_t)buf[i+10] | ((uint32_t)buf[i+11] << 8) |
-                                    ((uint32_t)buf[i+12] << 16) | ((uint32_t)buf[i+13] << 24);
-                uint16_t nbytes = (uint16_t)(buf[i+14] | (buf[i+15] << 8));
-                i += 16;
-                if (!sys->memory || tile_ptr >= sys->memory_size) break;
-                uint32_t avail = sys->memory_size - tile_ptr;
-                if ((uint32_t)nbytes > avail) nbytes = (uint16_t)avail;
-                uint32_t need = (uint32_t)size * (uint32_t)size * 3;
-                if (nbytes < need) break;
+                int32_t size = DRAW_W(3);
+                uint32_t tile_ptr = (uint32_t)DRAW_W(6);
+                int32_t nbytes = DRAW_W(7);
+                if (!sys->memory || tile_ptr >= sys->memory_size || size <= 0) break;
+                uint32_t avail_mem = sys->memory_size - tile_ptr;
+                if ((uint32_t)nbytes > avail_mem) nbytes = (int32_t)avail_mem;
+                if (nbytes < size * size * 3) break;
                 system_draw_tile(sys, sys->memory + tile_ptr, (int)size,
-                                 x, y, (int)use_key, key);
+                                 DRAW_W(1), DRAW_W(2), (int)DRAW_W(4),
+                                 (uint32_t)DRAW_W(5));
                 break;
             }
-            default:
-                return i - 1;
         }
+        buf += need;
+        consumed += need;
     }
-    return len;
+    return consumed;
 }
+
+#undef DRAW_W
 
 static int draw_close(VFSFile* file) {
     free(file);

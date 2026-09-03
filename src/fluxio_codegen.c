@@ -1002,24 +1002,47 @@ static void emit_load_byte(Codegen* cg) {
     emit_op(cg, OP_AND);                /* [byte] */
 }
 
-/* Evaluates value_expr (a runtime int expression), decomposes it into
- * `nbytes` little-endian bytes, and store_byte's each one into
- * buf_addr[field_offset .. field_offset+nbytes). Used to pack the runtime
- * fields (x/y/w/h/color/...) of a draw command. */
-static void emit_pack_field(Codegen* cg, FxProgram* program, FxNode* value_expr,
-                             int32_t buf_addr, int32_t field_offset, int nbytes) {
+/* Packs one word-aligned 32-bit field of a /dev/draw command from a runtime
+ * expression. The wire format gives every field its own word (see draw_write
+ * in src/vfs.c), so this is a single aligned store rather than the
+ * byte-at-a-time decomposition emit_pack_field has to do for byte-packed
+ * layouts -- byte access is not a VM opcode, so each byte costs a
+ * load/mask/shift/store sequence. */
+static void emit_pack_word(Codegen* cg, FxProgram* program, FxNode* value_expr,
+                           int32_t buf_addr, int32_t word_index) {
     codegen_expr(cg, program, value_expr);
-    emit_imm_op(cg, OP_STORE, cg->scratch_field);
-    for (int i = 0; i < nbytes; i++) {
-        emit_imm_op(cg, OP_LOAD, cg->scratch_field);
-        if (i > 0) {
-            emit_imm_op(cg, OP_PUSH, i * 8);
-            emit_op(cg, OP_SHR);
+    emit_imm_op(cg, OP_STORE, buf_addr + word_index * 4);
+}
+
+/* Same, for a compile-time-constant field (a command tag, a length). */
+static void emit_pack_const_word(Codegen* cg, int32_t buf_addr, int32_t word_index, int32_t value) {
+    emit_imm_op(cg, OP_PUSH, value);
+    emit_imm_op(cg, OP_STORE, buf_addr + word_index * 4);
+}
+
+/* Packs a compile-time string literal as whole words, zero padding the last
+ * one. Used only for DrawString's text payload, whose length travels in its
+ * own header word -- unlike emit_pack_string_literal below, which packs
+ * NUL-terminated C strings for path/title arguments and must keep its
+ * terminator. Writing 4 bytes per store instead of 1 keeps the padded text
+ * region aligned and costs a quarter of the runtime stores.
+ *
+ * The first character of each group goes in the most significant byte: VM
+ * words are big-endian (write_mem32 in src/vm.c), so that is what puts
+ * character i at byte offset i for the host to read back. */
+static void emit_pack_string_literal_words(Codegen* cg, FxNode* str_node,
+                                           int32_t buf_addr, int32_t byte_offset) {
+    int32_t len = str_node->as.str_lit.len;
+    for (int32_t w = 0; w * 4 < len; w++) {
+        uint32_t packed = 0;
+        for (int b = 0; b < 4; b++) {
+            int32_t idx = w * 4 + b;
+            if (idx < len) {
+                packed |= (uint32_t)(unsigned char)str_node->as.str_lit.value[idx] << ((3 - b) * 8);
+            }
         }
-        emit_imm_op(cg, OP_PUSH, 0xFF);
-        emit_op(cg, OP_AND);
-        emit_imm_op(cg, OP_PUSH, buf_addr + field_offset + i);
-        emit_store_byte(cg);
+        emit_imm_op(cg, OP_PUSH, (int32_t)packed);
+        emit_imm_op(cg, OP_STORE, buf_addr + byte_offset + w * 4);
     }
 }
 
@@ -1227,10 +1250,10 @@ static void codegen_builtin_call(Codegen* cg, FxProgram* program, const FxBuilti
     }
     if (strcmp(name, "begin_frame") == 0 || strcmp(name, "end_frame") == 0) {
         int32_t cmd_byte = strcmp(name, "begin_frame") == 0 ? FX_DRAW_CMD_BEGIN_FRAME : FX_DRAW_CMD_END_FRAME;
-        emit_pack_const_byte(cg, cg->sci_buf_addr, 0, cmd_byte);
+        emit_pack_const_word(cg, cg->sci_buf_addr, 0, cmd_byte);
         codegen_expr(cg, program, args[0]);
         emit_imm_op(cg, OP_STORE, FX_SCI_ARG1_ADDR);
-        emit_imm_op(cg, OP_PUSH, 1);
+        emit_imm_op(cg, OP_PUSH, 4);
         emit_imm_op(cg, OP_STORE, FX_SCI_ARG3_ADDR);
         emit_imm_op(cg, OP_PUSH, FX_SCI_CMD_VFS_WRITE);
         emit_imm_op(cg, OP_STORE, FX_SCI_CMD_ADDR);
@@ -1240,16 +1263,16 @@ static void codegen_builtin_call(Codegen* cg, FxProgram* program, const FxBuilti
         return;
     }
     if (strcmp(name, "fill_rect") == 0) {
-        /* cmd(1) x:i16(2) y:i16(2) w:i16(2) h:i16(2) color:u32(4) = 13 bytes */
-        emit_pack_const_byte(cg, cg->sci_buf_addr, 0, FX_DRAW_CMD_FILL_RECT);
-        emit_pack_field(cg, program, args[1], cg->sci_buf_addr, 1, 2);
-        emit_pack_field(cg, program, args[2], cg->sci_buf_addr, 3, 2);
-        emit_pack_field(cg, program, args[3], cg->sci_buf_addr, 5, 2);
-        emit_pack_field(cg, program, args[4], cg->sci_buf_addr, 7, 2);
-        emit_pack_field(cg, program, args[5], cg->sci_buf_addr, 9, 4);
+        /* cmd, x, y, w, h, color -- one word each = 24 bytes */
+        emit_pack_const_word(cg, cg->sci_buf_addr, 0, FX_DRAW_CMD_FILL_RECT);
+        emit_pack_word(cg, program, args[1], cg->sci_buf_addr, 1);
+        emit_pack_word(cg, program, args[2], cg->sci_buf_addr, 2);
+        emit_pack_word(cg, program, args[3], cg->sci_buf_addr, 3);
+        emit_pack_word(cg, program, args[4], cg->sci_buf_addr, 4);
+        emit_pack_word(cg, program, args[5], cg->sci_buf_addr, 5);
         codegen_expr(cg, program, args[0]);
         emit_imm_op(cg, OP_STORE, FX_SCI_ARG1_ADDR);
-        emit_imm_op(cg, OP_PUSH, 13);
+        emit_imm_op(cg, OP_PUSH, 24);
         emit_imm_op(cg, OP_STORE, FX_SCI_ARG3_ADDR);
         emit_imm_op(cg, OP_PUSH, FX_SCI_CMD_VFS_WRITE);
         emit_imm_op(cg, OP_STORE, FX_SCI_CMD_ADDR);
@@ -1259,26 +1282,23 @@ static void codegen_builtin_call(Codegen* cg, FxProgram* program, const FxBuilti
         return;
     }
     if (strcmp(name, "draw_str") == 0) {
-        /* cmd(1) x:i16(2) y:i16(2) color:u32(4) scale:u8(1) len:u16(2) text[len] */
+        /* cmd, x, y, color, scale, len -- one word each -- then text[len]
+         * padded up to a word boundary. */
         FxNode* text_node = args[5];
         int32_t text_len = text_node->as.str_lit.len;
-        int32_t total_len = 12 + text_len;
+        int32_t total_len = 24 + ((text_len + 3) & ~3);
         if (total_len > FX_SCI_BUF_SIZE) {
             cg_error(cg, call_node->line,
                 "draw_str text too long (%d bytes): exceeds the %d-byte draw scratch buffer",
                 text_len, FX_SCI_BUF_SIZE);
         }
-        emit_pack_const_byte(cg, cg->sci_buf_addr, 0, FX_DRAW_CMD_DRAW_STRING);
-        emit_pack_field(cg, program, args[1], cg->sci_buf_addr, 1, 2);
-        emit_pack_field(cg, program, args[2], cg->sci_buf_addr, 3, 2);
-        emit_pack_field(cg, program, args[3], cg->sci_buf_addr, 5, 4);
-        emit_pack_field(cg, program, args[4], cg->sci_buf_addr, 9, 1);
-        emit_pack_const_byte(cg, cg->sci_buf_addr, 10, text_len & 0xFF);
-        emit_pack_const_byte(cg, cg->sci_buf_addr, 11, (text_len >> 8) & 0xFF);
-        emit_pack_string_literal(cg, text_node, cg->sci_buf_addr, 12);
-        /* emit_pack_string_literal also writes a NUL after the text, one
-         * byte past `total_len` -- harmless, it's still inside sci_buf_addr
-         * and the SCI_VFS_WRITE length below is exactly total_len anyway. */
+        emit_pack_const_word(cg, cg->sci_buf_addr, 0, FX_DRAW_CMD_DRAW_STRING);
+        emit_pack_word(cg, program, args[1], cg->sci_buf_addr, 1);
+        emit_pack_word(cg, program, args[2], cg->sci_buf_addr, 2);
+        emit_pack_word(cg, program, args[3], cg->sci_buf_addr, 3);
+        emit_pack_word(cg, program, args[4], cg->sci_buf_addr, 4);
+        emit_pack_const_word(cg, cg->sci_buf_addr, 5, text_len);
+        emit_pack_string_literal_words(cg, text_node, cg->sci_buf_addr, 24);
         codegen_expr(cg, program, args[0]);
         emit_imm_op(cg, OP_STORE, FX_SCI_ARG1_ADDR);
         emit_imm_op(cg, OP_PUSH, total_len);
@@ -1291,19 +1311,20 @@ static void codegen_builtin_call(Codegen* cg, FxProgram* program, const FxBuilti
         return;
     }
     if (strcmp(name, "draw_bytes") == 0) {
-        /* Same wire format as draw_str (cmd(1) x:i16(2) y:i16(2) color:u32(4)
-         * scale:u8(1) len:u16(2) text[len]), but the text bytes come from a
-         * runtime buffer+length instead of a compile-time string literal --
-         * draw_str's compile-time unrolled emit_pack_string_literal doesn't
-         * apply, this needs a real emitted copy loop instead. */
-        int32_t text_off = 12;
+        /* Same wire format as draw_str (cmd, x, y, color, scale, len -- one
+         * word each -- then text[len] padded to a word), but the text bytes
+         * come from a runtime buffer+length instead of a compile-time string
+         * literal, so this needs a real emitted copy loop. The text copy stays
+         * byte-granular: the source pointer is a runtime value with no
+         * alignment guarantee. */
+        int32_t text_off = 24;
         int32_t max_text = FX_SCI_BUF_SIZE - text_off;
 
-        emit_pack_const_byte(cg, cg->sci_buf_addr, 0, FX_DRAW_CMD_DRAW_STRING);
-        emit_pack_field(cg, program, args[1], cg->sci_buf_addr, 1, 2); /* x */
-        emit_pack_field(cg, program, args[2], cg->sci_buf_addr, 3, 2); /* y */
-        emit_pack_field(cg, program, args[3], cg->sci_buf_addr, 5, 4); /* color */
-        emit_pack_field(cg, program, args[4], cg->sci_buf_addr, 9, 1); /* scale */
+        emit_pack_const_word(cg, cg->sci_buf_addr, 0, FX_DRAW_CMD_DRAW_STRING);
+        emit_pack_word(cg, program, args[1], cg->sci_buf_addr, 1); /* x */
+        emit_pack_word(cg, program, args[2], cg->sci_buf_addr, 2); /* y */
+        emit_pack_word(cg, program, args[3], cg->sci_buf_addr, 3); /* color */
+        emit_pack_word(cg, program, args[4], cg->sci_buf_addr, 4); /* scale */
 
         /* n = clamp(len, 0, max_text): an oversized len would overrun the
          * fixed sci_buf_addr scratch region into adjacent reserved scratch
@@ -1316,19 +1337,9 @@ static void codegen_builtin_call(Codegen* cg, FxProgram* program, const FxBuilti
         emit_op(cg, OP_MIN);
         emit_imm_op(cg, OP_STORE, cg->scratch_field); /* n */
 
-        /* len field of the wire format, u16 LE at offset 10-11. */
+        /* len field of the wire format: word 5, a plain aligned store. */
         emit_imm_op(cg, OP_LOAD, cg->scratch_field);
-        emit_imm_op(cg, OP_PUSH, 0xFF);
-        emit_op(cg, OP_AND);
-        emit_imm_op(cg, OP_PUSH, cg->sci_buf_addr + 10);
-        emit_store_byte(cg);
-        emit_imm_op(cg, OP_LOAD, cg->scratch_field);
-        emit_imm_op(cg, OP_PUSH, 8);
-        emit_op(cg, OP_SHR);
-        emit_imm_op(cg, OP_PUSH, 0xFF);
-        emit_op(cg, OP_AND);
-        emit_imm_op(cg, OP_PUSH, cg->sci_buf_addr + 11);
-        emit_store_byte(cg);
+        emit_imm_op(cg, OP_STORE, cg->sci_buf_addr + 20);
 
         /* SCI call args, set up before the copy loop below consumes
          * scratch_field as its countdown counter -- store order among
@@ -1336,10 +1347,19 @@ static void codegen_builtin_call(Codegen* cg, FxProgram* program, const FxBuilti
          * last, since that write is what fires the syscall. */
         codegen_expr(cg, program, args[0]); /* fd */
         emit_imm_op(cg, OP_STORE, FX_SCI_ARG1_ADDR);
+        /* total_len = text_off + round_up(n, 4). The text is padded so the
+         * next command's tag stays word-aligned; draw_write skips the same
+         * padding, so its contents are never read. */
         emit_imm_op(cg, OP_PUSH, text_off);
         emit_imm_op(cg, OP_LOAD, cg->scratch_field);
+        emit_imm_op(cg, OP_PUSH, 3);
         emit_op(cg, OP_ADD);
-        emit_imm_op(cg, OP_STORE, FX_SCI_ARG3_ADDR); /* total_len = 12+n */
+        emit_imm_op(cg, OP_PUSH, 4);
+        emit_op(cg, OP_DIV);
+        emit_imm_op(cg, OP_PUSH, 4);
+        emit_op(cg, OP_MUL);
+        emit_op(cg, OP_ADD);
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG3_ADDR);
         emit_imm_op(cg, OP_PUSH, FX_SCI_CMD_VFS_WRITE);
         emit_imm_op(cg, OP_STORE, FX_SCI_CMD_ADDR);
 

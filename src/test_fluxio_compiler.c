@@ -1762,6 +1762,40 @@ static void test_error_builtin_int_arg_required(void) {
  * "it didn't fault".
  * ----------------------------------------------------------------------- */
 
+/* Quill.fx's startup document is a fixed name in the working directory, so
+ * these tests used to seed and delete quill_scratch.txt in the repo root and
+ * leave it behind whenever an assert aborted the run. Every machine below is
+ * pointed at a sandbox instead, so the tests own their own scratch document
+ * and the repo is never written to. (test_quill_fx_file_picker_opens_and_picks
+ * sets its own sandbox after the call, which still wins -- it needs a
+ * directory containing exactly two known files for the listing.) */
+#define QUILL_FX_SANDBOX "/tmp/nuxvm_test_quill_fx_sandbox"
+
+static const char* quill_fx_sandbox(void) {
+    mkdir(QUILL_FX_SANDBOX, 0755); /* ignore EEXIST -- reused across tests */
+    return QUILL_FX_SANDBOX;
+}
+
+/* Path to one of these tests' own documents inside QUILL_FX_SANDBOX. Returns
+ * a rotating static buffer, so it is safe to use twice in one expression but
+ * not to hold across calls. */
+static const char* quill_fx_path(const char* name) {
+    static char bufs[2][512];
+    static int which = 0;
+    which ^= 1;
+    snprintf(bufs[which], sizeof(bufs[which]), "%s/%s", quill_fx_sandbox(), name);
+    return bufs[which];
+}
+
+/* A System for reading a document back, rooted in the sandbox the app wrote
+ * it to. */
+static System* quill_fx_check_system(void) {
+    System* check = system_create();
+    assert(check != NULL);
+    system_set_sandbox_root(check, quill_fx_sandbox());
+    return check;
+}
+
 /* Builds apps/fluxio/Quill.bin (via the real Makefile rule -- see below)
  * and returns a freshly created Machine for it, or NULL if fluxioc isn't
  * built / the source isn't found. Shared by every Quill.fx test so none
@@ -1802,6 +1836,7 @@ static Machine* quill_fx_machine(const char* dir, char* out_bin_path, size_t out
 
     Machine* m = machine_create(bc, (uint32_t) blen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
     free(bc);
+    if (m) system_set_sandbox_root(m->system, quill_fx_sandbox());
     return m;
 }
 
@@ -1813,7 +1848,7 @@ static void test_quill_fx_type_and_save(void) {
     Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
     if (!m) return;
 
-    remove("quill_scratch.txt"); /* fresh start -- sandbox_root defaults to "." */
+    remove(quill_fx_path("quill_scratch.txt")); /* fresh start -- sandbox_root defaults to "." */
 
     int32_t cfd = vfs_open(m->system, "/sys/chan/new", 0);
     int32_t pfd = vfs_open(m->system, "/sys/chan/peer", 0);
@@ -1838,8 +1873,7 @@ static void test_quill_fx_type_and_save(void) {
     assert(m->cpu->halted); /* Esc returned from main() */
     machine_free(m);
 
-    System* check = system_create();
-    assert(check != NULL);
+    System* check = quill_fx_check_system();
     int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
     assert(rfd >= 0);
     uint8_t got[16] = { 0 };
@@ -1850,7 +1884,7 @@ static void test_quill_fx_type_and_save(void) {
     assert(n == 2);
     assert(got[0] == 'H' && got[1] == 'i');
 
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 /* Mouse click positioning (find_click_index) against the word-wrap line
@@ -1870,8 +1904,8 @@ static void test_quill_fx_click_positions_cursor(void) {
     /* Seed the file before the first tick -- load_file() only runs once
      * main() actually starts executing, on the first machine_tick() call
      * below, so this is well before that. */
-    remove("quill_scratch.txt");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     const char* content = "AB\nCD\nEF\n";
     assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
@@ -1916,8 +1950,7 @@ static void test_quill_fx_click_positions_cursor(void) {
     assert(m->cpu->halted);
     machine_free(m);
 
-    System* check = system_create();
-    assert(check != NULL);
+    System* check = quill_fx_check_system();
     int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
     assert(rfd >= 0);
     uint8_t got[16] = { 0 };
@@ -1928,7 +1961,7 @@ static void test_quill_fx_click_positions_cursor(void) {
     assert(n == 10);
     assert(memcmp(got, "AB\nXCD\nEF\n", 10) == 0);
 
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 /* rebuild_lines' word-wrap: a single "word" with no spaces, much wider
@@ -1946,8 +1979,8 @@ static void test_quill_fx_wraps_long_word_without_fault(void) {
     if (!m) return;
     machine_free(m);
 
-    remove("quill_scratch.txt");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     char content[300];
     memset(content, 'A', sizeof(content));
@@ -2008,8 +2041,7 @@ static void test_quill_fx_wraps_long_word_without_fault(void) {
     assert(m->cpu->halted);
     machine_free(m);
 
-    System* check = system_create();
-    assert(check != NULL);
+    System* check = quill_fx_check_system();
     int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
     assert(rfd >= 0);
     uint8_t got[512] = { 0 };
@@ -2020,7 +2052,7 @@ static void test_quill_fx_wraps_long_word_without_fault(void) {
     assert(n == content_len + 1);
     assert(got[content_len] == 'Z');
 
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 /* Hex mode (view-only, Home key toggles): renders a hex dump for several
@@ -2037,8 +2069,8 @@ static void test_quill_fx_hex_mode_toggle(void) {
     if (!m) return;
     machine_free(m);
 
-    remove("quill_scratch.txt");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     const char* content = "Hello, Quill!";
     assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
@@ -2070,8 +2102,7 @@ static void test_quill_fx_hex_mode_toggle(void) {
     assert(m->cpu->halted);
     machine_free(m);
 
-    System* check = system_create();
-    assert(check != NULL);
+    System* check = quill_fx_check_system();
     int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
     assert(rfd >= 0);
     uint8_t got[32] = { 0 };
@@ -2082,7 +2113,7 @@ static void test_quill_fx_hex_mode_toggle(void) {
     assert(n == (int) strlen(content) + 1);
     assert(memcmp(got, "HelXlo, Quill!", (size_t) n) == 0);
 
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 /* Phase B7/C: the first Quill.fx test that actually exercises the linked
@@ -2106,8 +2137,8 @@ static void test_quill_fx_scrollbar_scrolls_view(void) {
     if (!m) return;
     machine_free(m);
 
-    remove("quill_scratch.txt");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     for (int i = 0; i < 200; i++) {
         char line[2];
@@ -2193,8 +2224,7 @@ static void test_quill_fx_scrollbar_scrolls_view(void) {
     assert(m->cpu->halted);
     machine_free(m);
 
-    System* check = system_create();
-    assert(check != NULL);
+    System* check = quill_fx_check_system();
     int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
     assert(rfd >= 0);
     uint8_t got[1024] = { 0 };
@@ -2212,7 +2242,7 @@ static void test_quill_fx_scrollbar_scrolls_view(void) {
     }
     assert(zpos > 20); /* well past the first ~10 lines -- proves the view actually scrolled */
 
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 /* Hex mode's own scrollbar+click support (v9): same shared sb_bar as text
@@ -2234,8 +2264,8 @@ static void test_quill_fx_hex_click_after_scroll(void) {
     if (!m) return;
     machine_free(m);
 
-    remove("quill_scratch.txt");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     const int seed_len = 2000; /* far more than one screen's ~20 hex rows (320 bytes) */
     for (int i = 0; i < seed_len; i++) {
@@ -2330,8 +2360,7 @@ static void test_quill_fx_hex_click_after_scroll(void) {
     assert(m->cpu->halted);
     machine_free(m);
 
-    System* check = system_create();
-    assert(check != NULL);
+    System* check = quill_fx_check_system();
     int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
     assert(rfd >= 0);
     uint8_t got[4096] = { 0 };
@@ -2349,7 +2378,7 @@ static void test_quill_fx_hex_click_after_scroll(void) {
     }
     assert(marker_pos > 320); /* past a single screen's worth of hex rows -- proves the view actually scrolled and the click mapped into it */
 
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 /* Finds the pixel x where the widest gap in a hex-mode row's ink ends,
@@ -2409,8 +2438,8 @@ static void test_quill_fx_hex_ascii_column_aligns_on_short_row(void) {
     if (!m) return;
     machine_free(m);
 
-    remove("quill_scratch.txt");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     const char* content = "Line One\nLine Two\nLine Three\nskip\nLINE FOUR"; /* 43 bytes: two full 16-byte rows + an 11-byte last row */
     assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
@@ -2461,7 +2490,7 @@ static void test_quill_fx_hex_ascii_column_aligns_on_short_row(void) {
 
     vfs_close(m->system, kc);
     machine_free(m);
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 /* Counts non-background ink pixels in the status bar's text row, at the
@@ -2507,8 +2536,8 @@ static void test_quill_fx_status_line_reflects_dirty_state(void) {
     if (!m) return;
     machine_free(m);
 
-    remove("quill_scratch.txt");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     const char* content = "Hello\nWorld\n";
     assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
@@ -2563,7 +2592,7 @@ static void test_quill_fx_status_line_reflects_dirty_state(void) {
     assert(m->cpu->halted);
     machine_free(m);
 
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 /* Viewport auto-follow: moves the cursor to end-of-buffer *without ever
@@ -2586,8 +2615,8 @@ static void test_quill_fx_viewport_follows_cursor(void) {
     if (!m) return;
     machine_free(m);
 
-    remove("quill_scratch.txt");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     for (int i = 0; i < 100; i++) {
         char line[2];
@@ -2677,8 +2706,7 @@ static void test_quill_fx_viewport_follows_cursor(void) {
     assert(m->cpu->halted);
     machine_free(m);
 
-    System* check = system_create();
-    assert(check != NULL);
+    System* check = quill_fx_check_system();
     int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
     assert(rfd >= 0);
     uint8_t got[1024] = { 0 };
@@ -2698,7 +2726,7 @@ static void test_quill_fx_viewport_follows_cursor(void) {
      * view scrolled to follow the cursor to end-of-buffer on its own. */
     assert(zpos > 64);
 
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 /* Phase C menu bar, the second thing (after the scrollbar) in this port
@@ -2735,8 +2763,8 @@ static void test_quill_fx_menu_bar_renders(void) {
     Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
     if (!m) return;
 
-    remove("quill_scratch.txt");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     assert(fwrite("Hello\n", 1, 6, seed) == 6);
     fclose(seed);
@@ -2766,7 +2794,7 @@ static void test_quill_fx_menu_bar_renders(void) {
     assert(ink > 0); /* the "File"/"View" titles must actually paint something */
 
     machine_free(m);
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 /* Real bug reported after the menu bar was declared working: switching
@@ -2790,8 +2818,8 @@ static void test_quill_fx_menu_bar_works_in_hex_mode(void) {
     Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
     if (!m) return;
 
-    remove("quill_scratch.txt");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     const char* content = "Hello\n";
     assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
@@ -2905,8 +2933,7 @@ static void test_quill_fx_menu_bar_works_in_hex_mode(void) {
     assert(m->cpu->halted);
     machine_free(m);
 
-    System* check = system_create();
-    assert(check != NULL);
+    System* check = quill_fx_check_system();
     int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
     assert(rfd >= 0);
     uint8_t got[32] = { 0 };
@@ -2917,7 +2944,7 @@ static void test_quill_fx_menu_bar_works_in_hex_mode(void) {
     assert(n == (int) strlen(content) + 1);
     assert(got[0] == '#'); /* only possible if the menu click really returned us to text mode */
 
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 /* v10 addition: hex-mode nibble editing. Typing a hex digit ('0'-'9',
@@ -2938,8 +2965,8 @@ static void test_quill_fx_hex_nibble_edit(void) {
     if (!m) return;
     machine_free(m);
 
-    remove("quill_scratch.txt");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     const char* content = "Hello, Quill!";
     assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
@@ -2979,8 +3006,7 @@ static void test_quill_fx_hex_nibble_edit(void) {
     assert(m->cpu->halted);
     machine_free(m);
 
-    System* check = system_create();
-    assert(check != NULL);
+    System* check = quill_fx_check_system();
     int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
     assert(rfd >= 0);
     uint8_t got[32] = { 0 };
@@ -2992,7 +3018,7 @@ static void test_quill_fx_hex_nibble_edit(void) {
     assert(got[0] == 'A'); /* 0x48 ('H') -> 0x41 ('A') via '4','1' */
     assert(memcmp(got + 1, content + 1, strlen(content) - 1) == 0); /* rest of the file untouched */
 
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 /* v10.2 addition: Up/Down arrows in hex mode move the cursor by a whole
@@ -3020,8 +3046,8 @@ static void test_quill_fx_hex_up_down_arrows(void) {
     if (!m) return;
     machine_free(m);
 
-    remove("quill_scratch.txt");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     const int seed_len = 40;
     for (int i = 0; i < seed_len; i++) {
@@ -3073,8 +3099,7 @@ static void test_quill_fx_hex_up_down_arrows(void) {
     assert(m->cpu->halted);
     machine_free(m);
 
-    System* check = system_create();
-    assert(check != NULL);
+    System* check = quill_fx_check_system();
     int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
     assert(rfd >= 0);
     uint8_t got[64] = { 0 };
@@ -3093,7 +3118,7 @@ static void test_quill_fx_hex_up_down_arrows(void) {
         }
     }
 
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 /* v10 addition: the View > Toggle Hex menu item is now a check-item
@@ -3115,8 +3140,8 @@ static void test_quill_fx_hex_menu_checkbox_syncs_via_home_key(void) {
     if (!m) return;
     machine_free(m);
 
-    remove("quill_scratch.txt");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     const char* content = "Hello\n";
     assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
@@ -3224,7 +3249,7 @@ static void test_quill_fx_hex_menu_checkbox_syncs_via_home_key(void) {
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 /* Counts blue-ish pixels (channel[3] high, channel[1]/[2] low, matching
@@ -3264,8 +3289,8 @@ static void test_quill_fx_hex_caret_is_hollow_blue_box(void) {
     if (!m) return;
     machine_free(m);
 
-    remove("quill_scratch.txt");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     const char* content = "Hello, Quill!";
     assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
@@ -3330,7 +3355,7 @@ static void test_quill_fx_hex_caret_is_hollow_blue_box(void) {
 
     vfs_close(m->system, kc);
     machine_free(m);
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 static void test_quill_fx_menu_save_via_click(void) {
@@ -3341,8 +3366,8 @@ static void test_quill_fx_menu_save_via_click(void) {
     Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
     if (!m) return;
 
-    remove("quill_scratch.txt");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     const char* content = "Hello\nWorld\n";
     assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
@@ -3426,8 +3451,7 @@ static void test_quill_fx_menu_save_via_click(void) {
     assert(m->cpu->halted);
     machine_free(m);
 
-    System* check = system_create();
-    assert(check != NULL);
+    System* check = quill_fx_check_system();
     int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
     assert(rfd >= 0);
     uint8_t got[32] = { 0 };
@@ -3438,7 +3462,7 @@ static void test_quill_fx_menu_save_via_click(void) {
     assert(n == (int) strlen(content) + 1);
     assert(got[0] == '#'); /* typed at cursor 0, saved via the menu click */
 
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 /* v12 addition: the Edit menu (Cut/Copy/Paste/Select All), sharing the
@@ -3463,8 +3487,8 @@ static void test_quill_fx_edit_copy_paste(void) {
     Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
     if (!m) return;
 
-    remove("quill_scratch.txt");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     const char* content = "AB\nCD\nEF\n";
     assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
@@ -3608,8 +3632,7 @@ static void test_quill_fx_edit_copy_paste(void) {
     assert(m->cpu->halted);
     machine_free(m);
 
-    System* check = system_create();
-    assert(check != NULL);
+    System* check = quill_fx_check_system();
     int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
     assert(rfd >= 0);
     uint8_t got[32] = { 0 };
@@ -3621,7 +3644,7 @@ static void test_quill_fx_edit_copy_paste(void) {
     assert(n == 12);
     assert(memcmp(got, "AB\nCD\nAB\nEF\n", 12) == 0);
 
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 /* v12 addition: Edit > Select All followed by Edit > Cut -- proves
@@ -3635,8 +3658,8 @@ static void test_quill_fx_edit_select_all_and_cut(void) {
     Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
     if (!m) return;
 
-    remove("quill_scratch.txt");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     const char* content = "Hi\n";
     assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
@@ -3751,8 +3774,7 @@ static void test_quill_fx_edit_select_all_and_cut(void) {
     assert(m->cpu->halted);
     machine_free(m);
 
-    System* check = system_create();
-    assert(check != NULL);
+    System* check = quill_fx_check_system();
     int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
     assert(rfd >= 0);
     uint8_t got[16] = { 0 };
@@ -3762,7 +3784,7 @@ static void test_quill_fx_edit_select_all_and_cut(void) {
 
     assert(n == 0); /* the whole buffer was selected and cut */
 
-    remove("quill_scratch.txt");
+    remove(quill_fx_path("quill_scratch.txt"));
 }
 
 /* v12 addition: File > New. Clicking it with a clean buffer (dirty == 0)
@@ -3779,9 +3801,9 @@ static void test_quill_fx_file_new_without_changes_skips_confirm(void) {
     Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
     if (!m) return;
 
-    remove("quill_scratch.txt");
-    remove("new.quill");
-    FILE* seed = fopen("quill_scratch.txt", "wb");
+    remove(quill_fx_path("quill_scratch.txt"));
+    remove(quill_fx_path("new.quill"));
+    FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
     assert(seed != NULL);
     const char* content = "Original\n";
     assert(fwrite(content, 1, strlen(content), seed) == strlen(content));
@@ -3861,8 +3883,7 @@ static void test_quill_fx_file_new_without_changes_skips_confirm(void) {
 
     /* The original scratch file was never reopened for writing -- still
      * exactly what it was seeded with. */
-    System* check = system_create();
-    assert(check != NULL);
+    System* check = quill_fx_check_system();
     int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
     assert(rfd >= 0);
     uint8_t got[32] = { 0 };
@@ -3881,8 +3902,8 @@ static void test_quill_fx_file_new_without_changes_skips_confirm(void) {
     assert(nn == 1);
     assert(ngot[0] == 'Z');
 
-    remove("quill_scratch.txt");
-    remove("new.quill");
+    remove(quill_fx_path("quill_scratch.txt"));
+    remove(quill_fx_path("new.quill"));
 }
 
 /* v12 addition: File > New with unsaved changes opens the confirm
@@ -3906,9 +3927,9 @@ static void test_quill_fx_file_new_dirty_confirm_dialog_buttons(void) {
     {
         Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
         if (!m) return;
-        remove("quill_scratch.txt");
-        remove("new.quill");
-        FILE* seed = fopen("quill_scratch.txt", "wb");
+        remove(quill_fx_path("quill_scratch.txt"));
+        remove(quill_fx_path("new.quill"));
+        FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
         assert(seed != NULL);
         assert(fwrite("Hi\n", 1, 3, seed) == 3);
         fclose(seed);
@@ -3978,8 +3999,7 @@ static void test_quill_fx_file_new_dirty_confirm_dialog_buttons(void) {
         assert(m->cpu->halted);
         machine_free(m);
 
-        System* check = system_create();
-        assert(check != NULL);
+        System* check = quill_fx_check_system();
         int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
         assert(rfd >= 0);
         uint8_t got[16] = { 0 };
@@ -3990,17 +4010,17 @@ static void test_quill_fx_file_new_dirty_confirm_dialog_buttons(void) {
         assert(n == 4);
         assert(memcmp(got, "#Hi\n", 4) == 0);
 
-        remove("quill_scratch.txt");
-        remove("new.quill");
+        remove(quill_fx_path("quill_scratch.txt"));
+        remove(quill_fx_path("new.quill"));
     }
 
     /* ---- Don't Save ---- */
     {
         Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
         if (!m) return;
-        remove("quill_scratch.txt");
-        remove("new.quill");
-        FILE* seed = fopen("quill_scratch.txt", "wb");
+        remove(quill_fx_path("quill_scratch.txt"));
+        remove(quill_fx_path("new.quill"));
+        FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
         assert(seed != NULL);
         assert(fwrite("Hi\n", 1, 3, seed) == 3);
         fclose(seed);
@@ -4063,8 +4083,7 @@ static void test_quill_fx_file_new_dirty_confirm_dialog_buttons(void) {
         assert(m->cpu->halted);
         machine_free(m);
 
-        System* check = system_create();
-        assert(check != NULL);
+        System* check = quill_fx_check_system();
         /* Old scratch file was never reopened for writing -- still just
          * the original seed, no '#'. */
         int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
@@ -4084,17 +4103,17 @@ static void test_quill_fx_file_new_dirty_confirm_dialog_buttons(void) {
         assert(nn == 1);
         assert(ngot[0] == 'Q');
 
-        remove("quill_scratch.txt");
-        remove("new.quill");
+        remove(quill_fx_path("quill_scratch.txt"));
+        remove(quill_fx_path("new.quill"));
     }
 
     /* ---- Cancel ---- */
     {
         Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
         if (!m) return;
-        remove("quill_scratch.txt");
-        remove("new.quill");
-        FILE* seed = fopen("quill_scratch.txt", "wb");
+        remove(quill_fx_path("quill_scratch.txt"));
+        remove(quill_fx_path("new.quill"));
+        FILE* seed = fopen(quill_fx_path("quill_scratch.txt"), "wb");
         assert(seed != NULL);
         assert(fwrite("Hi\n", 1, 3, seed) == 3);
         fclose(seed);
@@ -4169,8 +4188,7 @@ static void test_quill_fx_file_new_dirty_confirm_dialog_buttons(void) {
         assert(m->cpu->halted);
         machine_free(m);
 
-        System* check = system_create();
-        assert(check != NULL);
+        System* check = quill_fx_check_system();
         int32_t rfd = vfs_open(check, "/sys/file/quill_scratch.txt", 0);
         assert(rfd >= 0);
         uint8_t got[16] = { 0 };
@@ -4180,8 +4198,8 @@ static void test_quill_fx_file_new_dirty_confirm_dialog_buttons(void) {
         assert(n == 4);
         assert(memcmp(got, "#Hi\n", 4) == 0);
 
-        remove("quill_scratch.txt");
-        remove("new.quill");
+        remove(quill_fx_path("quill_scratch.txt"));
+        remove(quill_fx_path("new.quill"));
     }
 }
 

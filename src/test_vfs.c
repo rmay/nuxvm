@@ -11,6 +11,21 @@
 #include <math.h>
 #include <time.h>
 
+// Packs `n` 32-bit words into `buf` in VM byte order (big-endian, matching
+// write_mem32 in src/vm.c), returning the byte length. The /dev/draw wire
+// format is one word per field (see draw_write in src/vfs.c), so command
+// fixtures are written as word lists rather than hand-placed bytes.
+static int pack_draw(uint8_t* buf, int n, const int32_t* words) {
+    for (int i = 0; i < n; i++) {
+        uint32_t v = (uint32_t)words[i];
+        buf[i*4+0] = (uint8_t)((v >> 24) & 0xFF);
+        buf[i*4+1] = (uint8_t)((v >> 16) & 0xFF);
+        buf[i*4+2] = (uint8_t)((v >> 8) & 0xFF);
+        buf[i*4+3] = (uint8_t)(v & 0xFF);
+    }
+    return n * 4;
+}
+
 static System* make_test_screen(int w, int h) {
     System* sys = (System*)calloc(1, sizeof(System));
     assert(sys != NULL);
@@ -209,24 +224,12 @@ static void test_draw_file() {
     }
 
     // Send a FillRect command: cmd=0, x=10,y=5, w=8,h=3, color=0x00FF00 (green)
-    uint8_t cmd[13];
-    cmd[0] = 0; // FillRect
-    // x=10 (little endian)
-    cmd[1] = 10; cmd[2] = 0;
-    // y=5
-    cmd[3] = 5;  cmd[4] = 0;
-    // w=8
-    cmd[5] = 8;  cmd[6] = 0;
-    // h=3
-    cmd[7] = 3;  cmd[8] = 0;
-    // color 0x00FF00 -> R=0, G=0xFF, B=0  (we store as [0xFF, R, G, B] in C layout)
-    cmd[9]  = 0x00;
-    cmd[10] = 0xFF;
-    cmd[11] = 0x00;
-    cmd[12] = 0x00;
+    uint8_t cmd[24];
+    const int32_t fill_words[6] = { 0, 10, 5, 8, 3, 0x00FF00 };
+    int cmd_len = pack_draw(cmd, 6, fill_words);
 
-    int written = vfs_write(&sys, fd, cmd, 13);
-    if (written != 13) {
+    int written = vfs_write(&sys, fd, cmd, cmd_len);
+    if (written != cmd_len) {
         printf("  draw test: write failed\n");
     }
 
@@ -246,18 +249,11 @@ static void test_draw_file() {
     }
 
     // Quick DrawRect outline test (cmd 3)
-    uint8_t cmd3[13];
-    cmd3[0] = 3;
-    cmd3[1] = 20; cmd3[2] = 0;   // x=20
-    cmd3[3] = 10; cmd3[4] = 0;   // y=10
-    cmd3[5] = 4;  cmd3[6] = 0;   // w=4
-    cmd3[7] = 2;  cmd3[8] = 0;   // h=2
-    cmd3[9]  = 0x00;
-    cmd3[10] = 0x00;
-    cmd3[11] = 0x00;
-    cmd3[12] = 0xFF; // blue-ish (B=FF in our storage)
-
-    vfs_write(&sys, fd, cmd3, 13);
+    // Colour is the same word the byte-packed fixture used (high byte set,
+    // so R/G/B all read as 0); nothing asserts on it.
+    uint8_t cmd3[24];
+    const int32_t rect_words[6] = { 3, 20, 10, 4, 2, (int32_t)0xFF000000u };
+    vfs_write(&sys, fd, cmd3, pack_draw(cmd3, 6, rect_words));
 
     vfs_close(&sys, fd);
     free(sys.screen_pixels);
@@ -312,24 +308,25 @@ static void test_draw_string_vfs_scale18(void) {
     int32_t fd = vfs_open(sys, "/sys/draw", 0x02);
     assert(fd >= 100);
 
-    uint8_t set_font[] = {5, 2};
-    assert(vfs_write(sys, fd, set_font, 2) == 2);
+    uint8_t set_font[8];
+    const int32_t font_words[2] = { 5, 2 };
+    assert(vfs_write(sys, fd, set_font, pack_draw(set_font, 2, font_words)) == 8);
 
-    uint8_t set_size[] = {4, 18};
-    assert(vfs_write(sys, fd, set_size, 2) == 2);
+    uint8_t set_size[8];
+    const int32_t size_words[2] = { 4, 18 };
+    assert(vfs_write(sys, fd, set_size, pack_draw(set_size, 2, size_words)) == 8);
 
     fill_screen_white(sys);
 
-    uint8_t packet[14];
-    packet[0] = 2;
-    packet[1] = 12; packet[2] = 0;
-    packet[3] = 6;  packet[4] = 0;
-    packet[5] = 0x00; packet[6] = 0x00; packet[7] = 0x00; packet[8] = 0x00;
-    packet[9] = 18;
-    packet[10] = 2; packet[11] = 0;
-    packet[12] = 'H';
-    packet[13] = 'i';
-    assert(vfs_write(sys, fd, packet, sizeof(packet)) == (int)sizeof(packet));
+    // DrawString: header words then the text, padded out to a word boundary.
+    uint8_t packet[28];
+    const int32_t str_words[6] = { 2, 12, 6, 0x000000, 18, 2 };
+    int hdr = pack_draw(packet, 6, str_words);
+    packet[hdr + 0] = 'H';
+    packet[hdr + 1] = 'i';
+    packet[hdr + 2] = 0;
+    packet[hdr + 3] = 0;
+    assert(vfs_write(sys, fd, packet, hdr + 4) == hdr + 4);
 
     int right = rightmost_ink_x(sys, 12, 6, 200, 40);
     assert(right >= 12);
@@ -455,11 +452,13 @@ static void test_system_fonts(void) {
 
     int32_t dfd = vfs_open(sys, "/sys/draw", 0x02);
     assert(dfd >= 100);
-    uint8_t set_geneva[] = {5, FONT_GENEVA};
-    assert(vfs_write(sys, dfd, set_geneva, 2) == 2);
+    uint8_t set_geneva[8];
+    const int32_t geneva_words[2] = { 5, FONT_GENEVA };
+    assert(vfs_write(sys, dfd, set_geneva, pack_draw(set_geneva, 2, geneva_words)) == 8);
     assert(sys->font_id == FONT_GENEVA);
-    uint8_t set_monaco[] = {5, FONT_MONACO};
-    assert(vfs_write(sys, dfd, set_monaco, 2) == 2);
+    uint8_t set_monaco[8];
+    const int32_t monaco_words[2] = { 5, FONT_MONACO };
+    assert(vfs_write(sys, dfd, set_monaco, pack_draw(set_monaco, 2, monaco_words)) == 8);
     assert(sys->font_id == FONT_MONACO);
     vfs_close(sys, dfd);
 
@@ -494,19 +493,10 @@ static void test_draw_cff_cmd9(void) {
     int32_t fd = vfs_open(sys, "/sys/draw", 0x02);
     assert(fd >= 100);
 
-    uint8_t cmd[17];
-    memset(cmd, 0, sizeof(cmd));
-    cmd[0] = 9;
-    cmd[1] = 2; cmd[2] = 0;   /* x = 2 */
-    cmd[3] = 2; cmd[4] = 0;   /* y = 2 */
-    cmd[5] = 0x00; cmd[6] = 0x00; cmd[7] = 0x00; cmd[8] = 0x00; /* black */
-    cmd[9] = 1;               /* scale 1 */
-    cmd[10] = (uint8_t)'A';
-    /* font_ptr = 0 */
-    cmd[15] = (uint8_t)(CFF_LEN_UF2 & 0xFF);
-    cmd[16] = (uint8_t)((CFF_LEN_UF2 >> 8) & 0xFF);
-
-    assert(vfs_write(sys, fd, cmd, 17) == 17);
+    /* DrawCFFGlyph: cmd, x, y, color, scale, ch, font_ptr, nbytes */
+    uint8_t cmd[32];
+    const int32_t glyph_words[8] = { 9, 2, 2, 0x000000, 1, 'A', 0, CFF_LEN_UF2 };
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 8, glyph_words)) == 32);
     vfs_close(sys, fd);
 
     int ink = 0;
@@ -546,22 +536,11 @@ static void test_draw_tile_cmd10(void) {
     int32_t fd = vfs_open(sys, "/sys/draw", 0x02);
     assert(fd >= 100);
 
-    uint8_t cmd[17];
-    memset(cmd, 0, sizeof(cmd));
-    cmd[0] = 10;
-    cmd[1] = 10; cmd[2] = 0;  /* x = 10 */
-    cmd[3] = 10; cmd[4] = 0;  /* y = 10 */
-    cmd[5] = (uint8_t)size;
-    cmd[6] = 1;               /* use_key */
-    cmd[7] = 0xFF; cmd[8] = 0x00; cmd[9] = 0xFF; cmd[10] = 0x00; /* key = magenta */
-    cmd[11] = (uint8_t)(tile_ptr & 0xFF);
-    cmd[12] = (uint8_t)((tile_ptr >> 8) & 0xFF);
-    cmd[13] = (uint8_t)((tile_ptr >> 16) & 0xFF);
-    cmd[14] = (uint8_t)((tile_ptr >> 24) & 0xFF);
-    cmd[15] = (uint8_t)(nbytes & 0xFF);
-    cmd[16] = (uint8_t)((nbytes >> 8) & 0xFF);
-
-    assert(vfs_write(sys, fd, cmd, 17) == 17);
+    /* BlitTile: cmd, x, y, size, use_key, key, tile_ptr, nbytes */
+    uint8_t cmd[32];
+    const int32_t tile_words[8] = { 10, 10, 10, size, 1, 0x00FF00FF,
+                                    (int32_t)tile_ptr, (int32_t)nbytes };
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 8, tile_words)) == 32);
     vfs_close(sys, fd);
 
     /* Key-colored source pixel must stay untouched (still white). */
@@ -939,14 +918,13 @@ static void test_child_fb_blit(void) {
     // Child /dev/draw is the real draw device (not a Shell channel).
     int32_t cdfd = vfs_open(child->system, "/dev/draw", 0);
     assert(cdfd >= 100);
-    uint8_t fill[13] = {
-        0,
-        2, 0, 3, 0, 4, 0, 5, 0,
-        0xCC, 0xBB, 0xAA, 0x00,
-    };
-    uint8_t endf[1] = { 7 };
-    assert(vfs_write(child->system, cdfd, fill, 13) == 13);
-    assert(vfs_write(child->system, cdfd, endf, 1) == 1);
+    // Word-aligned /dev/draw format: cmd, x, y, w, h, color, one word each.
+    uint8_t fill[24];
+    const int32_t fill_words[6] = { 0, 2, 3, 4, 5, 0x00AABBCC };
+    uint8_t endf[4];
+    const int32_t end_words[1] = { 7 };
+    assert(vfs_write(child->system, cdfd, fill, pack_draw(fill, 6, fill_words)) == 24);
+    assert(vfs_write(child->system, cdfd, endf, pack_draw(endf, 1, end_words)) == 4);
     vfs_close(child->system, cdfd);
 
     char fbpath[64];
@@ -1015,14 +993,12 @@ static void test_offset_fb_blit(void) {
 
     int32_t cdfd = vfs_open(child->system, "/dev/draw", 0);
     assert(cdfd >= 100);
-    uint8_t fill[13] = {
-        0,
-        0, 0, 0, 0, 4, 0, 4, 0,
-        0x11, 0x22, 0x33, 0x00,
-    };
-    uint8_t endf[1] = { 7 };
-    assert(vfs_write(child->system, cdfd, fill, 13) == 13);
-    assert(vfs_write(child->system, cdfd, endf, 1) == 1);
+    uint8_t fill[24];
+    const int32_t fill_words[6] = { 0, 0, 0, 4, 4, 0x00332211 };
+    uint8_t endf[4];
+    const int32_t end_words[1] = { 7 };
+    assert(vfs_write(child->system, cdfd, fill, pack_draw(fill, 6, fill_words)) == 24);
+    assert(vfs_write(child->system, cdfd, endf, pack_draw(endf, 1, end_words)) == 4);
     vfs_close(child->system, cdfd);
 
     char fbpath[64];

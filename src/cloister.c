@@ -195,6 +195,28 @@ static uint32_t current_modifiers(SDL_Keymod m) {
     return mods;
 }
 
+/* translate_key() has no case for bare modifier keysyms (they carry no
+ * character), so pressing/releasing Shift by itself with no other key never
+ * reached the app -- apps that read kbd-mods to modify a live mouse drag
+ * (e.g. Easel's Shift-to-square) never saw the flag change. This sentinel
+ * keycode is outside the printable range and every special-cased key the
+ * apps compare against, so it safely does nothing except carry updated
+ * mods through on-kbd. */
+#define MOD_ONLY_KEYCODE 0xFF
+
+static bool is_shift_keysym(SDL_Keycode k) {
+    return k == SDLK_LSHIFT || k == SDLK_RSHIFT;
+}
+
+/* Tracks the mods last sent via MOD_ONLY_KEYCODE so a run of KEYDOWN/KEYUP
+ * for the same held Shift key (SDL delivers these on modifier auto-repeat
+ * on some keyboards/drivers) doesn't queue a fresh event every time -- only
+ * an actual modifier-state change is worth telling the guest about. Without
+ * this, a held Shift during a drag could flood the 64-slot event queue and
+ * every kbd event drained still costs guest-side dispatch, which is what
+ * made menus/palette feel laggy even though per-frame timing looked clean. */
+static uint32_t g_last_mod_only_mods = 0xFFFFFFFFu;
+
 static bool translate_key(SDL_Keycode k, bool shift, int32_t* out) {
     switch (k) {
         case SDLK_UP:        *out = 17; return true;
@@ -449,6 +471,7 @@ int main(int argc, char** argv) {
     int32_t last_hover = INT32_MIN;
     uint64_t last_frame_commits = 0;
     uint64_t host_loop_iters = 0;
+    Uint64 t_last_present = SDL_GetPerformanceCounter();
 
     const double FRAME_TARGET_MS = 1000.0 / 60.0;
 
@@ -479,12 +502,24 @@ int main(int argc, char** argv) {
                     if (translate_key(e.key.keysym.sym, shift, &code)) {
                         uint32_t mods = current_modifiers((SDL_Keymod)e.key.keysym.mod);
                         queue_event(machine, 0, (uint32_t)code & 0xFFFFFF, mods);
+                    } else if (is_shift_keysym(e.key.keysym.sym) && !e.key.repeat) {
+                        uint32_t mods = current_modifiers(SDL_GetModState());
+                        if (mods != g_last_mod_only_mods) {
+                            queue_event(machine, 0, MOD_ONLY_KEYCODE, mods);
+                            g_last_mod_only_mods = mods;
+                        }
                     }
                 } else if (e.type == SDL_KEYUP) {
                     int32_t code;
                     bool shift = (e.key.keysym.mod & KMOD_SHIFT) != 0;
                     if (translate_key(e.key.keysym.sym, shift, &code)) {
                         queue_event(machine, 1, (uint32_t)code & 0xFFFFFF, 0);
+                    } else if (is_shift_keysym(e.key.keysym.sym)) {
+                        uint32_t mods = current_modifiers(SDL_GetModState());
+                        if (mods != g_last_mod_only_mods) {
+                            queue_event(machine, 0, MOD_ONLY_KEYCODE, mods);
+                            g_last_mod_only_mods = mods;
+                        }
                     }
                 } else if (e.type == SDL_MOUSEMOTION) {
                     machine->system->mouse_x = e.motion.x;
@@ -516,6 +551,11 @@ int main(int argc, char** argv) {
 
         Uint64 t_after_poll = g_frame_debug ? SDL_GetPerformanceCounter() : 0;
 
+        // Set when machine_tick returned because it burned its per-tick cycle
+        // budget rather than because the app finished a frame and yielded. The
+        // guest is then stopped mid-frame with a half-drawn back buffer.
+        bool vm_mid_frame = false;
+
         if (running_rom && machine) {
             if (!machine_tick(machine)) {
                 char launch[SYS_LAUNCH_MAX];
@@ -546,6 +586,10 @@ int main(int argc, char** argv) {
             }
         }
 
+        if (running_rom && machine && machine->cpu && !machine->cpu->halted) {
+            vm_mid_frame = !machine->system->yielded && !vm_yielded(machine->cpu);
+        }
+
         Uint64 t_after_tick = g_frame_debug ? SDL_GetPerformanceCounter() : 0;
 
         if (g_menu_debug && machine && machine->cpu && machine->cpu->memory) {
@@ -569,6 +613,28 @@ int main(int argc, char** argv) {
             }
             last_frame_commits = commits_now;
         }
+
+        // A guest stopped mid-frame has nothing new to show: screen_pixels
+        // still holds the last committed frame. Presenting it again and then
+        // sleeping out the rest of the 16.7ms budget spends most of a frame
+        // period doing nothing while the app is behind, so an app frame that
+        // needs N cycle-budgets takes N*16.7ms of wall clock for only
+        // N*<budget> of actual work. Loop straight back into machine_tick
+        // instead and let it catch up at full speed.
+        //
+        // Bounded by CATCHUP_BUDGET_MS so a guest stuck in a loop that never
+        // yields still gets its window pumped and redrawn rather than
+        // appearing hung.
+        const double CATCHUP_BUDGET_MS = 100.0;
+        if (vm_mid_frame && !g_dialog.active) {
+            // Measured from the last present, not from this iteration's start:
+            // each catch-up iteration is one cycle budget, so a per-iteration
+            // clock would never reach the cap.
+            double since_present_ms = (double)(SDL_GetPerformanceCounter() - t_last_present)
+                                      * 1000.0 / (double)perf_freq;
+            if (since_present_ms < CATCHUP_BUDGET_MS) continue;
+        }
+        t_last_present = SDL_GetPerformanceCounter();
 
         uint32_t* pixels;
         int pitch;

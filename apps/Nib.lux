@@ -367,21 +367,12 @@ IMPORT GEOM
 
 @tool-y ( i -- y ) PAGE_Y 4 + SWAP 32 * + ;
 
-@in-tool? { mx my i -- f }
-    mx 4 >= mx 36 < AND
-    my i tool-y >= AND
-    my i tool-y 28 + < AND
+@tool-rect ( i -- x y w h )
+    tool-y 4 SWAP 32 28
 ;
 
 @hit-tool { mx my -- idx }
-    -1 { found }
-    0 { i }
-    [ i TOOLS < found 0 < AND ]
-    [
-        mx my i in-tool? [ i found! ] ?
-        i 1 + i!
-    ] |:
-    found
+    mx my TOOLS [ tool-rect ] UI::hit-index
 ;
 
 @near-line? { x y x0 y0 x1 y1 -- f }

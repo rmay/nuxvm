@@ -1,0 +1,182 @@
+( ICN -- System 6 style small icon format: fixed 16x16 1bpp glyphs, one
+  color plane (no mask -- the caller already erases/fills the cell behind
+  the icon, same convention Easel's tool palette already used for its
+  vector icons). Rows are MSB-first, 2 bytes/row, 32 bytes/icon -- the same
+  row-major bit layout as BITMAP and Easel's BRUSHES table, so an ICN table
+  is just BRUSHES sized for 16x16 instead of variable brush masks.
+
+  Icons are authored two ways: in-source, as 16 rows of 16-character ASCII
+  art ('#' = ink, any other char = blank), one T"..." literal per row via
+  ICN::row! (see Easel's init-tool-icons); or on disk, as an ICN1 file
+  (ICN::load/save) so an icon editor (Whittle) and an icon consumer (Easel,
+  or anyone else) can round-trip a set through the VFS without sharing
+  source. Either way the in-memory shape is the same packed table BRUSHES
+  already uses sized for 16x16, so every other word in this module (get-bit,
+  set-bit, draw, ...) doesn't care which authoring path filled it.
+
+  See docs/icn-format.md for the full format writeup.
+
+  INCLUDE "lib/icn.lux"  then  IMPORT ICN )
+
+INCLUDE "lib/core.lux"
+INCLUDE "lib/draw.lux"
+INCLUDE "lib/vfs.lux"
+
+MODULE ICN
+
+@SIZE      16 ;
+@ROW_BYTES  2 ; ( SIZE / 8 )
+@BYTES     32 ; ( SIZE * ROW_BYTES )
+
+( 8-byte ICN1 file-header staging buffer: magic(4) + count u16-LE(2) +
+  size u8(1) + reserved u8(1). Documented in docs/memory-map.md alongside
+  the rest of the library-scratch band -- do not move without updating it. )
+@hdr       0x8E0200 ;
+@HDR_BYTES 8 ;
+
+@addr { base index row -- addr }
+    base index BYTES * + row ROW_BYTES * +
+;
+
+@get-bit { base index col row -- b }
+    base index row addr { a }
+        col 8 < [ a load-byte ] [ a 1 + load-byte ] ?: { byte }
+            byte 128 col 8 MOD RSHIFT AND
+            0 = [ 0 ] [ 1 ] ?:
+        UNGIRD
+    UNGIRD
+;
+
+@set-bit { base index col row v -- }
+    base index row addr { a }
+        col 8 < [ a ] [ a 1 + ] ?: { ba }
+            ba load-byte { byte }
+                v 0 = [
+                    byte 128 col 8 MOD RSHIFT NOT AND
+                ] [
+                    byte 128 col 8 MOD RSHIFT OR
+                ] ?:
+                ba store-byte
+            UNGIRD
+        UNGIRD
+    UNGIRD
+;
+
+@clear { base index -- }
+    0 { row }
+        [ row SIZE < ]
+        [
+            base index row addr 0 store-byte
+            base index row addr 1 + 0 store-byte
+            row 1 + row!
+        ] |:
+    UNGIRD
+;
+
+( Paints one row of an icon from a null-terminated ASCII-art string, up to
+  SIZE chars: '#' sets the bit, '.' (or anything else) leaves it clear.
+  Stops at the terminator rather than reading SIZE bytes unconditionally,
+  so a row string shorter than SIZE is fine -- its remaining columns are
+  just left however ICN::clear left them. )
+@row! { base index row text -- }
+    0 { col }
+        [ col SIZE < ]
+        [
+            text col + load-byte { ch }
+                ch 0 = [
+                    SIZE col!
+                ] [
+                    ch 35 = [ base index col row 1 set-bit ] ?
+                    col 1 + col!
+                ]
+                ?:
+            UNGIRD
+        ] |:
+    UNGIRD
+;
+
+( --- Draw straight to the framebuffer at (x,y) in `color`, transparent
+  where the icon bit is 0 -- run-length per row to keep command count low.
+
+  Doesn't go through get-bit: get-bit's addr recomputes index*BYTES from
+  scratch on every one of the 256 pixel tests a full icon draw would make,
+  plus a function call and a shift/MOD per bit. Since draw-palette redraws
+  every tool cell on every damaged frame (not just on selection change),
+  that cost is paid every dirty frame for all TOOLS icons -- so here the
+  icon's base address is computed once, each row's 2 bytes are loaded once
+  as a 16-bit word, and the 16 bit tests are plain shifts against it. )
+@draw { fd base index x y color -- }
+    base index BYTES * + { icon-base }
+        0 { row }
+            [ row SIZE < ]
+            [
+                icon-base row ROW_BYTES * + { ra }
+                    ra load-byte 8 LSHIFT ra 1 + load-byte OR { bits }
+                        -1 { run-x }
+                            0 { col }
+                                [ col SIZE < ]
+                                [
+                                    bits 32768 col RSHIFT AND 0 > [
+                                        run-x 0 < [ col run-x! ] ?
+                                    ] [
+                                        run-x 0 >= [
+                                            fd x run-x + y row + col run-x - color DRAW::hline
+                                            -1 run-x!
+                                        ] ?
+                                    ] ?:
+                                    col 1 + col!
+                                ] |:
+                            UNGIRD
+                            run-x 0 >= [
+                                fd x run-x + y row + SIZE run-x - color DRAW::hline
+                            ] ?
+                        UNGIRD
+                    UNGIRD
+                UNGIRD
+                row 1 + row!
+            ] |:
+        UNGIRD
+    UNGIRD
+;
+
+( --- ICN1 file I/O: an icon *set* (one or more 16x16 glyphs back to back)
+  as a single VFS file -- see docs/icn-format.md. `fd` is already open on
+  the target path (VFS::open, same convention CFF::load/save and Easel's
+  EAS2 reader/writer use); this only reads/writes the bytes. )
+
+@magic-ok? ( -- f )
+    hdr load-byte 73 = ( 'I' )
+    hdr 1 + load-byte 67 = AND ( 'C' )
+    hdr 2 + load-byte 78 = AND ( 'N' )
+    hdr 3 + load-byte 49 = AND ( '1' )
+    hdr 6 + load-byte SIZE = AND ( icon size must match this build's SIZE )
+;
+
+( Reads an ICN1 file's icons into `base` (room for at least max-count of
+  them), stopping at max-count if the file holds more. Returns the number
+  of icons actually loaded, or 0 if the header's magic/size don't match. )
+@load { fd base max-count -- count }
+    fd hdr HDR_BYTES VFS::read drop
+    magic-ok? [
+        hdr 4 + DRAW::load-word-le max-count MIN { n }
+            fd base n BYTES * VFS::read drop
+            n
+        UNGIRD
+    ] [
+        0
+    ] ?:
+;
+
+( Writes `count` icons from `base` as an ICN1 file. Returns ok (1/0). )
+@save { fd base count -- ok }
+    73 hdr store-byte
+    67 hdr 1 + store-byte
+    78 hdr 2 + store-byte
+    49 hdr 3 + store-byte
+    count hdr 4 + DRAW::store-word-le
+    SIZE hdr 6 + store-byte
+    0 hdr 7 + store-byte
+    fd hdr HDR_BYTES VFS::write drop
+    fd base count BYTES * VFS::write
+    count BYTES * =
+;

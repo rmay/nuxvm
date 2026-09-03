@@ -19,8 +19,11 @@ MODULE DRAW
   are unaffected until batch-begin is called. `send` (not `emit` -- that token
   is hardcoded by the compiler to always mean char-output, shadowing any word
   definition of that name) is the shared tail every packer word calls. )
-@BATCH_BUF     0x8F1000 ; ( 8KB accumulation buffer, clear of BUF/ST_*/WIDTHS )
-@BATCH_CAP     8192 ;
+@BATCH_BUF     0x8F1000 ; ( accumulation buffer, clear of BUF/ST_*/WIDTHS )
+( Word-aligned commands are roughly twice the wire size of the old byte-packed
+  ones, so this doubled with them to keep the same number of commands per
+  flush. Still well clear of ST_FD at 0x8F8000: 0x8F1000 + 16384 = 0x8F5000. )
+@BATCH_CAP     16384 ;
 @ST_BATCH_ON   0x8F8200 ;
 @ST_BATCH_FD   0x8F8204 ;
 @ST_BATCH_LEN  0x8F8208 ;
@@ -30,6 +33,23 @@ MODULE DRAW
         [ i len < ]
         [
             src i + load-byte dst i + store-byte
+            i 1 + i!
+        ] |:
+    UNGIRD
+;
+
+( Word-granular copy for the batch buffer. Both ends are word-aligned and
+  every command is a whole number of words, so this moves the same bytes as
+  copy-bytes in a quarter of the iterations -- and each iteration is one
+  LOADI/STOREI pair instead of the load/mask/shift/store dance that
+  synthesized byte access costs. )
+@copy-words { src dst nwords -- }
+    0 { i }
+        [ i nwords < ]
+        [
+            src LOADI dst STOREI
+            src 4 + src!
+            dst 4 + dst!
             i 1 + i!
         ] |:
     UNGIRD
@@ -63,7 +83,7 @@ MODULE DRAW
 @send { fd len -- }
     batch-on? len BATCH_CAP <= AND [
         ST_BATCH_LEN LOADI len + BATCH_CAP > [ batch-flush ] ?
-        BUF BATCH_BUF ST_BATCH_LEN LOADI + len copy-bytes
+        BUF BATCH_BUF ST_BATCH_LEN LOADI + len 4 / copy-words
         ST_BATCH_LEN LOADI len + ST_BATCH_LEN STOREI
     ] [
         batch-on? [ batch-flush ] ?
@@ -93,31 +113,45 @@ MODULE DRAW
     OR
 ;
 
+( --- /dev/draw wire format ---
+  A stream of 32-bit LE words: word 0 is the command tag, and every field gets
+  its own word, so packing a command is a handful of plain STOREI stores.
+  It used to be tightly byte-packed, which meant every field went through
+  store-byte/store-word-le -- and byte access is not a VM opcode (AGENTS.md:
+  never add opcodes), so lib/core.lux synthesizes it as load/mask/shift/store.
+  That marshalling measured ~44% of the cost of a full Easel repaint. Words
+  cost more wire bytes and far fewer instructions, which is the right trade
+  when the "wire" is a memcpy inside the same address space.
+
+  BUF and BATCH_BUF are word-aligned and every command is a whole number of
+  words, so each field lands on an aligned address. src/vfs.c draw_write is
+  the other half of this contract; keep them in step. )
+
 @fill-pat ( fd x y w h color pat -- )
     ( Cmd 8: patterned fill. 0=50% checker, 1=h-lines, 2=25%, 3=75%. )
     7 frame! ( 0:pat 1:color 2:h 3:w 4:y 5:x 6:fd )
-    8 BUF store-byte
-    5 local@ BUF 1 + store-word-le
-    4 local@ BUF 3 + store-word-le
-    3 local@ BUF 5 + store-word-le
-    2 local@ BUF 7 + store-word-le
-    1 local@ BUF 9 + store-int-le
-    0 local@ BUF 13 + store-byte
-    6 local@ 14 send
+    8 BUF STOREI
+    5 local@ BUF 4 + STOREI
+    4 local@ BUF 8 + STOREI
+    3 local@ BUF 12 + STOREI
+    2 local@ BUF 16 + STOREI
+    1 local@ BUF 20 + STOREI
+    0 local@ BUF 24 + STOREI
+    6 local@ 28 send
     7 unframe!
 ;
 
 @fill-rect ( fd x y w h color -- )
     6 frame! ( 0:color, 1:h, 2:w, 3:y, 4:x, 5:fd )
-    
-    0 BUF store-byte ( Cmd 0: FillRect )
-    4 local@ BUF 1 + store-word-le
-    3 local@ BUF 3 + store-word-le
-    2 local@ BUF 5 + store-word-le
-    1 local@ BUF 7 + store-word-le
-    0 local@ BUF 9 + store-int-le
-    
-    5 local@ 13 send ( 1 type + 8 coords + 4 color = 13 bytes )
+
+    0 BUF STOREI ( Cmd 0: FillRect )
+    4 local@ BUF 4 + STOREI
+    3 local@ BUF 8 + STOREI
+    2 local@ BUF 12 + STOREI
+    1 local@ BUF 16 + STOREI
+    0 local@ BUF 20 + STOREI
+
+    5 local@ 24 send ( tag + x,y,w,h + color = 6 words )
 
     6 unframe!
 ;
@@ -125,14 +159,14 @@ MODULE DRAW
 @draw-rect ( fd x y w h color -- )
     6 frame! ( 0:color, 1:h, 2:w, 3:y, 4:x, 5:fd )
 
-    3 BUF store-byte ( Cmd 3: DrawRect )
-    4 local@ BUF 1 + store-word-le
-    3 local@ BUF 3 + store-word-le
-    2 local@ BUF 5 + store-word-le
-    1 local@ BUF 7 + store-word-le
-    0 local@ BUF 9 + store-int-le
+    3 BUF STOREI ( Cmd 3: DrawRect )
+    4 local@ BUF 4 + STOREI
+    3 local@ BUF 8 + STOREI
+    2 local@ BUF 12 + STOREI
+    1 local@ BUF 16 + STOREI
+    0 local@ BUF 20 + STOREI
 
-    5 local@ 13 send ( 1 type + 8 coords + 4 color = 13 bytes )
+    5 local@ 24 send ( tag + x,y,w,h + color = 6 words )
 
     6 unframe!
 ;
@@ -141,14 +175,14 @@ MODULE DRAW
     ( scale: 0=system-default, 1-5=multiplier, 6+=point-size )
     6 frame! ( 0:scale, 1:color, 2:char, 3:y, 4:x, 5:fd )
 
-    1 BUF store-byte ( Cmd 1: DrawChar )
-    4 local@ BUF 1 + store-word-le
-    3 local@ BUF 3 + store-word-le
-    2 local@ BUF 5 + store-byte
-    1 local@ BUF 6 + store-int-le
-    0 local@ BUF 10 + store-byte
+    1 BUF STOREI ( Cmd 1: DrawChar )
+    4 local@ BUF 4 + STOREI
+    3 local@ BUF 8 + STOREI
+    2 local@ BUF 12 + STOREI
+    1 local@ BUF 16 + STOREI
+    0 local@ BUF 20 + STOREI
 
-    5 local@ 11 send ( 1 type + 4 coords + 1 char + 4 color + 1 scale = 11 bytes )
+    5 local@ 24 send ( tag + x,y + char + color + scale = 6 words )
 
     6 unframe!
 ;
@@ -157,16 +191,17 @@ MODULE DRAW
     ( scale: 0=system-default, 1-5=multiplier, 6+=point-size )
     7 frame! ( 0:scale, 1:color, 2:len, 3:ptr, 4:y, 5:x, 6:fd )
 
-    2 BUF store-byte                    ( Cmd 2: DrawString )
-    5 local@ BUF 1 + store-word-le      ( x )
-    4 local@ BUF 3 + store-word-le      ( y )
-    1 local@ BUF 5 + store-int-le       ( color )
-    0 local@ BUF 9 + store-byte         ( scale )
-    2 local@ BUF 10 + store-word-le     ( len )
+    2 BUF STOREI                ( Cmd 2: DrawString )
+    5 local@ BUF 4 + STOREI     ( x )
+    4 local@ BUF 8 + STOREI     ( y )
+    1 local@ BUF 12 + STOREI    ( color )
+    0 local@ BUF 16 + STOREI    ( scale )
+    2 local@ BUF 20 + STOREI    ( len )
 
-    ( Copy string bytes into BUF+12 )
+    ( The text itself stays byte-packed -- it is a byte string, and the
+      source pointer has no alignment guarantee. Only the header is words. )
     3 local@ MEMORY::CTRL_TEMP STOREI
-    BUF 12 + MEMORY::CTRL_BASE STOREI
+    BUF 24 + MEMORY::CTRL_BASE STOREI
     2 local@
     [ dup 0 > ] [
         MEMORY::CTRL_TEMP LOADI load-byte
@@ -177,16 +212,18 @@ MODULE DRAW
     ] |:
     drop
 
-    6 local@ 12 2 local@ + send
+    ( Round the command up to a whole number of words so the next tag in the
+      batch stays aligned; draw_write skips the same padding. )
+    6 local@ 24 2 local@ + 3 + 4 / 4 * send
 
     7 unframe!
 ;
 
 @set-font-size ( fd size -- )
     2 frame!
-    4 BUF store-byte
-    0 local@ BUF 1 + store-byte
-    1 local@ BUF 2 VFS::write drop
+    4 BUF STOREI
+    0 local@ BUF 4 + STOREI
+    1 local@ BUF 8 VFS::write drop
     2 unframe!
 ;
 
@@ -200,9 +237,9 @@ MODULE DRAW
 @set-font ( fd which -- )
     ( which: 0 Chicago, 1 legacy 7x13 scale, 2 Geneva, 3 Monaco )
     2 frame!
-    5 BUF store-byte
-    0 local@ BUF 1 + store-byte
-    1 local@ BUF 2 VFS::write drop
+    5 BUF STOREI
+    0 local@ BUF 4 + STOREI
+    1 local@ BUF 8 VFS::write drop
     0 local@ ST_FONT LOADI = [
     ] [
         0 local@ ST_FONT STOREI
@@ -214,31 +251,31 @@ MODULE DRAW
 @begin-frame ( fd -- )
     1 frame!
     batch-on? [ batch-flush ] ?
-    6 BUF store-byte
-    0 local@ BUF 1 VFS::write drop
+    6 BUF STOREI
+    0 local@ BUF 4 VFS::write drop
     1 unframe!
 ;
 
 @end-frame ( fd -- )
     1 frame!
     batch-on? [ batch-flush ] ?
-    7 BUF store-byte
-    0 local@ BUF 1 VFS::write drop
+    7 BUF STOREI
+    0 local@ BUF 4 VFS::write drop
     1 unframe!
 ;
 
 @cff-glyph ( fd x y ch color scale font-ptr nbytes -- )
     ( Cmd 9: blit one CFF glyph from guest memory. scale 0/1 = 1x. )
     8 frame! ( 0:nbytes 1:font-ptr 2:scale 3:color 4:ch 5:y 6:x 7:fd )
-    9 BUF store-byte
-    6 local@ BUF 1 + store-word-le
-    5 local@ BUF 3 + store-word-le
-    3 local@ BUF 5 + store-int-le
-    2 local@ BUF 9 + store-byte
-    4 local@ BUF 10 + store-byte
-    1 local@ BUF 11 + store-int-le
-    0 local@ BUF 15 + store-word-le
-    7 local@ BUF 17 VFS::write drop
+    9 BUF STOREI
+    6 local@ BUF 4 + STOREI
+    5 local@ BUF 8 + STOREI
+    3 local@ BUF 12 + STOREI
+    2 local@ BUF 16 + STOREI
+    4 local@ BUF 20 + STOREI
+    1 local@ BUF 24 + STOREI
+    0 local@ BUF 28 + STOREI
+    7 local@ BUF 32 VFS::write drop
     8 unframe!
 ;
 
@@ -246,15 +283,15 @@ MODULE DRAW
     ( Cmd 10: blit an NxN RGB (3 bytes/pixel, row-major) bitmap tile from
       guest memory. use-key: 1 = key is a transparent color, 0 = opaque. )
     8 frame! ( 0:nbytes 1:tile-ptr 2:key 3:use-key 4:size 5:y 6:x 7:fd )
-    10 BUF store-byte
-    6 local@ BUF 1 + store-word-le
-    5 local@ BUF 3 + store-word-le
-    4 local@ BUF 5 + store-byte
-    3 local@ BUF 6 + store-byte
-    2 local@ BUF 7 + store-int-le
-    1 local@ BUF 11 + store-int-le
-    0 local@ BUF 15 + store-word-le
-    7 local@ BUF 17 VFS::write drop
+    10 BUF STOREI
+    6 local@ BUF 4 + STOREI
+    5 local@ BUF 8 + STOREI
+    4 local@ BUF 12 + STOREI
+    3 local@ BUF 16 + STOREI
+    2 local@ BUF 20 + STOREI
+    1 local@ BUF 24 + STOREI
+    0 local@ BUF 28 + STOREI
+    7 local@ BUF 32 VFS::write drop
     8 unframe!
 ;
 

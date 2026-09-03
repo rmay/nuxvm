@@ -10,6 +10,7 @@ INCLUDE "lib/core.lux"
 INCLUDE "lib/str.lux"
 INCLUDE "lib/ui.lux"
 INCLUDE "lib/sf.lux"
+INCLUDE "lib/icn.lux"
 
 MODULE WHITTLE
 VERSION 400000
@@ -21,6 +22,7 @@ IMPORT EVENT
 IMPORT STR
 IMPORT VFS
 IMPORT SF
+IMPORT ICN
 
 @KEY_COLOR 0xFF00FF ;
 
@@ -32,6 +34,7 @@ IMPORT SF
 @MAX_SPRITES 16 ;
 @MAX_FRAMES_PER_SPRITE 16 ;
 @SPRITE_TAB 0x9C0000 ;         ( 16*96 = 1536 bytes )
+@ICON_BUF   0x9C0600 ;         ( one ICN::BYTES (32-byte) icon slot, for Import/Export Icon )
 
 ( --- Small per-instance state --- )
 @doc-size      0x8A0000 ;
@@ -51,6 +54,8 @@ IMPORT SF
 @confirm-kind  0x8A0038 ;      ( 0=none, 1=delete-sprite confirm open )
 @save-as       0x8A003C ;
 @sprite-counter 0x8A0040 ;
+@icon-io       0x8A0044 ; ( 0=none, 1=Import Icon pending, 2=Export Icon pending -- which
+                            branch on-sf-ok takes; see menu-import-icon/menu-export-icon )
 
 @EDIT_BUF  0x8A0100 ;          ( 32 bytes: sprite-name text-input buffer )
 @PATH      0x8A0140 ;          ( 256 bytes: current file path )
@@ -58,6 +63,9 @@ IMPORT SF
 @NBUF      0x8A0340 ;          ( 32 bytes: int-to-str scratch )
 @HDR       0x8A0380 ;          ( 16 bytes: file-header staging )
 @PAL_RESULT 0x8A0390 ;
+@ICON_PATH  0x8A0400 ;          ( 256 bytes: Import/Export Icon's own path -- kept apart
+                                   from PATH so it never clobbers the sprite sheet's save
+                                   location; see menu-import-icon/menu-export-icon )
 
 ( --- Sprite record accessors --- )
 
@@ -530,7 +538,97 @@ IMPORT SF
     ] [ drop ] ?:
 ;
 
+( --- Icon import/export: an ICN1 file holds 16x16 1bpp glyphs (see
+  docs/icn-format.md), Whittle holds 32x32-max RGB tile frames -- so these
+  convert one 16x16 frame's worth of pixels rather than sharing storage.
+  A pixel counts as "ink" if it isn't the KEY_COLOR transparency key and
+  is dark enough by a plain NTSC-weighted luminance. )
+@ink? { r g b -- f }
+    r KEY_COLOR color-r = g KEY_COLOR color-g = AND b KEY_COLOR color-b = AND [
+        0
+    ] [
+        r 77 * g 151 * + b 28 * + 8 RSHIFT 128 <
+    ] ?:
+;
+
+( Export always samples a top-left 16x16 window of the current frame --
+  the common case is doc-size = 16 (via menu-new-16 or an imported icon),
+  so nothing is clipped; a larger canvas just exports its corner. )
+@do-export-icon ( -- )
+    ICON_PATH make-vfs-path 6 VFS::open-mode
+    dup 0 >= [
+        GIRD fd
+            ICON_BUF 0 ICN::clear
+            0 { py }
+                [ py 16 < ]
+                [
+                    0 { px }
+                        [ px 16 < ]
+                        [
+                            px doc-size LOADI < py doc-size LOADI < AND [
+                                cur-frame-addr px py frame-pixel@ ink? [
+                                    ICON_BUF 0 px py 1 ICN::set-bit
+                                ] ?
+                            ] ?
+                            px 1 + px!
+                        ] |:
+                    UNGIRD
+                    py 1 + py!
+                ] |:
+            UNGIRD
+            fd ICON_BUF 1 ICN::save drop
+            fd VFS::close drop
+        UNGIRD
+    ] [ drop ] ?:
+;
+
+( Import always starts a fresh 16x16 document, like menu-new-16, then
+  stamps the loaded icon's ink pixels in black -- new-doc's blank-slot
+  already fills the frame with KEY_COLOR, so only ink pixels need writing. )
+@do-import-icon ( -- )
+    ICON_PATH make-vfs-path 0 VFS::open-mode
+    dup 0 >= [
+        GIRD fd
+            fd ICON_BUF 1 ICN::load
+            GIRD n
+                fd VFS::close drop
+                n 1 >= [
+                    16 new-doc
+                    0 { py }
+                        [ py 16 < ]
+                        [
+                            0 { px }
+                                [ px 16 < ]
+                                [
+                                    ICON_BUF 0 px py ICN::get-bit 1 = [
+                                        cur-frame-addr px py 0 0 0 frame-pixel!
+                                    ] ?
+                                    px 1 + px!
+                                ] |:
+                            UNGIRD
+                            py 1 + py!
+                        ] |:
+                    UNGIRD
+                    1 file-dirty STOREI
+                ] ?
+            UNGIRD
+        UNGIRD
+    ] [ drop ] ?:
+;
+
 @on-sf-ok ( path -- )
+    icon-io LOADI 2 = [
+        0 icon-io STOREI
+        dup load-byte 47 = [ 1 + ] ?
+        ICON_PATH STR::strcpy
+        do-export-icon
+    ] [
+    icon-io LOADI 1 = [
+        0 icon-io STOREI
+        dup load-byte 47 = [ 1 + ] ?
+        ICON_PATH STR::strcpy
+        do-import-icon
+    ] [
     save-as LOADI [
         0 save-as STOREI
         dup load-byte 47 = [ 1 + ] ?
@@ -541,13 +639,18 @@ IMPORT SF
         PATH STR::strcpy
         load-file
     ] ?:
+    ] ?:
+    ] ?:
 ;
 
-@on-sf-cancel ( -- ) 0 save-as STOREI ;
+@on-sf-cancel ( -- ) 0 save-as STOREI 0 icon-io STOREI ;
 
 @menu-open ( -- ) SF::show ;
 @menu-save-as ( -- ) 1 save-as STOREI PATH SF::show-save ;
 @menu-save ( -- ) PATH load-byte 0 = [ menu-save-as ] [ do-save ] ?: ;
+
+@menu-import-icon ( -- ) 1 icon-io STOREI SF::show ;
+@menu-export-icon ( -- ) 2 icon-io STOREI T"icon.icn" SF::show-save ;
 
 ( --- Sprite-name text input (modal, keyboard-only) --- )
 
@@ -561,6 +664,7 @@ IMPORT SF
         ] ?:
         EDIT_BUF STR::strlen edit-len STOREI
         1 editing-name STOREI
+        1 APP::modal!
     UNGIRD
 ;
 @begin-new-sprite-name ( -- ) 0 begin-name-edit ;
@@ -573,9 +677,10 @@ IMPORT SF
     ] ?
     0 editing-name STOREI
     1 file-dirty STOREI
+    0 APP::modal!
 ;
 
-@cancel-name-edit ( -- ) 0 editing-name STOREI ;
+@cancel-name-edit ( -- ) 0 editing-name STOREI 0 APP::modal! ;
 
 @name-edit-add ( ch -- )
     GIRD ch
@@ -596,8 +701,8 @@ IMPORT SF
 
 ( --- Delete-sprite confirm (reuses UI overlay, like a Snake start screen) --- )
 
-@do-confirm-no  ( -- ) 0 confirm-kind STOREI UI::overlay-clear ;
-@do-confirm-yes ( -- ) cur-sprite LOADI delete-sprite 0 confirm-kind STOREI UI::overlay-clear ;
+@do-confirm-no  ( -- ) 0 confirm-kind STOREI UI::overlay-clear 0 APP::modal! ;
+@do-confirm-yes ( -- ) cur-sprite LOADI delete-sprite 0 confirm-kind STOREI UI::overlay-clear 0 APP::modal! ;
 @confirm-no  ( val -- ) drop do-confirm-no ;
 @confirm-yes ( val -- ) drop do-confirm-yes ;
 
@@ -659,13 +764,8 @@ IMPORT SF
 
 @swatch-rect ( idx -- x y w h )
     GIRD idx
-        idx PAL_COLS MOD { c }
-            idx PAL_COLS / { r }
-                PAL_X c SWATCH SWATCH_GAP + * +
-                PAL_Y r SWATCH SWATCH_GAP + * +
-                SWATCH SWATCH
-            UNGIRD
-        UNGIRD
+        idx PAL_COLS SWATCH SWATCH_GAP + SWATCH SWATCH_GAP + PAL_X PAL_Y UI::grid-cell-xy
+        SWATCH SWATCH
     UNGIRD
 ;
 
@@ -708,12 +808,7 @@ IMPORT SF
     GIRD idx STRIP_X idx 60 * + strip-btn-y 54 22 UNGIRD
 ;
 
-@in-rect? ( mx my x y w h -- f )
-    { mx my x y w h }
-        mx x >= mx x w + < AND
-        my y >= AND my y h + < AND
-    UNGIRD
-;
+@in-rect? ( mx my x y w h -- f ) UI::in-rect? ;
 
 ( --- Drawing --- )
 
@@ -874,19 +969,10 @@ IMPORT SF
                 valid [ px py paint-px ] ?
             UNGIRD
         ] ?
-        0
-        GIRD i
-            [ i 16 < ]
-            [
-                i swatch-rect
-                { x y w h }
-                    mx my x y w h in-rect? [
-                        i palette-color cur-color STOREI
-                    ] ?
-                UNGIRD
-                i 1 + i!
-            ] |:
-        UNGIRD
+        mx my 16 [ swatch-rect ] UI::hit-index
+            { si }
+                si 0 >= [ si palette-color cur-color STOREI ] ?
+            UNGIRD
         mx my PAL_X trans-y trans-w SWATCH in-rect? [
             KEY_COLOR cur-color STOREI
         ] ?
@@ -894,39 +980,24 @@ IMPORT SF
         mx my 1 act-rect in-rect? [ flip-v ] ?
         mx my 2 act-rect in-rect? [ fill-frame ] ?
         mx my 3 act-rect in-rect? [ clear-frame ] ?
-        0
-        GIRD i
-            [ i doc-nsprites LOADI < ]
-            [
-                i spr-row-rect
-                { x y w h }
-                    mx my x y w h in-rect? [
-                        i cur-sprite STOREI
-                        0 cur-frame STOREI
-                    ] ?
-                UNGIRD
-                i 1 + i!
-            ] |:
-        UNGIRD
+        mx my doc-nsprites LOADI [ spr-row-rect ] UI::hit-index
+            { ri }
+                ri 0 >= [
+                    ri cur-sprite STOREI
+                    0 cur-frame STOREI
+                ] ?
+            UNGIRD
         mx my spr-new-rect in-rect? [ begin-new-sprite-name ] ?
         mx my spr-ren-rect in-rect? [ begin-rename-sprite ] ?
         mx my spr-del-rect in-rect? doc-nsprites LOADI 1 > AND [
             1 confirm-kind STOREI
             place-confirm
+            1 APP::modal!
         ] ?
-        0
-        GIRD i
-            [ i cur-sprite LOADI sprite-count < ]
-            [
-                i strip-cell-rect
-                { x y w h }
-                    mx my x y w h in-rect? [
-                        i cur-frame STOREI
-                    ] ?
-                UNGIRD
-                i 1 + i!
-            ] |:
-        UNGIRD
+        mx my cur-sprite LOADI sprite-count [ strip-cell-rect ] UI::hit-index
+            { fi }
+                fi 0 >= [ fi cur-frame STOREI ] ?
+            UNGIRD
         mx my 0 fbtn-rect in-rect? [ cur-sprite LOADI sprite-add-frame ] ?
         mx my 1 fbtn-rect in-rect? [ cur-sprite LOADI cur-frame LOADI sprite-duplicate-frame ] ?
         mx my 2 fbtn-rect in-rect? [ cur-sprite LOADI cur-frame LOADI sprite-delete-frame ] ?
@@ -1020,6 +1091,7 @@ IMPORT SF
     draw-controls
     draw-name-edit
     draw-confirm
+    UI::draw
 ;
 
 @start
@@ -1030,6 +1102,7 @@ IMPORT SF
     16 new-doc
     [ on-sf-ok ] SF::on-ok!
     [ on-sf-cancel ] SF::on-cancel!
+    APP::width UI::menubar
     T"File" UI::menu
     T"New 8x8"   [ menu-new-8 ]         UI::item
     T"New 16x16" [ menu-new-16 ]        UI::item
@@ -1038,6 +1111,8 @@ IMPORT SF
     T"Open"      [ drop menu-open ]     UI::item
     T"Save"      [ drop menu-save ]     UI::item
     T"Save As"   [ drop menu-save-as ]  UI::item
+    T"Import Icon..." [ drop menu-import-icon ] UI::item
+    T"Export Icon..." [ drop menu-export-icon ] UI::item
     T"Quit"      [ drop HALT ]          UI::item
     [ on-mouse ] APP::on-mouse!
     [ on-kbd ] APP::on-kbd!

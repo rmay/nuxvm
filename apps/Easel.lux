@@ -5,9 +5,11 @@
   one-button alert instead of failing silently. Edit > Undo / Cut / Copy / Paste /
   Invert / Clear / Fill / Trace Edges / Flip H / Flip V / Rotate 90,
   Goodies > Grid (draws dots and snaps shape-tool drags to the 8px grid) /
-  FatBits / Edit Pattern / Brush Shape / Show Page, Font >
-  Chicago / Geneva / Monaco, Size > 12 / 24 / 36, Style > Bold / Underline
-  (Italic / Outline / Shadow not implemented). All 20 tools are wired,
+  FatBits / Edit Pattern / Brush Shape / Show Page / Mirror Horizontal /
+  Mirror Vertical (brush dabs also stamp reflected about the page center;
+  both together give 4-way symmetry), Font >
+  Chicago / Geneva / Monaco, Size > 12 / 24 / 36, Style > Bold / Italic /
+  Underline / Outline / Shadow, all combinable. All 20 tools are wired,
   including Marquee/Lasso selection, Freeform/Polygon, Text, and Hand
   (drags a 480x416 viewport around a 576x720 page). Show Page opens a
   reduced whole-page mini-map with a draggable rect marking the viewport;
@@ -36,6 +38,7 @@ INCLUDE "lib/geom.lux"
 INCLUDE "lib/bitmap.lux"
 INCLUDE "lib/time.lux"
 INCLUDE "lib/cff.lux"
+INCLUDE "lib/icn.lux"
 
 MODULE MAIN
 VERSION 500000
@@ -51,6 +54,7 @@ IMPORT GEOM
 IMPORT BITMAP
 IMPORT TIME
 IMPORT CFF
+IMPORT ICN
 
 ( --- Geometry: sized for the full 20-tool / 38-pattern layout to be
   comfortable at its own natural size, then the window fits that -- not the
@@ -91,8 +95,14 @@ IMPORT CFF
 @FAT_VH         52 ; ( CANVAS_H / FAT_Z, exact )
 @STK_MAX      4096 ;
 @PACK_BYTES  BITMAP::PAGE_BYTES 8 + ; ( 8-byte header + one full packed page -- EAS2 )
-@WIN_W         CANVAS_X CANVAS_W + ;
-@WIN_H         PAT_Y PAT_CELL_H PAT_ROWS * + ;
+( Literal, not an expression: cloister.c's scan_lux_win_size scans source
+  text for a bare integer right after this constant's name to size its
+  window before compiling, and can't evaluate CANVAS_X CANVAS_W +. Every
+  other app's window-size constants are literals for the same reason; keep
+  these equal to CANVAS_X+CANVAS_W / PAT_Y+PAT_CELL_H*PAT_ROWS if the
+  layout above changes. )
+@WIN_W         560 ; ( = CANVAS_X 80 + CANVAS_W 480 )
+@WIN_H         492 ; ( = PAT_Y 436 + PAT_CELL_H 28 * PAT_ROWS 2 )
 
 ( Authentic MacPaint tool order, row-major in the 2x10 palette (see
   easel_plan.md's target layout list). LASSO/MARQUEE/PENCIL/ERASER/BRUSH/
@@ -133,11 +143,12 @@ IMPORT CFF
 @DRAG_FREEFORM   6 ; ( freehand-tracing a freeform shape; commits straight to CANVAS )
 @DRAG_HAND       7 ; ( panning the viewport; view-x/view-y move, CANVAS is untouched )
 
-( Text style bits (combinable). Italic/Outline/Shadow are not implemented --
-  Bold and Underline are the two that don't need per-row shearing or a
-  second dilated pass, so they're the ones worth the pixel-stamping cost. )
+( Text style bits (combinable). )
 @STYLE_BOLD       1 ;
 @STYLE_UNDERLINE  2 ;
+@STYLE_ITALIC     4 ; ( per-row x shear, source rows sheared right toward the top )
+@STYLE_OUTLINE    8 ; ( dilate-minus-original: hollow strokes )
+@STYLE_SHADOW     16 ; ( a second glyph OR'd in, offset one source pixel down-right )
 
 @CONFIRM_ACT_NEW    0 ; ( what the dirty-confirm sheet runs after Save/Don't Save )
 @CONFIRM_ACT_OPEN   1 ;
@@ -182,15 +193,15 @@ IMPORT CFF
 @EPAT_GRID        EPAT_CELL 8 * ;
 @EPAT_PANEL_W     EPAT_GRID 40 + ;
 @EPAT_PANEL_H     EPAT_GRID 74 + ;
-@EPAT_PANEL_X     WIN_W EPAT_PANEL_W - 2 / ;
-@EPAT_PANEL_Y     WIN_H EPAT_PANEL_H - 2 / ;
+@EPAT_PANEL_X     WIN_W EPAT_PANEL_W UI::center-coord ;
+@EPAT_PANEL_Y     WIN_H EPAT_PANEL_H UI::center-coord ;
 @EPAT_GRID_X      EPAT_PANEL_X 20 + ;
 @EPAT_GRID_Y      EPAT_PANEL_Y 34 + ;
 @EPAT_BTN_W        70 ;
 @EPAT_BTN_H        20 ;
 @EPAT_BTN_Y       EPAT_GRID_Y EPAT_GRID + 14 + ;
-@EPAT_OK_X        EPAT_PANEL_X EPAT_PANEL_W + 20 - EPAT_BTN_W - ;
-@EPAT_CANCEL_X    EPAT_PANEL_X 20 + ;
+@EPAT_OK_X        EPAT_PANEL_X EPAT_PANEL_W EPAT_BTN_W UI::modal-ok-x ;
+@EPAT_CANCEL_X    EPAT_PANEL_X UI::modal-cancel-x ;
 
 ( Brush Shape modal: 32 preset 16x16 masks in an 8x4 grid, one cell per
   brush, click to select and close (no OK/Cancel -- picking IS committing,
@@ -204,8 +215,8 @@ IMPORT CFF
 @BR_CELL          24 ;
 @BR_PANEL_W       BR_CELL BR_COLS * 20 + ;
 @BR_PANEL_H       BR_CELL BR_ROWS * 44 + ;
-@BR_PANEL_X       WIN_W BR_PANEL_W - 2 / ;
-@BR_PANEL_Y       WIN_H BR_PANEL_H - 2 / ;
+@BR_PANEL_X       WIN_W BR_PANEL_W UI::center-coord ;
+@BR_PANEL_Y       WIN_H BR_PANEL_H UI::center-coord ;
 @BR_GRID_X        BR_PANEL_X 10 + ;
 @BR_GRID_Y        BR_PANEL_Y 30 + ;
 
@@ -219,15 +230,15 @@ IMPORT CFF
 @SP_MAP_H          PAGE_H SP_Z / ; ( 240 )
 @SP_PANEL_W        SP_MAP_W 20 + ;
 @SP_PANEL_H        SP_MAP_H 60 + ;
-@SP_PANEL_X        WIN_W SP_PANEL_W - 2 / ;
-@SP_PANEL_Y        WIN_H SP_PANEL_H - 2 / ;
+@SP_PANEL_X        WIN_W SP_PANEL_W UI::center-coord ;
+@SP_PANEL_Y        WIN_H SP_PANEL_H UI::center-coord ;
 @SP_MAP_X          SP_PANEL_X 10 + ;
 @SP_MAP_Y          SP_PANEL_Y 30 + ;
 @SP_BTN_W          70 ;
 @SP_BTN_H          20 ;
 @SP_BTN_Y          SP_MAP_Y SP_MAP_H + 14 + ;
-@SP_OK_X           SP_PANEL_X SP_PANEL_W + 20 - SP_BTN_W - ;
-@SP_CANCEL_X       SP_PANEL_X 20 + ;
+@SP_OK_X           SP_PANEL_X SP_PANEL_W SP_BTN_W UI::modal-ok-x ;
+@SP_CANCEL_X       SP_PANEL_X UI::modal-cancel-x ;
 @SP_VIEW_W         CANVAS_W SP_Z / ;
 @SP_VIEW_H         CANVAS_H SP_Z / ;
 
@@ -248,6 +259,8 @@ IMPORT CFF
 @VFS_PATH      0x990100 ;
 @PATTERNS      0x990300 ; ( 38 * 8 bytes, one row per byte -- see init-pats )
 @BRUSHES       0x990500 ; ( 32 * 32 bytes, 16x16 1bpp masks, 2 bytes/row -- see init-brushes )
+@TOOL_ICONS    0x990900 ; ( TOOLS * ICN::BYTES, one 16x16 System-6-style ICN per tool -- see
+                            init-tool-icons; ends 0x990B80, well clear of SEL_MASK below )
 @SEL_MASK      0x991000 ; ( BITMAP::PAGE_BYTES page: lasso's filled-interior selection mask )
 @SNARF_BUF     0x9A0000 ; ( EASS clipboard payload; a full-page selection packs to ~51.8 KB,
                             over SNARF_CAP below -- snarf-copy refuses rather than overrun it )
@@ -338,6 +351,11 @@ IMPORT CFF
 @tool-dbl-time     0x8A012C ;
 @mirror-h          0x8A0130 ; ( Goodies > Mirror H/V: brush dabs also stamp reflected about )
 @mirror-v          0x8A0134 ; ( the page center -- see brush-at )
+@last-tool         0x8A0138 ; ( previously drawn tool-palette selection, -1 = none yet )
+@hover-tool        0x8A013C ; ( palette cell under the cursor, -1 = none; drives the tooltip delay )
+@hover-t0          0x8A0140 ; ( TIME::milli@ when hover-tool last changed )
+@tooltip-shown     0x8A0144 ; ( 1 once the tooltip for hover-tool has been drawn this dwell, so
+                                on-frame stops re-drawing it every frame while the mouse sits still )
 
 ( Explicit damage bits, replacing the old single pat-full flag (whose narrow
   meaning -- "must draw-patterns redraw all swatches" -- was the exact bug: a
@@ -647,6 +665,298 @@ IMPORT CFF
     28 3 1 cross-mask  29 5 1 cross-mask  30 7 2 cross-mask  31 8 2 cross-mask
 ;
 
+( --- Tool palette tooltips: one label string per TOOL_*, shown after
+  TOOLTIP_DELAY ms of hovering a palette cell (see hover-tool/hover-t0
+  and the draw call in on-frame). )
+@TOOLTIP_DELAY   600 ;
+@TOOL_LABELS  0x8A0400 ; ( TOOLS * 4 bytes: index -> label string pointer )
+
+@tool-label { i -- ptr } TOOL_LABELS i 4 * + LOADI ;
+
+@init-tool-labels ( -- )
+    T"Lasso"            TOOL_LASSO           4 * TOOL_LABELS + STOREI
+    T"Marquee"          TOOL_MARQUEE         4 * TOOL_LABELS + STOREI
+    T"Hand"             TOOL_HAND            4 * TOOL_LABELS + STOREI
+    T"Text"             TOOL_TEXT            4 * TOOL_LABELS + STOREI
+    T"Fill"             TOOL_FILL            4 * TOOL_LABELS + STOREI
+    T"Spray Can"        TOOL_SPRAY           4 * TOOL_LABELS + STOREI
+    T"Brush"            TOOL_BRUSH           4 * TOOL_LABELS + STOREI
+    T"Pencil"           TOOL_PENCIL          4 * TOOL_LABELS + STOREI
+    T"Line"             TOOL_LINE            4 * TOOL_LABELS + STOREI
+    T"Eraser"           TOOL_ERASER          4 * TOOL_LABELS + STOREI
+    T"Rectangle"        TOOL_RECT            4 * TOOL_LABELS + STOREI
+    T"Filled Rectangle" TOOL_RECT_FILLED     4 * TOOL_LABELS + STOREI
+    T"Rounded Rectangle"        TOOL_ROUNDRECT        4 * TOOL_LABELS + STOREI
+    T"Filled Rounded Rectangle" TOOL_ROUNDRECT_FILLED 4 * TOOL_LABELS + STOREI
+    T"Oval"             TOOL_OVAL            4 * TOOL_LABELS + STOREI
+    T"Filled Oval"      TOOL_OVAL_FILLED     4 * TOOL_LABELS + STOREI
+    T"Freeform"         TOOL_FREEFORM        4 * TOOL_LABELS + STOREI
+    T"Filled Freeform"  TOOL_FREEFORM_FILLED 4 * TOOL_LABELS + STOREI
+    T"Polygon"          TOOL_POLYGON         4 * TOOL_LABELS + STOREI
+    T"Filled Polygon"   TOOL_POLYGON_FILLED  4 * TOOL_LABELS + STOREI
+;
+
+( --- Tool palette icons: 20 hand-authored 16x16 ICN glyphs (see lib/icn.lux),
+  System 6 style -- filled tools reuse their outline's silhouette bulked out
+  rather than being redrawn from scratch, the same way MacPaint's own
+  filled/unfilled icon pairs share a shape. )
+
+@icon-row { i row text -- } TOOL_ICONS i row text ICN::row! ;
+
+@init-tool-icons ( -- )
+    0 { i }
+        [ i TOOLS < ]
+        [
+            TOOL_ICONS i ICN::clear
+            i 1 + i!
+        ] |:
+    UNGIRD
+
+    TOOL_LASSO { i }
+        i 1  T"....######......"     icon-row
+        i 2  T"..##......##...."     icon-row
+        i 3  T".#..........#..."     icon-row
+        i 4  T"#............#.."     icon-row
+        i 5  T"#............#.."     icon-row
+        i 6  T".#..........#..."     icon-row
+        i 7  T"..##......##...."     icon-row
+        i 8  T"....######......"     icon-row
+        i 9  T"..........#....."     icon-row
+        i 10 T"...........#...."     icon-row
+        i 11 T"...........#...."     icon-row
+        i 12 T"..........#....."     icon-row
+        i 13 T".........##....."     icon-row
+    UNGIRD
+
+    TOOL_MARQUEE { i }
+        i 3  T"..#.#.#.#.#.#..."     icon-row
+        i 4  T"..#..........#.."     icon-row
+        i 6  T"..#..........#.."     icon-row
+        i 8  T"..#..........#.."     icon-row
+        i 10 T"..#..........#.."     icon-row
+        i 12 T"..#.#.#.#.#.#..."     icon-row
+    UNGIRD
+
+    TOOL_HAND { i }
+        i 2  T"....##.##......."     icon-row
+        i 3  T"....##.##.##...."     icon-row
+        i 4  T"....##.##.##...."     icon-row
+        i 5  T"....##.##.##.##."     icon-row
+        i 6  T"....############"     icon-row
+        i 7  T"...#############"     icon-row
+        i 8  T"..##############"     icon-row
+        i 9  T"..##############"     icon-row
+        i 10 T"..##############"     icon-row
+        i 11 T"...############."     icon-row
+    UNGIRD
+
+    TOOL_TEXT { i }
+        i 2  T"......##........"     icon-row
+        i 3  T".....####......."     icon-row
+        i 4  T".....####......."     icon-row
+        i 5  T"....##..##......"     icon-row
+        i 6  T"....##..##......"     icon-row
+        i 7  T"....######......"     icon-row
+        i 8  T"....######......"     icon-row
+        i 9  T"...##....##....."     icon-row
+        i 10 T"...##....##....."     icon-row
+        i 11 T"..##......##...."     icon-row
+    UNGIRD
+
+    TOOL_FILL { i }
+        i 3  T"....########...."     icon-row
+        i 4  T"....#......#...."     icon-row
+        i 5  T"....#......#...."     icon-row
+        i 6  T"....#......#...."     icon-row
+        i 7  T"....#......#...."     icon-row
+        i 8  T"....#......#...."     icon-row
+        i 9  T"....########...."     icon-row
+        i 10 T"..........#....."     icon-row
+        i 11 T".........##....."     icon-row
+    UNGIRD
+
+    TOOL_SPRAY { i }
+        i 2  T"..####.........."     icon-row
+        i 3  T"..#..#.........."     icon-row
+        i 4  T"..####.........."     icon-row
+        i 5  T"...##..........."     icon-row
+        i 6  T"....#...#..#...."     icon-row
+        i 7  T".....#....#....."     icon-row
+        i 8  T"......#..#...#.."     icon-row
+        i 9  T".......#....#..."     icon-row
+        i 10 T"......#...#....."     icon-row
+        i 11 T".......#....#..."     icon-row
+        i 12 T"........#..#...."     icon-row
+    UNGIRD
+
+    TOOL_BRUSH { i }
+        i 2  T"..........##...."     icon-row
+        i 3  T".........##....."     icon-row
+        i 4  T"........##......"     icon-row
+        i 5  T".......##......."     icon-row
+        i 6  T"......##........"     icon-row
+        i 7  T".....##........."     icon-row
+        i 8  T"....##.........."     icon-row
+        i 9  T"...####........."     icon-row
+        i 10 T"..######........"     icon-row
+        i 11 T"..######........"     icon-row
+        i 12 T"...####........."     icon-row
+    UNGIRD
+
+    TOOL_PENCIL { i }
+        i 2  T"............##.."     icon-row
+        i 3  T"...........##..."     icon-row
+        i 4  T"..........##...."     icon-row
+        i 5  T".........##....."     icon-row
+        i 6  T"........##......"     icon-row
+        i 7  T".......##......."     icon-row
+        i 8  T"......##........"     icon-row
+        i 9  T".....##........."     icon-row
+        i 10 T"....##.........."     icon-row
+        i 11 T"...##..........."     icon-row
+        i 12 T"..##............"     icon-row
+        i 13 T".#.............."     icon-row
+    UNGIRD
+
+    TOOL_LINE { i }
+        i 2  T"............##.."     icon-row
+        i 3  T"...........##..."     icon-row
+        i 4  T"..........##...."     icon-row
+        i 5  T".........##....."     icon-row
+        i 6  T"........##......"     icon-row
+        i 7  T".......##......."     icon-row
+        i 8  T"......##........"     icon-row
+        i 9  T".....##........."     icon-row
+        i 10 T"....##.........."     icon-row
+        i 11 T"...##..........."     icon-row
+        i 12 T"..##............"     icon-row
+        i 13 T".##............."     icon-row
+    UNGIRD
+
+    TOOL_ERASER { i }
+        i 4  T"....########...."     icon-row
+        i 5  T"...#........#..."     icon-row
+        i 6  T"..#..........#.."     icon-row
+        i 7  T"..#..........#.."     icon-row
+        i 8  T"..#..........#.."     icon-row
+        i 9  T"..############.."     icon-row
+    UNGIRD
+
+    TOOL_RECT { i }
+        i 4  T"....##########.."     icon-row
+        i 5  T"....#........#.."     icon-row
+        i 6  T"....#........#.."     icon-row
+        i 7  T"....#........#.."     icon-row
+        i 8  T"....#........#.."     icon-row
+        i 9  T"....#........#.."     icon-row
+        i 10 T"....##########.."     icon-row
+    UNGIRD
+
+    TOOL_RECT_FILLED { i }
+        i 4  T"....##########.."     icon-row
+        i 5  T"....##########.."     icon-row
+        i 6  T"....##########.."     icon-row
+        i 7  T"....##########.."     icon-row
+        i 8  T"....##########.."     icon-row
+        i 9  T"....##########.."     icon-row
+        i 10 T"....##########.."     icon-row
+    UNGIRD
+
+    TOOL_ROUNDRECT { i }
+        i 4  T".....########..."     icon-row
+        i 5  T"....#........#.."     icon-row
+        i 6  T"...#..........#."     icon-row
+        i 7  T"...#..........#."     icon-row
+        i 8  T"...#..........#."     icon-row
+        i 9  T"....#........#.."     icon-row
+        i 10 T".....########..."     icon-row
+    UNGIRD
+
+    TOOL_ROUNDRECT_FILLED { i }
+        i 4  T".....########..."     icon-row
+        i 5  T"....##########.."     icon-row
+        i 6  T"...############."     icon-row
+        i 7  T"...############."     icon-row
+        i 8  T"...############."     icon-row
+        i 9  T"....##########.."     icon-row
+        i 10 T".....########..."     icon-row
+    UNGIRD
+
+    TOOL_OVAL { i }
+        i 3  T".....######....."     icon-row
+        i 4  T"...##......##..."     icon-row
+        i 5  T"..#..........#.."     icon-row
+        i 6  T".#............#."     icon-row
+        i 7  T".#............#."     icon-row
+        i 8  T".#............#."     icon-row
+        i 9  T"..#..........#.."     icon-row
+        i 10 T"...##......##..."     icon-row
+        i 11 T".....######....."     icon-row
+    UNGIRD
+
+    TOOL_OVAL_FILLED { i }
+        i 3  T".....######....."     icon-row
+        i 4  T"...##########..."     icon-row
+        i 5  T"..############.."     icon-row
+        i 6  T".##############."     icon-row
+        i 7  T".##############."     icon-row
+        i 8  T".##############."     icon-row
+        i 9  T"..############.."     icon-row
+        i 10 T"...##########..."     icon-row
+        i 11 T".....######....."     icon-row
+    UNGIRD
+
+    TOOL_FREEFORM { i }
+        i 3  T"......##........"     icon-row
+        i 4  T"....##..##......"     icon-row
+        i 5  T"...#......##...."     icon-row
+        i 6  T"..#.........##.."     icon-row
+        i 7  T".#............#."     icon-row
+        i 8  T".#............#."     icon-row
+        i 9  T"..#..........#.."     icon-row
+        i 10 T"...#........#..."     icon-row
+        i 11 T"....#......#...."     icon-row
+        i 12 T".....########..."     icon-row
+    UNGIRD
+
+    TOOL_FREEFORM_FILLED { i }
+        i 3  T"......##........"     icon-row
+        i 4  T"....########...."     icon-row
+        i 5  T"...##########..."     icon-row
+        i 6  T"..############.."     icon-row
+        i 7  T".##############."     icon-row
+        i 8  T".##############."     icon-row
+        i 9  T"..############.."     icon-row
+        i 10 T"...##########..."     icon-row
+        i 11 T"....########...."     icon-row
+        i 12 T".....########..."     icon-row
+    UNGIRD
+
+    TOOL_POLYGON { i }
+        i 3  T".......##......."     icon-row
+        i 4  T"......#..#......"     icon-row
+        i 5  T".....#....#....."     icon-row
+        i 6  T"....#......#...."     icon-row
+        i 7  T"...#........#..."     icon-row
+        i 8  T"..#..........#.."     icon-row
+        i 9  T".#............#."     icon-row
+        i 10 T".#............#."     icon-row
+        i 11 T"..############.."     icon-row
+    UNGIRD
+
+    TOOL_POLYGON_FILLED { i }
+        i 3  T".......##......."     icon-row
+        i 4  T"......####......"     icon-row
+        i 5  T".....######....."     icon-row
+        i 6  T"....########...."     icon-row
+        i 7  T"...##########..."     icon-row
+        i 8  T"..############.."     icon-row
+        i 9  T".##############."     icon-row
+        i 10 T".##############."     icon-row
+        i 11 T".##############."     icon-row
+    UNGIRD
+;
+
 ( --- Text (Step 7): a single system font, Chicago, at its native 16x16
   tile size -- no Font/Size/Style menu yet. /dev/draw's DrawCFFGlyph paints
   the framebuffer directly, not a guest bitmap, so a committed text block
@@ -678,7 +988,7 @@ IMPORT CFF
 
 @text-scale ( -- n ) text-size LOADI 1 + ;
 
-@brush-at { cx cy -- }
+@brush-stamp-raw { cx cy -- }
     0 { row }
         [ row BR_SIZE < ]
         [
@@ -694,6 +1004,19 @@ IMPORT CFF
             row 1 + row!
         ] |:
     UNGIRD
+;
+
+( Goodies > Mirror H/V: also stamps the dab reflected about the page center
+  on whichever axes are on -- both together gives 4-way (point) symmetry.
+  Reflecting off PAGE_W/PAGE_H rather than the viewport keeps the mirrored
+  ink correct however the Hand tool has panned. )
+@brush-at { cx cy -- }
+    cx cy brush-stamp-raw
+    mirror-h LOADI [ PAGE_W cx - cy brush-stamp-raw ] ?
+    mirror-v LOADI [ cx PAGE_H cy - brush-stamp-raw ] ?
+    mirror-h LOADI mirror-v LOADI AND [
+        PAGE_W cx - PAGE_H cy - brush-stamp-raw
+    ] ?
 ;
 
 @erase-at { cx cy -- }
@@ -1672,29 +1995,15 @@ IMPORT CFF
 ;
 
 @tool-xy { i -- x y }
-    PAL_X i 2 MOD PAL_CELL_W * +
-    PAL_Y i 2 / PAL_CELL_H * +
+    i 2 PAL_CELL_W PAL_CELL_H PAL_X PAL_Y UI::grid-cell-xy
 ;
 
-@in-tool? { mx my i -- f }
-    i tool-xy { x y }
-        mx x >= mx x PAL_CELL_W + < AND
-        my y >= AND
-        my y PAL_CELL_H + < AND
-    UNGIRD
+@tool-rect ( i -- x y w h )
+    tool-xy PAL_CELL_W PAL_CELL_H
 ;
 
 @hit-tool { mx my -- idx }
-    -1 { found }
-        0 { i }
-            [ i TOOLS < found 0 < AND ]
-            [
-                mx my i in-tool? [ i found! ] ?
-                i 1 + i!
-            ] |:
-        UNGIRD
-        found
-    UNGIRD
+    mx my TOOLS [ tool-rect ] UI::hit-index
 ;
 
 @scr>can { mx my -- cx cy }
@@ -2070,22 +2379,45 @@ IMPORT CFF
     APP::dirty!
 ;
 
+( One source pixel's on/off state under the current text-style, before
+  Bold/Shadow smearing or Italic shear are applied: plain CFF::pixel@,
+  or -- Outline -- dilate-minus-original (on iff off itself but any of the
+  4-neighbours is on), giving hollow strokes. CFF::pixel@ reads 0 out of
+  the glyph's 16x16 box, so edge rows/columns dilate correctly. )
+@glyph-bit { ch gx gy -- bit }
+    text-style LOADI STYLE_OUTLINE AND 0 > [
+        ch gx gy CFF::pixel@ 0 = [
+            ch gx 1 - gy CFF::pixel@
+            ch gx 1 + gy CFF::pixel@ OR
+            ch gx gy 1 - CFF::pixel@ OR
+            ch gx gy 1 + CFF::pixel@ OR
+            0 >
+        ] [ 0 ] ?:
+    ] [ ch gx gy CFF::pixel@ 0 > ] ?:
+;
+
 ( Stamps one glyph into CANVAS at its already-scaled origin (cx,cy), each
   source pixel expanded to a text-scale x text-scale block. Bold synthesizes
-  by OR-ing each source pixel with the one to its left before expanding --
-  CFF::pixel@ 0 for a negative column, so gx=0 is unaffected. Assumes
-  active-font is already CFF::use'd by the caller. )
+  by OR-ing each source pixel with the one to its left before expanding.
+  Shadow OR's in the pixel one row/column up-left, which smears the shape
+  one source pixel down-right instead. Italic shifts each row's placement
+  right by more the closer to the top, shearing without resampling.
+  Assumes active-font is already CFF::use'd by the caller. )
 @stamp-glyph { ch cx cy -- }
     text-scale { sc }
         0 { gy }
             [ gy 16 < ]
             [
+                text-style LOADI STYLE_ITALIC AND 0 > [ 15 gy - 2 SHR sc * ] [ 0 ] ?: { ishift }
                 0 { gx }
                     [ gx 16 < ]
                     [
-                        ch gx gy CFF::pixel@
+                        ch gx gy glyph-bit
                         text-style LOADI STYLE_BOLD AND 0 > [
-                            ch gx 1 - gy CFF::pixel@ OR
+                            ch gx 1 - gy glyph-bit OR
+                        ] ?
+                        text-style LOADI STYLE_SHADOW AND 0 > [
+                            ch gx 1 - gy 1 - glyph-bit OR
                         ] ?
                         0 > [
                             0 { oy }
@@ -2094,7 +2426,7 @@ IMPORT CFF
                                     0 { ox }
                                         [ ox sc < ]
                                         [
-                                            1 cx gx sc * ox + + cy gy sc * oy + + pix!
+                                            1 cx gx sc * ox + ishift + + cy gy sc * oy + + pix!
                                             ox 1 + ox!
                                         ] |:
                                     UNGIRD
@@ -2105,6 +2437,7 @@ IMPORT CFF
                         gx 1 + gx!
                     ] |:
                 UNGIRD
+                UNGIRD ( ishift )
                 gy 1 + gy!
             ] |:
         UNGIRD
@@ -2136,7 +2469,7 @@ IMPORT CFF
                                             0 { ux }
                                                 [ ux w < ]
                                                 [
-                                                    1 cx ux + cy 16 text-scale * + 1 - + pix!
+                                                    1 cx ux + cy 16 text-scale * + 1 - pix!
                                                     ux 1 + ux!
                                                 ] |:
                                             UNGIRD
@@ -2159,10 +2492,14 @@ IMPORT CFF
 
 ( Draws the still-editing text block straight to the framebuffer each frame
   -- floating, not yet part of CANVAS/UNDO -- plus a caret bar at the
-  insertion point. DRAW::cff-glyph handles scale itself; Bold is
-  approximated with a second 1px-offset draw (no per-source-pixel access to
-  the framebuffer to OR properly, unlike stamp-glyph's CANVAS write), and
-  Underline is one line per glyph's advance width. )
+  insertion point. DRAW::cff-glyph handles scale itself; Bold and Shadow are
+  approximated with a second offset draw (no per-source-pixel access to the
+  framebuffer to OR properly, unlike stamp-glyph's CANVAS write -- Shadow's
+  offset is one scaled pixel rather than one source pixel, since there is no
+  sub-glyph resampling here either), and Underline is one line per glyph's
+  advance width. Italic and Outline need per-pixel shearing/dilation that
+  only stamp-glyph can do, so the live preview shows them unstyled until the
+  block commits to CANVAS -- text-commit is the source of truth. )
 @draw-text-live ( -- )
     text-active LOADI [
         active-font 16 CFF::use
@@ -2181,6 +2518,9 @@ IMPORT CFF
                                         APP::draw-fd sx sy ch CLR_FG text-scale active-font CFF::bytes DRAW::cff-glyph
                                         text-style LOADI STYLE_BOLD AND 0 > [
                                             APP::draw-fd sx 1 + sy ch CLR_FG text-scale active-font CFF::bytes DRAW::cff-glyph
+                                        ] ?
+                                        text-style LOADI STYLE_SHADOW AND 0 > [
+                                            APP::draw-fd sx 1 + sy 1 + ch CLR_FG text-scale active-font CFF::bytes DRAW::cff-glyph
                                         ] ?
                                         text-style LOADI STYLE_UNDERLINE AND 0 > [
                                             ch CFF::width@ text-scale * { w }
@@ -2443,22 +2783,18 @@ IMPORT CFF
 
 ( --- Confirm / menus --- )
 
-@confirm-panel-x ( -- x ) WIN_W CONFIRM_PANEL_W - 2 / ;
-@confirm-panel-y ( -- y ) WIN_H CONFIRM_PANEL_H - 2 / ;
-@confirm-btn-x ( -- x ) confirm-panel-x CONFIRM_PANEL_W CONFIRM_BTN_W - 2 / + ;
+@confirm-panel-x ( -- x ) WIN_W CONFIRM_PANEL_W UI::center-coord ;
+@confirm-panel-y ( -- y ) WIN_H CONFIRM_PANEL_H UI::center-coord ;
+@confirm-btn-x ( -- x ) confirm-panel-x CONFIRM_PANEL_W CONFIRM_BTN_W UI::modal-center-btn-x ;
 @confirm-btn-y ( i -- y ) confirm-panel-y 46 + swap CONFIRM_BTN_H CONFIRM_BTN_GAP + * + ;
 
 @confirm-dirty-draw ( -- )
     confirm-dirty-open LOADI [
-        confirm-panel-x confirm-panel-y confirm-btn-x 3 frame! ( 0:bx 1:py 2:px )
-        APP::draw-fd 2 local@ CONFIRM_SHADOW + 1 local@ CONFIRM_SHADOW + CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_DIM DRAW::fill-rect
-        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
-        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_H + 1 - CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd 2 local@ 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd 2 local@ CONFIRM_PANEL_W + 1 - 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd 2 local@ 26 + 1 local@ 16 + T"Save changes?" CLR_CONFIRM_TEXT 16 DRAW::draw-str
-        3 unframe!
+        confirm-panel-x confirm-panel-y 2 frame! ( 0:py 1:px )
+        APP::draw-fd 1 local@ 0 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CONFIRM_SHADOW CLR_CONFIRM_DIM UI::draw-modal-shadow
+        APP::draw-fd 1 local@ 0 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_PANEL CLR_CONFIRM_BORDER UI::draw-modal-panel
+        APP::draw-fd 1 local@ 26 + 0 local@ 16 + T"Save changes?" CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        2 unframe!
         UI::overlay-draw
     ] ?
 ;
@@ -2558,15 +2894,11 @@ IMPORT CFF
 
 @io-alert-draw ( -- )
     io-alert-open LOADI [
-        confirm-panel-x confirm-panel-y confirm-btn-x 3 frame! ( 0:bx 1:py 2:px )
-        APP::draw-fd 2 local@ CONFIRM_SHADOW + 1 local@ CONFIRM_SHADOW + CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_DIM DRAW::fill-rect
-        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
-        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_H + 1 - CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd 2 local@ 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd 2 local@ CONFIRM_PANEL_W + 1 - 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd 2 local@ 26 + 1 local@ 16 + io-alert-text LOADI CLR_CONFIRM_TEXT 16 DRAW::draw-str
-        3 unframe!
+        confirm-panel-x confirm-panel-y 2 frame! ( 0:py 1:px )
+        APP::draw-fd 1 local@ 0 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CONFIRM_SHADOW CLR_CONFIRM_DIM UI::draw-modal-shadow
+        APP::draw-fd 1 local@ 0 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_PANEL CLR_CONFIRM_BORDER UI::draw-modal-panel
+        APP::draw-fd 1 local@ 26 + 0 local@ 16 + io-alert-text LOADI CLR_CONFIRM_TEXT 16 DRAW::draw-str
+        2 unframe!
         UI::overlay-draw
     ] ?
 ;
@@ -2642,12 +2974,8 @@ IMPORT CFF
 
 @edit-pat-draw ( -- )
     edit-pat-open LOADI [
-        APP::draw-fd EPAT_PANEL_X CONFIRM_SHADOW + EPAT_PANEL_Y CONFIRM_SHADOW + EPAT_PANEL_W EPAT_PANEL_H CLR_CONFIRM_DIM DRAW::fill-rect
-        APP::draw-fd EPAT_PANEL_X EPAT_PANEL_Y EPAT_PANEL_W EPAT_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
-        APP::draw-fd EPAT_PANEL_X EPAT_PANEL_Y EPAT_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd EPAT_PANEL_X EPAT_PANEL_Y EPAT_PANEL_H + 1 - EPAT_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd EPAT_PANEL_X EPAT_PANEL_Y 1 EPAT_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd EPAT_PANEL_X EPAT_PANEL_W + 1 - EPAT_PANEL_Y 1 EPAT_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd EPAT_PANEL_X EPAT_PANEL_Y EPAT_PANEL_W EPAT_PANEL_H CONFIRM_SHADOW CLR_CONFIRM_DIM UI::draw-modal-shadow
+        APP::draw-fd EPAT_PANEL_X EPAT_PANEL_Y EPAT_PANEL_W EPAT_PANEL_H CLR_CONFIRM_PANEL CLR_CONFIRM_BORDER UI::draw-modal-panel
         APP::draw-fd EPAT_PANEL_X 12 + EPAT_PANEL_Y 8 + T"Edit Pattern" CLR_CONFIRM_TEXT 16 DRAW::draw-str
         0 { row }
             [ row 8 < ]
@@ -2735,18 +3063,13 @@ IMPORT CFF
 ;
 
 @br-cell-xy { bi -- x y }
-    BR_GRID_X bi BR_COLS MOD BR_CELL * +
-    BR_GRID_Y bi BR_COLS / BR_CELL * +
+    bi BR_COLS BR_CELL BR_CELL BR_GRID_X BR_GRID_Y UI::grid-cell-xy
 ;
 
 @brush-pick-draw ( -- )
     brush-pick-open LOADI [
-        APP::draw-fd BR_PANEL_X CONFIRM_SHADOW + BR_PANEL_Y CONFIRM_SHADOW + BR_PANEL_W BR_PANEL_H CLR_CONFIRM_DIM DRAW::fill-rect
-        APP::draw-fd BR_PANEL_X BR_PANEL_Y BR_PANEL_W BR_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
-        APP::draw-fd BR_PANEL_X BR_PANEL_Y BR_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd BR_PANEL_X BR_PANEL_Y BR_PANEL_H + 1 - BR_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd BR_PANEL_X BR_PANEL_Y 1 BR_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd BR_PANEL_X BR_PANEL_W + 1 - BR_PANEL_Y 1 BR_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd BR_PANEL_X BR_PANEL_Y BR_PANEL_W BR_PANEL_H CONFIRM_SHADOW CLR_CONFIRM_DIM UI::draw-modal-shadow
+        APP::draw-fd BR_PANEL_X BR_PANEL_Y BR_PANEL_W BR_PANEL_H CLR_CONFIRM_PANEL CLR_CONFIRM_BORDER UI::draw-modal-panel
         APP::draw-fd BR_PANEL_X 12 + BR_PANEL_Y 8 + T"Brush Shape" CLR_CONFIRM_TEXT 16 DRAW::draw-str
         0 { bi }
             [ bi BR_COUNT < ]
@@ -2867,12 +3190,8 @@ IMPORT CFF
 
 @sp-draw ( -- )
     show-page-open LOADI [
-        APP::draw-fd SP_PANEL_X CONFIRM_SHADOW + SP_PANEL_Y CONFIRM_SHADOW + SP_PANEL_W SP_PANEL_H CLR_CONFIRM_DIM DRAW::fill-rect
-        APP::draw-fd SP_PANEL_X SP_PANEL_Y SP_PANEL_W SP_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
-        APP::draw-fd SP_PANEL_X SP_PANEL_Y SP_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd SP_PANEL_X SP_PANEL_Y SP_PANEL_H + 1 - SP_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd SP_PANEL_X SP_PANEL_Y 1 SP_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd SP_PANEL_X SP_PANEL_W + 1 - SP_PANEL_Y 1 SP_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd SP_PANEL_X SP_PANEL_Y SP_PANEL_W SP_PANEL_H CONFIRM_SHADOW CLR_CONFIRM_DIM UI::draw-modal-shadow
+        APP::draw-fd SP_PANEL_X SP_PANEL_Y SP_PANEL_W SP_PANEL_H CLR_CONFIRM_PANEL CLR_CONFIRM_BORDER UI::draw-modal-panel
         APP::draw-fd SP_PANEL_X 12 + SP_PANEL_Y 8 + T"Show Page" CLR_CONFIRM_TEXT 16 DRAW::draw-str
         APP::draw-fd SP_MAP_X SP_MAP_Y SP_MAP_W SP_MAP_H CLR_WHITE DRAW::fill-rect
         0 { my }
@@ -3012,6 +3331,8 @@ IMPORT CFF
 @menu-flip-v ( val -- ) drop do-flip-v ;
 @menu-rotate90 ( val -- ) drop do-rotate90 ;
 @menu-grid ( val -- ) grid-f STOREI APP::dirty! ;
+@menu-mirror-h ( val -- ) mirror-h STOREI APP::dirty! ;
+@menu-mirror-v ( val -- ) mirror-v STOREI APP::dirty! ;
 ( Turning FatBits on centers it on whatever the Hand tool currently has in
   view, rather than wherever fat-ox/fat-oy last were -- the two coordinate
   systems are otherwise completely independent. )
@@ -3079,109 +3400,76 @@ IMPORT CFF
     APP::dirty!
 ;
 
-( --- Draw --- )
-
-( Tools with real behavior get a proper icon; Hand (Step 8, not yet
-  implemented) gets its index number so the palette is legible without
-  pretending it works. )
-@draw-tool-icon { i x y color -- }
-    i TOOL_LASSO = [
-        APP::draw-fd x 6 + y 6 + 12 8 color DRAW::frame-oval
+@menu-style-italic { val -- }
+    val 0 > [
+        text-style LOADI STYLE_ITALIC OR
     ] [
-    i TOOL_MARQUEE = [
-        APP::draw-fd x 6 + y 5 + 13 11 color DRAW::frame-rect
-    ] [
-    i TOOL_PENCIL = [
-        APP::draw-fd x 7 + y 17 + x 18 + y 6 + color DRAW::line
-        APP::draw-fd x 16 + y 4 + 4 4 color DRAW::fill-rect
-    ] [
-    i TOOL_ERASER = [
-        APP::draw-fd x 7 + y 6 + 14 10 color DRAW::fill-rect
-        APP::draw-fd x 7 + y 6 + 14 10 CLR_FG DRAW::frame-rect
-    ] [
-    i TOOL_BRUSH = [
-        APP::draw-fd x 6 + y 5 + 12 12 color DRAW::paint-oval
-        APP::draw-fd x 11 + y 14 + 3 4 color DRAW::fill-rect
-    ] [
-    i TOOL_FILL = [
-        APP::draw-fd x 6 + y 5 + x 18 + y 5 + x 12 + y 16 + color DRAW::paint-tri
-    ] [
-    i TOOL_LINE = [
-        APP::draw-fd x 6 + y 16 + x 18 + y 5 + color DRAW::line
-    ] [
-    i TOOL_RECT = [
-        APP::draw-fd x 5 + y 4 + 15 13 color DRAW::frame-rect
-    ] [
-    i TOOL_RECT_FILLED = [
-        APP::draw-fd x 5 + y 4 + 15 13 color DRAW::paint-rect
-    ] [
-    i TOOL_OVAL = [
-        APP::draw-fd x 5 + y 4 + 15 13 color DRAW::frame-oval
-    ] [
-    i TOOL_OVAL_FILLED = [
-        APP::draw-fd x 5 + y 4 + 15 13 color DRAW::paint-oval
-    ] [
-    i TOOL_ROUNDRECT = [
-        APP::draw-fd x 6 + y 5 + 13 11 color DRAW::frame-rect
-    ] [
-    i TOOL_ROUNDRECT_FILLED = [
-        APP::draw-fd x 6 + y 5 + 13 11 color DRAW::paint-rect
-    ] [
-    i TOOL_SPRAY = [
-        APP::draw-fd x 8 + y 6 + color DRAW::pix
-        APP::draw-fd x 13 + y 4 + color DRAW::pix
-        APP::draw-fd x 11 + y 10 + color DRAW::pix
-        APP::draw-fd x 16 + y 8 + color DRAW::pix
-        APP::draw-fd x 9 + y 14 + color DRAW::pix
-        APP::draw-fd x 14 + y 15 + color DRAW::pix
-        APP::draw-fd x 17 + y 12 + color DRAW::pix
-    ] [
-    i TOOL_FREEFORM = i TOOL_FREEFORM_FILLED = OR [
-        APP::draw-fd x 5 + y 14 + x 10 + y 6 + color DRAW::line
-        APP::draw-fd x 10 + y 6 + x 15 + y 15 + color DRAW::line
-        APP::draw-fd x 15 + y 15 + x 5 + y 14 + color DRAW::line
-        i TOOL_FREEFORM_FILLED = [
-            APP::draw-fd x 8 + y 6 + x 15 + y 12 + 5 3 color DRAW::paint-oval
-        ] ?
-    ] [
-    i TOOL_POLYGON = i TOOL_POLYGON_FILLED = OR [
-        APP::draw-fd x 11 + y 4 + x 18 + y 9 + color DRAW::line
-        APP::draw-fd x 18 + y 9 + x 15 + y 16 + color DRAW::line
-        APP::draw-fd x 15 + y 16 + x 7 + y 16 + color DRAW::line
-        APP::draw-fd x 7 + y 16 + x 4 + y 9 + color DRAW::line
-        APP::draw-fd x 4 + y 9 + x 11 + y 4 + color DRAW::line
-        i TOOL_POLYGON_FILLED = [
-            APP::draw-fd x 8 + y 8 + 8 6 color DRAW::fill-rect
-        ] ?
-    ] [
-    i TOOL_TEXT = [
-        APP::draw-fd x 11 + y 5 + x 6 + y 17 + color DRAW::line
-        APP::draw-fd x 11 + y 5 + x 16 + y 17 + color DRAW::line
-        APP::draw-fd x 8 + y 13 + x 14 + y 13 + color DRAW::line
-    ] [
-        APP::draw-fd x 12 + y 5 + i color 0 DRAW::draw-int
-    ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?: ] ?:
+        text-style LOADI STYLE_ITALIC NOT AND
+    ] ?: text-style STOREI
+    APP::dirty!
 ;
 
-@draw-palette ( -- )
-    APP::draw-fd PAL_X PAL_Y PAL_W LW_Y PAL_Y - CLR_PAL DRAW::fill-rect
-    APP::draw-fd PAL_W 1 - PAL_Y 1 LW_Y PAL_Y - CLR_FRAME DRAW::fill-rect
-    0 { i }
-        [ i TOOLS < ]
-        [
-            i tool-xy { x y }
-                i tool LOADI = [
-                    APP::draw-fd x y PAL_CELL_W PAL_CELL_H CLR_FG DRAW::fill-rect
-                    i x y CLR_WHITE draw-tool-icon
-                ] [
-                    APP::draw-fd x y PAL_CELL_W PAL_CELL_H CLR_WHITE DRAW::fill-rect
-                    APP::draw-fd x y PAL_CELL_W PAL_CELL_H CLR_FG DRAW::frame-rect
-                    i x y CLR_FG draw-tool-icon
-                ] ?:
-            UNGIRD
-            i 1 + i!
-        ] |:
+@menu-style-outline { val -- }
+    val 0 > [
+        text-style LOADI STYLE_OUTLINE OR
+    ] [
+        text-style LOADI STYLE_OUTLINE NOT AND
+    ] ?: text-style STOREI
+    APP::dirty!
+;
+
+@menu-style-shadow { val -- }
+    val 0 > [
+        text-style LOADI STYLE_SHADOW OR
+    ] [
+        text-style LOADI STYLE_SHADOW NOT AND
+    ] ?: text-style STOREI
+    APP::dirty!
+;
+
+( --- Draw --- )
+
+( ICN_X/ICN_Y center a 16x16 ICN glyph in a PAL_CELL_W x PAL_CELL_H cell. )
+@ICN_X PAL_CELL_W ICN::SIZE - 2 / ;
+@ICN_Y PAL_CELL_H ICN::SIZE - 2 / ;
+
+@draw-tool-icon { i x y color -- }
+    APP::draw-fd TOOL_ICONS i x ICN_X + y ICN_Y + color ICN::draw
+;
+
+@draw-tool-cell { i -- }
+    i tool-xy { x y }
+        i tool LOADI = [
+            APP::draw-fd x y PAL_CELL_W PAL_CELL_H CLR_FG DRAW::fill-rect
+            i x y CLR_WHITE draw-tool-icon
+        ] [
+            APP::draw-fd x y PAL_CELL_W PAL_CELL_H CLR_WHITE DRAW::fill-rect
+            APP::draw-fd x y PAL_CELL_W PAL_CELL_H CLR_FG DRAW::frame-rect
+            i x y CLR_FG draw-tool-icon
+        ] ?:
     UNGIRD
+;
+
+( Same rule as draw-patterns: the palette backdrop and all TOOLS icons are
+  static except which cell is selected, so a full pass runs only when
+  DIRTY_TOOLS is set (start/resume-draw-all) -- every other dirty frame just
+  repaints the 1-2 cells whose selection state actually changed. )
+@draw-palette ( -- )
+    damage LOADI DIRTY_TOOLS AND 0 > [
+        APP::draw-fd PAL_X PAL_Y PAL_W LW_Y PAL_Y - CLR_PAL DRAW::fill-rect
+        APP::draw-fd PAL_W 1 - PAL_Y 1 LW_Y PAL_Y - CLR_FRAME DRAW::fill-rect
+        0 { i }
+            [ i TOOLS < ]
+            [
+                i draw-tool-cell
+                i 1 + i!
+            ] |:
+        UNGIRD
+    ] [
+        last-tool LOADI dup -1 > [ draw-tool-cell ] [ drop ] ?:
+        tool LOADI draw-tool-cell
+    ] ?:
+    tool LOADI last-tool STOREI
 ;
 
 ( 19x2 swatch grid; the always-visible current-pattern preview at x 0..35 is
@@ -3924,6 +4212,28 @@ IMPORT CFF
             ] ?:
         UNGIRD
     ] ?
+    ( Tooltip hover tracking. A full repaint is only needed when the cell
+      being left actually had its tooltip on screen (hover-t0 more than
+      TOOLTIP_DELAY ago) -- that's the only case where something was drawn
+      that a plain cell-crossing wouldn't otherwise erase. Sweeping the
+      mouse across the palette faster than TOOLTIP_DELAY per cell never
+      shows a tooltip, so it must not force a full canvas/pattern/palette
+      redraw on every crossing -- that was the "menu is laggy" regression
+      (draw-damaged's DIRTY_ALL path costing ~6ms was running on nearly
+      every mouse-move frame while sweeping the palette). )
+    mpkt EVENT::mouse-type EVENT::MOUSE_MOVE = [
+        mx my hit-tool { t }
+            t hover-tool LOADI = 0 = [
+                TIME::milli@ hover-t0 LOADI - TOOLTIP_DELAY >= [
+                    DIRTY_ALL damage!
+                    APP::dirty!
+                ] ?
+                t hover-tool STOREI
+                TIME::milli@ hover-t0 STOREI
+                0 tooltip-shown STOREI
+            ] ?
+        UNGIRD
+    ] ?
     mpkt EVENT::mouse-type EVENT::MOUSE_MOVE = mouse-held LOADI AND [
         mx my page-drag
     ] ?
@@ -3979,11 +4289,39 @@ IMPORT CFF
     SF::open? [
         SF::mouse
     ] [
-        UI::menu-open? { was }
+        UI::menu-active { was }
             dup UI::feed
-            was UI::menu-open? OR [
+            was -1 > UI::menu-open? OR [
                 drop
-                APP::dirty!
+                ( The dropdown draws only while open (mb-draw-drop) and never
+                  erases itself -- closing/opening/changing selection can leave
+                  its last frame painted over the tool palette below the menu
+                  bar unless every layer under it does a full repaint too, per
+                  the damage-bit rule above: DIRTY_CHROME alone would wipe the
+                  whole window but leave draw-palette/draw-patterns doing only
+                  their partial 1-2-cell repaint, blanking everything else.
+
+                  But that only applies when the dropdown's own rectangle
+                  moves: opening, closing, or sliding to a different title.
+                  Merely hovering a different item inside an already-open menu
+                  leaves the rectangle exactly where it was, so redrawing the
+                  dropdown in place covers its own previous highlight and
+                  nothing underneath is ever exposed. Repainting everything
+                  there cost ~15M VM cycles per mouse-move -- ~100x a still
+                  frame, and far more than one host frame's budget -- which is
+                  what made the highlight trail the pointer by a quarter
+                  second. UI::draw (the APP::dirty-off path in on-frame)
+                  repaints the bar and dropdown alone.
+
+                  Opening one from nothing (was = -1) needs no repaint either:
+                  the dropdown is painted on top of pixels that are already
+                  correct and uncovers nothing. Only a dropdown that was drawn
+                  somewhere and is now gone or somewhere else -- closing, or
+                  sliding to another title -- leaves stale pixels behind. )
+                was -1 > was UI::menu-active = 0 = AND [
+                    DIRTY_ALL damage!
+                    APP::dirty!
+                ] ?
             ] [
                 handle-page-mouse
             ] ?:
@@ -4059,7 +4397,12 @@ IMPORT CFF
                     0 sel-active STOREI
                     APP::dirty!
                 ] ?
-                UI::escape drop
+                UI::escape [
+                    DIRTY_ALL damage!
+                    APP::dirty!
+                ] [
+                    drop
+                ] ?:
             ] [
                 dup EVENT::kbd-mods
                 over EVENT::kbd-key
@@ -4117,6 +4460,14 @@ IMPORT CFF
         brush-pick-draw
         io-alert-draw
         sp-draw
+        hover-tool LOADI 0 >= UI::menu-open? 0 = tooltip-shown LOADI 0 = AND AND [
+            TIME::milli@ hover-t0 LOADI - TOOLTIP_DELAY >= [
+                hover-tool LOADI tool-xy { tx ty }
+                    APP::draw-fd hover-tool LOADI tool-label tx ty PAL_CELL_H + APP::width UI::tooltip-draw
+                UNGIRD
+                1 tooltip-shown STOREI
+            ] ?
+        ] ?
     ] ?:
 ;
 
@@ -4156,6 +4507,9 @@ IMPORT CFF
     T"Edit Pattern..." [ menu-edit-pat ] UI::item
     T"Brush Shape..." [ menu-brush-pick ] UI::item
     T"Show Page..." [ menu-show-page ] UI::item
+    UI::sep
+    T"Mirror Horizontal" [ menu-mirror-h ] UI::check-item
+    T"Mirror Vertical"   [ menu-mirror-v ] UI::check-item
     T"font" font-grp STOREI
     T"Font" UI::menu
     T"Chicago" font-grp LOADI [ menu-font-chicago ] UI::radio-item
@@ -4168,15 +4522,22 @@ IMPORT CFF
     T"36" size-grp LOADI [ menu-size-36 ] UI::radio-item
     T"Style" UI::menu
     T"Bold"      [ menu-style-bold ]      UI::check-item
+    T"Italic"    [ menu-style-italic ]    UI::check-item
     T"Underline" [ menu-style-underline ] UI::check-item
+    T"Outline"   [ menu-style-outline ]   UI::check-item
+    T"Shadow"    [ menu-style-shadow ]    UI::check-item
     T"Chicago" 1 UI::item-set
     T"12" 1 UI::item-set
     T"Grid" 0 UI::item-set
     T"FatBits" 0 UI::item-set
+    T"Mirror Horizontal" 0 UI::item-set
+    T"Mirror Vertical" 0 UI::item-set
     [ on-pick ] SF::on-ok!
     [ on-cancel ] SF::on-cancel!
     init-pats
     init-brushes
+    init-tool-icons
+    init-tool-labels
     load-font
     0 text-active STOREI
     0 text-len STOREI
@@ -4185,8 +4546,14 @@ IMPORT CFF
     0 text-style STOREI
     0 grid-f STOREI
     0 fat-f STOREI
+    0 mirror-h STOREI
+    0 mirror-v STOREI
     0 pen-width STOREI
     -1 last-pat-id STOREI
+    -1 last-tool STOREI
+    -1 hover-tool STOREI
+    0 hover-t0 STOREI
+    0 tooltip-shown STOREI
     0 edit-pat-open STOREI
     -1 epat-last-idx STOREI
     0 epat-last-time STOREI

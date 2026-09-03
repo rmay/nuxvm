@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 // -----------------------------------------------------------------------------
 // Output capture for "." and EMIT
@@ -1791,6 +1792,101 @@ static void test_duplicate_addr_const_warning(void) {
  * quill_scratch.txt. Quit is File > Quit -- Esc is Cloister's overlay.
  * ----------------------------------------------------------------------- */
 
+/* These tests drive Quill's real startup document, whose name apps/Quill.lux
+ * hardcodes as "manuscript.quill". Run against the repo root, that meant
+ * overwriting the tracked manuscript.quill in the working copy and restoring
+ * it afterwards -- a restore that a failed assert (which aborts the process)
+ * would skip entirely, leaving the file clobbered. Everything here runs in a
+ * disposable sandbox directory instead, so the tests own their own Quill
+ * document and the repo's copy is never opened at all. */
+#define QUILL_LUX_SANDBOX "/tmp/nuxvm_test_quill_lux_sandbox"
+
+static const char* quill_lux_sandbox(void) {
+    mkdir(QUILL_LUX_SANDBOX, 0755); /* ignore EEXIST -- reused across tests */
+    return QUILL_LUX_SANDBOX;
+}
+
+static void quill_lux_sandbox_path(const char* name, char* out, size_t cap) {
+    snprintf(out, cap, "%s/%s", quill_lux_sandbox(), name);
+}
+
+/* The same treatment for the other app tests. Easel, Tabula, Nib and Illumos
+ * all drive apps whose startup document is a fixed name in the working
+ * directory (untitled.eas / .tabula / .nib / .cff), so running them against
+ * the repo root meant writing those files there and restoring around them --
+ * and Illumos additionally opens the tracked resources/chicago12x12.cff,
+ * which the tests had to back up in case the font editor saved over it.
+ * Pointing every app machine at a sandbox makes all of that unnecessary.
+ * Kept separate from QUILL_LUX_SANDBOX so one app's leftovers cannot show up
+ * in another's directory listing. */
+#define LUX_APP_SANDBOX "/tmp/nuxvm_test_lux_app_sandbox"
+
+static const char* lux_app_sandbox(void) {
+    mkdir(LUX_APP_SANDBOX, 0755); /* ignore EEXIST -- reused across tests */
+    return LUX_APP_SANDBOX;
+}
+
+static void lux_app_path(const char* name, char* out, size_t cap) {
+    snprintf(out, cap, "%s/%s", lux_app_sandbox(), name);
+}
+
+static void lux_app_remove(const char* name) {
+    char path[512];
+    lux_app_path(name, path, sizeof(path));
+    remove(path);
+}
+
+/* Illumos opens resources/chicago12x12.cff at startup (apps/Illumos.lux:552),
+ * so the sandbox needs its own copy -- otherwise the font editor comes up
+ * with nothing loaded. Copying it here is what lets the tests stop backing up
+ * the tracked original: they can no longer reach it at all. */
+static void lux_app_seed_resources(void) {
+    char dir[512];
+    snprintf(dir, sizeof(dir), "%s/resources", lux_app_sandbox());
+    mkdir(dir, 0755);
+
+    char dst[512];
+    lux_app_path("resources/chicago12x12.cff", dst, sizeof(dst));
+    FILE* in = fopen("resources/chicago12x12.cff", "rb");
+    if (!in) return; /* not run from the repo root; the test skips on its own */
+    FILE* out = fopen(dst, "wb");
+    if (!out) {
+        fclose(in);
+        return;
+    }
+    char buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        assert(fwrite(buf, 1, n, out) == n);
+    }
+    fclose(in);
+    fclose(out);
+}
+
+/* Reads one of the app tests' own documents back out of LUX_APP_SANDBOX.
+ * lux_app_read is the same thing with the byte count returned rather than
+ * written through a pointer, matching the older lux_file_read call sites. */
+static int lux_app_read(const char* name, uint8_t* got, int cap);
+
+static void lux_app_read_doc(const char* name, uint8_t* got, int cap, int* n) {
+    System* check = system_create();
+    assert(check != NULL);
+    system_set_sandbox_root(check, lux_app_sandbox());
+    char vfs_path[512];
+    snprintf(vfs_path, sizeof(vfs_path), "/sys/file/%s", name);
+    int32_t rfd = vfs_open(check, vfs_path, 0);
+    assert(rfd >= 0);
+    *n = vfs_read(check, rfd, got, cap);
+    vfs_close(check, rfd);
+    system_free(check);
+}
+
+static int lux_app_read(const char* name, uint8_t* got, int cap) {
+    int n = 0;
+    lux_app_read_doc(name, got, cap, &n);
+    return n;
+}
+
 static int quill_lux_pump(Machine* m, int n) {
     int frames = 0;
     while (!m->cpu->halted && frames < n) {
@@ -1828,6 +1924,7 @@ static Machine* quill_lux_machine(void) {
     free(bc);
     assert(m != NULL);
     system_set_resolution(m->system, 960, 720);
+    system_set_sandbox_root(m->system, quill_lux_sandbox());
     return m;
 }
 
@@ -1881,45 +1978,30 @@ static void quill_lux_view_toggle_hex(Machine* m, int32_t mc) {
     quill_lux_click(m, mc, 120, 29);
 }
 
-static char* quill_lux_backup_file(const char* path, size_t* out_len) {
-    FILE* f = fopen(path, "rb");
-    if (!f) {
-        *out_len = 0;
-        return NULL;
-    }
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char* buf = malloc((size_t) n + 1);
-    assert(buf != NULL);
-    assert(fread(buf, 1, (size_t) n, f) == (size_t) n);
-    fclose(f);
-    *out_len = (size_t) n;
-    return buf;
-}
-
-static void quill_lux_restore_file(const char* path, char* buf, size_t n) {
-    if (!buf) {
-        remove(path);
-        return;
-    }
-    FILE* f = fopen(path, "wb");
-    assert(f != NULL);
-    assert(fwrite(buf, 1, n, f) == n);
-    fclose(f);
-    free(buf);
-}
-
 static void quill_lux_seed(const char* content, int len) {
-    FILE* f = fopen("manuscript.quill", "wb");
+    char path[512];
+    quill_lux_sandbox_path("manuscript.quill", path, sizeof(path));
+    FILE* f = fopen(path, "wb");
     assert(f != NULL);
     assert(fwrite(content, 1, (size_t) len, f) == (size_t) len);
     fclose(f);
 }
 
-static void quill_lux_read_file(const char* vfs_path, uint8_t* got, int cap, int* n) {
+/* Clears a document the test is about to check for, so a leftover file from
+ * an earlier run cannot make a save look like it succeeded. */
+static void quill_lux_remove(const char* name) {
+    char path[512];
+    quill_lux_sandbox_path(name, path, sizeof(path));
+    remove(path);
+}
+
+/* Reads one of the Quill tests' own documents out of QUILL_LUX_SANDBOX. */
+static void quill_lux_read_doc(const char* name, uint8_t* got, int cap, int* n) {
     System* check = system_create();
     assert(check != NULL);
+    system_set_sandbox_root(check, quill_lux_sandbox());
+    char vfs_path[512];
+    snprintf(vfs_path, sizeof(vfs_path), "/sys/file/%s", name);
     int32_t rfd = vfs_open(check, vfs_path, 0);
     assert(rfd >= 0);
     *n = vfs_read(check, rfd, got, cap);
@@ -1990,12 +2072,8 @@ static void test_quill_lux_file_new_without_changes_skips_confirm(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
-    size_t new_backup_len = 0;
-    char* new_backup = quill_lux_backup_file("new.quill", &new_backup_len);
     quill_lux_seed("Original\n", 9);
-    remove("new.quill");
+    quill_lux_remove("new.quill");
 
     Machine* m = quill_lux_machine();
     assert(m != NULL);
@@ -2016,17 +2094,14 @@ static void test_quill_lux_file_new_without_changes_skips_confirm(void) {
 
     uint8_t got[16] = { 0 };
     int n = 0;
-    quill_lux_read_file("/sys/file/new.quill", got, sizeof(got), &n);
+    quill_lux_read_doc("new.quill", got, sizeof(got), &n);
     assert(n == 1);
     assert(got[0] == 'Q');
 
     uint8_t orig[16] = { 0 };
-    quill_lux_read_file("/sys/file/manuscript.quill", orig, sizeof(orig), &n);
+    quill_lux_read_doc("manuscript.quill", orig, sizeof(orig), &n);
     assert(n == 9);
     assert(memcmp(orig, "Original\n", 9) == 0);
-
-    quill_lux_restore_file("manuscript.quill", backup, backup_len);
-    quill_lux_restore_file("new.quill", new_backup, new_backup_len);
 }
 
 static void test_quill_lux_file_new_dirty_confirm_dialog_buttons(void) {
@@ -2035,15 +2110,11 @@ static void test_quill_lux_file_new_dirty_confirm_dialog_buttons(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
-    size_t new_backup_len = 0;
-    char* new_backup = quill_lux_backup_file("new.quill", &new_backup_len);
 
     /* Save */
     {
         quill_lux_seed("Hi\n", 3);
-        remove("new.quill");
+        quill_lux_remove("new.quill");
         Machine* m = quill_lux_machine();
         assert(m != NULL);
         int32_t mc, kc;
@@ -2061,7 +2132,7 @@ static void test_quill_lux_file_new_dirty_confirm_dialog_buttons(void) {
 
         uint8_t got[16] = { 0 };
         int n = 0;
-        quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+        quill_lux_read_doc("manuscript.quill", got, sizeof(got), &n);
         assert(n == 4);
         assert(memcmp(got, "#Hi\n", 4) == 0);
     }
@@ -2069,7 +2140,7 @@ static void test_quill_lux_file_new_dirty_confirm_dialog_buttons(void) {
     /* Don't Save */
     {
         quill_lux_seed("Hi\n", 3);
-        remove("new.quill");
+        quill_lux_remove("new.quill");
         Machine* m = quill_lux_machine();
         assert(m != NULL);
         int32_t mc, kc;
@@ -2088,10 +2159,10 @@ static void test_quill_lux_file_new_dirty_confirm_dialog_buttons(void) {
 
         uint8_t got[16] = { 0 };
         int n = 0;
-        quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+        quill_lux_read_doc("manuscript.quill", got, sizeof(got), &n);
         assert(n == 3);
         assert(memcmp(got, "Hi\n", 3) == 0);
-        quill_lux_read_file("/sys/file/new.quill", got, sizeof(got), &n);
+        quill_lux_read_doc("new.quill", got, sizeof(got), &n);
         assert(n == 1);
         assert(got[0] == 'Q');
     }
@@ -2099,7 +2170,7 @@ static void test_quill_lux_file_new_dirty_confirm_dialog_buttons(void) {
     /* Cancel */
     {
         quill_lux_seed("Hi\n", 3);
-        remove("new.quill");
+        quill_lux_remove("new.quill");
         Machine* m = quill_lux_machine();
         assert(m != NULL);
         int32_t mc, kc;
@@ -2118,13 +2189,10 @@ static void test_quill_lux_file_new_dirty_confirm_dialog_buttons(void) {
 
         uint8_t got[16] = { 0 };
         int n = 0;
-        quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+        quill_lux_read_doc("manuscript.quill", got, sizeof(got), &n);
         assert(n == 4);
         assert(memcmp(got, "#Hi\n", 4) == 0);
     }
-
-    quill_lux_restore_file("manuscript.quill", backup, backup_len);
-    quill_lux_restore_file("new.quill", new_backup, new_backup_len);
 }
 
 static void test_quill_lux_hex_nibble_edit(void) {
@@ -2133,8 +2201,6 @@ static void test_quill_lux_hex_nibble_edit(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
     const char* content = "Hello, Quill!";
     quill_lux_seed(content, (int) strlen(content));
 
@@ -2155,12 +2221,10 @@ static void test_quill_lux_hex_nibble_edit(void) {
 
     uint8_t got[32] = { 0 };
     int n = 0;
-    quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+    quill_lux_read_doc("manuscript.quill", got, sizeof(got), &n);
     assert(n == (int) strlen(content));
     assert(got[0] == 'A');
     assert(memcmp(got + 1, content + 1, strlen(content) - 1) == 0);
-
-    quill_lux_restore_file("manuscript.quill", backup, backup_len);
 }
 
 static void test_quill_lux_hex_caret_is_hollow_blue_box(void) {
@@ -2169,8 +2233,6 @@ static void test_quill_lux_hex_caret_is_hollow_blue_box(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
     quill_lux_seed("Hello, Quill!", 13);
 
     Machine* m = quill_lux_machine();
@@ -2204,7 +2266,6 @@ static void test_quill_lux_hex_caret_is_hollow_blue_box(void) {
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
-    quill_lux_restore_file("manuscript.quill", backup, backup_len);
 }
 
 static void test_quill_lux_hex_ascii_column_aligns_on_short_row(void) {
@@ -2213,8 +2274,6 @@ static void test_quill_lux_hex_ascii_column_aligns_on_short_row(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
     const char* content = "Line One\nLine Two\nLine Three\nskip\nLINE FOUR";
     quill_lux_seed(content, (int) strlen(content));
 
@@ -2239,7 +2298,6 @@ static void test_quill_lux_hex_ascii_column_aligns_on_short_row(void) {
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
-    quill_lux_restore_file("manuscript.quill", backup, backup_len);
 }
 
 static void test_quill_lux_wraps_long_word_without_fault(void) {
@@ -2248,8 +2306,6 @@ static void test_quill_lux_wraps_long_word_without_fault(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
     char content[300];
     memset(content, 'A', sizeof(content));
     int content_len = (int) sizeof(content);
@@ -2273,11 +2329,9 @@ static void test_quill_lux_wraps_long_word_without_fault(void) {
 
     uint8_t got[512] = { 0 };
     int n = 0;
-    quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+    quill_lux_read_doc("manuscript.quill", got, sizeof(got), &n);
     assert(n == content_len + 1);
     assert(got[content_len] == 'Z');
-
-    quill_lux_restore_file("manuscript.quill", backup, backup_len);
 }
 
 static void test_quill_lux_edit_copy_paste(void) {
@@ -2286,8 +2340,6 @@ static void test_quill_lux_edit_copy_paste(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
     const char* content = "AB\nCD\nEF\n";
     quill_lux_seed(content, (int) strlen(content));
 
@@ -2321,11 +2373,9 @@ static void test_quill_lux_edit_copy_paste(void) {
 
     uint8_t got[32] = { 0 };
     int n = 0;
-    quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+    quill_lux_read_doc("manuscript.quill", got, sizeof(got), &n);
     assert(n == 12);
     assert(memcmp(got, "AB\nCD\nAB\nEF\n", 12) == 0);
-
-    quill_lux_restore_file("manuscript.quill", backup, backup_len);
 }
 
 static void test_quill_lux_cmd_s_saves_and_esc_does_not_quit(void) {
@@ -2334,8 +2384,6 @@ static void test_quill_lux_cmd_s_saves_and_esc_does_not_quit(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
 
     /* Esc raises the Cloister overlay and must not HALT. */
     {
@@ -2370,12 +2418,10 @@ static void test_quill_lux_cmd_s_saves_and_esc_does_not_quit(void) {
 
         uint8_t got[16] = { 0 };
         int n = 0;
-        quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+        quill_lux_read_doc("manuscript.quill", got, sizeof(got), &n);
         assert(n == 4);
         assert(memcmp(got, "#Hi\n", 4) == 0);
     }
-
-    quill_lux_restore_file("manuscript.quill", backup, backup_len);
 }
 
 /* File > Save As: name field is selected, so typing replaces it. Save
@@ -2388,12 +2434,8 @@ static void test_quill_lux_file_save_as_creates_new_file(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
-    size_t copy_backup_len = 0;
-    char* copy_backup = quill_lux_backup_file("copy.quill", &copy_backup_len);
     quill_lux_seed("Hi\n", 3);
-    remove("copy.quill");
+    quill_lux_remove("copy.quill");
 
     Machine* m = quill_lux_machine();
     assert(m != NULL);
@@ -2417,15 +2459,12 @@ static void test_quill_lux_file_save_as_creates_new_file(void) {
 
     uint8_t got[16] = { 0 };
     int n = 0;
-    quill_lux_read_file("/sys/file/copy.quill", got, sizeof(got), &n);
+    quill_lux_read_doc("copy.quill", got, sizeof(got), &n);
     assert(n == 4);
     assert(memcmp(got, "#Hi\n", 4) == 0);
-    quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+    quill_lux_read_doc("manuscript.quill", got, sizeof(got), &n);
     assert(n == 3);
     assert(memcmp(got, "Hi\n", 3) == 0);
-
-    quill_lux_restore_file("manuscript.quill", backup, backup_len);
-    quill_lux_restore_file("copy.quill", copy_backup, copy_backup_len);
 }
 
 static void test_quill_lux_file_save_as_cancel_keeps_path(void) {
@@ -2434,8 +2473,6 @@ static void test_quill_lux_file_save_as_cancel_keeps_path(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("manuscript.quill", &backup_len);
     quill_lux_seed("Hi\n", 3);
 
     Machine* m = quill_lux_machine();
@@ -2457,11 +2494,9 @@ static void test_quill_lux_file_save_as_cancel_keeps_path(void) {
 
     uint8_t got[16] = { 0 };
     int n = 0;
-    quill_lux_read_file("/sys/file/manuscript.quill", got, sizeof(got), &n);
+    quill_lux_read_doc("manuscript.quill", got, sizeof(got), &n);
     assert(n == 4);
     assert(memcmp(got, "#Hi\n", 4) == 0);
-
-    quill_lux_restore_file("manuscript.quill", backup, backup_len);
 }
 
 /* -----------------------------------------------------------------------
@@ -2507,6 +2542,7 @@ static Machine* tabula_machine(void) {
     free(bc);
     assert(m != NULL);
     system_set_resolution(m->system, 960, 720);
+    system_set_sandbox_root(m->system, lux_app_sandbox());
     return m;
 }
 
@@ -2564,7 +2600,7 @@ static int tabula_file_has(const char* needle) {
     uint8_t got[4096];
     int n = 0;
     memset(got, 0, sizeof(got));
-    quill_lux_read_file("/sys/file/untitled.tabula", got, (int) sizeof(got) - 1, &n);
+    lux_app_read_doc("untitled.tabula", got, (int) sizeof(got) - 1, &n);
     if (n < 0) n = 0;
     got[n] = 0;
     return strstr((char*) got, needle) != NULL;
@@ -2576,9 +2612,7 @@ static void test_tabula_type_classify_save(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
-    remove("untitled.tabula");
+    lux_app_remove("untitled.tabula");
 
     Machine* m = tabula_machine();
     assert(m != NULL);
@@ -2607,7 +2641,7 @@ static void test_tabula_type_classify_save(void) {
     uint8_t got[256];
     int n = 0;
     memset(got, 0, sizeof(got));
-    quill_lux_read_file("/sys/file/untitled.tabula", got, (int) sizeof(got) - 1, &n);
+    lux_app_read_doc("untitled.tabula", got, (int) sizeof(got) - 1, &n);
     assert(n > 10);
     got[n] = 0;
     assert(strncmp((char*) got, "TABULA 400\n", 11) == 0);
@@ -2617,7 +2651,6 @@ static void test_tabula_type_classify_save(void) {
     /* Sparse: a high empty row is not written as blank lines. */
     assert(strstr((char*) got, "A4") == NULL);
 
-    quill_lux_restore_file("untitled.tabula", backup, backup_len);
 }
 
 static void test_tabula_click_selects_cell(void) {
@@ -2626,9 +2659,7 @@ static void test_tabula_click_selects_cell(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
-    remove("untitled.tabula");
+    lux_app_remove("untitled.tabula");
 
     Machine* m = tabula_machine();
     assert(m != NULL);
@@ -2648,7 +2679,6 @@ static void test_tabula_click_selects_cell(void) {
     assert(tabula_file_has("B2,Zed"));
     assert(!tabula_file_has("A1,Zed"));
 
-    quill_lux_restore_file("untitled.tabula", backup, backup_len);
 }
 
 static void test_tabula_file_new_clean_and_dirty(void) {
@@ -2657,9 +2687,7 @@ static void test_tabula_file_new_clean_and_dirty(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
-    remove("untitled.tabula");
+    lux_app_remove("untitled.tabula");
 
     {
         Machine* m = tabula_machine();
@@ -2700,13 +2728,12 @@ static void test_tabula_file_new_clean_and_dirty(void) {
         uint8_t got[256];
         int n = 0;
         memset(got, 0, sizeof(got));
-        quill_lux_read_file("/sys/file/untitled.tabula", got, (int) sizeof(got) - 1, &n);
+        lux_app_read_doc("untitled.tabula", got, (int) sizeof(got) - 1, &n);
         if (n < 0) n = 0;
         got[n] = 0;
         assert(strstr((char*) got, "keep?") == NULL);
     }
 
-    quill_lux_restore_file("untitled.tabula", backup, backup_len);
 }
 
 static void test_tabula_edit_copy_paste(void) {
@@ -2715,9 +2742,7 @@ static void test_tabula_edit_copy_paste(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
-    remove("untitled.tabula");
+    lux_app_remove("untitled.tabula");
 
     Machine* m = tabula_machine();
     assert(m != NULL);
@@ -2741,7 +2766,6 @@ static void test_tabula_edit_copy_paste(void) {
     assert(tabula_file_has("A1,abacus"));
     assert(tabula_file_has("B1,abacus"));
 
-    quill_lux_restore_file("untitled.tabula", backup, backup_len);
 }
 
 static void test_tabula_high_row_sparse_save(void) {
@@ -2750,9 +2774,7 @@ static void test_tabula_high_row_sparse_save(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
-    remove("untitled.tabula");
+    lux_app_remove("untitled.tabula");
 
     Machine* m = tabula_machine();
     assert(m != NULL);
@@ -2772,14 +2794,13 @@ static void test_tabula_high_row_sparse_save(void) {
     uint8_t got[256];
     int n = 0;
     memset(got, 0, sizeof(got));
-    quill_lux_read_file("/sys/file/untitled.tabula", got, (int) sizeof(got) - 1, &n);
+    lux_app_read_doc("untitled.tabula", got, (int) sizeof(got) - 1, &n);
     assert(n > 8);
     got[n] = 0;
     assert(strstr((char*) got, "A31,deep") != NULL);
     /* Must not emit 31 blank rows. */
     assert(n < 80);
 
-    quill_lux_restore_file("untitled.tabula", backup, backup_len);
 }
 
 #define TABULA_POOL      0x900000
@@ -2843,9 +2864,7 @@ static void test_tabula_formula_source_saved(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
-    remove("untitled.tabula");
+    lux_app_remove("untitled.tabula");
 
     Machine* m = tabula_machine();
     assert(m != NULL);
@@ -2879,7 +2898,6 @@ static void test_tabula_formula_source_saved(void) {
     assert(!tabula_file_has("C1,30"));
     assert(tabula_file_has("TABULA 400"));
 
-    quill_lux_restore_file("untitled.tabula", backup, backup_len);
 }
 
 static void test_tabula_escape_roundtrip(void) {
@@ -2888,9 +2906,7 @@ static void test_tabula_escape_roundtrip(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
-    remove("untitled.tabula");
+    lux_app_remove("untitled.tabula");
 
     Machine* m = tabula_machine();
     assert(m != NULL);
@@ -2913,13 +2929,12 @@ static void test_tabula_escape_roundtrip(void) {
     uint8_t got[256];
     int n = 0;
     memset(got, 0, sizeof(got));
-    quill_lux_read_file("/sys/file/untitled.tabula", got, (int) sizeof(got) - 1, &n);
+    lux_app_read_doc("untitled.tabula", got, (int) sizeof(got) - 1, &n);
     assert(n > 8);
     got[n] = 0;
     assert(strstr((char*) got, "A1,a\\\\b") != NULL);
     assert(strstr((char*) got, "B1,a\\,b") != NULL);
 
-    quill_lux_restore_file("untitled.tabula", backup, backup_len);
 }
 
 static void test_tabula_sum_and_errors(void) {
@@ -2928,9 +2943,7 @@ static void test_tabula_sum_and_errors(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
-    remove("untitled.tabula");
+    lux_app_remove("untitled.tabula");
 
     Machine* m = tabula_machine();
     assert(m != NULL);
@@ -2985,7 +2998,6 @@ static void test_tabula_sum_and_errors(void) {
 
     assert(tabula_file_has("A3,=SUM(A1:A2)"));
 
-    quill_lux_restore_file("untitled.tabula", backup, backup_len);
 }
 
 static void test_tabula_calc_esc_stops(void) {
@@ -2994,9 +3006,7 @@ static void test_tabula_calc_esc_stops(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.tabula", &backup_len);
-    remove("untitled.tabula");
+    lux_app_remove("untitled.tabula");
 
     Machine* m = tabula_machine();
     assert(m != NULL);
@@ -3032,7 +3042,6 @@ static void test_tabula_calc_esc_stops(void) {
     vfs_close(m->system, kc);
     machine_free(m);
 
-    quill_lux_restore_file("untitled.tabula", backup, backup_len);
 }
 
 /* -----------------------------------------------------------------------
@@ -3079,6 +3088,8 @@ static Machine* lux_app_machine(const char* src, const char* bin) {
     free(bc);
     assert(m != NULL);
     system_set_resolution(m->system, 960, 720);
+    lux_app_seed_resources();
+    system_set_sandbox_root(m->system, lux_app_sandbox());
     return m;
 }
 
@@ -3094,7 +3105,11 @@ static int host_file_size(const char* path) {
     return (int) n;
 }
 
-static int pump_until_file(Machine* m, const char* path, int min_n, int max_ticks) {
+/* `name` is a document name relative to LUX_APP_SANDBOX, where the app under
+ * test writes it -- not a path in the working directory. */
+static int pump_until_file(Machine* m, const char* name, int min_n, int max_ticks) {
+    char path[512];
+    lux_app_path(name, path, sizeof(path));
     for (int i = 0; i < max_ticks; i++) {
         if (m && m->cpu && !m->cpu->halted) {
             machine_tick(m);
@@ -3125,12 +3140,6 @@ static void lux_drag(Machine* m, int32_t mc, int x0, int y0, int x1, int y1) {
 static void lux_file_item(Machine* m, int32_t mc, int row) {
     quill_lux_click(m, mc, 20, 10);
     quill_lux_click(m, mc, 20, 20 + row * 18 + 9);
-}
-
-static int lux_file_read(const char* vfs_path, uint8_t* got, int cap) {
-    int n = 0;
-    quill_lux_read_file(vfs_path, got, cap, &n);
-    return n;
 }
 
 static void test_lux_apps_compile(void) {
@@ -3173,11 +3182,7 @@ static void test_illumos_paint_save(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.cff", &backup_len);
-    size_t chicago_len = 0;
-    char* chicago = quill_lux_backup_file("resources/chicago12x12.cff", &chicago_len);
-    remove("untitled.cff");
+    lux_app_remove("untitled.cff");
 
     Machine* m = lux_app_machine("apps/Illumos.lux", "apps/Illumos.bin");
     assert(m != NULL);
@@ -3211,14 +3216,12 @@ static void test_illumos_paint_save(void) {
 
     uint8_t got[8448];
     assert(n == 8448);
-    n = lux_file_read("/sys/file/untitled.cff", got, (int) sizeof(got));
+    n = lux_app_read("untitled.cff", got, (int) sizeof(got));
     assert(n == 8448);
     /* glyph-bytes=32; A at 256+65*32=2336, B at 2368. */
     assert((got[2336] & 0x80) != 0); /* A (0,0) */
     assert((got[2368] & 0x80) != 0); /* B (0,0) */
 
-    quill_lux_restore_file("untitled.cff", backup, backup_len);
-    quill_lux_restore_file("resources/chicago12x12.cff", chicago, chicago_len);
 }
 
 static void test_illumos_collection_click(void) {
@@ -3227,11 +3230,7 @@ static void test_illumos_collection_click(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.cff", &backup_len);
-    size_t chicago_len = 0;
-    char* chicago = quill_lux_backup_file("resources/chicago12x12.cff", &chicago_len);
-    remove("untitled.cff");
+    lux_app_remove("untitled.cff");
 
     Machine* m = lux_app_machine("apps/Illumos.lux", "apps/Illumos.bin");
     assert(m != NULL);
@@ -3255,13 +3254,11 @@ static void test_illumos_collection_click(void) {
 
     uint8_t got[8448];
     assert(n == 8448);
-    n = lux_file_read("/sys/file/untitled.cff", got, (int) sizeof(got));
+    n = lux_app_read("untitled.cff", got, (int) sizeof(got));
     assert(n == 8448);
     assert((got[256] & 0x80) != 0); /* glyph 0 */
     assert((got[2336] & 0x80) == 0); /* glyph A untouched */
 
-    quill_lux_restore_file("untitled.cff", backup, backup_len);
-    quill_lux_restore_file("resources/chicago12x12.cff", chicago, chicago_len);
 }
 
 static void test_nib_rect_save(void) {
@@ -3270,9 +3267,7 @@ static void test_nib_rect_save(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.nib", &backup_len);
-    remove("untitled.nib");
+    lux_app_remove("untitled.nib");
 
     Machine* m = lux_app_machine("apps/Nib.lux", "apps/Nib.bin");
     assert(m != NULL);
@@ -3294,12 +3289,11 @@ static void test_nib_rect_save(void) {
     uint8_t got[256];
     memset(got, 0, sizeof(got));
     assert(n > 8);
-    n = lux_file_read("/sys/file/untitled.nib", got, (int) sizeof(got) - 1);
+    n = lux_app_read("untitled.nib", got, (int) sizeof(got) - 1);
     assert(n > 8);
     assert(strncmp((char*) got, "NIB 1\n", 6) == 0);
     assert(strstr((char*) got, "rect") != NULL);
 
-    quill_lux_restore_file("untitled.nib", backup, backup_len);
 }
 
 static void test_easel_paint_save(void) {
@@ -3308,9 +3302,7 @@ static void test_easel_paint_save(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -3337,12 +3329,12 @@ static void test_easel_paint_save(void) {
     uint8_t got[64];
     memset(got, 0, sizeof(got));
     assert(n == 51848);
-    n = lux_file_read("/sys/file/untitled.eas", got, (int) sizeof(got));
+    n = lux_app_read("untitled.eas", got, (int) sizeof(got));
     assert(n >= 8);
     assert(got[0] == 'E' && got[1] == 'A' && got[2] == 'S' && got[3] == '2');
 
     uint8_t body[52000];
-    n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
+    n = lux_app_read("untitled.eas", body, (int) sizeof(body));
     assert(n == 51848);
     int nonzero = 0;
     for (int i = 8; i < n; i++) {
@@ -3350,7 +3342,6 @@ static void test_easel_paint_save(void) {
     }
     assert(nonzero > 0);
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 static int easel_bit_set(const uint8_t* body, int n, int col, int row) {
@@ -3370,9 +3361,7 @@ static void test_easel_marquee_move(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -3408,13 +3397,12 @@ static void test_easel_marquee_move(void) {
 
     assert(n == 51848);
     uint8_t body[52000];
-    n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
+    n = lux_app_read("untitled.eas", body, (int) sizeof(body));
     assert(n == 51848);
 
     assert(easel_bit_set(body, n, 20, 30) == 0);   /* source now blank */
     assert(easel_bit_set(body, n, 70, 30) == 1);   /* destination now set */
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 static void test_easel_lasso_move(void) {
@@ -3423,9 +3411,7 @@ static void test_easel_lasso_move(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -3465,13 +3451,12 @@ static void test_easel_lasso_move(void) {
 
     assert(n == 51848);
     uint8_t body[52000];
-    n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
+    n = lux_app_read("untitled.eas", body, (int) sizeof(body));
     assert(n == 51848);
 
     assert(easel_bit_set(body, n, 20, 30) == 0);   /* source now blank */
     assert(easel_bit_set(body, n, 70, 30) == 1);   /* destination now set */
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 static void test_easel_copy_paste(void) {
@@ -3480,9 +3465,7 @@ static void test_easel_copy_paste(void) {
     if (!probe) return;
     machine_free(probe);
 
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -3515,7 +3498,7 @@ static void test_easel_copy_paste(void) {
 
     assert(n == 51848);
     uint8_t body[52000];
-    n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
+    n = lux_app_read("untitled.eas", body, (int) sizeof(body));
     assert(n == 51848);
 
     /* Original pixel untouched by Copy. */
@@ -3525,7 +3508,6 @@ static void test_easel_copy_paste(void) {
      * (237,205). */
     assert(easel_bit_set(body, n, 237, 205) == 1);
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 /* Shared setup for the Step 6 transform tests below: boots Easel, paints one
@@ -3557,16 +3539,14 @@ static int easel_save_and_read(Machine* m, int32_t mc, int32_t kc, uint8_t* body
     vfs_close(m->system, kc);
     machine_free(m);
     assert(n == 51848);
-    n = lux_file_read("/sys/file/untitled.eas", body, cap);
+    n = lux_app_read("untitled.eas", body, cap);
     assert(n == 51848);
     return n;
 }
 
 static void test_easel_flip_h(void) {
     printf("Testing apps/Easel.lux: Flip Horizontal transforms the selection...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     int32_t mc, kc;
     Machine* m = easel_transform_setup(&mc, &kc);
@@ -3579,14 +3559,11 @@ static void test_easel_flip_h(void) {
     assert(easel_bit_set(body, n, 15, 23) == 0);   /* source now blank */
     assert(easel_bit_set(body, n, 55, 23) == 1);   /* x0+x1-x = 10+60-15 */
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 static void test_easel_flip_v(void) {
     printf("Testing apps/Easel.lux: Flip Vertical transforms the selection...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     int32_t mc, kc;
     Machine* m = easel_transform_setup(&mc, &kc);
@@ -3599,14 +3576,11 @@ static void test_easel_flip_v(void) {
     assert(easel_bit_set(body, n, 15, 23) == 0);   /* source now blank */
     assert(easel_bit_set(body, n, 15, 32) == 1);   /* y0+y1-y = 20+35-23 */
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 static void test_easel_rotate90(void) {
     printf("Testing apps/Easel.lux: Rotate 90 transforms the selection...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     int32_t mc, kc;
     Machine* m = easel_transform_setup(&mc, &kc);
@@ -3620,14 +3594,11 @@ static void test_easel_rotate90(void) {
     /* dx = x0+(y1-y) = 10+(35-23) = 22, dy = y0+(x-x0) = 20+(15-10) = 25 */
     assert(easel_bit_set(body, n, 22, 25) == 1);
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 static void test_easel_fill(void) {
     printf("Testing apps/Easel.lux: Fill paints the whole selection...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     int32_t mc, kc;
     Machine* m = easel_transform_setup(&mc, &kc);
@@ -3641,14 +3612,11 @@ static void test_easel_fill(void) {
      * one original pixel, to prove the whole rect got covered. */
     assert(easel_bit_set(body, n, 12, 22) == 1);
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 static void test_easel_trace_edges(void) {
     printf("Testing apps/Easel.lux: Trace Edges keeps boundary, clears interior...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -3681,7 +3649,6 @@ static void test_easel_trace_edges(void) {
     assert(easel_bit_set(body, n, 25, 25) == 0);   /* square's interior, cleared */
     assert(easel_bit_set(body, n, 20, 25) == 1);   /* square's left edge, kept */
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 /* Freeform tool (Step 4): a right triangle canvas (50,50)-(50,100)-(100,100),
@@ -3690,9 +3657,7 @@ static void test_easel_trace_edges(void) {
  * closes it on mouse-up; the interior stays untouched. */
 static void test_easel_freeform_outline(void) {
     printf("Testing apps/Easel.lux: Freeform tool strokes an outline and closes on mouse-up...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -3716,16 +3681,13 @@ static void test_easel_freeform_outline(void) {
     assert(easel_bit_set(body, n, 50, 75) == 1);   /* on the traced A-B edge */
     assert(easel_bit_set(body, n, 70, 90) == 0);   /* interior, untouched */
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 /* Same triangle, Freeform Filled: the interior is painted with the current
  * pattern (default pattern 1 = solid black) once the loop closes. */
 static void test_easel_freeform_filled(void) {
     printf("Testing apps/Easel.lux: Freeform Filled tool fills the closed interior...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -3749,7 +3711,6 @@ static void test_easel_freeform_filled(void) {
     assert(easel_bit_set(body, n, 70, 90) == 1);   /* interior, now filled */
     assert(easel_bit_set(body, n, 10, 10) == 0);   /* well outside the triangle */
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 /* Polygon tool (Step 4): click-to-add-vertex, closing by clicking back on the
@@ -3758,9 +3719,7 @@ static void test_easel_freeform_filled(void) {
  * here since it also exercises the vertex-count-gated close path. */
 static void test_easel_polygon_filled(void) {
     printf("Testing apps/Easel.lux: Polygon tool closes on click-near-start and fills...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -3787,7 +3746,6 @@ static void test_easel_polygon_filled(void) {
     assert(easel_bit_set(body, n, 83, 67) == 1);   /* triangle centroid, filled */
     assert(easel_bit_set(body, n, 10, 10) == 0);   /* well outside the triangle */
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 /* Same tool, but closing via a double-click on the last-placed vertex
@@ -3796,9 +3754,7 @@ static void test_easel_polygon_filled(void) {
  * unfilled variant, so only the traced edges should be black. */
 static void test_easel_polygon_outline_double_click_close(void) {
     printf("Testing apps/Easel.lux: Polygon tool closes on a double-click and strokes only the outline...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -3825,7 +3781,6 @@ static void test_easel_polygon_outline_double_click_close(void) {
     assert(easel_bit_set(body, n, 75, 75) == 1);   /* midpoint of the v2->v0 closing edge */
     assert(easel_bit_set(body, n, 83, 67) == 0);   /* triangle centroid, unfilled */
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 static int easel_any_bit_in_rect(const uint8_t* body, int n, int x0, int y0, int x1, int y1) {
@@ -3843,9 +3798,7 @@ static int easel_any_bit_in_rect(const uint8_t* body, int n, int x0, int y0, int
  * CFF::pixel@ into CANVAS. */
 static void test_easel_text_tool(void) {
     printf("Testing apps/Easel.lux: Text tool types a caption and commits it on tool switch...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -3869,14 +3822,14 @@ static void test_easel_text_tool(void) {
     int n0 = pump_until_file(m, "untitled.eas", 51848, 2000);
     assert(n0 == 51848);
     uint8_t body0[52000];
-    n0 = lux_file_read("/sys/file/untitled.eas", body0, (int) sizeof(body0));
+    n0 = lux_app_read("untitled.eas", body0, (int) sizeof(body0));
     assert(n0 == 51848);
     assert(easel_any_bit_in_rect(body0, n0, 100, 100, 140, 116) == 0);
 
     /* Both saves write a fixed 51848-byte EAS2 file, so pump_until_file's
      * size check can't tell "still the old save" from "the new one landed" --
      * remove it first so the next save is unambiguously fresh. */
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool (index 7) -- commits the text */
     quill_lux_pump(m, 20);
@@ -3887,7 +3840,6 @@ static void test_easel_text_tool(void) {
     assert(easel_any_bit_in_rect(body, n, 100, 100, 140, 116) == 1);   /* "hi" landed */
     assert(easel_any_bit_in_rect(body, n, 0, 0, 50, 50) == 0);         /* elsewhere untouched */
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 static int easel_count_bits_in_rect(const uint8_t* body, int n, int x0, int y0, int x1, int y1) {
@@ -3909,9 +3861,7 @@ static int easel_count_bits_in_rect(const uint8_t* body, int n, int x0, int y0, 
  * item rows are BAR_H + row*18 + 9, same formula as lux_file_item. */
 static void test_easel_text_style_bold(void) {
     printf("Testing apps/Easel.lux: Style > Bold thickens committed glyphs...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -3934,7 +3884,7 @@ static void test_easel_text_style_bold(void) {
     int plain_count = easel_count_bits_in_rect(plain_body, plain_n, 100, 100, 116, 116);
     assert(plain_count > 0);
 
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
     m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
     quill_lux_bind(m, &mc, &kc);
@@ -3959,7 +3909,6 @@ static void test_easel_text_style_bold(void) {
 
     assert(bold_count > plain_count);
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 /* Size menu (Step 7): "24" is scale 2, so a committed glyph should be ~32px
@@ -3967,9 +3916,7 @@ static void test_easel_text_style_bold(void) {
  * could reach. */
 static void test_easel_text_size_24(void) {
     printf("Testing apps/Easel.lux: Size > 24 doubles committed glyph scale...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -3996,7 +3943,169 @@ static void test_easel_text_size_24(void) {
 
     assert(easel_any_bit_in_rect(body, n, 100, 116, 132, 131) == 1);  /* only reachable at scale 2 */
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
+/* Style menu: Shadow ORs in the pixel one row/column up-left of each source
+ * pixel, the mirror image of Bold's left-neighbour OR -- same "never less
+ * ink than plain" argument as test_easel_text_style_bold. */
+static void test_easel_text_style_shadow(void) {
+    printf("Testing apps/Easel.lux: Style > Shadow thickens committed glyphs...\n");
+    lux_app_remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 60, 68);   /* Text tool */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 180, 120); /* caret at canvas (100,100) */
+    quill_lux_pump(m, 20);
+    quill_lux_key(m, kc, 'A', 0);
+    quill_lux_pump(m, 10);
+    quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
+    quill_lux_pump(m, 20);
+
+    uint8_t plain_body[52000];
+    int plain_n = easel_save_and_read(m, mc, kc, plain_body, (int) sizeof(plain_body));
+    int plain_count = easel_count_bits_in_rect(plain_body, plain_n, 100, 100, 116, 116);
+    assert(plain_count > 0);
+
+    lux_app_remove("untitled.eas");
+    m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+
+    quill_lux_click(m, mc, 284, 10);   /* Style menu */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 284, 101);  /* Shadow (row 4: Bold/Italic/Underline/Outline/Shadow) */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 60, 68);    /* Text tool */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 180, 120);  /* caret at canvas (100,100) */
+    quill_lux_pump(m, 20);
+    quill_lux_key(m, kc, 'A', 0);
+    quill_lux_pump(m, 10);
+    quill_lux_click(m, mc, 60, 132);   /* Pencil tool -- commits */
+    quill_lux_pump(m, 20);
+
+    uint8_t shadow_body[52000];
+    int shadow_n = easel_save_and_read(m, mc, kc, shadow_body, (int) sizeof(shadow_body));
+    int shadow_count = easel_count_bits_in_rect(shadow_body, shadow_n, 100, 100, 116, 116);
+
+    assert(shadow_count > plain_count);
+}
+
+/* Style menu: Outline is dilate-minus-original -- every originally-on pixel
+ * turns off and its off neighbours turn on, tracing a 1px halo around each
+ * stroke. Chicago's glyphs are themselves thin strokes rather than solid
+ * fills, so a halo around a stroke has *more* total ink than the stroke
+ * (both sides light up), not less -- the interior-hollowing intuition only
+ * holds for a solid glyph. Just check it's neither the same shape (some
+ * ink moved) nor empty. */
+static void test_easel_text_style_outline(void) {
+    printf("Testing apps/Easel.lux: Style > Outline traces a halo around committed glyphs...\n");
+    lux_app_remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 60, 68);   /* Text tool */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 180, 120); /* caret at canvas (100,100) */
+    quill_lux_pump(m, 20);
+    quill_lux_key(m, kc, 'A', 0);
+    quill_lux_pump(m, 10);
+    quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
+    quill_lux_pump(m, 20);
+
+    uint8_t plain_body[52000];
+    int plain_n = easel_save_and_read(m, mc, kc, plain_body, (int) sizeof(plain_body));
+    int plain_count = easel_count_bits_in_rect(plain_body, plain_n, 100, 100, 116, 116);
+    assert(plain_count > 0);
+
+    lux_app_remove("untitled.eas");
+    m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+
+    quill_lux_click(m, mc, 284, 10);  /* Style menu */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 284, 83);  /* Outline (row 3) */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 60, 68);   /* Text tool */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 180, 120); /* caret at canvas (100,100) */
+    quill_lux_pump(m, 20);
+    quill_lux_key(m, kc, 'A', 0);
+    quill_lux_pump(m, 10);
+    quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
+    quill_lux_pump(m, 20);
+
+    uint8_t outline_body[52000];
+    int outline_n = easel_save_and_read(m, mc, kc, outline_body, (int) sizeof(outline_body));
+    int outline_count = easel_count_bits_in_rect(outline_body, outline_n, 100, 100, 116, 116);
+
+    assert(outline_count > 0);
+    assert(outline_count != plain_count);
+}
+
+static int easel_leftmost_bit_x(const uint8_t* body, int n, int x0, int x1, int y) {
+    for (int x = x0; x <= x1; x++) {
+        if (easel_bit_set(body, n, x, y) == 1) return x;
+    }
+    return -1;
+}
+
+/* Style menu: Italic shears each source row's placement right by more the
+ * closer to the top (ishift = (15-gy)>>2 * scale), without resampling. "H"
+ * has a left vertical stroke spanning the full glyph height, so its leftmost
+ * ink column at the very top row should land strictly right of its leftmost
+ * ink column near the bottom, where the shear has faded to 0. */
+static void test_easel_text_style_italic(void) {
+    printf("Testing apps/Easel.lux: Style > Italic shears committed glyphs...\n");
+    lux_app_remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 284, 10);  /* Style menu */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 284, 47);  /* Italic (row 1) */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 60, 68);   /* Text tool */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 180, 120); /* caret at canvas (100,100) */
+    quill_lux_pump(m, 20);
+    quill_lux_key(m, kc, 'H', 0);
+    quill_lux_pump(m, 10);
+    quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
+    quill_lux_pump(m, 20);
+
+    uint8_t body[52000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    /* Chicago's "H" only inks canvas rows 103-111 (source rows gy=3..11 of
+     * the 16-row box; the rest is side-bearing), so probe near the top and
+     * bottom of the glyph's actual ink rather than the box's edges:
+     * ishift(gy=3)=(15-3)>>2=3, ishift(gy=11)=(15-11)>>2=1. */
+    int top_x = easel_leftmost_bit_x(body, n, 100, 130, 103);
+    int bot_x = easel_leftmost_bit_x(body, n, 100, 130, 111);
+    assert(top_x >= 0);
+    assert(bot_x >= 0);
+    assert(top_x > bot_x);
 }
 
 /* Goodies > Show Page (Step 8): clicking the mini-map's bottom-right corner
@@ -4015,9 +4124,7 @@ static void test_easel_text_size_24(void) {
  * as page (96,304) once painted. */
 static void test_easel_show_page(void) {
     printf("Testing apps/Easel.lux: Goodies > Show Page pans the viewport...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -4046,13 +4153,12 @@ static void test_easel_show_page(void) {
 
     assert(n == 51848);
     uint8_t body[52000];
-    n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
+    n = lux_app_read("untitled.eas", body, (int) sizeof(body));
     assert(n == 51848);
 
     assert(easel_bit_set(body, n, 96, 304) == 1);  /* painted at the panned viewport's origin */
     assert(easel_bit_set(body, n, 0, 0) == 0);     /* unpanned origin untouched */
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 /* Goodies > Grid snapping (Step 8): dragging Rect Filled from screen
@@ -4064,9 +4170,7 @@ static void test_easel_show_page(void) {
  * (PAL_X+1*PAL_CELL_W=40, PAL_Y+5*PAL_CELL_H=180, center (60,196)). */
 static void test_easel_grid_snap(void) {
     printf("Testing apps/Easel.lux: Goodies > Grid snaps shape-tool drags...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     /* Baseline: Grid off, drag reaches the unsnapped corner (57,37). */
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
@@ -4085,7 +4189,7 @@ static void test_easel_grid_snap(void) {
     int off_n = easel_save_and_read(m, mc, kc, off_body, (int) sizeof(off_body));
     assert(easel_bit_set(off_body, off_n, 57, 37) == 1);
 
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
     m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
     quill_lux_bind(m, &mc, &kc);
@@ -4107,7 +4211,53 @@ static void test_easel_grid_snap(void) {
     assert(easel_bit_set(on_body, on_n, 56, 40) == 1);  /* the snapped corner instead */
     assert(easel_bit_set(on_body, on_n, 0, 0) == 1);    /* snapped top-left too */
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
+}
+
+/* Goodies > Mirror Horizontal / Mirror Vertical (Step 9): with both on, a
+ * single Brush dab at page (50,60) should also land at (PAGE_W-50,60)=
+ * (526,60), (50,PAGE_H-60)=(50,660), and (526,660) -- 4-way symmetry about
+ * the page center. Goodies title is at MN_X=106 (+10=116); row height 18,
+ * y=BAR_H+row*18+9: Mirror Horizontal is row 7 (Grid, FatBits, sep, Edit
+ * Pattern, Brush Shape, Show Page, sep, Mirror Horizontal), y=20+126+9=155;
+ * Mirror Vertical is row 8, y=173. The menu closes after each item click,
+ * so Goodies has to be reopened for the second one. Brush is palette cell 6
+ * (PAL_X+0*PAL_CELL_W=0, PAL_Y+3*PAL_CELL_H=116, center (20,132)). The dab
+ * itself is a click at screen (CANVAS_X+50,CANVAS_Y+60)=(130,80); brush 0
+ * (the default) is circle-mask radius 1, so its own center pixel is always
+ * painted regardless of the mask's exact footprint. */
+static void test_easel_brush_mirror(void) {
+    printf("Testing apps/Easel.lux: Goodies > Mirror Horizontal/Vertical reflect brush dabs...\n");
+    lux_app_remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    quill_lux_click(m, mc, 116, 10);  /* Goodies menu */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 116, 155); /* Mirror Horizontal */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 116, 10);  /* Goodies menu (reopen) */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 116, 173); /* Mirror Vertical */
+    quill_lux_pump(m, 20);
+
+    quill_lux_click(m, mc, 20, 132);  /* Brush tool */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 130, 80);  /* dab at page (50,60) */
+    quill_lux_pump(m, 20);
+
+    uint8_t body[52000];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    assert(easel_bit_set(body, n, 50, 60) == 1);   /* the dab itself */
+    assert(easel_bit_set(body, n, 526, 60) == 1);  /* mirrored horizontally */
+    assert(easel_bit_set(body, n, 50, 660) == 1);  /* mirrored vertically */
+    assert(easel_bit_set(body, n, 526, 660) == 1); /* mirrored both ways */
+    assert(easel_bit_set(body, n, 10, 10) == 0);   /* unrelated pixel untouched */
 }
 
 /* Double-click tool shortcuts (Step 4). Pencil -> toggle FatBits: scr>can
@@ -4120,9 +4270,7 @@ static void test_easel_grid_snap(void) {
  * cell 7 (PAL_X+1*PAL_CELL_W=40, PAL_Y+3*PAL_CELL_H=116, center (60,132)). */
 static void test_easel_dbl_click_pencil_fatbits(void) {
     printf("Testing apps/Easel.lux: double-click Pencil toggles FatBits...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -4145,7 +4293,6 @@ static void test_easel_dbl_click_pencil_fatbits(void) {
     assert(easel_bit_set(body, n, 210, 182) == 1);  /* FatBits-mapped pixel */
     assert(easel_bit_set(body, n, 0, 0) == 0);       /* not the plain 1:1 mapping */
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 /* Eraser -> erase the whole page, regardless of any selection. Eraser is
@@ -4153,9 +4300,7 @@ static void test_easel_dbl_click_pencil_fatbits(void) {
  * (60,164)). */
 static void test_easel_dbl_click_eraser_clears_page(void) {
     printf("Testing apps/Easel.lux: double-click Eraser clears the whole page...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -4177,7 +4322,6 @@ static void test_easel_dbl_click_eraser_clears_page(void) {
 
     assert(easel_bit_set(body, n, 20, 30) == 0);
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 /* Marquee -> select all. Distinguished from "no selection" by dragging from
@@ -4187,9 +4331,7 @@ static void test_easel_dbl_click_eraser_clears_page(void) {
  * palette cell 1 (PAL_X+1*PAL_CELL_W=40, PAL_Y, center (60,36)). */
 static void test_easel_dbl_click_marquee_select_all(void) {
     printf("Testing apps/Easel.lux: double-click Marquee selects the whole page...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -4215,7 +4357,6 @@ static void test_easel_dbl_click_marquee_select_all(void) {
     assert(easel_bit_set(body, n, 20, 30) == 0);  /* source now blank */
     assert(easel_bit_set(body, n, 70, 30) == 1);  /* destination now set */
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 /* Hand -> Show Page. Same panning check as menu-show-page's own test, just
@@ -4223,9 +4364,7 @@ static void test_easel_dbl_click_marquee_select_all(void) {
  * cell 2 (PAL_X, PAL_Y+1*PAL_CELL_H=52, center (20,68)). */
 static void test_easel_dbl_click_hand_show_page(void) {
     printf("Testing apps/Easel.lux: double-click Hand opens Show Page...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -4254,7 +4393,6 @@ static void test_easel_dbl_click_hand_show_page(void) {
 
     assert(easel_bit_set(body, n, 96, 304) == 1);
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 /* File > Open/Quit with unsaved changes (Step 9): both now route through the
@@ -4268,9 +4406,7 @@ static void test_easel_dbl_click_hand_show_page(void) {
  * sep run (y=137), both via BAR_H + row*18 + 9. */
 static void test_easel_open_with_unsaved_changes_prompts(void) {
     printf("Testing apps/Easel.lux: File > Open with unsaved changes prompts, and Save routes it through...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -4295,11 +4431,10 @@ static void test_easel_open_with_unsaved_changes_prompts(void) {
     machine_free(m);
 
     uint8_t body[52000];
-    n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
+    n = lux_app_read("untitled.eas", body, (int) sizeof(body));
     assert(n == 51848);
     assert(easel_bit_set(body, n, 20, 30) == 1);
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 /* File > Revert: reload from disk, discarding in-memory edits made since
@@ -4308,9 +4443,7 @@ static void test_easel_open_with_unsaved_changes_prompts(void) {
  * "Don't Save" is confirm row 1 (x=280,y=262, same as the Quit test). */
 static void test_easel_revert_discards_unsaved_edits(void) {
     printf("Testing apps/Easel.lux: File > Revert reloads the saved document...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -4346,20 +4479,17 @@ static void test_easel_revert_discards_unsaved_edits(void) {
 
     assert(n == 51848);
     uint8_t body[52000];
-    n = lux_file_read("/sys/file/untitled.eas", body, (int) sizeof(body));
+    n = lux_app_read("untitled.eas", body, (int) sizeof(body));
     assert(n == 51848);
 
     assert(easel_bit_set(body, n, 20, 30) == 1);  /* saved edit survived the revert */
     assert(easel_bit_set(body, n, 70, 30) == 0);  /* unsaved edit was discarded */
 
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 static void test_easel_quit_with_unsaved_changes_prompts(void) {
     printf("Testing apps/Easel.lux: File > Quit with unsaved changes prompts, and Don't Save still quits...\n");
-    size_t backup_len = 0;
-    char* backup = quill_lux_backup_file("untitled.eas", &backup_len);
-    remove("untitled.eas");
+    lux_app_remove("untitled.eas");
 
     Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
     assert(m != NULL);
@@ -4384,7 +4514,6 @@ static void test_easel_quit_with_unsaved_changes_prompts(void) {
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
-    quill_lux_restore_file("untitled.eas", backup, backup_len);
 }
 
 // -----------------------------------------------------------------------------
@@ -4494,9 +4623,13 @@ int main(void) {
     test_easel_polygon_outline_double_click_close();
     test_easel_text_tool();
     test_easel_text_style_bold();
+    test_easel_text_style_shadow();
+    test_easel_text_style_outline();
+    test_easel_text_style_italic();
     test_easel_text_size_24();
     test_easel_show_page();
     test_easel_grid_snap();
+    test_easel_brush_mirror();
     test_easel_dbl_click_pencil_fatbits();
     test_easel_dbl_click_eraser_clears_page();
     test_easel_dbl_click_marquee_select_all();

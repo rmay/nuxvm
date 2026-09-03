@@ -900,9 +900,9 @@ IMPORT SF
 
 ( --- File > New confirm dialog --- )
 
-@confirm-panel-x ( -- x ) WIN_W CONFIRM_PANEL_W - 2 / ;
-@confirm-panel-y ( -- y ) WIN_H CONFIRM_PANEL_H - 2 / ;
-@confirm-btn-x ( -- x ) confirm-panel-x CONFIRM_PANEL_W CONFIRM_BTN_W - 2 / + ;
+@confirm-panel-x ( -- x ) WIN_W CONFIRM_PANEL_W UI::center-coord ;
+@confirm-panel-y ( -- y ) WIN_H CONFIRM_PANEL_H UI::center-coord ;
+@confirm-btn-x ( -- x ) confirm-panel-x CONFIRM_PANEL_W CONFIRM_BTN_W UI::modal-center-btn-x ;
 @confirm-btn-y ( i -- y ) confirm-panel-y 46 + swap CONFIRM_BTN_H CONFIRM_BTN_GAP + * + ;
 
 @confirm-hit-btn ( i px py -- flag )
@@ -966,11 +966,7 @@ IMPORT SF
     confirm-new-open LOADI [
         APP::draw-fd 0 0 WIN_W WIN_H CLR_CONFIRM_DIM DRAW::fill-rect
         confirm-panel-x confirm-panel-y confirm-btn-x 3 frame! ( 0:bx 1:py 2:px )
-        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
-        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_H + 1 - CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd 2 local@ 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd 2 local@ CONFIRM_PANEL_W + 1 - 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
+        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_PANEL CLR_CONFIRM_BORDER UI::draw-modal-panel
         APP::draw-fd 2 local@ 26 + 1 local@ 16 + T"Save changes?" CLR_CONFIRM_TEXT 16 DRAW::draw-str
         APP::draw-fd 0 local@ 0 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
         APP::draw-fd 0 local@ 68 + 0 confirm-btn-y 9 + T"Save" CLR_CONFIRM_TEXT 16 DRAW::draw-str

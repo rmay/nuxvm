@@ -34,6 +34,16 @@ it and just draws.
 **Wire format** (`case 10` in `draw_write`, `src/vfs.c`, added after the
 existing `case 9` block at line ~1026):
 
+> **Superseded — the byte layout below is historical.** `/dev/draw` has since
+> moved to a word-aligned format: every command is a sequence of 32-bit VM
+> words (big-endian, as `write_mem32` writes them), one word per field, so
+> guests pack commands with plain `STOREI` stores. Byte-packing every field
+> cost a load/mask/shift/store sequence per byte — byte access is not an
+> opcode — which measured ~44% of a full Easel repaint. Cmd 10 is now 8 words
+> (32 bytes): `cmd, x, y, size, use_key, key, tile_ptr, nbytes`. The field
+> order and meanings are unchanged; only the encoding is. See the comment
+> above `draw_write` in `src/vfs.c` for the current contract.
+
 ```
 [0]  cmd = 10
 [1-2]  x   i16 LE

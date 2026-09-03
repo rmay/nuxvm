@@ -857,6 +857,7 @@ All Edit operations snapshot first (except Undo itself, which swaps), so a secon
 | **Edit Pattern...** | 8×8 modal editor for the current pattern swatch. |
 | **Brush Shape...** | Picker over the 32 preset brush shapes. |
 | **Show Page...** | Reduced whole-page mini-map with a draggable rectangle marking the viewport. |
+| **Mirror Horizontal / Mirror Vertical** | Brush dabs also stamp reflected about the page center on whichever axes are checked; both together give 4-way symmetry. |
 
 **Font / Size / Style** (apply to the Text tool)
 
@@ -864,7 +865,7 @@ All Edit operations snapshot first (except Undo itself, which swaps), so a secon
 | --- | --- |
 | **Font** | Chicago, Geneva, Monaco |
 | **Size** | 12, 24, 36 |
-| **Style** | Bold, Underline (combinable; Italic/Outline/Shadow are not implemented) |
+| **Style** | Bold, Italic, Underline, Outline, Shadow (all combinable) |
 
 ### Patterns
 
