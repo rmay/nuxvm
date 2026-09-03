@@ -670,6 +670,36 @@ void system_push_mouse_event(System* sys, uint8_t type, int32_t x, int32_t y, ui
     sys->mouse_tail = next;
 }
 
+// The host's single entry point for an input event. Lives here rather than in
+// cloister.c so it is reachable from the tests -- no test binary links the SDL
+// front end, which is how a dropped KEY_UP went unnoticed for as long as it did.
+void system_push_host_event(System* sys, uint32_t type, uint32_t data, uint32_t mods) {
+    if (!sys) return;
+
+    int next = (sys->event_tail + 1) % 64;
+    if (next != sys->event_head) {
+        sys->events[sys->event_tail] = (type << 24) | (data & 0xFFFFFF);
+        sys->event_tail = next;
+    }
+
+    // KEY_DOWN and KEY_UP both go to the keyboard queue: held-key apps (the
+    // Breakout paddle) are driven by the down/up pair, not by the press alone.
+    if (type == 0 || type == 1) {
+        system_push_kbd_event(sys, (uint8_t)type, (int32_t)(data & 0xFFFFFF), mods);
+    } else if (type >= 2 && type <= 4) {
+        int32_t mx = (int32_t)(data >> 12);
+        int32_t my = (int32_t)(data & 0xFFF);
+        uint8_t btn = (type == 2) ? 0 : (uint8_t)(mods & 0xFF);
+        system_push_mouse_event(sys, (uint8_t)type, mx, my, btn);
+    }
+}
+
+void system_freeze_monotonic_ms(System* sys, uint32_t ms) {
+    if (!sys) return;
+    sys->time_frozen = true;
+    sys->time_ms = ms;
+}
+
 void system_set_dialog_result(System* sys, const char* path) {
     if (!sys || !path) return;
     strncpy(sys->dialog_result, path, sizeof(sys->dialog_result) - 1);

@@ -171,19 +171,7 @@ static void audio_callback(void* userdata, Uint8* stream, int len) {
 
 static void queue_event(Machine* m, uint32_t type, uint32_t data, uint32_t mods) {
     if (!m || !m->system) return;
-    int next = (m->system->event_tail + 1) % 64;
-    if (next != m->system->event_head) {
-        m->system->events[m->system->event_tail] = (type << 24) | (data & 0xFFFFFF);
-        m->system->event_tail = next;
-    }
-    if (type == 0) {
-        system_push_kbd_event(m->system, (uint8_t)type, (int32_t)(data & 0xFFFFFF), mods);
-    } else if (type >= 2 && type <= 4) {
-        int32_t mx = (int32_t)(data >> 12);
-        int32_t my = (int32_t)(data & 0xFFF);
-        uint8_t btn = (type == 2) ? 0 : (uint8_t)(mods & 0xFF);
-        system_push_mouse_event(m->system, (uint8_t)type, mx, my, btn);
-    }
+    system_push_host_event(m->system, type, data, mods);
 }
 
 static uint32_t current_modifiers(SDL_Keymod m) {

@@ -163,6 +163,55 @@ static void test_kbd_vfs(void) {
     printf("  kbd VFS: OK\n");
 }
 
+/* system_push_host_event is the one path every host input event takes on its
+ * way to a guest. It used to live inside cloister.c, which no test binary
+ * links, and it silently dropped KEY_UP (type 1) -- so an app driven by
+ * held keys, like the Breakout paddle, could never see a key released. */
+static void test_host_event_fanout(void) {
+    printf("Testing system_push_host_event fan-out...\n");
+    System* sys = system_create();
+    assert(sys != NULL);
+    int32_t kfd = vfs_open(sys, "/sys/kbd", 0);
+    int32_t mfd = vfs_open(sys, "/sys/mouse", 0);
+    assert(kfd >= 100 && mfd >= 100);
+    uint8_t buf[8] = {0};
+
+    /* KEY_DOWN then KEY_UP for the same key: both must arrive, in order. */
+    system_push_host_event(sys, 0, 20 /* RIGHT */, 0);
+    system_push_host_event(sys, 1, 20, 0);
+
+    assert(vfs_read(sys, kfd, buf, 8) == 8);
+    assert(buf[0] == 0);
+    assert(buf[2] == 20);
+    assert(vfs_read(sys, kfd, buf, 8) == 8);
+    assert(buf[0] == 1);
+    assert(buf[2] == 20);
+
+    /* Queue drained; nothing else was pushed. */
+    sys->yielded = false;
+    assert(vfs_read(sys, kfd, buf, 8) == 0);
+
+    /* Mouse types still fan out as before: move, then a button-down whose
+     * button number rides in mods. */
+    system_push_host_event(sys, 2, (300 << 12) | 200, 0);
+    system_push_host_event(sys, 3, (300 << 12) | 200, 1);
+    assert(vfs_read(sys, mfd, buf, 8) == 8);
+    assert(buf[0] == 2);
+    assert(((uint32_t)buf[2] | ((uint32_t)buf[3] << 8)) == 300);
+    assert(((uint32_t)buf[4] | ((uint32_t)buf[5] << 8)) == 200);
+    assert(vfs_read(sys, mfd, buf, 8) == 8);
+    assert(buf[0] == 3);
+    assert(buf[1] == 1);
+
+    /* Every one of the five also lands in the legacy events[] ring. */
+    assert(sys->event_tail == 4);
+
+    vfs_close(sys, kfd);
+    vfs_close(sys, mfd);
+    system_free(sys);
+    printf("  host event fan-out: OK\n");
+}
+
 static uint32_t le32(const uint8_t* p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -1554,6 +1603,7 @@ int main() {
     test_host_file();
     test_dummy_file();
     test_kbd_vfs();
+    test_host_event_fanout();
     test_time_vfs();
     test_screen_pixels_ownership();
     test_snarf_roundtrip();

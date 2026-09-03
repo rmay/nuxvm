@@ -360,6 +360,39 @@ APP::loop
 
 `on-frame` should call `UI::handle` then `UI::draw`. See [`ui.md`](ui.md).
 
+### Simulation vs. drawing
+
+`on-frame` runs once per rendered frame, which is right for a program that only
+redraws in response to input. Anything that moves *on its own* — a game, an
+animation — wants a second hook:
+
+```forth
+[ on-tick  ] APP::on-tick!    ( physics and state, fixed 16ms step )
+[ on-frame ] APP::on-frame!   ( drawing only )
+```
+
+`APP::loop` keeps a millisecond accumulator fed from `/dev/time` and calls
+`on-tick` once per whole `APP::STEP_MS` (16 ms, ~60 Hz) of elapsed time —
+usually once a frame, zero when a frame was quick, several when one was slow.
+A frame that took 33 ms to draw runs two steps instead of quietly running the
+world at half speed, so motion is measured in real time rather than in frames.
+Two guards bound it: `APP::MAX_DT` (100 ms) clamps one frame's elapsed time,
+and `APP::MAX_STEPS` (5) caps the steps a single frame may run, dropping the
+remaining backlog rather than carrying it forward forever.
+
+Because a fixed step never divides a frame period exactly, some frames run two
+steps and drawing raw simulation state lurches on those. `APP::tick-alpha`
+(0–255, how far into the current step the renderer is) and `APP::lerp` fix it:
+keep last step's value alongside the current one and draw between them.
+
+```forth
+prev-x LOADI x LOADI APP::lerp    ( draws one step behind, but evenly )
+```
+
+Register no `on-tick` and none of this happens — the clock is never even read.
+`apps/Snake.lux` and `apps/Breakout.lux` are the two examples; the design notes
+are in [`games/breakout_clone.md`](games/breakout_clone.md).
+
 ### File Inclusion
 
 If your project grows, you can split it into multiple files and use `INCLUDE` to bring them together:

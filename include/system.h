@@ -77,6 +77,12 @@ typedef struct System {
     int mouse_head;
     int mouse_tail;
 
+    // When set, /dev/time reports time_ms as its monotonic-ms field instead of
+    // CLOCK_MONOTONIC. Test-only: a headless harness runs machine_tick far
+    // faster than real time, so a wall clock never advances a simulation step.
+    bool time_frozen;
+    uint32_t time_ms;
+
     uint8_t* snarf_buf;
     int snarf_len;
     int snarf_cap;
@@ -111,6 +117,13 @@ void system_set_sandbox_root(System* sys, const char* root);
 
 void system_push_kbd_event(System* sys, uint8_t type, int32_t keycode, uint32_t modifiers);
 void system_push_mouse_event(System* sys, uint8_t type, int32_t x, int32_t y, uint8_t btn);
+// One host input event, fanned out to the legacy events[] ring and to the
+// kbd/mouse queues. Types: 0 KEY_DOWN, 1 KEY_UP, 2 MOVE, 3 BUTTON_DOWN,
+// 4 BUTTON_UP. data is a keycode for 0/1 and a packed (x<<12)|y for 2-4.
+void system_push_host_event(System* sys, uint32_t type, uint32_t data, uint32_t mods);
+// Pins /dev/time's monotonic-ms field so a harness can step the guest's
+// fixed-timestep loop by hand. Once frozen it only moves when set again.
+void system_freeze_monotonic_ms(System* sys, uint32_t ms);
 void system_set_dialog_result(System* sys, const char* path);
 
 void system_fill_rect(System* sys, int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color);

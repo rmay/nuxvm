@@ -3160,9 +3160,11 @@ static void test_lux_apps_compile(void) {
         { "apps/OurFather.lux", "apps/OurFather.bin" },
         { "apps/Picker.lux", "apps/Picker.bin" },
         { "apps/Quill.lux", "apps/Quill.bin" },
+        { "apps/Breakout.lux", "apps/Breakout.bin" },
         { "apps/Snake.lux", "apps/Snake.bin" },
         { "apps/Tabula.lux", "apps/Tabula.bin" },
         { "apps/UIDemo.lux", "apps/UIDemo.bin" },
+        { "apps/Whittle.lux", "apps/Whittle.bin" },
         { NULL, NULL }
     };
     for (int i = 0; apps[i][0]; i++) {
@@ -3174,6 +3176,361 @@ static void test_lux_apps_compile(void) {
         assert(n > 1000);
     }
     printf("  luxc apps: OK\n");
+}
+
+/* apps/Breakout.lux state cells (see the @-constants at the top of the app). */
+#define BREAKOUT_BX     0x880000
+#define BREAKOUT_BY     0x880004
+#define BREAKOUT_VY     0x88000C
+#define BREAKOUT_PX     0x880010
+#define BREAKOUT_PW     0x880014
+#define BREAKOUT_STATE  0x880020
+#define BREAKOUT_LIVES  0x880024
+#define BREAKOUT_LEFT_N 0x880034
+#define BREAKOUT_S_TITLE 0
+#define BREAKOUT_S_SERVE 1
+#define BREAKOUT_S_PLAY  2
+
+/* APP::STEP_MS -- one simulation step of lib/app.lux's fixed-timestep loop.
+ * The three helpers below are shared by the Breakout, Snake and framework
+ * timestep tests; they are not Breakout-specific. */
+#define APP_STEP_MS 16
+/* BREAKOUT::PAD_SPEED -- px the paddle travels per simulation step. */
+#define BREAKOUT_PAD_SPEED 6
+
+/* The simulation runs off /dev/time, and machine_tick runs far faster than
+ * real time, so pumping alone advances nothing. Freeze the clock and walk it
+ * forward one step per pumped frame: n pumps then means exactly n sim steps,
+ * which is what makes the assertions below deterministic. */
+static void app_sim_steps(Machine* m, int n) {
+    for (int i = 0; i < n; i++) {
+        m->system->time_ms += APP_STEP_MS;
+        quill_lux_pump(m, 1);
+    }
+}
+
+/* quill_lux_key only sends KEY_DOWN; a paddle or a steered snake is driven by
+ * held-key state, so these tests need the matching KEY_UP (packet type 1). */
+static void app_hold_key(Machine* m, int32_t kc, int type, int key) {
+    uint8_t kpkt[8] = {
+        (uint8_t) type, 0,
+        (uint8_t) (key & 0xFF), (uint8_t) ((key >> 8) & 0xFF),
+        0, 0, 0, 0
+    };
+    assert(vfs_write(m->system, kc, kpkt, 8) == 8);
+    app_sim_steps(m, 4);
+}
+
+static int32_t app_cell(Machine* m, uint32_t addr) {
+    return tabula_be32(m->cpu->memory + addr);
+}
+
+/* The paddle moves while an arrow key is *held*, which is the one piece of
+ * Breakout with no precedent elsewhere in the repo: every other app acts on
+ * the keypress itself. Drive a press, a release, and a hold-into-the-wall. */
+static void test_breakout_paddle_hold(void) {
+    printf("Testing apps/Breakout.lux: held arrow keys drive the paddle...\n");
+    Machine* m = lux_app_machine("apps/Breakout.lux", "apps/Breakout.bin");
+    if (!m) return;
+
+    system_freeze_monotonic_ms(m->system, 1000);
+
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    app_sim_steps(m, 30);
+
+    assert(app_cell(m, BREAKOUT_STATE) == BREAKOUT_S_TITLE);
+
+    /* Enter at the title screen starts a game and leaves it ready to serve. */
+    app_hold_key(m, kc, 0, 13);
+    app_hold_key(m, kc, 1, 13);
+    app_sim_steps(m, 10);
+    assert(app_cell(m, BREAKOUT_STATE) == BREAKOUT_S_SERVE);
+
+    int32_t px0 = app_cell(m, BREAKOUT_PX);
+    int32_t pw = app_cell(m, BREAKOUT_PW);
+    assert(pw == 64);
+
+    /* Hold right: the paddle keeps moving step after step with no further
+     * packets, which is what distinguishes held-key from per-keypress. */
+    app_hold_key(m, kc, 0, 20);
+    app_sim_steps(m, 30);
+    int32_t px1 = app_cell(m, BREAKOUT_PX);
+    assert(px1 > px0);
+
+    /* Release: it stops, and stays stopped. Before the host learned to deliver
+     * KEY_UP at all (src/system.c, system_push_host_event), this held under
+     * the harness -- which writes packets straight into the kbd channel -- and
+     * failed in bin/cloister, where the release never arrived. */
+    app_hold_key(m, kc, 1, 20);
+    app_sim_steps(m, 30);
+    int32_t px2 = app_cell(m, BREAKOUT_PX);
+    app_sim_steps(m, 30);
+    assert(app_cell(m, BREAKOUT_PX) == px2);
+
+    /* Hold right into the wall: it clamps and does not run off the field.
+     * The test canvas is 960x720, so play_r == (960 + 480) / 2 == 720. */
+    app_hold_key(m, kc, 0, 20);
+    app_sim_steps(m, 400);
+    assert(app_cell(m, BREAKOUT_PX) == 720 - pw);
+    app_hold_key(m, kc, 1, 20);
+
+    /* Hold left into the far wall: play_l == (960 - 480) / 2 == 240. */
+    app_hold_key(m, kc, 0, 19);
+    app_sim_steps(m, 400);
+    assert(app_cell(m, BREAKOUT_PX) == 240);
+    app_hold_key(m, kc, 1, 19);
+
+    /* While serving the ball rides the paddle, so it tracked all of that. */
+    assert(app_cell(m, BREAKOUT_STATE) == BREAKOUT_S_SERVE);
+    int32_t ball_mid = app_cell(m, BREAKOUT_BX) / 256 + 4;
+    int32_t pad_mid = app_cell(m, BREAKOUT_PX) + pw / 2;
+    assert(ball_mid == pad_mid);
+
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    printf("  Breakout paddle: OK\n");
+}
+
+/* apps/Snake.lux state cells (see the @-constants at the top of the app). */
+#define SNAKE_HEAD  0x8A0000
+#define SNAKE_STATE 0x8A0018
+#define SNAKE_TICK  0x8A001C
+#define SNAKE_SPEED 0x8A0020
+
+/* Snake moved onto the same fixed-timestep clock as Breakout: `tick`/`speed`
+ * now count simulation steps rather than rendered frames. Check the crawl
+ * still happens, and happens on the clock rather than on the frame. */
+static void test_snake_tick_clock(void) {
+    printf("Testing apps/Snake.lux: the snake crawls on the simulation clock...\n");
+    Machine* m = lux_app_machine("apps/Snake.lux", "apps/Snake.bin");
+    if (!m) return;
+
+    system_freeze_monotonic_ms(m->system, 1000);
+
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    app_sim_steps(m, 30);
+
+    /* Enter at the title screen starts a round. */
+    app_hold_key(m, kc, 0, 13);
+    app_hold_key(m, kc, 1, 13);
+    app_sim_steps(m, 5);
+    assert(app_cell(m, SNAKE_STATE) == 1);
+
+    int32_t speed = app_cell(m, SNAKE_SPEED);
+    assert(speed == 10);
+
+    /* Frames where the clock stands still advance nothing at all -- before the
+     * split this counter was driven by the render loop. */
+    int32_t head = app_cell(m, SNAKE_HEAD);
+    int32_t tick = app_cell(m, SNAKE_TICK);
+    quill_lux_pump(m, 5);
+    assert(app_cell(m, SNAKE_TICK) == tick);
+    assert(app_cell(m, SNAKE_HEAD) == head);
+
+    /* `speed` steps of the clock is exactly one move of the snake. */
+    app_sim_steps(m, speed);
+    assert(app_cell(m, SNAKE_HEAD) == head + 1);
+
+    app_sim_steps(m, speed);
+    assert(app_cell(m, SNAKE_HEAD) == head + 2);
+
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    printf("  Snake tick clock: OK\n");
+}
+
+/* lib/app.lux runs simulation on a fixed 16ms step and replays the steps a
+ * slow frame missed, so a game's speed does not track how long a frame took to
+ * draw. Breakout's paddle is the cleanest probe: it moves PAD_SPEED px per
+ * step, so px is a direct step counter. */
+/* Breakout's draw positions after interpolation (see @dbx/@dby/@dpx). */
+#define BREAKOUT_DBX 0x880080
+#define BREAKOUT_DBY 0x880084
+
+/* A fixed 16ms step never divides a ~16.67ms frame, so roughly every 24th
+ * frame runs two simulation steps. Painting raw simulation state made that
+ * frame jump the ball twice as far as its neighbours -- a visible lurch a
+ * couple of times a second. APP::lerp/APP::tick-alpha render between the
+ * previous step and the current one instead, which should leave the ball
+ * advancing the same distance every frame however the steps fell.
+ *
+ * The ball travels 2.34 px/frame, so consecutive frames may legitimately
+ * differ by one pixel of rounding -- but never by more. */
+static void test_ball_render_smoothness(void) {
+    printf("Testing apps/Breakout.lux: interpolated ball motion is frame-uniform...\n");
+    Machine* m = lux_app_machine("apps/Breakout.lux", "apps/Breakout.bin");
+    if (!m) return;
+
+    system_freeze_monotonic_ms(m->system, 1000);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    app_sim_steps(m, 30);
+    app_hold_key(m, kc, 0, 13); app_hold_key(m, kc, 1, 13);
+    app_sim_steps(m, 10);
+    app_hold_key(m, kc, 0, 32); app_hold_key(m, kc, 1, 32);
+    app_sim_steps(m, 2);
+    assert(app_cell(m, BREAKOUT_STATE) == BREAKOUT_S_PLAY);
+
+    /* 17,17,16 repeating averages 16.67ms -- cloister's FRAME_TARGET_MS. */
+    const int cadence[3] = { 17, 17, 16 };
+    int32_t prev_x = app_cell(m, BREAKOUT_DBX);
+    int32_t prev_y = app_cell(m, BREAKOUT_DBY);
+    int dy2 = 0, dy3 = 0;
+
+    /* 60 frames of climbing, comfortably short of the ~200 steps it takes to
+     * reach the wall, so the ball is in free flight throughout. */
+    for (int f = 0; f < 60; f++) {
+        m->system->time_ms += cadence[f % 3];
+        quill_lux_pump(m, 1);
+        int32_t x = app_cell(m, BREAKOUT_DBX);
+        int32_t y = app_cell(m, BREAKOUT_DBY);
+        int dx = prev_x - x;
+        int dy = prev_y - y;
+
+        /* Rising and drifting left, by a rounded 2.34 and 1.17 px a frame.
+         * Before interpolation a double-step frame moved 5 px here. */
+        assert(dy == 2 || dy == 3);
+        assert(dx == 1 || dx == 2);
+        if (dy == 2) dy2++; else dy3++;
+
+        prev_x = x;
+        prev_y = y;
+    }
+
+    /* The 2s and 3s are the rounding of a constant 2.34 px/frame, so they come
+     * in roughly a 2:1 mix -- not, say, 59 frames of 2 and one frame of 22. */
+    assert(dy2 > 30 && dy2 < 48);
+    assert(dy3 > 12 && dy3 < 30);
+
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    printf("  Breakout render smoothness: OK\n");
+}
+
+static void test_app_fixed_timestep(void) {
+    printf("Testing lib/app.lux: fixed-timestep catch-up...\n");
+    Machine* m = lux_app_machine("apps/Breakout.lux", "apps/Breakout.bin");
+    if (!m) return;
+
+    system_freeze_monotonic_ms(m->system, 1000);
+
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    app_sim_steps(m, 30);
+    app_hold_key(m, kc, 0, 13);
+    app_hold_key(m, kc, 1, 13);
+    app_sim_steps(m, 10);
+    assert(app_cell(m, BREAKOUT_STATE) == BREAKOUT_S_SERVE);
+
+    /* Hold left, and settle so the release below is the only thing in flight. */
+    app_hold_key(m, kc, 0, 19);
+    app_sim_steps(m, 5);
+
+    /* A frame where no time passed runs no steps at all. */
+    int32_t px = app_cell(m, BREAKOUT_PX);
+    quill_lux_pump(m, 3);
+    assert(app_cell(m, BREAKOUT_PX) == px);
+
+    /* One frame that took 48ms replays the three steps it owes, rather than
+     * running one step and letting the game fall behind real time. */
+    m->system->time_ms += 3 * APP_STEP_MS;
+    quill_lux_pump(m, 1);
+    assert(app_cell(m, BREAKOUT_PX) == px - 3 * BREAKOUT_PAD_SPEED);
+
+    /* Sub-step remainders accumulate instead of being discarded: three 8ms
+     * frames are 24ms, which is one whole step with 8ms left over. */
+    px = app_cell(m, BREAKOUT_PX);
+    for (int i = 0; i < 3; i++) {
+        m->system->time_ms += 8;
+        quill_lux_pump(m, 1);
+    }
+    assert(app_cell(m, BREAKOUT_PX) == px - BREAKOUT_PAD_SPEED);
+
+    /* A long stall is clamped (MAX_DT) and capped (MAX_STEPS) rather than
+     * dumping seconds of simulation into one frame. */
+    px = app_cell(m, BREAKOUT_PX);
+    m->system->time_ms += 10000;
+    quill_lux_pump(m, 1);
+    int32_t moved = (px - app_cell(m, BREAKOUT_PX)) / BREAKOUT_PAD_SPEED;
+    assert(moved > 0 && moved <= 5);
+
+    /* And the backlog is dropped, not carried: the next zero-time frame is
+     * still a no-op rather than another five steps of catch-up. */
+    px = app_cell(m, BREAKOUT_PX);
+    quill_lux_pump(m, 3);
+    assert(app_cell(m, BREAKOUT_PX) == px);
+
+    app_hold_key(m, kc, 1, 19);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    printf("  app fixed timestep: OK\n");
+}
+
+/* The paddle test stops at S_SERVE, so nothing covered the part of Breakout
+ * that actually moves on its own: the ball. Serve, then let the simulation
+ * clock run and check that the ball travels, breaks the brick it reaches and
+ * reflects off it, and costs a life when it gets past the paddle. */
+static void test_breakout_ball_play(void) {
+    printf("Testing apps/Breakout.lux: served ball travels, bounces, breaks bricks...\n");
+    Machine* m = lux_app_machine("apps/Breakout.lux", "apps/Breakout.bin");
+    if (!m) return;
+
+    system_freeze_monotonic_ms(m->system, 1000);
+
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    app_sim_steps(m, 30);
+
+    /* Enter to start, Space to serve. */
+    app_hold_key(m, kc, 0, 13);
+    app_hold_key(m, kc, 1, 13);
+    app_sim_steps(m, 10);
+    assert(app_cell(m, BREAKOUT_STATE) == BREAKOUT_S_SERVE);
+    assert(app_cell(m, BREAKOUT_LEFT_N) == 60);
+
+    app_hold_key(m, kc, 0, 32);
+    app_hold_key(m, kc, 1, 32);
+    app_sim_steps(m, 2);
+    assert(app_cell(m, BREAKOUT_STATE) == BREAKOUT_S_PLAY);
+
+    /* The serve sends the ball upward: vy is negative and by decreases. */
+    assert(app_cell(m, BREAKOUT_VY) < 0);
+    int32_t by0 = app_cell(m, BREAKOUT_BY);
+    int32_t bx0 = app_cell(m, BREAKOUT_BX);
+    app_sim_steps(m, 20);
+    assert(app_cell(m, BREAKOUT_BY) < by0);
+    assert(app_cell(m, BREAKOUT_BX) != bx0);
+
+    /* ~200 steps of climbing reaches the bottom row of the wall. One brick
+     * goes, and the ball turns around: this is the whole collision path --
+     * cell lookup, brick clear, and the vy flip that step-y asks for. */
+    app_sim_steps(m, 250);
+    assert(app_cell(m, BREAKOUT_LEFT_N) == 59);
+    assert(app_cell(m, BREAKOUT_STATE) == BREAKOUT_S_PLAY);
+    assert(app_cell(m, BREAKOUT_VY) > 0);
+
+    /* It never leaves the playfield on the way: play_t == BAR_H == 28. */
+    int32_t by_mid = app_cell(m, BREAKOUT_BY) / 256;
+    assert(by_mid >= 28 && by_mid <= 720);
+
+    /* Nothing moved the paddle, and the serve leans sideways, so the ball
+     * comes down past it and costs a life -- which puts the game back into
+     * S_SERVE with the ball re-attached to the paddle. */
+    app_sim_steps(m, 250);
+    assert(app_cell(m, BREAKOUT_STATE) == BREAKOUT_S_SERVE);
+    assert(app_cell(m, BREAKOUT_LIVES) == 2);
+    assert(app_cell(m, BREAKOUT_LEFT_N) == 59);
+
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    printf("  Breakout ball: OK\n");
 }
 
 static void test_illumos_paint_save(void) {
@@ -4605,6 +4962,11 @@ int main(void) {
     test_tabula_calc_esc_stops();
 
     test_lux_apps_compile();
+    test_breakout_paddle_hold();
+    test_breakout_ball_play();
+    test_app_fixed_timestep();
+    test_snake_tick_clock();
+    test_ball_render_smoothness();
     test_illumos_paint_save();
     test_illumos_collection_click();
     test_nib_rect_save();

@@ -4,6 +4,7 @@ INCLUDE "lib/vfs.lux"
 INCLUDE "lib/draw.lux"
 INCLUDE "lib/event.lux"
 INCLUDE "lib/ui.lux"
+INCLUDE "lib/time.lux"
 
 MODULE APP
 
@@ -11,6 +12,7 @@ IMPORT VFS
 IMPORT DRAW
 IMPORT EVENT
 IMPORT UI
+IMPORT TIME
 
 ( --- State --- )
 ( Using 0x8C0000 range to avoid collision with DRAW::BUF at 0x8F0000 )
@@ -31,6 +33,23 @@ IMPORT UI
 @text-font-id  0x8C0080 ;
 @text-font-grp 0x8C0084 ;
 @v-font        0x8C0088 ;
+
+( --- Fixed-timestep simulation clock ---
+  Painting happens once per rendered frame, but simulation runs on its own
+  fixed 16ms step so a game's speed does not depend on how long a frame took
+  to draw, or on the host's refresh rate. An app registers on-tick! for
+  physics/state and on-frame! for drawing; an app that registers no on-tick
+  never reads the clock and behaves exactly as it did before. )
+@v-tick    0x8C008C ;  ( simulation hook, 0 = not registered )
+@tick-acc  0x8C0090 ;  ( unspent milliseconds )
+@tick-ms   0x8C0094 ;  ( monotonic ms sampled on the previous frame )
+@tfd       0x8C0098 ;  ( persistent /dev/time fd, 0 = not open )
+@tbuf      0x8C00A0 ;  ( 16-byte /dev/time snapshot )
+
+@STEP_MS   16 ;   ( ~60 simulation steps a second )
+@MAX_STEPS  5 ;   ( catch-up cap for one rendered frame )
+@MAX_DT   100 ;   ( never replay more than 100ms of a stall )
+@ALPHA_ONE 256 ;  ( tick-alpha's scale: a whole step )
 ( Alias of UI::APP_MODAL — same cell, not a second reservation. )
 @modal-f  ( -- addr ) UI::APP_MODAL ;
 
@@ -46,6 +65,44 @@ IMPORT UI
 @under-shell? ( -- f ) nfd LOADI ;
 @width    ( -- w )  win-w LOADI ;
 @height   ( -- h )  win-h LOADI ;
+
+( Monotonic milliseconds off the persistent /dev/time fd -- bytes 12-15 of the
+  16-byte snapshot. TIME::milli@ would do the same job, but it opens and closes
+  the device on every call, and this runs once a frame. Returns tick-ms
+  unchanged if the device was never opened, which reads as dt = 0. )
+( How far into the current simulation step the renderer is, 0..ALPHA_ONE-1.
+  A fixed step never lines up with a frame period -- 16ms against cloister's
+  16.67ms means one frame in every ~24 runs two steps -- so an app that paints
+  its raw simulation state lurches on those frames. Painting instead at
+  `prev + (cur - prev) * tick-alpha / ALPHA_ONE` renders one step behind but
+  advances by the same distance every frame, however the steps fell.
+
+  Only meaningful during on-frame, after the tick phase has spent the whole
+  steps it owed. )
+@tick-alpha ( -- n )
+    tick-acc LOADI ALPHA_ONE * STEP_MS /
+    dup ALPHA_ONE >= [ drop ALPHA_ONE 1 - ] ?
+    dup 0 < [ drop 0 ] ?
+;
+
+( Interpolate one value between its previous-step and current-step readings.
+  Whole units in, whole units out: an app holding fixed-point state should
+  pass the scaled values and divide afterwards, so the fraction survives. )
+@lerp ( prev cur -- v )
+    OVER - tick-alpha * ALPHA_ONE / +
+;
+
+@now-ms ( -- ms )
+    tfd LOADI 0 > [
+        tfd LOADI tbuf 16 VFS::read 16 = [
+            tbuf 12 + TIME::load-int-le
+        ] [
+            tick-ms LOADI
+        ] ?:
+    ] [
+        tick-ms LOADI
+    ] ?:
+;
 
 ( A caller that bypasses APP::init/loop entirely -- e.g. Fluxio's own
   self-contained event loop, docs/quill_fluxio.md Phase C -- never runs
@@ -65,6 +122,14 @@ IMPORT UI
 
 ( --- Vector Setters --- )
 @on-frame! ( addr -- ) v-frame STOREI ;
+
+( Registering the sim hook also seeds the clock, so the first tick phase sees
+  a small dt rather than the whole interval since the machine booted. )
+@on-tick!  ( addr -- )
+    v-tick STOREI
+    0 tick-acc STOREI
+    now-ms tick-ms STOREI
+;
 @on-mouse! ( addr -- ) v-mouse STOREI ;
 @on-kbd!   ( addr -- ) v-kbd   STOREI ;
 @on-resume! ( addr -- ) v-resume STOREI ;
@@ -195,6 +260,12 @@ IMPORT UI
     ] |:
     kfd STOREI
 
+    ( /dev/time drives the fixed-timestep clock. Optional in the same sense as
+      /dev/menu: without it now-ms reports no elapsed time and on-tick simply
+      never fires, which is no worse than not registering one. )
+    T"/dev/time" VFS::open dup 0 < [ drop 0 ] ?
+    tfd STOREI
+
     ( /dev/menu is optional; a missing file means the app owns its bar. )
     T"/dev/menu" VFS::open dup 0 < [ drop 0 ] ?
     nfd STOREI
@@ -289,8 +360,12 @@ IMPORT UI
             ] ?:
         ] |:
 
-        ( 2. Handle Keyboard )
-        kfd LOADI kpkt 8 VFS::read-noyield 8 = [
+        ( 2. Handle Keyboard — drained like the mouse. A held key is a
+          KEY_DOWN/KEY_UP pair, and a burst of auto-repeat arrives faster
+          than one packet a frame, so taking a single packet per frame let
+          the 64-slot queue back up into visible input lag. )
+        [ kfd LOADI kpkt 8 VFS::read-noyield 8 = ]
+        [
             esc-open LOADI [
                 kpkt handle-esc-kbd
             ] [
@@ -305,7 +380,7 @@ IMPORT UI
                     ] [ drop ] ?:
                 ] ?:
             ] ?:
-        ] ?
+        ] |:
 
         nfd LOADI 0 > [
             nfd LOADI npkt 32 VFS::read
@@ -321,14 +396,43 @@ IMPORT UI
         ] ?
         UI::handle
 
-        ( 3. Handle Frame )
+        ( 3. Simulation — fixed STEP_MS steps, however long the frame took.
+          A frame that overran replays the steps it missed instead of just
+          running the game slower. )
+        v-tick LOADI 0 > [
+            now-ms { now }
+                now tick-ms LOADI - { dt }
+                    ( First frame, or a clock that went backwards. )
+                    dt 0 < [ 0 dt! ] ?
+                    ( Don't replay a long stall -- an app resumed from the ESC
+                      menu, or a frame that blew its cycle budget, would
+                      otherwise dump seconds of simulation into one frame. )
+                    dt MAX_DT > [ MAX_DT dt! ] ?
+                    now tick-ms STOREI
+                    tick-acc LOADI dt + tick-acc STOREI
+                UNGIRD
+            UNGIRD
+
+            0 { steps }
+                [ tick-acc LOADI STEP_MS >= steps MAX_STEPS < AND ] [
+                    v-tick LOADI CALLSTACK
+                    tick-acc LOADI STEP_MS - tick-acc STOREI
+                    steps 1 + steps!
+                ] |:
+                ( Capped out: drop the backlog rather than carry it into the
+                  next frame, where it would cap out again forever. )
+                steps MAX_STEPS >= [ 0 tick-acc STOREI ] ?
+            UNGIRD
+        ] ?
+
+        ( 4. Handle Frame — drawing only, for an app that also has on-tick )
         v-frame LOADI dup 0 > [
             CALLSTACK
         ] [ drop ] ?:
 
         nfd LOADI 0 > [ UI::export ] ?
 
-        ( 4. Handle Overlay )
+        ( 5. Handle Overlay )
         esc-open LOADI [
             draw-esc-popup
         ] ?

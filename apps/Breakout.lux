@@ -1,0 +1,562 @@
+( Breakout — paddle, ball, brick wall. Arrow keys move, Space serves,
+  three lives, levels that keep coming until you run out.
+
+  The first Cloister app with continuous motion. The ball's position and
+  velocity are fixed-point with 8 fractional bits, and each frame it moves
+  in several sub-steps, one axis at a time, so that a fast ball cannot
+  tunnel through a 16px brick and so the reflection axis is unambiguous.
+
+  Design notes: docs/games/breakout_clone.md
+
+  ./bin/cloister apps/Breakout.bin )
+
+INCLUDE "lib/app.lux"
+INCLUDE "lib/ui.lux"
+
+MODULE BREAKOUT
+VERSION 400000
+
+IMPORT APP
+IMPORT UI
+IMPORT DRAW
+IMPORT EVENT
+IMPORT STR
+IMPORT VFS
+
+( Read out of this source by scan_lux_win_size (src/cloister.c) to size the
+  SDL window before the ROM boots. Everything below lays out from
+  APP::width/APP::height, not from these, so an ESC-menu restart re-derives. )
+@WIN_W 512 ;
+@WIN_H 480 ;
+
+( --- Geometry --- )
+@BAR_H      28 ;
+@COLS       10 ;
+@ROWS        6 ;
+@NBRICK     60 ;   ( COLS * ROWS )
+@BRICK_W    48 ;
+@BRICK_H    16 ;
+@BRICK_TOP  68 ;   ( BAR_H + 40 )
+@PAD_W      64 ;
+@PAD_H       8 ;
+@PAD_GAP    40 ;   ( paddle inset from the bottom of the canvas )
+@PAD_MIN    32 ;
+@PAD_SPEED   6 ;
+@BALL        8 ;
+
+( --- Fixed point: one unit is 1/256 px --- )
+@FP         256 ;
+@BASE_SPEED 576 ;  ( 2.25 px/frame )
+@LEVEL_STEP  64 ;
+@MAX_SPEED 1408 ;  ( 5.5 px/frame; past this it stops being a game )
+@MIN_VY     192 ;  ( keeps the ball from ever running near-horizontal )
+
+( --- States --- )
+@S_TITLE   0 ;
+@S_SERVE   1 ;
+@S_PLAY    2 ;
+@S_CLEARED 3 ;
+@S_OVER    4 ;
+
+( --- State. 0x880000 is a free slice of the app small-state band; see
+      docs/memory-map.md for the occupied addresses it clears. --- )
+@bx      0x880000 ;  ( ball left edge, fixed point )
+@by      0x880004 ;  ( ball top edge, fixed point )
+@vx      0x880008 ;  ( fixed point )
+@vy      0x88000C ;
+@px      0x880010 ;  ( paddle left edge, whole px )
+@pw      0x880014 ;  ( paddle width, whole px )
+@kleft   0x880018 ;  ( held-key flags )
+@kright  0x88001C ;
+@state   0x880020 ;
+@lives   0x880024 ;
+@score   0x880028 ;
+@best    0x88002C ;
+@level   0x880030 ;
+@left-n  0x880034 ;  ( bricks remaining )
+@speed   0x880038 ;  ( fixed point )
+@side    0x88003C ;  ( which way the next serve leans )
+@afd     0x880040 ;
+( Where the ball and paddle stood before the current simulation step. Drawing
+  interpolates between these and the live values -- see @paint-field. )
+@pbx     0x880044 ;  ( fixed point )
+@pby     0x880048 ;  ( fixed point )
+@ppx     0x88004C ;  ( whole px )
+@nbuf    0x880050 ;  ( int-to-str scratch )
+@abuf    0x880070 ;  ( /dev/audio packet )
+( The interpolated positions @paint-field actually drew, in whole px. Kept in
+  memory so a headless probe can measure per-frame smoothness. )
+@dbx     0x880080 ;
+@dby     0x880084 ;
+@dpx     0x880088 ;
+@bricks  0x881000 ;  ( NBRICK words: 0 empty, else row+1 )
+
+( --- Playfield edges. The wall is exactly as wide as the brick grid, so the
+      two always line up whatever the window size turns out to be. --- )
+@field-w ( -- w ) COLS BRICK_W * ;
+@play-l  ( -- x ) APP::width field-w - 2 / ;
+@play-r  ( -- x ) play-l field-w + ;
+@play-t  ( -- y ) BAR_H ;
+@pad-y   ( -- y ) APP::height PAD_GAP - ;
+
+@ball-l ( -- x ) bx LOADI FP / ;
+@ball-t ( -- y ) by LOADI FP / ;
+@ball-r ( -- x ) ball-l BALL + 1 - ;
+@ball-b ( -- y ) ball-t BALL + 1 - ;
+@pad-mid ( -- x ) px LOADI pw LOADI 2 / + ;
+
+@beep { id -- }
+    afd LOADI 0 < [ ] [
+        id abuf DRAW::store-int-le
+        afd LOADI abuf 4 VFS::write drop
+    ] ?:
+;
+
+@load-best
+    T"/sys/file/.breakout_hi" VFS::open
+    dup 0 < [
+        drop
+        0 best STOREI
+    ] [
+        dup best 4 VFS::read drop
+        VFS::close drop
+    ] ?:
+;
+
+@save-best
+    T"/sys/file/.breakout_hi" VFS::open
+    dup 0 < [
+        drop
+    ] [
+        dup best 4 VFS::write drop
+        VFS::close drop
+    ] ?:
+;
+
+@record-best
+    score LOADI best LOADI > [
+        score LOADI best STOREI
+        save-best
+    ] ?
+;
+
+( --- Brick wall --- )
+
+( Grid cell containing a point, or -1 when the point is off the wall. )
+@cell-of { x y -- idx }
+    y BRICK_TOP <
+    y BRICK_TOP ROWS BRICK_H * + >= OR
+    x play-l < OR
+    x play-r >= OR
+    [ -1 ] [
+        y BRICK_TOP - BRICK_H / COLS *
+        x play-l - BRICK_W / +
+    ] ?:
+;
+
+( That cell's index if it holds a brick, else -1. )
+@try-cell { x y -- idx }
+    x y cell-of { idx }
+        idx 0 < [ -1 ] [
+            idx 4 * bricks + LOADI 0 > [ idx ] [ -1 ] ?:
+        ] ?:
+    UNGIRD
+;
+
+( First of the ball's four corners sitting on a brick, else -1. )
+@find-brick ( -- idx )
+    -1
+    dup 0 < [ drop ball-l ball-t try-cell ] ?
+    dup 0 < [ drop ball-r ball-t try-cell ] ?
+    dup 0 < [ drop ball-l ball-b try-cell ] ?
+    dup 0 < [ drop ball-r ball-b try-cell ] ?
+;
+
+( Clear one brick under the ball and reflect. flip-x picks the axis: it is
+  set by whichever of step-x / step-y just moved, which is the whole reason
+  the two axes advance separately. )
+@hit-brick { flip-x -- }
+    find-brick { idx }
+        idx 0 >= [
+            idx 4 * bricks + LOADI { row }
+                0 idx 4 * bricks + STOREI
+                left-n LOADI 1 - left-n STOREI
+                score LOADI ROWS row - 1 + 10 * + score STOREI
+                440 row 1 - 40 * + beep
+            UNGIRD
+            flip-x [
+                vx LOADI NEGATE vx STOREI
+            ] [
+                vy LOADI NEGATE vy STOREI
+            ] ?:
+        ] ?
+    UNGIRD
+;
+
+( --- Ball --- )
+
+@ball-to-paddle
+    pad-mid BALL 2 / - FP * bx STOREI
+    pad-y BALL - FP * by STOREI
+;
+
+( Collapse the interpolation window onto the current position. Motion between
+  two steps is a straight line, which is only true while the ball is *moving*;
+  after a teleport -- losing a life, starting a level -- the previous position
+  is somewhere else entirely, and interpolating would streak the ball across
+  the screen for one frame. )
+@sync-prev
+    bx LOADI pbx STOREI
+    by LOADI pby STOREI
+    px LOADI ppx STOREI
+;
+
+@to-serve
+    S_SERVE state STOREI
+    0 vx STOREI
+    0 vy STOREI
+    ball-to-paddle
+    sync-prev
+;
+
+@serve
+    S_PLAY state STOREI
+    speed LOADI 2 /
+    side LOADI 0 = [ NEGATE ] ?
+    vx STOREI
+    speed LOADI NEGATE vy STOREI
+    side LOADI 1 XOR side STOREI
+;
+
+( Where along the paddle the ball lands sets the outgoing angle. vy is
+  derived by subtraction rather than sqrt(speed^2 - vx^2) -- there is no sqrt
+  opcode, and at these speeds the difference is invisible. )
+@paddle-bounce
+    ball-l BALL 2 / + pad-mid - { off }
+        off speed LOADI * 2 * pw LOADI / vx STOREI
+    UNGIRD
+    speed LOADI vx LOADI ABS 2 / - MIN_VY MAX NEGATE vy STOREI
+    pad-y BALL - FP * by STOREI
+    220 beep
+;
+
+@lose-life
+    lives LOADI 1 - lives STOREI
+    110 beep
+    lives LOADI 0 <= [
+        S_OVER state STOREI
+        record-best
+        place-again
+    ] [
+        to-serve
+    ] ?:
+;
+
+@step-x { d -- }
+    bx LOADI d + bx STOREI
+    ball-l play-l < [
+        play-l FP * bx STOREI
+        vx LOADI ABS vx STOREI
+        165 beep
+    ] ?
+    ball-r play-r >= [
+        play-r BALL - FP * bx STOREI
+        vx LOADI ABS NEGATE vx STOREI
+        165 beep
+    ] ?
+    1 hit-brick
+;
+
+@paddle-hit? ( -- f )
+    vy LOADI 0 >
+    ball-b pad-y >= AND
+    ball-t pad-y PAD_H + < AND
+    ball-r px LOADI >= AND
+    ball-l px LOADI pw LOADI + < AND
+;
+
+@step-y { d -- }
+    by LOADI d + by STOREI
+    ball-t play-t < [
+        play-t FP * by STOREI
+        vy LOADI ABS vy STOREI
+        165 beep
+    ] ?
+    paddle-hit? [ paddle-bounce ] ?
+    0 hit-brick
+    ball-t APP::height > [ lose-life ] ?
+;
+
+( One tick of ball motion, split into enough sub-steps that no single move
+  exceeds a brick's height. The per-step deltas are read from vx/vy inside the
+  loop, not hoisted: step-x and step-y flip a velocity's sign on a wall, brick
+  or paddle bounce, and the sub-steps after that bounce have to travel the new
+  direction. Hoisting them made a bounced ball keep pushing into the surface it
+  had just hit, re-clamping and re-beeping for the rest of the tick. )
+@advance
+    speed LOADI FP / 1 + { n }
+        0 { i }
+            [ i n < state LOADI S_PLAY = AND ] [
+                vx LOADI n / step-x
+                state LOADI S_PLAY = [ vy LOADI n / step-y ] ?
+                i 1 + i!
+            ] |:
+        UNGIRD
+    UNGIRD
+;
+
+( --- Levels --- )
+
+( Level 1 is a solid wall; later levels punch a diagonal of gaps, so each one
+  looks different without a table of hand-drawn maps. Gaps only ever remove
+  bricks, so no level can come out unwinnable. )
+@fill-bricks
+    0 left-n STOREI
+    0 { i }
+        [ i NBRICK < ] [
+            i COLS / i COLS MOD { r c }
+                c r + level LOADI + 6 MOD 0 =
+                level LOADI 1 > AND
+                [ 0 ] [ r 1 + ] ?:
+                dup i 4 * bricks + STOREI
+                0 > [ left-n LOADI 1 + left-n STOREI ] ?
+            UNGIRD
+            i 1 + i!
+        ] |:
+    UNGIRD
+;
+
+@apply-level
+    BASE_SPEED level LOADI 1 - LEVEL_STEP * + MAX_SPEED MIN speed STOREI
+    PAD_W level LOADI 1 - 8 * - PAD_MIN MAX pw STOREI
+    APP::width pw LOADI - 2 / px STOREI
+    fill-bricks
+    to-serve
+    UI::overlay-clear
+;
+
+@next-level
+    level LOADI 1 + level STOREI
+    apply-level
+;
+
+@new-game
+    1 level STOREI
+    3 lives STOREI
+    0 score STOREI
+    0 side STOREI
+    apply-level
+;
+
+( --- Overlay buttons ( val -- ) --- )
+
+@begin { val -- } new-game ;
+@resume-level { val -- } next-level ;
+
+@place-start
+    UI::overlay-clear
+    T"Start"
+    APP::width 80 - 2 /
+    APP::height 2 / 24 +
+    80 20 [ begin ] UI::overlay-button
+;
+
+@place-again
+    UI::overlay-clear
+    T"Play Again"
+    APP::width 100 - 2 /
+    APP::height 2 / 24 +
+    100 20 [ begin ] UI::overlay-button
+;
+
+@place-next
+    UI::overlay-clear
+    T"Next Level"
+    APP::width 100 - 2 /
+    APP::height 2 / 24 +
+    100 20 [ resume-level ] UI::overlay-button
+;
+
+( --- Paddle --- )
+
+@move-paddle
+    kleft LOADI [ px LOADI PAD_SPEED - px STOREI ] ?
+    kright LOADI [ px LOADI PAD_SPEED + px STOREI ] ?
+    px LOADI play-l MAX play-r pw LOADI - MIN px STOREI
+;
+
+( --- Painting --- )
+
+@paint-bar
+    APP::draw-fd 0 0 APP::width BAR_H 0xFFFFFF DRAW::fill-rect
+    APP::draw-fd 0 BAR_H 1 - APP::width 1 0x000000 DRAW::fill-rect
+    APP::draw-fd 8 8 T"Score" 0x000000 1 DRAW::draw-str
+    score LOADI nbuf STR::int-to-str
+    APP::draw-fd 56 8 nbuf 0x000000 1 DRAW::draw-str
+    APP::draw-fd 132 8 T"Lives" 0x000000 1 DRAW::draw-str
+    lives LOADI nbuf STR::int-to-str
+    APP::draw-fd 180 8 nbuf 0x000000 1 DRAW::draw-str
+    APP::draw-fd 232 8 T"Level" 0x000000 1 DRAW::draw-str
+    level LOADI nbuf STR::int-to-str
+    APP::draw-fd 280 8 nbuf 0x000000 1 DRAW::draw-str
+    APP::draw-fd APP::width 140 - 8 T"Best" 0x000000 1 DRAW::draw-str
+    best LOADI nbuf STR::int-to-str
+    APP::draw-fd APP::width 100 - 8 nbuf 0x000000 1 DRAW::draw-str
+;
+
+( Rows band by fill so the wall reads on a 1-bit screen without colour. )
+@paint-brick { i v -- }
+    play-l i COLS MOD BRICK_W * + 1 + { x }
+    BRICK_TOP i COLS / BRICK_H * + 1 + { y }
+        v 3 MOD 0 = [
+            APP::draw-fd x y BRICK_W 2 - BRICK_H 2 - 0x000000 DRAW::fill-rect
+        ] [
+            APP::draw-fd x y BRICK_W 2 - BRICK_H 2 - 0x000000
+            v 3 MOD 1 = [ 2 ] [ 3 ] ?:
+            DRAW::fill-pat
+        ] ?:
+        APP::draw-fd x y BRICK_W 2 - BRICK_H 2 - 0x000000 DRAW::draw-rect
+    UNGIRD UNGIRD
+;
+
+@paint-field
+    APP::draw-fd
+    play-l 1 -
+    play-t
+    field-w 2 +
+    APP::height play-t -
+    0x000000 DRAW::draw-rect
+
+    0 { i }
+        [ i NBRICK < ] [
+            i 4 * bricks + LOADI { v }
+                v 0 > [ i v paint-brick ] ?
+            UNGIRD
+            i 1 + i!
+        ] |:
+    UNGIRD
+
+    ( Draw where the ball and paddle are *now*, not where the last simulation
+      step left them. A step is 16ms and a frame is ~16.67ms, so the steps do
+      not line up with the frames: every ~24th frame runs two steps and would
+      jump the ball twice as far. Interpolating between the previous step and
+      the current one by APP::tick-alpha renders one step behind but advances
+      the same distance every frame. Ball positions stay in fixed point until
+      after the interpolation, so the fraction is not thrown away first. )
+    pbx LOADI bx LOADI APP::lerp FP / dbx STOREI
+    pby LOADI by LOADI APP::lerp FP / dby STOREI
+    ppx LOADI px LOADI APP::lerp dpx STOREI
+
+    APP::draw-fd dpx LOADI pad-y pw LOADI PAD_H 0x000000 DRAW::fill-rect
+    APP::draw-fd dbx LOADI dby LOADI BALL BALL 0x000000 DRAW::fill-rect
+;
+
+@paint-banner { title sub -- }
+    APP::width 260 - 2 / { bx0 }
+    APP::height 130 - 2 / { by0 }
+        APP::draw-fd bx0 by0 260 130 0x000000 DRAW::fill-rect
+        APP::draw-fd bx0 2 + by0 2 + 256 126 0xFFFFFF DRAW::fill-rect
+        APP::draw-fd bx0 30 + by0 22 + title 0x000000 1 DRAW::draw-str
+        APP::draw-fd bx0 20 + by0 48 + sub 0x000000 1 DRAW::draw-str
+    UNGIRD UNGIRD
+;
+
+@paint
+    APP::draw-fd 0 0 APP::width APP::height 0xFFFFFF DRAW::fill-rect
+    paint-bar
+    state LOADI S_TITLE = [
+        T"BREAKOUT" T"Arrows move, Space serves" paint-banner
+        UI::overlay-draw
+    ] [
+        paint-field
+        state LOADI S_OVER = [
+            T"GAME OVER" T"Press Enter to play again" paint-banner
+            UI::overlay-draw
+        ] ?
+        state LOADI S_CLEARED = [
+            T"WALL CLEARED" T"Press Enter for the next level" paint-banner
+            UI::overlay-draw
+        ] ?
+    ] ?:
+;
+
+( --- Event handlers --- )
+
+@key-set { key down -- }
+    key EVENT::KEY_LEFT_ARROW =
+    key 97 = OR
+    [ down kleft STOREI ] ?
+    key EVENT::KEY_RIGHT_ARROW =
+    key 100 = OR
+    [ down kright STOREI ] ?
+;
+
+@confirm? { key -- f }
+    key EVENT::KEY_ENTER =
+    key EVENT::KEY_SPACE = OR
+;
+
+@on-kbd { kpkt -- }
+    kpkt EVENT::kbd-type kpkt EVENT::kbd-key { t key }
+        t EVENT::KEY_DOWN = [
+            key 1 key-set
+            state LOADI S_SERVE = key confirm? AND [ serve ] ?
+            state LOADI S_TITLE = key confirm? AND [ 0 begin ] ?
+            state LOADI S_OVER = key confirm? AND [ 0 begin ] ?
+            state LOADI S_CLEARED = key confirm? AND [ 0 resume-level ] ?
+        ] ?
+        t EVENT::KEY_UP = [ key 0 key-set ] ?
+    UNGIRD
+;
+
+@on-mouse { mpkt -- }
+    state LOADI S_PLAY = state LOADI S_SERVE = OR [ ] [
+        mpkt UI::overlay-feed
+        UI::overlay-handle
+    ] ?:
+;
+
+( Simulation. Runs on APP's fixed 16ms clock, not once per rendered frame, so
+  the ball travels at the same speed whatever the display refresh is and
+  whatever a frame costs to draw. BASE_SPEED is px per *step*. )
+@on-tick
+    APP::esc-open? 0 = [
+        sync-prev
+        state LOADI S_SERVE = state LOADI S_PLAY = OR [ move-paddle ] ?
+        state LOADI S_SERVE = [ ball-to-paddle ] ?
+        state LOADI S_PLAY = [
+            advance
+            left-n LOADI 0 <= [
+                S_CLEARED state STOREI
+                660 beep
+                record-best
+                place-next
+            ] ?
+        ] ?
+    ] ?
+;
+
+@on-frame
+    paint
+;
+
+@start
+    T"Breakout" APP::init
+    UI::new
+    0 kleft STOREI
+    0 kright STOREI
+    S_TITLE state STOREI
+    T"/dev/audio" VFS::open afd STOREI
+    load-best
+    new-game
+    S_TITLE state STOREI
+    place-start
+    [ on-mouse ] APP::on-mouse!
+    [ on-kbd ] APP::on-kbd!
+    [ on-tick ] APP::on-tick!
+    [ on-frame ] APP::on-frame!
+    APP::loop
+;
+
+BREAKOUT::start
+HALT

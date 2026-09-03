@@ -302,7 +302,10 @@ IMPORT TILEMAP
     ] ?:
 ;
 
-@on-frame ( -- )
+( Simulation. `tick`/`speed` count APP's fixed 16ms steps rather than rendered
+  frames, so the snake crawls at the same rate on any display and under any
+  frame cost. The step counts are unchanged -- frames were already ~60Hz. )
+@on-tick ( -- )
     APP::esc-open? 0 = [
         state LOADI 1 = [
             tick LOADI 1 + tick STOREI
@@ -312,6 +315,9 @@ IMPORT TILEMAP
             ] ?
         ] ?
     ] ?
+;
+
+@on-frame ( -- )
     APP::draw-fd 0 0 APP::width APP::height 0xFFFFFF DRAW::fill-rect
     paint-bar
     state LOADI 0 = [
@@ -338,6 +344,7 @@ IMPORT TILEMAP
     place-start
     [ on-mouse ] APP::on-mouse!
     [ on-kbd ] APP::on-kbd!
+    [ on-tick ] APP::on-tick!
     [ on-frame ] APP::on-frame!
     APP::loop
 ;

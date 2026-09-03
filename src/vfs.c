@@ -327,7 +327,6 @@ static void time_put_le32(uint8_t* p, uint32_t v) {
 }
 
 static int time_read(VFSFile* file, uint8_t* buf, int len) {
-    (void)file;
     if (!buf || len <= 0) return 0;
 
     time_t now = time(NULL);
@@ -342,10 +341,20 @@ static int time_read(VFSFile* file, uint8_t* buf, int len) {
                    ((uint32_t)tm.tm_min << 8) |
                    (uint32_t)tm.tm_sec;
 
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    uint32_t milli = (uint32_t)((uint64_t)ts.tv_sec * 1000ull +
-                                (uint64_t)ts.tv_nsec / 1000000ull);
+    // A frozen clock lets a headless harness drive the fixed-timestep loop in
+    // lib/app.lux deterministically: machine_tick runs far faster than real
+    // time, so a test that relied on the wall clock could never advance a
+    // simulation step. See system_freeze_monotonic_ms.
+    System* sys = (System*)file->private_data;
+    uint32_t milli;
+    if (sys && sys->time_frozen) {
+        milli = sys->time_ms;
+    } else {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        milli = (uint32_t)((uint64_t)ts.tv_sec * 1000ull +
+                           (uint64_t)ts.tv_nsec / 1000000ull);
+    }
 
     uint8_t snap[16];
     time_put_le32(snap, unix_ts);
@@ -363,9 +372,11 @@ static int time_close(VFSFile* file) {
     return 0;
 }
 
-static VFSFile* create_time_file(void) {
+static VFSFile* create_time_file(System* sys) {
     VFSFile* file = (VFSFile*)calloc(1, sizeof(VFSFile));
     if (!file) return NULL;
+    // Borrowed, not owned -- time_close frees only the VFSFile.
+    file->private_data = sys;
     file->read = time_read;
     file->close = time_close;
     return file;
@@ -1253,7 +1264,7 @@ static VFSFile* open_path(System* sys, const char* path, int32_t flags) {
         return create_snarf_file(sys);
     }
     if (strcmp(path, "/sys/time") == 0 || strcmp(path, "/dev/time") == 0) {
-        return create_time_file();
+        return create_time_file(sys);
     }
     if (strcmp(path, "/sys/launch") == 0 || strcmp(path, "/dev/launch") == 0) {
         return create_launch_file(sys);
