@@ -1,6 +1,7 @@
 #include "fluxio_parser.h"
 #include "fluxio_token.h"
 #include "fluxio_ast.h"
+#include "kelvin.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -749,8 +750,18 @@ FxProgram* fx_parse(FxTokenList* tokens) {
         if (check(&p, FXTOK_KW_VERSION)) {
             advance(&p);
             FxToken* ver = expect(&p, FXTOK_INT_LIT, "an integer literal");
-            if (ver->int_value < 0) {
-                fail(&p, "version must be a nonnegative integer (Kelvin versioning, AGENTS.md)");
+            /* Same rules as Lux's VERSION directive -- one implementation in
+             * include/kelvin.h so the two front ends cannot drift apart. */
+            const char* why = kelvin_reject_reason((int32_t) ver->int_value);
+            if (why) {
+                char msg[256];
+                snprintf(msg, sizeof(msg),
+                         "version %lld is not a legal Kelvin version: %s. "
+                         "This platform is %dK (Nux %dK); a guest must be at least "
+                         "as hot. See AGENTS.md's versioning section and cooldown log",
+                         (long long) ver->int_value, why,
+                         CLOISTER_KELVIN / 1000, NUX_KELVIN / 1000);
+                fail(&p, msg);
             }
             expect(&p, FXTOK_SEMI, "';'");
             program->version_seen = true;

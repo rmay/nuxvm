@@ -26,6 +26,9 @@
 
 #include "opcodes.h"
 #include "memory_map.h"
+#include "rom.h"
+#include "sha256.h"
+#include "kelvin.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -280,11 +283,30 @@ int main(int argc, char** argv) {
     char* lib_bytes_signed = read_file(lib_path, &lib_len);
     if (!lib_bytes_signed) { fprintf(stderr, "fluxlink: cannot read %s\n", lib_path); return 1; }
     uint8_t* lib_bytes = (uint8_t*)lib_bytes_signed;
+    if (rom_has_header(lib_bytes, lib_len)) {
+        fprintf(stderr, "fluxlink: %s looks like an app ROM (NUXR header); pass a luxc -base library\n",
+                lib_path);
+        free(lib_bytes);
+        return 1;
+    }
 
-    size_t app_len;
-    char* app_bytes_signed = read_file(app_path, &app_len);
-    if (!app_bytes_signed) { fprintf(stderr, "fluxlink: cannot read %s\n", app_path); return 1; }
-    uint8_t* app_bytes = (uint8_t*)app_bytes_signed;
+    size_t app_file_len;
+    char* app_file = read_file(app_path, &app_file_len);
+    if (!app_file) { fprintf(stderr, "fluxlink: cannot read %s\n", app_path); free(lib_bytes); return 1; }
+    char romerr[256];
+    size_t app_len = 0;
+    int32_t kelvin = 0;
+    bool app_headered = false;
+    uint8_t app_source_sha[ROM_SHA256_LEN];
+    uint8_t* app_bytes = rom_open_image((uint8_t*)app_file, app_file_len, &app_len, &kelvin,
+                                        &app_headered, app_source_sha, romerr, sizeof(romerr));
+    free(app_file);
+    if (!app_bytes) {
+        fprintf(stderr, "fluxlink: %s: %s\n", app_path, romerr);
+        free(lib_bytes);
+        return 1;
+    }
+    if (!app_headered) kelvin = CLOISTER_KELVIN;
 
     int32_t lib_code_base = lib_base + MM_ABI_TRAMPOLINE_RESERVE;
     if (lib_code_base < app_base) {
@@ -325,17 +347,45 @@ int main(int argc, char** argv) {
 
     memcpy(merged + (lib_code_base - app_base), lib_bytes, lib_len);
 
-    FILE* out_f = fopen(out_path, "wb");
-    if (!out_f) { fprintf(stderr, "fluxlink: cannot write %s\n", out_path); return 1; }
-    fwrite(merged, 1, total_len, out_f);
-    fclose(out_f);
+    /* A linked image has no single source file, so its source_sha256 is the
+     * digest of everything that went into it: the app's own recorded source
+     * digest (zeroes if the app came in raw and never recorded one), plus the
+     * library bytes and the two JSON files that decide the trampoline layout.
+     * Change any of them and the merged image's provenance moves with it. */
+    uint8_t source_sha[ROM_SHA256_LEN];
+    {
+        Sha256Ctx ctx;
+        sha256_init(&ctx);
+        uint8_t d[ROM_SHA256_LEN];
+        sha256_update(&ctx, app_source_sha, ROM_SHA256_LEN);
+        sha256(lib_bytes, lib_len, d);
+        sha256_update(&ctx, d, sizeof(d));
+        sha256((const uint8_t*)symtab_json, strlen(symtab_json), d);
+        sha256_update(&ctx, d, sizeof(d));
+        sha256((const uint8_t*)exports_json, strlen(exports_json), d);
+        sha256_update(&ctx, d, sizeof(d));
+        sha256_final(&ctx, source_sha);
+    }
+
+    uint8_t sha[ROM_SHA256_LEN];
+    if (!rom_write_file(out_path, merged, total_len, kelvin, source_sha, sha)) {
+        fprintf(stderr, "fluxlink: cannot write %s\n", out_path);
+        free(symtab_json);
+        free(exports_json);
+        free(lib_bytes);
+        free(app_bytes);
+        free(merged);
+        return 1;
+    }
+    char hex[65];
+    rom_sha256_hex(sha, hex);
 
     printf("fluxlink: linked %d export(s) from %s into %s\n", export_count, lib_path, out_path);
     printf("  app:     0x%X (%zu bytes)\n", (unsigned)app_base, app_len);
     printf("  trampoline: 0x%X (%d bytes reserved, %d used)\n",
            (unsigned)lib_base, (int)MM_ABI_TRAMPOLINE_RESERVE, (int)(12 + 5 * export_count));
     printf("  lib code:   0x%X (%zu bytes)\n", (unsigned)lib_code_base, lib_len);
-    printf("  merged:     %zu bytes total\n", total_len);
+    printf("  merged:     %zu bytes payload, VERSION %d, sha256=%s\n", total_len, kelvin, hex);
 
     free(symtab_json);
     free(exports_json);

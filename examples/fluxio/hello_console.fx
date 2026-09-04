@@ -14,7 +14,7 @@
  *   bin/nux examples/fluxio/hello_console.bin
  */
 
-version 400000;
+version 399000;
 
 /** prints "Hello, World!" followed by a newline, one ASCII code at a time */
 int say_hello() {

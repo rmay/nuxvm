@@ -3,6 +3,7 @@
 #include "machine.h"
 #include "compiler.h"
 #include "vm.h"
+#include "rom.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -928,11 +929,22 @@ static int vm_write(VFSFile* file, const uint8_t* buf, int len) {
         fseek(f, 0, SEEK_END);
         long fs = ftell(f);
         fseek(f, 0, SEEK_SET);
-        program = (uint8_t*)malloc((size_t)fs);
-        if (!program) { fclose(f); return 0; }
-        fread(program, 1, (size_t)fs, f);
+        uint8_t* raw = (uint8_t*)malloc((size_t)fs);
+        if (!raw) { fclose(f); return 0; }
+        if (fread(raw, 1, (size_t)fs, f) != (size_t)fs) {
+            fclose(f);
+            free(raw);
+            return 0;
+        }
         fclose(f);
-        prog_len = (size_t)fs;
+        char romerr[256];
+        program = rom_open_image(raw, (size_t)fs, &prog_len, NULL, NULL, NULL,
+                                 romerr, sizeof(romerr));
+        free(raw);
+        if (!program) {
+            fprintf(stderr, "vfs: %s: %s\n", path, romerr);
+            return 0;
+        }
         prog_owned = true;
     }
 
@@ -1080,7 +1092,7 @@ static int draw_write(VFSFile* file, const uint8_t* buf, int len) {
             case 5: sys->font_id   = (uint8_t)DRAW_W(1); break;
             case 11: {
                 int32_t ch = DRAW_W(1);
-                if (ch >= DRAW_CHAN_RGB && ch <= DRAW_CHAN_K1)
+                if (ch >= DRAW_CHAN_RGB && ch <= DRAW_CHAN_C4)
                     sys->draw_chan = (uint8_t)ch;
                 break;
             }

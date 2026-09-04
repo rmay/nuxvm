@@ -9,7 +9,7 @@ For the compiler command line, see [`using-fluxio.md`](using-fluxio.md). For the
 Fluxio v1 has no string literals as general values, so console output is one character at a time via `emit()`:
 
 ```c
-version 400000;
+version 399000;
 
 /** prints "Hello, World!" followed by a newline, one ASCII code at a time */
 int say_hello() {
@@ -43,7 +43,7 @@ Every Fluxio program also needs a top-level `version <n>;` directive (Kelvin ver
 fluxioc: hello.fx: missing required 'version <n>;' directive
 ```
 
-Unless a specific app has a reason to declare otherwise, use `400000` (400K) — see `AGENTS.md`'s versioning section for what 300K is reserved for.
+Unless a specific app has a reason to declare otherwise, use the current default, `399000` (399K) — check `AGENTS.md`'s versioning section for the number in force and for what 300K is reserved for.
 
 ## Naming and documentation rules
 

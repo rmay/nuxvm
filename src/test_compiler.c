@@ -1,8 +1,10 @@
 #include "compiler.h"
+#include "kelvin.h"
 #include "vm.h"
 #include "opcodes.h"
 #include "machine.h"
 #include "vfs.h"
+#include "rom.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1534,6 +1536,598 @@ static void test_sf_dropdown_does_not_clobber_result_flags(void) {
     printf("  SF breadcrumb vs result flags: OK\n");
 }
 
+/* lib/doc.lux talks to SCI (window title) and may YIELD inside SF::show, so
+ * these run on a Machine with a bus, pumped until HALT, not a bare VM. */
+static Machine* doc_run(const uint8_t* bc, size_t len) {
+    Machine* m = machine_create(bc, (uint32_t)len, HEADLESS_BASE_ADDRESS, MM_TOTAL_MEMORY, false);
+    assert(m != NULL);
+    int ticks = 0;
+    while (!m->cpu->halted && ticks < 64) {
+        if (!machine_tick(m)) break;
+        ticks++;
+    }
+    return m;
+}
+
+/* lib/cmap.lux is the 4bpp sibling of lib/graymap.lux. It needs the full
+ * 16 MB map because its RESERVE band sits at 0xA00000, so it runs on a
+ * Machine like lib/doc.lux does rather than a 4 MB bare VM -- but with a far
+ * larger tick budget, because a whole-page fill or widen is millions of
+ * cycles and doc_run's 64 ticks would silently truncate it. */
+static Machine* cmap_run(const uint8_t* bc, size_t len) {
+    Machine* m = machine_create(bc, (uint32_t)len, HEADLESS_BASE_ADDRESS, MM_TOTAL_MEMORY, false);
+    assert(m != NULL);
+    int ticks = 0;
+    while (!m->cpu->halted && ticks < 4096) {
+        /* machine_tick returns false on the tick that halts as well as on a
+         * runtime error, so halted is what separates the two. */
+        if (!machine_tick(m)) {
+            if (!m->cpu->halted) {
+                fprintf(stderr, "cmap_run: machine fault at PC 0x%08X after %d tick(s)\n",
+                        m->cpu->pc, ticks);
+                assert(false && "lib/cmap.lux program faulted");
+            }
+            break;
+        }
+        ticks++;
+    }
+    assert(m->cpu->halted && "lib/cmap.lux program did not reach HALT");
+    return m;
+}
+
+/* Kelvin versioning is enforced in the compiler rather than in luxc, so that
+ * cloister and nux -- which compile .lux in process and never touch luxc's
+ * argument handling -- get the same gate. See include/kelvin.h and AGENTS.md.
+ *
+ * The boundary is the interesting part: a guest may be as hot as it likes
+ * (an older ROM still runs), but never colder than the platform that has to
+ * support it, because colder means more final. */
+static void test_kelvin_version_enforced(void) {
+    printf("Testing Kelvin versioning is enforced on VERSION...\n");
+    size_t len;
+    uint8_t* bc;
+
+    /* The platform's own two components must satisfy rule 5 against each
+     * other; include/kelvin.h also asserts this at build time. */
+    assert(NUX_KELVIN < CLOISTER_KELVIN);
+
+    /* Legal: exactly the platform (an app inside the 399K collective). */
+    char src[128];
+    snprintf(src, sizeof(src), "VERSION %d\nMODULE MAIN\n42\nHALT\n", CLOISTER_KELVIN);
+    bc = must_compile(src, &len);
+    free(bc);
+
+    /* Legal: hotter than the platform -- Easel, and any ROM built before a
+     * cooldown. A colder platform can always support a hotter guest. */
+    snprintf(src, sizeof(src), "VERSION %d\nMODULE MAIN\n42\nHALT\n", CLOISTER_KELVIN + 100000);
+    bc = must_compile(src, &len);
+    free(bc);
+
+    /* Illegal by one: colder than the platform. This is the check that would
+     * have caught a ROM built against a contract this host does not
+     * implement -- the reason the palette work needed a cooldown at all. */
+    snprintf(src, sizeof(src), "VERSION %d\nMODULE MAIN\n42\nHALT\n", CLOISTER_KELVIN - 1);
+    bc = compile_capturing_stderr(src, &len);
+    assert(bc == NULL);
+    assert(strstr(stderr_capture, "rule 5") != NULL);
+    assert(strstr(stderr_capture, "AGENTS.md") != NULL);
+
+    /* Illegal: the VM's own version. A guest cannot claim to be as final as
+     * the layer beneath it. */
+    snprintf(src, sizeof(src), "VERSION %d\nMODULE MAIN\n42\nHALT\n", NUX_KELVIN);
+    bc = compile_capturing_stderr(src, &len);
+    assert(bc == NULL);
+
+    /* Illegal: absolute zero is frozen (rule 3) and unsupportable (rule 5). */
+    bc = compile_capturing_stderr("VERSION 0\nMODULE MAIN\n42\nHALT\n", &len);
+    assert(bc == NULL);
+    assert(strstr(stderr_capture, "absolute zero") != NULL);
+
+    /* Illegal: rule 1 -- a version is a nonnegative integer. */
+    bc = compile_capturing_stderr("VERSION -5\nMODULE MAIN\n42\nHALT\n", &len);
+    assert(bc == NULL);
+    assert(strstr(stderr_capture, "nonnegative") != NULL);
+
+    /* Malformed: the argument must be an integer. Without this the directive
+     * would degrade into "VERSION" followed by an ordinary word, and a typo
+     * like `VERSION v2` would compile as a call to an undefined word (or,
+     * worse, to a defined one) rather than as the versioning mistake it is. */
+    bc = compile_capturing_stderr("VERSION twelve\nMODULE MAIN\n42\nHALT\n", &len);
+    assert(bc == NULL);
+    assert(strstr(stderr_capture, "expected integer after VERSION") != NULL);
+
+    /* A snippet that declares no VERSION at all still compiles: whether one
+     * is *required* is luxc's business (library builds are exempt), and this
+     * gate only judges a version that is actually declared. Most of this
+     * test file depends on that staying true. */
+    bc = must_compile("42 HALT", &len);
+    free(bc);
+
+    assert(kelvin_reject_reason(CLOISTER_KELVIN) == NULL);
+    assert(kelvin_reject_reason(CLOISTER_KELVIN - 1) != NULL);
+
+    /* AGENTS.md quotes both numbers in prose, and it is the document people
+     * actually read before picking a VERSION. Pin it to the header the same
+     * way the palette is pinned to lib/draw.lux: a doc that disagrees with
+     * the gate is worse than no doc, because it tells you to write a number
+     * the compiler will reject. */
+    FILE* f = fopen("AGENTS.md", "rb");
+    if (f) {
+        static char doc[64 * 1024];
+        size_t n = fread(doc, 1, sizeof(doc) - 1, f);
+        fclose(f);
+        doc[n] = '\0';
+
+        /* Match the declarative sentence, not just the number: the cooldown
+         * log below it necessarily mentions the same figures, so a loose
+         * needle would still be satisfied by a stale headline. */
+        char want_nux[96], want_cloister[96];
+        snprintf(want_nux, sizeof(want_nux),
+                 "Nux opcodes and implementation is %dK", NUX_KELVIN / 1000);
+        snprintf(want_cloister, sizeof(want_cloister),
+                 "everything else is **%dK**", CLOISTER_KELVIN / 1000);
+        if (!strstr(doc, want_nux) || !strstr(doc, want_cloister)) {
+            fprintf(stderr,
+                    "AGENTS.md does not state the versions in include/kelvin.h "
+                    "(expected \"%s\" and \"%s\"). Cool the header and the doc "
+                    "together, and add a cooldown-log row.\n",
+                    want_nux, want_cloister);
+            assert(0 && "AGENTS.md is out of step with include/kelvin.h");
+        }
+        /* A cooldown must leave a trail; the log is what makes a version
+         * number mean something later. */
+        assert(strstr(doc, "Cooldown log") != NULL);
+    } else {
+        printf("  (AGENTS.md pin skipped -- not run from the repo root)\n");
+    }
+
+    printf("  Kelvin version gate: OK\n");
+}
+
+static void test_cmap_4bpp(void) {
+    printf("Testing lib/cmap.lux: 4bpp pack, spans, invert, EAS3 widen...\n");
+    size_t len;
+    uint8_t* bc;
+    Machine* m;
+    int32_t a, b, c, d, e, f, g, h;
+
+    /* --- geometry, nibble order, set/get round-trip --- */
+    bc = must_compile(
+        "INCLUDE \"lib/cmap.lux\"\n"
+        "MODULE MAIN\n"
+        "IMPORT CMAP\n"
+        "@P 0xB00000 ;\n"
+        "CMAP::PAGE_BYTES CMAP::ROW_BYTES CMAP::PPW\n"
+        /* Two pixels share a byte, leftmost in the high nibble. */
+        "P CMAP::clear\n"
+        "P 0 0 12 CMAP::set  P 1 0 5 CMAP::set\n"
+        "P 0 0 CMAP::get  P 1 0 CMAP::get\n"
+        "P 0 0 CMAP::addr load-byte\n"
+        /* Every index survives a round-trip at an odd x on a later row. */
+        "1 { ok }\n"
+        "  0 { i } [ i 16 < ] [\n"
+        "    P 37 11 i CMAP::set\n"
+        "    P 37 11 CMAP::get i = 0 = [ 0 ok! ] ?\n"
+        "    i 1 + i! ] |:\n"
+        "  ok\n"
+        "  UNGIRD\n"
+        "UNGIRD\n"
+        "HALT\n", &len);
+    m = cmap_run(bc, len);
+    assert(vm_pop(m->cpu, &h)); /* all 16 indices round-trip */
+    assert(vm_pop(m->cpu, &g)); /* packed byte */
+    assert(vm_pop(m->cpu, &f)); /* get(1,0) */
+    assert(vm_pop(m->cpu, &e)); /* get(0,0) */
+    assert(vm_pop(m->cpu, &d)); /* PPW */
+    assert(vm_pop(m->cpu, &c)); /* ROW_BYTES */
+    assert(vm_pop(m->cpu, &b)); /* PAGE_BYTES */
+    assert(b == 207360);
+    assert(c == 288);
+    assert(d == 8);
+    assert(e == 12);
+    assert(f == 5);
+    assert(g == 0xC5); /* MSB-first: leftmost pixel in the high nibble */
+    assert(h == 1);
+    machine_free(m);
+    free(bc);
+
+    /* --- hspan across word boundaries, and rep-word --- */
+    bc = must_compile(
+        "INCLUDE \"lib/cmap.lux\"\n"
+        "MODULE MAIN\n"
+        "IMPORT CMAP\n"
+        "@P 0xB00000 ;\n"
+        "P CMAP::clear\n"
+        /* A run of 13 starting at x=5 spans three words (8 px per word). */
+        "P 5 3 13 9 CMAP::hspan\n"
+        "1 { ok }\n"
+        "  0 { x } [ x 32 < ] [\n"
+        "    x 5 >= x 18 < AND [ 9 ] [ 0 ] ?: { want }\n"
+        "      P x 3 CMAP::get want = 0 = [ 0 ok! ] ?\n"
+        "    UNGIRD\n"
+        "    x 1 + x! ] |:\n"
+        "  ok\n"
+        "  UNGIRD\n"
+        "UNGIRD\n"
+        /* An adjacent row is untouched -- catches a ROW_BYTES slip. */
+        "P 5 4 CMAP::get\n"
+        "14 CMAP::rep-word\n"
+        "HALT\n", &len);
+    m = cmap_run(bc, len);
+    assert(vm_pop(m->cpu, &c)); /* rep-word 14 */
+    assert(vm_pop(m->cpu, &b)); /* neighbouring row */
+    assert(vm_pop(m->cpu, &a)); /* span exact */
+    assert(a == 1);
+    assert(b == 0);
+    assert((uint32_t)c == 0xEEEEEEEE);
+    machine_free(m);
+    free(bc);
+
+    /* --- invert is involutive, and inverts the grays as GRAYMAP did --- */
+    bc = must_compile(
+        "INCLUDE \"lib/cmap.lux\"\n"
+        "MODULE MAIN\n"
+        "IMPORT CMAP\n"
+        "@P 0xB00000 ;\n"
+        "P CMAP::clear\n"
+        "0 { x } [ x 16 < ] [ P x 0 x CMAP::set  x 1 + x! ] |: UNGIRD\n"
+        "P CMAP::invert\n"
+        /* grays: 0<->3, 1<->2, exactly as at 2bpp */
+        "P 0 0 CMAP::get  P 1 0 CMAP::get  P 2 0 CMAP::get  P 3 0 CMAP::get\n"
+        /* every index maps to (i XOR 3) */
+        "1 { ok }\n"
+        "  0 { i } [ i 16 < ] [\n"
+        "    P i 0 CMAP::get i 3 XOR = 0 = [ 0 ok! ] ?\n"
+        "    i 1 + i! ] |:\n"
+        "  ok\n"
+        "  UNGIRD\n"
+        "UNGIRD\n"
+        /* twice is the identity */
+        "P CMAP::invert\n"
+        "1 { ok2 }\n"
+        "  0 { i } [ i 16 < ] [\n"
+        "    P i 0 CMAP::get i = 0 = [ 0 ok2! ] ?\n"
+        "    i 1 + i! ] |:\n"
+        "  ok2\n"
+        "  UNGIRD\n"
+        "UNGIRD\n"
+        "HALT\n", &len);
+    m = cmap_run(bc, len);
+    assert(vm_pop(m->cpu, &f)); /* involutive */
+    assert(vm_pop(m->cpu, &e)); /* all i -> i XOR 3 */
+    assert(vm_pop(m->cpu, &d));
+    assert(vm_pop(m->cpu, &c));
+    assert(vm_pop(m->cpu, &b));
+    assert(vm_pop(m->cpu, &a));
+    assert(a == 3 && b == 2 && c == 1 && d == 0);
+    assert(e == 1);
+    assert(f == 1);
+    machine_free(m);
+    free(bc);
+
+    /* --- widen-2bpp: the EAS3 -> EAS4 migration path ---
+     * A 2bpp GRAYMAP page must widen index-for-index, because palette
+     * entries 0..3 are exactly GRAYMAP's four levels in the same order. */
+    bc = must_compile(
+        "INCLUDE \"lib/cmap.lux\"\n"
+        "INCLUDE \"lib/graymap.lux\"\n"
+        "MODULE MAIN\n"
+        "IMPORT CMAP\n"
+        "@SRC 0xA80000 ;\n"
+        "@DST 0xB00000 ;\n"
+        "SRC GRAYMAP::clear\n"
+        "DST CMAP::clear\n"
+        /* Sample points chosen to exercise both nibbles and a late row. */
+        "SRC 0 0 1 GRAYMAP::set   SRC 1 0 2 GRAYMAP::set\n"
+        "SRC 2 0 3 GRAYMAP::set   SRC 3 0 0 GRAYMAP::set\n"
+        "SRC 575 719 3 GRAYMAP::set\n"
+        "SRC 100 400 2 GRAYMAP::set\n"
+        "SRC DST CMAP::widen-2bpp\n"
+        "DST 0 0 CMAP::get  DST 1 0 CMAP::get\n"
+        "DST 2 0 CMAP::get  DST 3 0 CMAP::get\n"
+        "DST 575 719 CMAP::get\n"
+        "DST 100 400 CMAP::get\n"
+        "HALT\n", &len);
+    m = cmap_run(bc, len);
+    assert(vm_pop(m->cpu, &f));
+    assert(vm_pop(m->cpu, &e));
+    assert(vm_pop(m->cpu, &d));
+    assert(vm_pop(m->cpu, &c));
+    assert(vm_pop(m->cpu, &b));
+    assert(vm_pop(m->cpu, &a));
+    assert(a == 1 && b == 2 && c == 3 && d == 0);
+    assert(e == 3);
+    assert(f == 2);
+    machine_free(m);
+    free(bc);
+
+    printf("  cmap.lux 4bpp: OK\n");
+}
+
+static void test_doc_session(void) {
+    printf("Testing lib/doc.lux: path, dirty title, confirm New/Open/Quit, SF pick...\n");
+    size_t len;
+    uint8_t* bc;
+    Machine* m;
+    int32_t a, b, c, d, e, f;
+
+    bc = must_compile(
+        "INCLUDE \"lib/doc.lux\"\n"
+        "MODULE MAIN\n"
+        "IMPORT DOC\n"
+        "IMPORT STR\n"
+        "T\"Doc\" T\"untitled.doc\" DOC::init\n"
+        "DOC::dirty?\n"
+        "DOC::path STR::strlen\n"
+        "DOC::title STR::strlen\n"
+        "DOC::dirty!\n"
+        "DOC::dirty?\n"
+        "DOC::title STR::strlen\n"
+        "DOC::clean!\n"
+        "DOC::dirty?\n"
+        "DOC::title STR::strlen\n",
+        &len);
+    m = doc_run(bc, len);
+    assert(vm_pop(m->cpu, &a) && a == 12); /* clean title = basename */
+    assert(vm_pop(m->cpu, &b) && b == 0);  /* clean! */
+    assert(vm_pop(m->cpu, &c) && c == 14); /* "untitled.doc *" */
+    assert(vm_pop(m->cpu, &d) && d == 1);
+    assert(vm_pop(m->cpu, &e) && e == 12);
+    assert(vm_pop(m->cpu, &f) && f == 12);
+    assert(vm_pop(m->cpu, &a) && a == 0);  /* dirty? after init */
+    machine_free(m);
+    free(bc);
+
+    /* Open via pick strips a leading slash and calls on-load, then clean. */
+    bc = must_compile(
+        "INCLUDE \"lib/doc.lux\"\n"
+        "MODULE MAIN\n"
+        "IMPORT DOC\n"
+        "RESERVE loaded 4\n"
+        "@on-load loaded STOREI ;\n"
+        "T\"Doc\" T\"untitled.doc\" DOC::init\n"
+        "$on-load DOC::on-load!\n"
+        "T\"/out.doc\" DOC::pick\n"
+        "DOC::path load-byte\n"
+        "DOC::dirty?\n"
+        "loaded LOADI 0 >\n",
+        &len);
+    m = doc_run(bc, len);
+    assert(vm_pop(m->cpu, &a) && a == 1);   /* on-load ran */
+    assert(vm_pop(m->cpu, &b) && b == 0);   /* clean after load */
+    assert(vm_pop(m->cpu, &c) && c == 'o'); /* not '/' */
+    machine_free(m);
+    free(bc);
+
+    /* File > New on a clean doc calls on-new immediately. */
+    bc = must_compile(
+        "INCLUDE \"lib/doc.lux\"\n"
+        "MODULE MAIN\n"
+        "IMPORT DOC\n"
+        "IMPORT UI\n"
+        "RESERVE news 4\n"
+        "@on-new 1 news STOREI ;\n"
+        "UI::new\n"
+        "T\"Doc\" T\"untitled.doc\" DOC::init\n"
+        "$on-new DOC::on-new!\n"
+        "DOC::menu-new\n"
+        "news LOADI\n",
+        &len);
+    m = doc_run(bc, len);
+    assert(vm_pop(m->cpu, &a) && a == 1);
+    machine_free(m);
+    free(bc);
+
+    /* Dirty New: confirm Save runs on-save then on-new and clears dirty. */
+    bc = must_compile(
+        "INCLUDE \"lib/doc.lux\"\n"
+        "MODULE MAIN\n"
+        "IMPORT DOC\n"
+        "IMPORT DIALOG\n"
+        "IMPORT UI\n"
+        "RESERVE news 4\n"
+        "RESERVE saves 4\n"
+        "@on-new 1 news STOREI ;\n"
+        "@on-save drop 1 saves STOREI ;\n"
+        "UI::new\n"
+        "T\"Doc\" T\"untitled.doc\" DOC::init\n"
+        "$on-new DOC::on-new!\n"
+        "$on-save DOC::on-save!\n"
+        "DOC::dirty!\n"
+        "DOC::menu-new\n"
+        "DIALOG::open?\n"
+        "0 DIALOG::on-0\n"
+        "DIALOG::open?\n"
+        "news LOADI\n"
+        "saves LOADI\n"
+        "DOC::dirty?\n",
+        &len);
+    m = doc_run(bc, len);
+    assert(vm_pop(m->cpu, &a) && a == 0); /* clean after Save+New */
+    assert(vm_pop(m->cpu, &b) && b == 1); /* saved */
+    assert(vm_pop(m->cpu, &c) && c == 1); /* new */
+    assert(vm_pop(m->cpu, &d) && d == 0); /* dialog closed */
+    assert(vm_pop(m->cpu, &e) && e == 1); /* dialog was open */
+    machine_free(m);
+    free(bc);
+
+    /* Dirty New: Don't Save runs on-new without on-save. */
+    bc = must_compile(
+        "INCLUDE \"lib/doc.lux\"\n"
+        "MODULE MAIN\n"
+        "IMPORT DOC\n"
+        "IMPORT DIALOG\n"
+        "IMPORT UI\n"
+        "RESERVE news 4\n"
+        "RESERVE saves 4\n"
+        "@on-new 1 news STOREI ;\n"
+        "@on-save drop 1 saves STOREI ;\n"
+        "UI::new\n"
+        "T\"Doc\" T\"untitled.doc\" DOC::init\n"
+        "$on-new DOC::on-new!\n"
+        "$on-save DOC::on-save!\n"
+        "DOC::dirty!\n"
+        "DOC::menu-new\n"
+        "0 DIALOG::on-1\n"
+        "news LOADI\n"
+        "saves LOADI\n"
+        "DOC::dirty?\n",
+        &len);
+    m = doc_run(bc, len);
+    assert(vm_pop(m->cpu, &a) && a == 0);
+    assert(vm_pop(m->cpu, &b) && b == 0); /* not saved */
+    assert(vm_pop(m->cpu, &c) && c == 1);
+    machine_free(m);
+    free(bc);
+
+    /* Dirty New: Cancel leaves the document dirty and does not call on-new. */
+    bc = must_compile(
+        "INCLUDE \"lib/doc.lux\"\n"
+        "MODULE MAIN\n"
+        "IMPORT DOC\n"
+        "IMPORT DIALOG\n"
+        "IMPORT UI\n"
+        "RESERVE news 4\n"
+        "@on-new 1 news STOREI ;\n"
+        "UI::new\n"
+        "T\"Doc\" T\"untitled.doc\" DOC::init\n"
+        "$on-new DOC::on-new!\n"
+        "DOC::dirty!\n"
+        "DOC::menu-new\n"
+        "0 DIALOG::on-2\n"
+        "DIALOG::open?\n"
+        "news LOADI\n"
+        "DOC::dirty?\n",
+        &len);
+    m = doc_run(bc, len);
+    assert(vm_pop(m->cpu, &a) && a == 1);
+    assert(vm_pop(m->cpu, &b) && b == 0);
+    assert(vm_pop(m->cpu, &c) && c == 0);
+    machine_free(m);
+    free(bc);
+
+    /* Quit on a clean doc HALTs. */
+    bc = must_compile(
+        "INCLUDE \"lib/doc.lux\"\n"
+        "MODULE MAIN\n"
+        "IMPORT DOC\n"
+        "T\"Doc\" T\"untitled.doc\" DOC::init\n"
+        "DOC::menu-quit\n",
+        &len);
+    m = doc_run(bc, len);
+    assert(m->cpu->halted);
+    machine_free(m);
+    free(bc);
+
+    /* Quit while dirty opens the confirm sheet and does not HALT. */
+    bc = must_compile(
+        "INCLUDE \"lib/doc.lux\"\n"
+        "MODULE MAIN\n"
+        "IMPORT DOC\n"
+        "IMPORT DIALOG\n"
+        "IMPORT UI\n"
+        "UI::new\n"
+        "T\"Doc\" T\"untitled.doc\" DOC::init\n"
+        "DOC::dirty!\n"
+        "DOC::menu-quit\n"
+        "DIALOG::open?\n",
+        &len);
+    m = doc_run(bc, len);
+    assert(vm_pop(m->cpu, &a) && a == 1);
+    machine_free(m);
+    free(bc);
+
+    /* Dirty Quit + Don't Save HALTs (inside do-quit, before any later word). */
+    bc = must_compile(
+        "INCLUDE \"lib/doc.lux\"\n"
+        "MODULE MAIN\n"
+        "IMPORT DOC\n"
+        "IMPORT DIALOG\n"
+        "IMPORT UI\n"
+        "UI::new\n"
+        "T\"Doc\" T\"untitled.doc\" DOC::init\n"
+        "DOC::dirty!\n"
+        "DOC::menu-quit\n"
+        "0 DIALOG::on-1\n"
+        "99\n",
+        &len);
+    m = doc_run(bc, len);
+    assert(m->cpu->halted);
+    assert(!vm_pop(m->cpu, &a)); /* 99 never pushed */
+    machine_free(m);
+    free(bc);
+
+    /* Dirty Open: Don't Save dismisses confirm and raises the file picker. */
+    bc = must_compile(
+        "INCLUDE \"lib/doc.lux\"\n"
+        "MODULE MAIN\n"
+        "IMPORT DOC\n"
+        "IMPORT DIALOG\n"
+        "IMPORT SF\n"
+        "IMPORT UI\n"
+        "UI::new\n"
+        "T\"Doc\" T\"untitled.doc\" DOC::init\n"
+        "DOC::dirty!\n"
+        "DOC::menu-open\n"
+        "DIALOG::open?\n"
+        "SF::open?\n"
+        "0 DIALOG::on-1\n"
+        "DIALOG::open?\n"
+        "SF::open?\n",
+        &len);
+    m = doc_run(bc, len);
+    assert(vm_pop(m->cpu, &a) && a == 1); /* SF open after Don't Save */
+    assert(vm_pop(m->cpu, &b) && b == 0); /* dialog closed */
+    assert(vm_pop(m->cpu, &c) && c == 0); /* SF not open during confirm */
+    assert(vm_pop(m->cpu, &d) && d == 1); /* dialog was open */
+    machine_free(m);
+    free(bc);
+
+    /* Save As + pick writes the new name and calls on-save. */
+    bc = must_compile(
+        "INCLUDE \"lib/doc.lux\"\n"
+        "MODULE MAIN\n"
+        "IMPORT DOC\n"
+        "IMPORT UI\n"
+        "RESERVE saves 4\n"
+        "@on-save drop 1 saves STOREI ;\n"
+        "UI::new\n"
+        "T\"Doc\" T\"untitled.doc\" DOC::init\n"
+        "$on-save DOC::on-save!\n"
+        "DOC::save-as!\n"
+        "T\"out.doc\" DOC::pick\n"
+        "DOC::path load-byte\n"
+        "saves LOADI\n"
+        "DOC::dirty?\n",
+        &len);
+    m = doc_run(bc, len);
+    assert(vm_pop(m->cpu, &a) && a == 0);
+    assert(vm_pop(m->cpu, &b) && b == 1);
+    assert(vm_pop(m->cpu, &c) && c == 'o');
+    machine_free(m);
+    free(bc);
+
+    /* File + Edit menus install without faulting. */
+    bc = must_compile(
+        "INCLUDE \"lib/doc.lux\"\n"
+        "MODULE MAIN\n"
+        "IMPORT DOC\n"
+        "IMPORT UI\n"
+        "UI::new\n"
+        "960 UI::menubar\n"
+        "T\"Doc\" T\"untitled.doc\" DOC::init\n"
+        "DOC::file-menu\n"
+        "DOC::edit-menu\n"
+        "1\n",
+        &len);
+    m = doc_run(bc, len);
+    assert(vm_pop(m->cpu, &a) && a == 1);
+    machine_free(m);
+    free(bc);
+
+    printf("  DOC session: OK\n");
+}
+
 static void test_reserve_directive(void) {
     printf("Testing RESERVE directive...\n");
     size_t len;
@@ -2104,14 +2698,9 @@ static Machine* quill_lux_machine(void) {
     fclose(probe);
     assert(system("make apps/Quill.bin >/tmp/nuxvm_test_quill_lux_build.log 2>&1") == 0);
 
-    FILE* bf = fopen("apps/Quill.bin", "rb");
-    assert(bf != NULL);
-    fseek(bf, 0, SEEK_END);
-    long blen = ftell(bf);
-    fseek(bf, 0, SEEK_SET);
-    uint8_t* bc = malloc((size_t) blen);
-    assert(fread(bc, 1, (size_t) blen, bf) == (size_t) blen);
-    fclose(bf);
+    size_t blen = 0;
+    uint8_t* bc = rom_load_executable("apps/Quill.bin", &blen, NULL);
+    assert(bc != NULL);
 
     Machine* m = machine_create(bc, (uint32_t) blen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
     free(bc);
@@ -2729,14 +3318,9 @@ static Machine* tabula_machine(void) {
     fclose(probe);
     assert(system("make apps/Tabula.bin >/tmp/nuxvm_test_tabula_lux_build.log 2>&1") == 0);
 
-    FILE* bf = fopen("apps/Tabula.bin", "rb");
-    assert(bf != NULL);
-    fseek(bf, 0, SEEK_END);
-    long blen = ftell(bf);
-    fseek(bf, 0, SEEK_SET);
-    uint8_t* bc = malloc((size_t) blen);
-    assert(fread(bc, 1, (size_t) blen, bf) == (size_t) blen);
-    fclose(bf);
+    size_t blen = 0;
+    uint8_t* bc = rom_load_executable("apps/Tabula.bin", &blen, NULL);
+    assert(bc != NULL);
 
     Machine* m = machine_create(bc, (uint32_t) blen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
     free(bc);
@@ -3282,14 +3866,9 @@ static Machine* lux_app_machine(const char* src, const char* bin) {
         assert(0);
     }
 
-    FILE* bf = fopen(bin, "rb");
-    assert(bf != NULL);
-    fseek(bf, 0, SEEK_END);
-    long blen = ftell(bf);
-    fseek(bf, 0, SEEK_SET);
-    uint8_t* bc = malloc((size_t) blen);
-    assert(fread(bc, 1, (size_t) blen, bf) == (size_t) blen);
-    fclose(bf);
+    size_t blen = 0;
+    uint8_t* bc = rom_load_executable(bin, &blen, NULL);
+    assert(bc != NULL);
 
     Machine* m = machine_create(bc, (uint32_t) blen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
     free(bc);
@@ -3384,6 +3963,40 @@ static void test_lux_apps_compile(void) {
         assert(n > 1000);
     }
     printf("  luxc apps: OK\n");
+}
+
+/* Every distinct colour in a committed frame must be an exact system-palette
+ * entry. Under DRAW_CHAN_C4 the host snaps ink, so an off-palette pixel can
+ * only mean the app never reached the c4 channel at all -- which is the one
+ * failure mode a screenshot would not make obvious, because a luma-collapsed
+ * frame still looks like a plausible picture. Returns how many distinct
+ * colours the frame used, so a caller can also assert that colour is actually
+ * being spent. */
+static int assert_frame_on_palette(Machine* m, const char* who) {
+    assert(m->system->draw_chan == DRAW_CHAN_C4);
+    assert(m->system->screen_pixels != NULL);
+    assert(m->system->frame_commits > 0);
+
+    uint32_t seen[64];
+    int nseen = 0;
+    int w = m->system->screen_width, h = m->system->screen_height;
+    for (int i = 0; i < w * h; i++) {
+        const uint8_t* px = m->system->screen_pixels + (size_t)i * 4;
+        uint32_t c = ((uint32_t)px[1] << 16) | ((uint32_t)px[2] << 8) | px[3];
+        int j = 0;
+        for (; j < nseen; j++) if (seen[j] == c) break;
+        if (j < nseen) continue;
+
+        int pal = 0;
+        for (int k = 0; k < 16; k++) if (system_palette_entry(k) == c) { pal = 1; break; }
+        if (!pal) {
+            fprintf(stderr, "%s: off-palette pixel 0x%06X at (%d,%d)\n",
+                    who, c, i % w, i / w);
+            assert(0 && "frame contains a colour outside the system palette");
+        }
+        if (nseen < 64) seen[nseen++] = c;
+    }
+    return nseen;
 }
 
 /* apps/Breakout.lux state cells (see the @-constants at the top of the app). */
@@ -3552,6 +4165,54 @@ static void test_calculator_reserved_state(void) {
 /* The paddle moves while an arrow key is *held*, which is the one piece of
  * Breakout with no precedent elsewhere in the repo: every other app acts on
  * the keypress itself. Drive a press, a release, and a hold-into-the-wall. */
+/* The brick ramp is the point of giving Breakout colour: six rows, six
+ * distinct hues. A regression that dropped APP::palette! or collapsed the
+ * ramp would still draw a playable board, so assert the colours directly. */
+static void test_breakout_brick_colours(void) {
+    printf("Testing apps/Breakout.lux: bricks paint six palette colours...\n");
+    Machine* m = lux_app_machine("apps/Breakout.lux", "apps/Breakout.bin");
+    if (!m) return;
+
+    system_freeze_monotonic_ms(m->system, 1000);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    app_sim_steps(m, 30);
+    assert(app_cell(m, BREAKOUT_STATE) == BREAKOUT_S_TITLE);
+
+    /* The title screen is black on white; bricks only exist once play starts. */
+    app_hold_key(m, kc, 0, 13);
+    app_hold_key(m, kc, 1, 13);
+    app_sim_steps(m, 20);
+    assert(app_cell(m, BREAKOUT_STATE) == BREAKOUT_S_SERVE);
+
+    int n = assert_frame_on_palette(m, "Breakout");
+
+    /* white + black chrome, plus one colour per brick row. */
+    static const uint32_t ramp[6] = {
+        0xDD0000, 0xEE7700, 0xEEDD00, 0x007700, 0x00CCCC, 0x3366EE,
+    };
+    int w = m->system->screen_width, h = m->system->screen_height;
+    for (int r = 0; r < 6; r++) {
+        long count = 0;
+        for (int i = 0; i < w * h; i++) {
+            const uint8_t* px = m->system->screen_pixels + (size_t)i * 4;
+            uint32_t c = ((uint32_t)px[1] << 16) | ((uint32_t)px[2] << 8) | px[3];
+            if (c == ramp[r]) count++;
+        }
+        if (count == 0) {
+            fprintf(stderr, "Breakout: brick row %d colour 0x%06X never painted\n",
+                    r, ramp[r]);
+            assert(0 && "a brick row lost its colour");
+        }
+    }
+    assert(n >= 8); /* six ramp colours + black + white */
+
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    printf("  Breakout brick colours: OK\n");
+}
+
 static void test_breakout_paddle_hold(void) {
     printf("Testing apps/Breakout.lux: held arrow keys drive the paddle...\n");
     Machine* m = lux_app_machine("apps/Breakout.lux", "apps/Breakout.bin");
@@ -3911,6 +4572,51 @@ static int32_t road_kerb_at(Machine* m, int32_t y) {
  * rides an offset from the kerb rather than an absolute x, so the two things
  * worth pinning are that the ring stays a *continuous* road as it scrolls and
  * that leaving it costs a life. */
+/* Road Escape's whole reason for wanting colour is that civilian and hostile
+ * traffic used to differ only by luma (208 vs 112 gray), which the app's own
+ * comment was already apologising for. Assert hue now carries it, and that
+ * the scenery colours are on-palette. */
+static void test_road_escape_palette(void) {
+    printf("Testing apps/RoadEscape.lux: scenery and traffic use the palette...\n");
+    Machine* m = lux_app_machine("apps/RoadEscape.lux", "apps/RoadEscape.bin");
+    if (!m) return;
+
+    system_freeze_monotonic_ms(m->system, 1000);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    app_sim_steps(m, 30);
+    assert(app_cell(m, RE_STATE) == RE_S_TITLE);
+
+    app_hold_key(m, kc, 0, 13);
+    app_hold_key(m, kc, 1, 13);
+    /* Long enough for traffic to have spawned and scrolled into view. */
+    app_sim_steps(m, 240);
+    assert(app_cell(m, RE_STATE) == RE_S_PLAY);
+
+    assert_frame_on_palette(m, "RoadEscape");
+
+    int w = m->system->screen_width, h = m->system->screen_height;
+    long grass = 0, tar = 0, civil = 0, hostile = 0;
+    for (int i = 0; i < w * h; i++) {
+        const uint8_t* px = m->system->screen_pixels + (size_t)i * 4;
+        uint32_t c = ((uint32_t)px[1] << 16) | ((uint32_t)px[2] << 8) | px[3];
+        if (c == 0x007700) grass++;
+        else if (c == 0x555555) tar++;
+        else if (c == 0x00CCCC) civil++;
+        else if (c == 0xDD0000) hostile++;
+    }
+    /* Scenery is most of the screen. */
+    assert(grass > 10000);
+    assert(tar > 10000);
+    /* At least one kind of traffic is on screen, in a hue and not a gray. */
+    assert(civil + hostile > 0);
+
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    printf("  RoadEscape palette: OK\n");
+}
+
 static void test_roadescape_road(void) {
     printf("Testing apps/RoadEscape.lux: scrolling road, steering, crashes...\n");
     Machine* m = lux_app_machine("apps/RoadEscape.lux", "apps/RoadEscape.bin");
@@ -4344,6 +5050,9 @@ static void test_nib_rect_save(void) {
 
 }
 
+/* Size of a saved EAS4 file: 8-byte header + one 576x720 4bpp CMAP page. */
+#define EASEL_EAS4_BYTES (8 + 288 * 720)
+
 static void test_easel_paint_save(void) {
     printf("Testing apps/Easel.lux: paint a pixel and save untitled.eas...\n");
     Machine* probe = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
@@ -4369,21 +5078,21 @@ static void test_easel_paint_save(void) {
     /* pack-bits is now one whole-page BITMAP::copy rather than a per-pixel
      * scan, but the save can still straddle a frame boundary. */
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 103688, 2000);
+    int n = pump_until_file(m, "untitled.eas", EASEL_EAS4_BYTES, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
     uint8_t got[64];
     memset(got, 0, sizeof(got));
-    assert(n == 103688);
+    assert(n == EASEL_EAS4_BYTES);
     n = lux_app_read("untitled.eas", got, (int) sizeof(got));
     assert(n >= 8);
-    assert(got[0] == 'E' && got[1] == 'A' && got[2] == 'S' && got[3] == '3');
+    assert(got[0] == 'E' && got[1] == 'A' && got[2] == 'S' && got[3] == '4');
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     n = lux_app_read("untitled.eas", body, (int) sizeof(body));
-    assert(n == 103688);
+    assert(n == EASEL_EAS4_BYTES);
     int nonzero = 0;
     for (int i = 8; i < n; i++) {
         if (body[i]) nonzero++;
@@ -4393,14 +5102,25 @@ static void test_easel_paint_save(void) {
 }
 
 static int easel_bit_set(const uint8_t* body, int n, int col, int row) {
-    /* EAS3 body starts after the 8-byte header and is a raw dump of the
-     * GRAYMAP page: ROW_BYTES=144 for PAGE_W=576, 2 bits/pixel, MSB-first
-     * (bits 7-6 of a byte are the leftmost pixel). Nonzero gray counts as
-     * ink so the existing 1/0 assertions still hold for black pencil. */
-    int off = 8 + row * 144 + col / 4;
+    /* EAS4 body starts after the 8-byte header and is a raw dump of the CMAP
+     * page: ROW_BYTES=288 for PAGE_W=576, 4 bits/pixel, MSB-first (bits 7-4
+     * of a byte are the leftmost pixel). Any non-white index counts as ink,
+     * so the existing 1/0 assertions still hold for a black pencil -- palette
+     * index 0 is white, exactly as level 0 was at 2bpp. */
+    int off = 8 + row * 288 + col / 2;
     if (off < 0 || off >= n) return -1;
-    int shift = (3 - (col % 4)) * 2;
-    return ((body[off] >> shift) & 3) != 0;
+    int shift = (1 - (col % 2)) * 4;
+    return ((body[off] >> shift) & 15) != 0;
+}
+
+/* Which palette index a saved pixel holds -- the colour equivalent of
+ * easel_bit_set, for tests that care which ink was used and not merely that
+ * something was painted. */
+static int easel_pixel_index(const uint8_t* body, int n, int col, int row) {
+    int off = 8 + row * 288 + col / 2;
+    if (off < 0 || off >= n) return -1;
+    int shift = (1 - (col % 2)) * 4;
+    return (body[off] >> shift) & 15;
 }
 
 static void test_easel_marquee_move(void) {
@@ -4438,15 +5158,15 @@ static void test_easel_marquee_move(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 103688, 2000);
+    int n = pump_until_file(m, "untitled.eas", EASEL_EAS4_BYTES, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
-    assert(n == 103688);
-    uint8_t body[104000];
+    assert(n == EASEL_EAS4_BYTES);
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     n = lux_app_read("untitled.eas", body, (int) sizeof(body));
-    assert(n == 103688);
+    assert(n == EASEL_EAS4_BYTES);
 
     assert(easel_bit_set(body, n, 20, 30) == 0);   /* source now blank */
     assert(easel_bit_set(body, n, 70, 30) == 1);   /* destination now set */
@@ -4492,15 +5212,15 @@ static void test_easel_lasso_move(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 103688, 2000);
+    int n = pump_until_file(m, "untitled.eas", EASEL_EAS4_BYTES, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
-    assert(n == 103688);
-    uint8_t body[104000];
+    assert(n == EASEL_EAS4_BYTES);
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     n = lux_app_read("untitled.eas", body, (int) sizeof(body));
-    assert(n == 103688);
+    assert(n == EASEL_EAS4_BYTES);
 
     assert(easel_bit_set(body, n, 20, 30) == 0);   /* source now blank */
     assert(easel_bit_set(body, n, 70, 30) == 1);   /* destination now set */
@@ -4539,15 +5259,15 @@ static void test_easel_copy_paste(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 103688, 2000);
+    int n = pump_until_file(m, "untitled.eas", EASEL_EAS4_BYTES, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
-    assert(n == 103688);
-    uint8_t body[104000];
+    assert(n == EASEL_EAS4_BYTES);
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     n = lux_app_read("untitled.eas", body, (int) sizeof(body));
-    assert(n == 103688);
+    assert(n == EASEL_EAS4_BYTES);
 
     /* Original pixel untouched by Copy. */
     assert(easel_bit_set(body, n, 20, 30) == 1);
@@ -4582,13 +5302,13 @@ static Machine* easel_transform_setup(int32_t* mc, int32_t* kc) {
 
 static int easel_save_and_read(Machine* m, int32_t mc, int32_t kc, uint8_t* body, int cap) {
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 103688, 2000);
+    int n = pump_until_file(m, "untitled.eas", EASEL_EAS4_BYTES, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
-    assert(n == 103688);
+    assert(n == EASEL_EAS4_BYTES);
     n = lux_app_read("untitled.eas", body, cap);
-    assert(n == 103688);
+    assert(n == EASEL_EAS4_BYTES);
     return n;
 }
 
@@ -4601,7 +5321,7 @@ static void test_easel_flip_h(void) {
     quill_lux_key(m, kc, 'h', 8); /* Cmd+H: Flip Horizontal */
     quill_lux_pump(m, 20);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 15, 23) == 0);   /* source now blank */
@@ -4618,7 +5338,7 @@ static void test_easel_flip_v(void) {
     quill_lux_key(m, kc, 'j', 8); /* Cmd+J: Flip Vertical */
     quill_lux_pump(m, 20);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 15, 23) == 0);   /* source now blank */
@@ -4635,7 +5355,7 @@ static void test_easel_rotate90(void) {
     quill_lux_key(m, kc, 'r', 8); /* Cmd+R: Rotate 90 */
     quill_lux_pump(m, 20);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 15, 23) == 0);   /* source now blank */
@@ -4653,7 +5373,7 @@ static void test_easel_fill(void) {
     quill_lux_key(m, kc, 'f', 8); /* Cmd+F: Fill (pattern 1 = solid black) */
     quill_lux_pump(m, 20);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     /* (12,22) was never painted -- Fill must have set it, not just the
@@ -4691,7 +5411,7 @@ static void test_easel_trace_edges(void) {
     quill_lux_key(m, kc, 'g', 8); /* Cmd+G: Trace Edges */
     quill_lux_pump(m, 20);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 25, 25) == 0);   /* square's interior, cleared */
@@ -4723,7 +5443,7 @@ static void test_easel_freeform_outline(void) {
     lux_mouse(m, mc, 4, 1, 180, 120); /* up -- closes the loop back to (50,50) */
     quill_lux_pump(m, 20);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 50, 75) == 1);   /* on the traced A-B edge */
@@ -4753,7 +5473,7 @@ static void test_easel_freeform_filled(void) {
     lux_mouse(m, mc, 4, 1, 180, 120);
     quill_lux_pump(m, 20);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 70, 90) == 1);   /* interior, now filled */
@@ -4788,7 +5508,7 @@ static void test_easel_polygon_filled(void) {
     quill_lux_click(m, mc, 130, 70);  /* click back on vertex 0 -- closes */
     quill_lux_pump(m, 20);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 83, 67) == 1);   /* triangle centroid, filled */
@@ -4823,7 +5543,7 @@ static void test_easel_polygon_outline_double_click_close(void) {
     quill_lux_click(m, mc, 180, 120); /* double-click on vertex 2 -- closes back to vertex 0 */
     quill_lux_pump(m, 20);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 75, 75) == 1);   /* midpoint of the v2->v0 closing edge */
@@ -4867,14 +5587,14 @@ static void test_easel_text_tool(void) {
 
     /* Nothing committed to CANVAS yet -- still floating. */
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n0 = pump_until_file(m, "untitled.eas", 103688, 2000);
-    assert(n0 == 103688);
-    uint8_t body0[104000];
+    int n0 = pump_until_file(m, "untitled.eas", EASEL_EAS4_BYTES, 2000);
+    assert(n0 == EASEL_EAS4_BYTES);
+    static uint8_t body0[EASEL_EAS4_BYTES + 64];
     n0 = lux_app_read("untitled.eas", body0, (int) sizeof(body0));
-    assert(n0 == 103688);
+    assert(n0 == EASEL_EAS4_BYTES);
     assert(easel_any_bit_in_rect(body0, n0, 100, 100, 140, 116) == 0);
 
-    /* Both saves write a fixed 103688-byte EAS3 file, so pump_until_file's
+    /* Both saves write a fixed-size EAS4 file, so pump_until_file's
      * size check can't tell "still the old save" from "the new one landed" --
      * remove it first so the next save is unambiguously fresh. */
     lux_app_remove("untitled.eas");
@@ -4882,7 +5602,7 @@ static void test_easel_text_tool(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool (index 7) -- commits the text */
     quill_lux_pump(m, 20);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_any_bit_in_rect(body, n, 100, 100, 140, 116) == 1);   /* "hi" landed */
@@ -4927,7 +5647,7 @@ static void test_easel_text_style_bold(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t plain_body[104000];
+    static uint8_t plain_body[EASEL_EAS4_BYTES + 64];
     int plain_n = easel_save_and_read(m, mc, kc, plain_body, (int) sizeof(plain_body));
     int plain_count = easel_count_bits_in_rect(plain_body, plain_n, 100, 100, 116, 116);
     assert(plain_count > 0);
@@ -4951,7 +5671,7 @@ static void test_easel_text_style_bold(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t bold_body[104000];
+    static uint8_t bold_body[EASEL_EAS4_BYTES + 64];
     int bold_n = easel_save_and_read(m, mc, kc, bold_body, (int) sizeof(bold_body));
     int bold_count = easel_count_bits_in_rect(bold_body, bold_n, 100, 100, 116, 116);
 
@@ -4986,7 +5706,7 @@ static void test_easel_text_size_24(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_any_bit_in_rect(body, n, 100, 116, 132, 131) == 1);  /* only reachable at scale 2 */
@@ -5016,7 +5736,7 @@ static void test_easel_text_style_shadow(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t plain_body[104000];
+    static uint8_t plain_body[EASEL_EAS4_BYTES + 64];
     int plain_n = easel_save_and_read(m, mc, kc, plain_body, (int) sizeof(plain_body));
     int plain_count = easel_count_bits_in_rect(plain_body, plain_n, 100, 100, 116, 116);
     assert(plain_count > 0);
@@ -5040,7 +5760,7 @@ static void test_easel_text_style_shadow(void) {
     quill_lux_click(m, mc, 60, 132);   /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t shadow_body[104000];
+    static uint8_t shadow_body[EASEL_EAS4_BYTES + 64];
     int shadow_n = easel_save_and_read(m, mc, kc, shadow_body, (int) sizeof(shadow_body));
     int shadow_count = easel_count_bits_in_rect(shadow_body, shadow_n, 100, 100, 116, 116);
 
@@ -5074,7 +5794,7 @@ static void test_easel_text_style_outline(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t plain_body[104000];
+    static uint8_t plain_body[EASEL_EAS4_BYTES + 64];
     int plain_n = easel_save_and_read(m, mc, kc, plain_body, (int) sizeof(plain_body));
     int plain_count = easel_count_bits_in_rect(plain_body, plain_n, 100, 100, 116, 116);
     assert(plain_count > 0);
@@ -5098,7 +5818,7 @@ static void test_easel_text_style_outline(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t outline_body[104000];
+    static uint8_t outline_body[EASEL_EAS4_BYTES + 64];
     int outline_n = easel_save_and_read(m, mc, kc, outline_body, (int) sizeof(outline_body));
     int outline_count = easel_count_bits_in_rect(outline_body, outline_n, 100, 100, 116, 116);
 
@@ -5142,7 +5862,7 @@ static void test_easel_text_style_italic(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     /* Chicago's "H" only inks canvas rows 103-111 (source rows gy=3..11 of
@@ -5194,15 +5914,15 @@ static void test_easel_show_page(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 103688, 2000);
+    int n = pump_until_file(m, "untitled.eas", EASEL_EAS4_BYTES, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
-    assert(n == 103688);
-    uint8_t body[104000];
+    assert(n == EASEL_EAS4_BYTES);
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     n = lux_app_read("untitled.eas", body, (int) sizeof(body));
-    assert(n == 103688);
+    assert(n == EASEL_EAS4_BYTES);
 
     assert(easel_bit_set(body, n, 96, 304) == 1);  /* painted at the panned viewport's origin */
     assert(easel_bit_set(body, n, 0, 0) == 0);     /* unpanned origin untouched */
@@ -5233,7 +5953,7 @@ static void test_easel_grid_snap(void) {
     lux_drag(m, mc, 83, 23, 137, 57);
     quill_lux_pump(m, 20);
 
-    uint8_t off_body[104000];
+    static uint8_t off_body[EASEL_EAS4_BYTES + 64];
     int off_n = easel_save_and_read(m, mc, kc, off_body, (int) sizeof(off_body));
     assert(easel_bit_set(off_body, off_n, 57, 37) == 1);
 
@@ -5252,7 +5972,7 @@ static void test_easel_grid_snap(void) {
     lux_drag(m, mc, 83, 23, 137, 57);
     quill_lux_pump(m, 20);
 
-    uint8_t on_body[104000];
+    static uint8_t on_body[EASEL_EAS4_BYTES + 64];
     int on_n = easel_save_and_read(m, mc, kc, on_body, (int) sizeof(on_body));
 
     assert(easel_bit_set(on_body, on_n, 57, 37) == 0);  /* snapped past this corner */
@@ -5298,7 +6018,7 @@ static void test_easel_brush_mirror(void) {
     quill_lux_click(m, mc, 130, 80);  /* dab at page (50,60) */
     quill_lux_pump(m, 20);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 50, 60) == 1);   /* the dab itself */
@@ -5335,7 +6055,7 @@ static void test_easel_dbl_click_pencil_fatbits(void) {
     quill_lux_click(m, mc, 80, 20);   /* paints through the FatBits mapping */
     quill_lux_pump(m, 20);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 210, 182) == 1);  /* FatBits-mapped pixel */
@@ -5365,7 +6085,7 @@ static void test_easel_dbl_click_eraser_clears_page(void) {
     quill_lux_click(m, mc, 60, 164);  /* double-click: erases the whole page */
     quill_lux_pump(m, 20);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 20, 30) == 0);
@@ -5399,7 +6119,7 @@ static void test_easel_dbl_click_marquee_select_all(void) {
     lux_drag(m, mc, 100, 50, 150, 50); /* drag from inside the selection, +50px */
     quill_lux_pump(m, 20);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 20, 30) == 0);  /* source now blank */
@@ -5436,7 +6156,7 @@ static void test_easel_dbl_click_hand_show_page(void) {
     quill_lux_click(m, mc, 80, 20);   /* paints the viewport's own top-left pixel */
     quill_lux_pump(m, 20);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 96, 304) == 1);
@@ -5472,15 +6192,15 @@ static void test_easel_open_with_unsaved_changes_prompts(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_click(m, mc, 280, 222); /* Save */
-    int n = pump_until_file(m, "untitled.eas", 103688, 2000);
-    assert(n == 103688);
+    int n = pump_until_file(m, "untitled.eas", EASEL_EAS4_BYTES, 2000);
+    assert(n == EASEL_EAS4_BYTES);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
-    uint8_t body[104000];
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     n = lux_app_read("untitled.eas", body, (int) sizeof(body));
-    assert(n == 103688);
+    assert(n == EASEL_EAS4_BYTES);
     assert(easel_bit_set(body, n, 20, 30) == 1);
 
 }
@@ -5504,8 +6224,8 @@ static void test_easel_revert_discards_unsaved_edits(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_key(m, kc, 's', 8);     /* Cmd+S: this pixel is what's on disk */
-    int n = pump_until_file(m, "untitled.eas", 103688, 2000);
-    assert(n == 103688);
+    int n = pump_until_file(m, "untitled.eas", EASEL_EAS4_BYTES, 2000);
+    assert(n == EASEL_EAS4_BYTES);
 
     quill_lux_click(m, mc, 150, 50);  /* pencil paints canvas (70,30), unsaved */
     quill_lux_pump(m, 20);
@@ -5520,19 +6240,155 @@ static void test_easel_revert_discards_unsaved_edits(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_key(m, kc, 's', 8);     /* Cmd+S again to inspect the reloaded canvas */
-    n = pump_until_file(m, "untitled.eas", 103688, 2000);
+    n = pump_until_file(m, "untitled.eas", EASEL_EAS4_BYTES, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
-    assert(n == 103688);
-    uint8_t body[104000];
+    assert(n == EASEL_EAS4_BYTES);
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
     n = lux_app_read("untitled.eas", body, (int) sizeof(body));
-    assert(n == 103688);
+    assert(n == EASEL_EAS4_BYTES);
 
     assert(easel_bit_set(body, n, 20, 30) == 1);  /* saved edit survived the revert */
     assert(easel_bit_set(body, n, 70, 30) == 0);  /* unsaved edit was discarded */
 
+}
+
+/* Stage a byte-for-byte copy of a file from the repo into the app sandbox. */
+static int lux_app_stage(const char* repo_path, const char* as_name) {
+    FILE* in = fopen(repo_path, "rb");
+    if (!in) return 0;
+    char dst[512];
+    lux_app_path(as_name, dst, sizeof(dst));
+    FILE* out = fopen(dst, "wb");
+    if (!out) { fclose(in); return 0; }
+    char buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) fwrite(buf, 1, n, out);
+    fclose(in);
+    fclose(out);
+    return 1;
+}
+
+/* An EAS3 file -- the 2bpp gray page Easel wrote before the palette -- must
+ * still open, and must come back looking *identical*, not merely similar:
+ * palette indices 0..3 are exactly GRAYMAP's four levels in the same order,
+ * so the widen is index-for-index. tests/fixtures/legacy.eas is a permanent
+ * fixture written in the old format; it is never regenerated by this suite,
+ * which is the point of keeping it. */
+static void test_easel_opens_legacy_eas3(void) {
+    printf("Testing apps/Easel.lux: a 2bpp EAS3 file still opens and widens...\n");
+    lux_app_remove("untitled.eas");
+    if (!lux_app_stage("tests/fixtures/legacy.eas", "untitled.eas")) {
+        printf("  (skipped: tests/fixtures/legacy.eas not found -- run from repo root)\n");
+        return;
+    }
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    /* File > Revert loads DOC::path, which new-document set to untitled.eas.
+     * The document is clean, so Revert does not prompt. */
+    quill_lux_click(m, mc, 20, 10);   /* File menu */
+    quill_lux_pump(m, 10);
+    quill_lux_click(m, mc, 20, 101);  /* Revert */
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    /* Save it back out: the file on disk is now EAS4, carrying what the
+     * EAS3 body meant. */
+    lux_app_remove("untitled.eas");
+    quill_lux_key(m, kc, 's', 8);
+    int n = pump_until_file(m, "untitled.eas", EASEL_EAS4_BYTES, 4000);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    assert(n == EASEL_EAS4_BYTES);
+
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
+    n = lux_app_read("untitled.eas", body, (int) sizeof(body));
+    assert(n == EASEL_EAS4_BYTES);
+    assert(body[3] == '4'); /* written back in the new format */
+
+    /* The fixture's four gray levels, at the four pixels it set them at. */
+    assert(easel_pixel_index(body, n, 10, 20) == 1); /* light gray */
+    assert(easel_pixel_index(body, n, 11, 20) == 2); /* dark gray */
+    assert(easel_pixel_index(body, n, 12, 20) == 3); /* black */
+    assert(easel_pixel_index(body, n, 13, 20) == 0); /* white */
+    /* A run, and the very last pixel of the page -- the geometry corner. */
+    for (int x = 100; x < 140; x++) assert(easel_pixel_index(body, n, x, 300) == 3);
+    assert(easel_pixel_index(body, n, 99, 300) == 0);
+    assert(easel_pixel_index(body, n, 140, 300) == 0);
+    assert(easel_pixel_index(body, n, 575, 719) == 2);
+
+    lux_app_remove("untitled.eas");
+}
+
+/* Picking a colour from the 4x4 ink picker paints that palette index, and
+ * the canvas renders it as that colour. This is the whole feature in one
+ * test: a regression that lost the picker, the ink, or the c4 channel all
+ * land here. */
+static void test_easel_paints_in_colour(void) {
+    printf("Testing apps/Easel.lux: the ink picker paints palette colours...\n");
+    lux_app_remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    /* The picker is a 4x4 grid in the pattern strip's left box: PAT_CUR_W=66
+     * wide by 2*PAT_CELL_H=56 tall, so cells are 16 x 14 starting at PAT_Y.
+     * Index 4 (red) is row 1, column 0. */
+    const int PAT_Y = 436, CELL_W = 16, CELL_H = 14;
+    quill_lux_click(m, mc, CELL_W / 2, PAT_Y + CELL_H + CELL_H / 2);
+    quill_lux_pump(m, 20);
+
+    quill_lux_click(m, mc, 100, 50);  /* pencil paints canvas (20,30) in red */
+    quill_lux_pump(m, 20);
+
+    /* Index 9 (dark green) is row 2, column 1. */
+    quill_lux_click(m, mc, CELL_W + CELL_W / 2, PAT_Y + 2 * CELL_H + CELL_H / 2);
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 150, 50);  /* pencil paints canvas (70,30) in green */
+    quill_lux_pump(m, 20);
+
+    /* Both inks reached the screen, through the c4 channel. */
+    assert(m->system->draw_chan == DRAW_CHAN_C4);
+    int w = m->system->screen_width, h = m->system->screen_height;
+    long red = 0, green = 0;
+    for (int i = 0; i < w * h; i++) {
+        const uint8_t* px = m->system->screen_pixels + (size_t)i * 4;
+        uint32_t c = ((uint32_t)px[1] << 16) | ((uint32_t)px[2] << 8) | px[3];
+        if (c == 0xDD0000) red++;
+        else if (c == 0x007700) green++;
+    }
+    assert(red > 0);
+    assert(green > 0);
+
+    quill_lux_key(m, kc, 's', 8);
+    int n = pump_until_file(m, "untitled.eas", EASEL_EAS4_BYTES, 4000);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    assert(n == EASEL_EAS4_BYTES);
+
+    /* And both survive the round-trip through EAS4 as distinct indices --
+     * which a 2bpp page could not have represented at all. */
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
+    n = lux_app_read("untitled.eas", body, (int) sizeof(body));
+    assert(n == EASEL_EAS4_BYTES);
+    assert(easel_pixel_index(body, n, 20, 30) == 4); /* red */
+    assert(easel_pixel_index(body, n, 70, 30) == 9); /* dark green */
+
+    lux_app_remove("untitled.eas");
 }
 
 static void test_easel_quit_with_unsaved_changes_prompts(void) {
@@ -5622,6 +6478,9 @@ int main(void) {
     test_regression_question_takes_one_quot();
     test_fields_directive();
     test_sf_dropdown_does_not_clobber_result_flags();
+    test_kelvin_version_enforced();
+    test_cmap_4bpp();
+    test_doc_session();
     test_reserve_directive();
     test_reserve_errors();
     test_reserve_overlap_warning();
@@ -5657,11 +6516,13 @@ int main(void) {
     test_tabula_calc_esc_stops();
 
     test_lux_apps_compile();
+    test_breakout_brick_colours();
     test_breakout_paddle_hold();
     test_breakout_ball_play();
     test_app_fixed_timestep();
     test_calculator_reserved_state();
     test_snake_tick_clock();
+    test_road_escape_palette();
     test_roadescape_road();
     test_roadescape_throttle();
     test_roadescape_gun();
@@ -5698,6 +6559,8 @@ int main(void) {
     test_easel_dbl_click_hand_show_page();
     test_easel_open_with_unsaved_changes_prompts();
     test_easel_revert_discards_unsaved_edits();
+    test_easel_opens_legacy_eas3();
+    test_easel_paints_in_colour();
     test_easel_quit_with_unsaved_changes_prompts();
 
     printf("\n=== ALL COMPILER TESTS PASSED ===\n\n");

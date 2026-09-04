@@ -92,6 +92,48 @@ The menu bar is always the top 20px strip. Click a title to open, click an item 
 
 Wire keyboard Return to `UI::enter` and Esc to `UI::escape`. The ring is still there (`UI::poll`) if an app wants raw records instead of handlers.
 
+## Document session (`lib/doc.lux`)
+
+File/Edit, unsaved-changes, and the Standard File picker are the same in every document ROM. `DOC` owns that session; the app still serializes its own bytes.
+
+```lux
+INCLUDE "lib/doc.lux"
+
+@load-bytes ( path -- ) ... ;
+@save-bytes ( path -- ) ... ;
+@reset-doc  ( -- )      ... ;
+
+@start
+    T"My App" APP::init
+    UI::new
+    APP::width UI::menubar
+    T"My App" T"untitled.myapp" DOC::init
+    [ load-bytes ] DOC::on-load!
+    [ save-bytes ] DOC::on-save!
+    [ reset-doc  ] DOC::on-new!
+    DOC::file-menu
+    DOC::edit-menu          ( omit if there is no Cut/Copy/Paste )
+    [ on-mouse ] APP::on-mouse!
+    [ on-frame ] APP::on-frame!
+    APP::loop
+;
+```
+
+| Word | Stack | Meaning |
+|---|---|---|
+| `DOC::init` | `title default-path --` | path, untitled name, window title, SF wiring |
+| `DOC::path` | `-- ptr` | current document path (no leading `/`) |
+| `DOC::dirty?` / `DOC::dirty!` / `DOC::clean!` | `-- f` / `--` | unsaved-changes; `dirty!` also `APP::dirty!` and appends ` *` to the title |
+| `DOC::on-load!` / `DOC::on-save!` | `xt --` | quotations `( path -- )` |
+| `DOC::on-new!` / `DOC::on-quit!` | `xt --` | quotations `( -- )`; quit defaults to `HALT` |
+| `DOC::file-menu` | `--` | File > New / Open / Save / Save As / Quit. Dirty New, Open, and Quit raise `DIALOG::confirm-save` |
+| `DOC::edit-menu` | `--` | Edit > Cut / Copy / Paste / Select All (no-ops until `DOC::on-cut!` and friends) |
+| `DOC::menu-save` / `DOC::menu-new` / … | `--` | the same actions as the menu items, for Cmd-S and tests |
+| `DOC::confirm-xt` | `xt --` | if dirty, confirm-save then CALL xt; if clean, CALL xt now. For Revert and New 8x8 / 16x16 / … |
+| `DOC::pick` | `path --` | SF Open vs Save As (leading `/` stripped) |
+
+Quill, Tabula, Nib, Illumos, Easel, and Whittle all use this session. Apps whose File menu is not the five standard items (Illumos/Whittle New sizes, Easel Revert) still call `DOC::menu-*` / `DOC::confirm-xt` and keep their own item list. Hello, Calculator, and games do not INCLUDE `lib/doc.lux`. Formats stay per-app (`.quill`, `.tabula`, `.eas`, `.nib`, `.cff`, `.csf`).
+
 Cloister is a fantasy machine: one program at a time owns the 960×720 screen and its own menu bar. `./bin/cloister` boots `apps/Picker.lux`, a Lux guest that shows two group-box lists (Lux sources from `apps/` on the left, compiled Fluxio bins from `apps/fluxio/` on the right). **Cloister > About Cloister** is a modal info box (`APP::modal!`, dithered desk, title bar, close box, OK). Click or Enter writes the path to `/sys/launch` and HALTs; the host loads that ROM. `./bin/cloister apps/Quill.bin` boots that ROM directly. Esc in an app raises Continue / Restart / Quit. Halt (Quit) returns to the picker, or exits if the ROM was passed on the command line or Quit was chosen in the picker itself.
 
 A group box is FrameRect with the title punched through the top edge. `UI::groupbox` is that chrome alone (place radios or other controls inside by coordinates). `UI::list` is the same chrome plus a clickable column of strings — two of them side by side is how the picker does headers-and-columns, with no layout manager.
@@ -100,7 +142,7 @@ A group box is FrameRect with the title punched through the top edge. `UI::group
 
 **Nib** (`apps/Nib.lux`) is MacDraw-simple object drawing: arrow / line / rect / roundrect / oval / text, pen 1–3 pt, fill none/white/black, grid and snap. File > New/Open/Save/Save As | Quit, Edit > Cut/Copy/Paste/Duplicate/Clear, Arrange > Bring to Front / Send to Back. Save files are `NIB 1` text. `./bin/cloister apps/Nib.bin`. User-facing: [user-manual.md](user-manual.md).
 
-**Easel** (`apps/Easel.lux`) is a MacPaint clone: 20 tools (lasso, marquee, hand, text, fill, spray, brush, pencil, line, eraser, rect/filled, roundrect/filled, oval/filled, freeform/filled, polygon/filled) over a 2-bit gray (four levels) 576×720 page, viewed through a 480×416 scrollable viewport. Selection (marquee + lasso) supports move, Option-drag copy, and Cut/Copy/Paste/Clear via `/sys/snarf`. Edit also has Invert/Fill/Trace Edges/Flip H/Flip V/Rotate 90. Text tool rasterizes Chicago/Geneva/Monaco via `lib/cff.lux` at size 12/24/36 with Bold/Italic/Underline/Outline/Shadow, all combinable. 38 patterns, 32 preset brush shapes, a 0/1/2/3/4/8px pen-width strip, Goodies > Grid / FatBits / Edit Pattern / Brush Shape / Show Page / Mirror Horizontal / Mirror Vertical (brush dabs also stamp reflected about the page center; both on together give 4-way symmetry). The page is packed 2bpp via `lib/graymap.lux` (selection masks stay 1bpp in `lib/bitmap.lux`). `/dev/draw` writes are batched via `lib/draw.lux` so a full repaint stays inside one host frame. Save files are `EAS3` (whole packed gray page, no back-compat reader). A 2×2 gray-ink picker sits in the pattern strip’s left box. `./bin/cloister apps/Easel.bin`. User-facing: [user-manual.md](user-manual.md). Design/status: `easel_plan.md`.
+**Easel** (`apps/Easel.lux`) is a MacPaint clone: 20 tools (lasso, marquee, hand, text, fill, spray, brush, pencil, line, eraser, rect/filled, roundrect/filled, oval/filled, freeform/filled, polygon/filled) over a 4-bit colour (16 palette indices) 576×720 page, viewed through a 480×416 scrollable viewport. Selection (marquee + lasso) supports move, Option-drag copy, and Cut/Copy/Paste/Clear via `/sys/snarf`. Edit also has Invert/Fill/Trace Edges/Flip H/Flip V/Rotate 90. Text tool rasterizes Chicago/Geneva/Monaco via `lib/cff.lux` at size 12/24/36 with Bold/Italic/Underline/Outline/Shadow, all combinable. 38 patterns, 32 preset brush shapes, a 0/1/2/3/4/8px pen-width strip, Goodies > Grid / FatBits / Edit Pattern / Brush Shape / Show Page / Mirror Horizontal / Mirror Vertical (brush dabs also stamp reflected about the page center; both on together give 4-way symmetry). The page is packed 4bpp via `lib/cmap.lux`, one nibble per pixel indexing the 16-colour system palette (selection masks stay 1bpp in `lib/bitmap.lux`). `/dev/draw` writes are batched via `lib/draw.lux` so a full repaint stays inside one host frame. Save files are `EAS4` (whole packed 4bpp page). The older 2bpp `EAS3` still opens and widens index-for-index — palette entries 0-3 are exactly the four grays it used — but is never written back. A 4×4 colour-ink picker sits in the pattern strip’s left box. `./bin/cloister apps/Easel.bin`. User-facing: [user-manual.md](user-manual.md). Design/status: `easel_plan.md`.
 
 **Tabula** (`apps/Tabula.lux`) is the spreadsheet: columns A–Z, sparse rows 1…99999, strings/ints/floats and basic formulas. File > New/Open/Save/Save As | Quit, Edit > Cut/Copy/Paste/Select All, Formula > Calculate (Esc stops a running pass). Entry bar shows formula source; the grid shows the last computed value (or `#DIV/0!` / `#VALUE!` / `#REF!` / `#CIRC` / `#NAME?` / `#STOP`). Save files are `TABULA 400` sparse CSV (`addr,source`); formula source is stored, not the cache. Value fields use backslash escapes (`\\`, `\t`, `\n`, `\r`, `\,`, and `\=` for a leading equals that is not a formula). Integer arithmetic only: `+ - * /`, parentheses, unary minus, `A1` refs, `SUM(A1:B10)`. `./bin/cloister apps/Tabula.bin`. User-facing: [user-manual.md](user-manual.md).
 
@@ -112,13 +154,14 @@ A group box is FrameRect with the title punched through the top edge. `UI::group
 | `lib/str.lux` | `printable?`, `int-to-str`, `strcpy`/`strlen`/`streq`, `last-slash`, `basename` |
 | `lib/vfs.lux` | Plan 9 file ops plus `VFS::sys-file` (`rel dest -- dest`) to join `/sys/file/`, `VFS::snarf-read`/`snarf-write`, `VFS::load-i32`/`save-i32` |
 | `lib/bitmap.lux` | Packed 1bpp page primitives (`addr`/`get`/`set`, `word@`/`word!`, `hspan`/`hspan-pat`, `clear`/`fill`/`copy`/`invert`/`blit`). Easel uses this for the lasso selection mask, not the document. |
-| `lib/graymap.lux` | Packed 2bpp grayscale page (four levels, 0 white .. 3 black), same 576×720 geometry as `BITMAP`. Easel’s canvas/undo/tmp. |
+| `lib/graymap.lux` | Packed 2bpp grayscale page (four levels, 0 white .. 3 black), same 576×720 geometry as `BITMAP`. No longer a document format — kept for reading Easel’s legacy `EAS3` files. |
+| `lib/cmap.lux` | Packed 4bpp colour page (16 palette indices, one nibble per pixel), same 576×720 geometry. Easel’s canvas/undo/tmp. `CMAP::widen-2bpp` converts a `GRAYMAP` page in place of a copy; `CMAP::invert` is one `0x33333333` XOR per word. See `docs/palette.md`. |
 | `lib/mem.lux` | Bump heap at `0xA00000` |
-| `lib/draw.lux` | QuickDraw: `/dev/draw` packing plus `paint-rect` / `frame-rect`, `paint-oval` / `frame-oval`, `paint-rrect` / `frame-rrect`, `paint-tri`, `hline` / `vline` / `line` / `dash-h`, `x-mark` / `check-mark`, `fill-r` / `stroke-r`, `char-w` / `char-h`. `DRAW::set-font` 0 Chicago / 2 Geneva / 3 Monaco; UI chrome stays Chicago. `DRAW::chan!` / `DRAW::grayscale` / `DRAW::gray` select the draw channel (RGB default, or k8/k2/k1 grayscale) |
+| `lib/draw.lux` | QuickDraw: `/dev/draw` packing plus `paint-rect` / `frame-rect`, `paint-oval` / `frame-oval`, `paint-rrect` / `frame-rrect`, `paint-tri`, `hline` / `vline` / `line` / `dash-h`, `x-mark` / `check-mark`, `fill-r` / `stroke-r`, `char-w` / `char-h`. `DRAW::set-font` 0 Chicago / 2 Geneva / 3 Monaco; UI chrome stays Chicago. `DRAW::chan!` / `DRAW::grayscale` / `DRAW::gray` select the draw channel (RGB default, k8/k2/k1 grayscale, or c4 — snap to the 16-colour system palette). `DRAW::PAL_*` are the sixteen palette inks and `DRAW::clut` maps a 4bpp index to one; `DRAW::rgb` packs r/g/b. See `docs/palette.md`. |
 | `lib/ui.lux` | Controls. Faces call DRAW primitives (button → RoundRect, radio → Oval, checkbox → Rect + `x-mark`, scrollbar arrows → `paint-tri`, menu check → `check-mark`, separator → `dash-h`, group box / list → FrameRect + title) |
 | `lib/sf.lux` | System 6 Standard File picker (`SF::`) |
 | `lib/dialog.lux` | In-app Save/Don't Save/Cancel and one-button alert (`DIALOG::confirm-save`, `DIALOG::alert`). Overlay buttons; `APP::modal!`. |
-| `lib/app.lux` | Devices, loop, `dirty!`. Menus/buttons are Chicago. `APP::font-menu` (Quill, Tabula) picks the document face (`APP::use-text-font`, `APP::text-font`). Overlay buttons (`UI::overlay-*`) are the Esc system menu and the picker’s About box. `APP::grayscale!` after `APP::init` puts `/dev/draw` in 8-bit gray; `APP::color!` restores RGB. `APP::beep` writes a 4-byte packet to `/dev/audio` (opened in `init`; no-op if missing). |
+| `lib/app.lux` | Devices, loop, `dirty!`. Menus/buttons are Chicago. `APP::font-menu` (Quill, Tabula) picks the document face (`APP::use-text-font`, `APP::text-font`). Overlay buttons (`UI::overlay-*`) are the Esc system menu and the picker’s About box. `APP::grayscale!` after `APP::init` puts `/dev/draw` in 8-bit gray; `APP::palette!` puts it in the 16-colour system palette (`docs/palette.md`); `APP::color!` restores unrestricted RGB. `APP::beep` writes a 4-byte packet to `/dev/audio` (opened in `init`; no-op if missing). |
 | `lib/menu.lux` | Leftover quotation menu bar (Quill uses `UI::`) |
 
 ## Standard File (`SF`)

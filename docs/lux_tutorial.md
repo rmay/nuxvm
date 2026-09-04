@@ -709,12 +709,14 @@ IMPORT MATH AS M
 Every app build must declare a version, using the project's Kelvin
 versioning scheme (see `AGENTS.md`): higher numbers are "hotter," and a
 hotter build can run something just as hot or colder, but not the reverse.
-NUX opcodes/implementation sit at 300K; everything else defaults to 400K
-unless a specific app has a reason to declare otherwise.
+NUX opcodes/implementation sit at 300K; everything else defaults to 399K
+unless a specific app has a reason to declare otherwise. That default cools
+over time — check `AGENTS.md`'s cooldown log rather than copying a number
+from an older document.
 
 ```forth
 MODULE MYAPP
-VERSION 400000
+VERSION 399000
 ```
 
 `luxc` rejects an app build that never declares `VERSION <n>` anywhere in

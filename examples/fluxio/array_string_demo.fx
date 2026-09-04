@@ -7,7 +7,7 @@
  *   bin/nux examples/fluxio/array_string_demo.bin
  */
 
-version 400000;
+version 399000;
 
 int greeting[] = "Hello, Fluxio!";
 

@@ -5,15 +5,13 @@
   ./bin/cloister apps/Nib.bin )
 
 INCLUDE "lib/app.lux"
+INCLUDE "lib/doc.lux"
 INCLUDE "lib/core.lux"
 INCLUDE "lib/str.lux"
-INCLUDE "lib/ui.lux"
-INCLUDE "lib/sf.lux"
-INCLUDE "lib/dialog.lux"
 INCLUDE "lib/geom.lux"
 
 MODULE MAIN
-VERSION 400000
+VERSION 399000
 
 IMPORT APP
 IMPORT VFS
@@ -24,6 +22,7 @@ IMPORT UI
 IMPORT SF
 IMPORT DIALOG
 IMPORT GEOM
+IMPORT DOC
 
 ( --- Geometry --- )
 @WIN_W         960 ;
@@ -99,7 +98,6 @@ IMPORT GEOM
   own FILE_MAX/SNARF_MAX. )
 RESERVE POOL 8192 ;
 RESERVE TEXT_POOL 16384 ;
-RESERVE PATH 256 ;
 RESERVE VFS_PATH 256 ;
 RESERVE STATUS_BUF 256 ;
 RESERVE LINE_BUF 512 ;
@@ -117,7 +115,7 @@ RESERVE tool 4 ;
 RESERVE sel 4 ;
 RESERVE drag 4 ;
 RESERVE mouse-held 4 ;
-RESERVE file-dirty 4 ;
+
 RESERVE cur-pen 4 ;
 RESERVE cur-fill 4 ;
 RESERVE grid-f 4 ;
@@ -141,24 +139,15 @@ RESERVE fill-grp 4 ;
 @p-y1              0x8A0068 ;
 RESERVE p-fill 4 ;
 RESERVE p-pen 4 ;
-RESERVE save-as 4 ;
+
 
 ( --- Path / dirty --- )
 
 
 
-@mark-dirty ( -- )
-    1 file-dirty STOREI
-    APP::dirty!
-    sync-title
-;
+@mark-dirty ( -- ) DOC::dirty! ;
 
-@path-basename ( -- ptr ) PATH STR::basename ;
-
-@sync-title ( -- )
-    file-dirty LOADI [ T"Nib *" ] [ T"Nib" ] ?:
-    VFS::set-window-title
-;
+@path-basename ( -- ptr ) DOC::path STR::basename ;
 
 ( --- Object pool --- )
 
@@ -619,7 +608,7 @@ RESERVE save-as 4 ;
     APP::draw-fd 0 STATUS_Y WIN_W STATUS_H CLR_HDR DRAW::fill-rect
     APP::draw-fd 0 STATUS_Y WIN_W 1 CLR_FRAME DRAW::fill-rect
     path-basename STATUS_BUF STR::strcpy
-    file-dirty LOADI [
+    DOC::dirty? [
         T" *" STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
     ] ?
     APP::draw-fd 8 STATUS_Y 6 + STATUS_BUF CLR_FG FONT_SIZE DRAW::draw-str
@@ -1166,42 +1155,34 @@ RESERVE save-as 4 ;
     ] [ 0 ] ?:
 ;
 
-@save-file ( -- )
+@save-bytes { p -- }
     commit-edit
-    PATH VFS_PATH VFS::sys-file 6 VFS::open-mode
+    p VFS_PATH VFS::sys-file 6 VFS::open-mode
     dup 0 >= [
         dup write-all
         VFS::close drop
-        0 file-dirty STOREI
-        sync-title
         APP::dirty!
     ] [ drop ] ?:
 ;
 
-@load-path ( path -- )
+@load-bytes { p -- }
     commit-edit
-    dup load-byte 47 = [ 1 + ] ?
-    PATH STR::strcpy
-    PATH VFS_PATH VFS::sys-file 0 VFS::open-mode
+    p VFS_PATH VFS::sys-file 0 VFS::open-mode
     dup 0 >= [
         dup FILE_BUF FILE_MAX 1 - VFS::read { n }
         n 0 < [ 0 n! ] ?
         0 FILE_BUF n + store-byte
         VFS::close drop
         parse-file [
-            0 file-dirty STOREI
             -1 sel STOREI
         ] ?
-        sync-title
     ] [ drop ] ?:
     APP::dirty!
 ;
 
-@new-document ( -- )
+@reset-doc ( -- )
     cancel-edit
     clear-pool
-    T"untitled.nib" PATH STR::strcpy
-    0 file-dirty STOREI
     0 APP::modal!
     TOOL_ARROW tool STOREI
     1 cur-pen STOREI
@@ -1209,7 +1190,6 @@ RESERVE save-as 4 ;
     DRAG_NONE drag STOREI
     sync-pen-ui
     sync-fill-ui
-    sync-title
     APP::dirty!
 ;
 
@@ -1264,38 +1244,11 @@ RESERVE save-as 4 ;
 
 ( --- Confirm / menus --- )
 
-@on-pick ( path -- )
-    save-as LOADI [
-        0 save-as STOREI
-        dup load-byte 47 = [ 1 + ] ?
-        PATH STR::strcpy
-        save-file
-    ] [
-        load-path
-    ] ?:
-;
-@on-cancel ( -- )
-    0 save-as STOREI
-    APP::dirty!
-;
-
-@menu-new ( -- )
-    commit-edit
-    file-dirty LOADI [
-        [ save-file new-document ] [ new-document ] [ APP::dirty! ] DIALOG::confirm-save
-        APP::dirty!
-    ] [
-        new-document
-    ] ?:
-;
-
-@menu-open ( -- ) commit-edit SF::show ;
-@menu-save-as ( -- )
-    commit-edit
-    1 save-as STOREI
-    PATH SF::show-save
-;
-@menu-quit ( -- ) HALT ;
+@menu-new ( -- ) commit-edit DOC::menu-new ;
+@menu-open ( -- ) commit-edit DOC::menu-open ;
+@menu-save ( -- ) commit-edit DOC::menu-save ;
+@menu-save-as ( -- ) commit-edit DOC::menu-save-as ;
+@menu-quit ( -- ) DOC::menu-quit ;
 @menu-cut ( -- ) commit-edit snarf-sel sel LOADI obj-delete APP::dirty! ;
 @menu-copy ( -- ) commit-edit snarf-sel ;
 @menu-paste ( -- ) paste-snarf ;
@@ -1440,7 +1393,7 @@ RESERVE save-as 4 ;
         0 local@ EVENT::MOD_SHIFT AND [
             menu-save-as
         ] [
-            save-file
+            menu-save
         ] ?:
     ] [
     dup 120 = [ drop menu-cut ] [
@@ -1537,13 +1490,17 @@ RESERVE save-as 4 ;
     APP::draw-fd FONT_SIZE DRAW::set-font-size
     UI::new
     WIN_W UI::menubar
+    T"Nib" T"untitled.nib" DOC::init
+    $load-bytes DOC::on-load!
+    $save-bytes DOC::on-save!
+    $reset-doc  DOC::on-new!
     T"File" UI::menu
-    T"New"  [ drop menu-new ]  UI::item
-    T"Open" [ drop menu-open ] UI::item
-    T"Save" [ drop save-file ] UI::item
+    T"New"     [ drop menu-new ]     UI::item
+    T"Open"    [ drop menu-open ]    UI::item
+    T"Save"    [ drop menu-save ]    UI::item
     T"Save As" [ drop menu-save-as ] UI::item
     UI::sep
-    T"Quit" [ drop menu-quit ] UI::item
+    T"Quit"    [ drop menu-quit ]    UI::item
     T"Edit" UI::menu
     T"Cut"       [ drop menu-cut ]   UI::item
     T"Copy"      [ drop menu-copy ]  UI::item
@@ -1570,11 +1527,9 @@ RESERVE save-as 4 ;
     T"Snap to Grid" 0 UI::item-set
     [ on-font ] APP::font-hook!
     APP::font-menu
-    [ on-pick ] SF::on-ok!
-    [ on-cancel ] SF::on-cancel!
     0 grid-f STOREI
     0 snap-f STOREI
-    new-document
+    reset-doc
     [ on-mouse ] APP::on-mouse!
     [ on-kbd ] APP::on-kbd!
     [ on-frame ] APP::on-frame!

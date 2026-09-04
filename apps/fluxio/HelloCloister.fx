@@ -13,7 +13,7 @@
  */
 include "../../lib/escape_menu.fx";
 
-version 400000;
+version 399000;
 
 /** entry point */
 int main() {

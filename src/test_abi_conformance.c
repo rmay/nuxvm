@@ -25,8 +25,10 @@
  */
 
 #include "compiler.h"
+#include "kelvin.h"
 #include "vm.h"
 #include "opcodes.h"
+#include "rom.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -267,18 +269,10 @@ static void test_fluxlink_end_to_end(void) {
         dir, dir, dir, dir, (unsigned)MM_GRAPHICAL_CODE_BASE, (unsigned)lib_link_base, dir, dir);
     CHECK(system(cmd) == 0, "fluxlink linked the merged image");
 
-    size_t merged_len;
-    FILE* mf = fopen("/tmp/nuxvm_test_fluxlink_e2e/merged.bin", "rb");
-    CHECK(mf != NULL, "merged.bin was produced");
-    if (mf) {
-        fseek(mf, 0, SEEK_END);
-        merged_len = (size_t)ftell(mf);
-        fseek(mf, 0, SEEK_SET);
-        uint8_t* merged = malloc(merged_len);
-        size_t rd = fread(merged, 1, merged_len, mf);
-        fclose(mf);
-        CHECK(rd == merged_len, "read the merged image back");
-
+    size_t merged_len = 0;
+    uint8_t* merged = rom_load_executable("/tmp/nuxvm_test_fluxlink_e2e/merged.bin", &merged_len, NULL);
+    CHECK(merged != NULL, "merged.bin was produced");
+    if (merged) {
         VM* vm = vm_create(merged, (uint32_t)merged_len, (uint32_t)MM_GRAPHICAL_CODE_BASE, 4 * 1024 * 1024, false);
         vm_run(vm);
         int32_t result = -1;
@@ -355,7 +349,7 @@ static void test_fluxio_extern_end_to_end(void) {
     CHECK(app_src != NULL, "opened scratch app.fx for writing");
     if (!app_src) return;
     fprintf(app_src,
-        "version 400000;\n\n"
+        "version 399000;\n\n"
         "extern int lib_double(int n) = 0x%X;\n"
         "extern int lib_triple(int n) = 0x%X;\n"
         "extern int lib_add2(int a, int b) = 0x%X;\n\n"
@@ -378,17 +372,10 @@ static void test_fluxio_extern_end_to_end(void) {
         dir, dir, dir, dir, (unsigned)MM_GRAPHICAL_CODE_BASE, (unsigned)lib_link_base, dir, dir);
     CHECK(system(cmd) == 0, "fluxlink linked the Fluxio app against the Lux library");
 
-    FILE* mf = fopen("/tmp/nuxvm_test_extern_e2e/merged.bin", "rb");
-    CHECK(mf != NULL, "merged.bin was produced");
-    if (mf) {
-        fseek(mf, 0, SEEK_END);
-        size_t merged_len = (size_t)ftell(mf);
-        fseek(mf, 0, SEEK_SET);
-        uint8_t* merged = malloc(merged_len);
-        size_t rd = fread(merged, 1, merged_len, mf);
-        fclose(mf);
-        CHECK(rd == merged_len, "read the merged image back");
-
+    size_t merged_len = 0;
+    uint8_t* merged = rom_load_executable("/tmp/nuxvm_test_extern_e2e/merged.bin", &merged_len, NULL);
+    CHECK(merged != NULL, "merged.bin was produced");
+    if (merged) {
         VM* vm = vm_create(merged, (uint32_t)merged_len, (uint32_t)MM_GRAPHICAL_CODE_BASE, 4 * 1024 * 1024, false);
         vm_run(vm);
         int32_t result = -1;
@@ -448,7 +435,7 @@ static void test_fluxio_extern_void_end_to_end(void) {
     CHECK(app_src != NULL, "opened scratch app.fx for writing");
     if (!app_src) return;
     fprintf(app_src,
-        "version 400000;\n\n"
+        "version 399000;\n\n"
         "extern void v_stash(int x) = 0x%X;\n"
         "extern int v_peek() = 0x%X;\n\n"
         "/** Entry point. */\n"
@@ -470,17 +457,10 @@ static void test_fluxio_extern_void_end_to_end(void) {
         dir, dir, dir, dir, (unsigned)MM_GRAPHICAL_CODE_BASE, (unsigned)lib_link_base, dir, dir);
     CHECK(system(cmd) == 0, "fluxlink linked the Fluxio app against the Lux library");
 
-    FILE* mf = fopen("/tmp/nuxvm_test_extern_void_e2e/merged.bin", "rb");
-    CHECK(mf != NULL, "merged.bin was produced");
-    if (mf) {
-        fseek(mf, 0, SEEK_END);
-        size_t merged_len = (size_t)ftell(mf);
-        fseek(mf, 0, SEEK_SET);
-        uint8_t* merged = malloc(merged_len);
-        size_t rd = fread(merged, 1, merged_len, mf);
-        fclose(mf);
-        CHECK(rd == merged_len, "read the merged image back");
-
+    size_t merged_len = 0;
+    uint8_t* merged = rom_load_executable("/tmp/nuxvm_test_extern_void_e2e/merged.bin", &merged_len, NULL);
+    CHECK(merged != NULL, "merged.bin was produced");
+    if (merged) {
         VM* vm = vm_create(merged, (uint32_t)merged_len, (uint32_t)MM_GRAPHICAL_CODE_BASE, 16 * 1024 * 1024, false);
         vm_run(vm);
         int32_t result = -1;
@@ -497,7 +477,7 @@ static void test_fluxio_extern_void_end_to_end(void) {
     CHECK(bad_src != NULL, "opened scratch bad.fx for writing");
     if (bad_src) {
         fprintf(bad_src,
-            "version 400000;\n\n"
+            "version 399000;\n\n"
             "extern void v_stash(int x) = 0x%X;\n\n"
             "/** Entry point. */\n"
             "int main() {\n"
@@ -559,7 +539,7 @@ static void test_uisf_library_link(void) {
     CHECK(app_src != NULL, "opened scratch app.fx for writing");
     if (!app_src) return;
     fprintf(app_src,
-        "version 400000;\n\n"
+        "version 399000;\n\n"
         "extern void ui_new() = 0x%X;\n"
         "extern int ui_menu_open() = 0x%X;\n\n"
         "/** Entry point. */\n"
@@ -585,17 +565,10 @@ static void test_uisf_library_link(void) {
         dir, dir, dir, (unsigned)MM_GRAPHICAL_CODE_BASE, (unsigned)lib_link_base, dir, dir);
     CHECK(system(cmd) == 0, "fluxlink linked the placeholder app against the real UI/SF library and abi/uisf.exports.json");
 
-    FILE* mf = fopen("/tmp/nuxvm_test_uisf_link/merged.bin", "rb");
-    CHECK(mf != NULL, "merged.bin was produced");
-    if (mf) {
-        fseek(mf, 0, SEEK_END);
-        size_t merged_len = (size_t)ftell(mf);
-        fseek(mf, 0, SEEK_SET);
-        uint8_t* merged = malloc(merged_len);
-        size_t rd = fread(merged, 1, merged_len, mf);
-        fclose(mf);
-        CHECK(rd == merged_len, "read the merged image back");
-
+    size_t merged_len = 0;
+    uint8_t* merged = rom_load_executable("/tmp/nuxvm_test_uisf_link/merged.bin", &merged_len, NULL);
+    CHECK(merged != NULL, "merged.bin was produced");
+    if (merged) {
         VM* vm = vm_create(merged, (uint32_t)merged_len, (uint32_t)MM_GRAPHICAL_CODE_BASE, 16 * 1024 * 1024, false);
         vm_run(vm);
         int32_t result = -1;
@@ -605,6 +578,181 @@ static void test_uisf_library_link(void) {
         vm_free(vm);
         free(merged);
     }
+}
+
+/* --- Kelvin version enforcement at the driver level ---
+ *
+ * test_compiler.c and test_fluxio_compiler.c already prove that a *declared*
+ * version is judged by include/kelvin.h. They cannot prove the other half of
+ * the rule, which lives in the two CLI drivers and not in the compilers:
+ * every app build must declare a version at all (src/luxc.c, src/fluxioc.c),
+ * with exactly one exemption -- `luxc -base`, a library build, which owns no
+ * runnable app. That exemption is the part most likely to rot into "nothing
+ * is required anywhere", so it is pinned here from the outside, through the
+ * real binaries, the way `make apps` invokes them.
+ *
+ * Requires ./bin/luxc and ./bin/fluxioc (true under `make test`); skips
+ * gracefully otherwise rather than failing confusingly. */
+
+#define VERDIR "/tmp/nuxvm_test_version_gate"
+
+/* Runs `cmd` with stdout+stderr captured into `out`, and returns the exit
+ * status. `out` is always NUL-terminated so callers can strstr() it. */
+static int run_tool(const char* cmd, char* out, size_t cap) {
+    char full[2048];
+    snprintf(full, sizeof(full), "%s >%s/tool.log 2>&1", cmd, VERDIR);
+    int rc = system(full);
+    out[0] = '\0';
+    char logpath[256];
+    snprintf(logpath, sizeof(logpath), "%s/tool.log", VERDIR);
+    FILE* f = fopen(logpath, "rb");
+    if (f) {
+        size_t n = fread(out, 1, cap - 1, f);
+        out[n] = '\0';
+        fclose(f);
+    }
+    return rc;
+}
+
+/* Writes `text` to VERDIR/`name`. */
+static void write_scratch(const char* name, const char* text) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/%s", VERDIR, name);
+    FILE* f = fopen(path, "w");
+    CHECK(f != NULL, "opened a scratch source for writing");
+    if (!f) return;
+    fputs(text, f);
+    fclose(f);
+}
+
+static void test_version_required_by_drivers(void) {
+    printf("Testing Kelvin versioning is enforced by luxc/fluxioc (real CLI)...\n");
+
+    FILE* probe = fopen("./bin/luxc", "rb");
+    if (!probe) {
+        printf("  (skipped: ./bin/luxc not built yet -- run from repo root after `make`)\n");
+        return;
+    }
+    fclose(probe);
+    probe = fopen("./bin/fluxioc", "rb");
+    if (!probe) {
+        printf("  (skipped: ./bin/fluxioc not built yet -- run from repo root after `make`)\n");
+        return;
+    }
+    fclose(probe);
+
+    char cmd[1024], log[4096];
+    snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", VERDIR, VERDIR);
+    CHECK(system(cmd) == 0, "created scratch dir");
+
+    char src[512];
+
+    /* --- luxc: an app build must declare a VERSION. --- */
+    write_scratch("no_version.lux", "MODULE MAIN\n42\nHALT\n");
+    snprintf(cmd, sizeof(cmd), "./bin/luxc -o %s/out.bin %s/no_version.lux", VERDIR, VERDIR);
+    CHECK(run_tool(cmd, log, sizeof(log)) != 0, "luxc rejects an app with no VERSION directive");
+    CHECK(strstr(log, "missing required 'VERSION <n>'") != NULL,
+          "luxc names the missing VERSION directive in its error");
+
+    /* The rejection must be total: no .bin may be left behind for a build
+     * system to happily pick up. */
+    char outpath[256];
+    snprintf(outpath, sizeof(outpath), "%s/out.bin", VERDIR);
+    FILE* leftover = fopen(outpath, "rb");
+    CHECK(leftover == NULL, "luxc wrote no output for the rejected app");
+    if (leftover) fclose(leftover);
+
+    /* --- luxc: a legal VERSION compiles. --- */
+    snprintf(src, sizeof(src), "VERSION %d\nMODULE MAIN\n42\nHALT\n", CLOISTER_KELVIN);
+    write_scratch("ok.lux", src);
+    snprintf(cmd, sizeof(cmd), "./bin/luxc -o %s/ok.bin %s/ok.lux", VERDIR, VERDIR);
+    CHECK(run_tool(cmd, log, sizeof(log)) == 0, "luxc accepts an app at exactly the platform version");
+
+    /* --- luxc: a colder-than-platform VERSION is rejected (rule 5). --- */
+    snprintf(src, sizeof(src), "VERSION %d\nMODULE MAIN\n42\nHALT\n", CLOISTER_KELVIN - 1);
+    write_scratch("cold.lux", src);
+    snprintf(cmd, sizeof(cmd), "./bin/luxc -o %s/cold.bin %s/cold.lux", VERDIR, VERDIR);
+    CHECK(run_tool(cmd, log, sizeof(log)) != 0, "luxc rejects an app colder than the platform");
+    CHECK(strstr(log, "rule 5") != NULL, "luxc's rejection cites the rule it breaks");
+
+    /* --- luxc: a malformed VERSION is a compile error, not a silent skip.
+     * Without this, `VERSION v2` would compile as an undeclared word rather
+     * than as the versioning mistake it is. --- */
+    write_scratch("bad.lux", "VERSION twelve\nMODULE MAIN\n42\nHALT\n");
+    snprintf(cmd, sizeof(cmd), "./bin/luxc -o %s/bad.bin %s/bad.lux", VERDIR, VERDIR);
+    CHECK(run_tool(cmd, log, sizeof(log)) != 0, "luxc rejects a non-integer VERSION");
+    CHECK(strstr(log, "expected integer after VERSION") != NULL,
+          "luxc explains that VERSION wants an integer");
+
+    /* --- luxc -base: the library exemption. A library build owns no
+     * runnable app, so it may omit VERSION entirely... --- */
+    write_scratch("lib.lux", "MODULE LIBV\n@double ( n -- 2n ) 2 * ;\n");
+    snprintf(cmd, sizeof(cmd), "./bin/luxc -base 0x701000 -o %s/lib.bin %s/lib.lux", VERDIR, VERDIR);
+    CHECK(run_tool(cmd, log, sizeof(log)) == 0,
+          "luxc -base accepts a library with no VERSION (the one exemption)");
+
+    /* ...but the exemption is only about *requiring* a version. One that is
+     * declared is still judged, on the library path too -- the gate lives in
+     * the compiler precisely so no driver flag can route around it. */
+    snprintf(src, sizeof(src), "VERSION %d\nMODULE LIBV\n@double ( n -- 2n ) 2 * ;\n", CLOISTER_KELVIN - 1);
+    write_scratch("lib_cold.lux", src);
+    snprintf(cmd, sizeof(cmd), "./bin/luxc -base 0x701000 -o %s/lib_cold.bin %s/lib_cold.lux", VERDIR, VERDIR);
+    CHECK(run_tool(cmd, log, sizeof(log)) != 0,
+          "luxc -base still rejects a declared VERSION that is colder than the platform");
+
+    /* --- fluxioc: same requirement, and no exemption at all. Fluxio only
+     * produces apps (libraries are a luxc -base concept), so every build
+     * must declare `version <n>;`. --- */
+    write_scratch("no_version.fx", "/** e */\nint main() { return 0; }\n");
+    snprintf(cmd, sizeof(cmd), "./bin/fluxioc -o %s/fxout.bin %s/no_version.fx", VERDIR, VERDIR);
+    CHECK(run_tool(cmd, log, sizeof(log)) != 0, "fluxioc rejects an app with no version directive");
+    CHECK(strstr(log, "missing required 'version <n>;'") != NULL,
+          "fluxioc names the missing version directive in its error");
+
+    snprintf(src, sizeof(src), "version %d;\n/** e */\nint main() { return 0; }\n", CLOISTER_KELVIN);
+    write_scratch("ok.fx", src);
+    snprintf(cmd, sizeof(cmd), "./bin/fluxioc -o %s/fxok.bin %s/ok.fx", VERDIR, VERDIR);
+    CHECK(run_tool(cmd, log, sizeof(log)) == 0, "fluxioc accepts an app at exactly the platform version");
+
+    snprintf(src, sizeof(src), "version %d;\n/** e */\nint main() { return 0; }\n", CLOISTER_KELVIN - 1);
+    write_scratch("cold.fx", src);
+    snprintf(cmd, sizeof(cmd), "./bin/fluxioc -o %s/fxcold.bin %s/cold.fx", VERDIR, VERDIR);
+    CHECK(run_tool(cmd, log, sizeof(log)) != 0, "fluxioc rejects an app colder than the platform");
+    CHECK(strstr(log, "rule 5") != NULL, "fluxioc's rejection cites the rule it breaks");
+}
+
+/* Every shipped app is a real build that `make apps` runs through the gate
+ * above, so each one must carry a version the current platform accepts. That
+ * is not automatic: a cooldown raises CLOISTER_KELVIN, and every app still
+ * sitting at the old number becomes uncompilable. Checking the sources here
+ * turns that into one legible failure listing the offenders, instead of a
+ * wall of luxc errors in the middle of `make`. */
+static void test_shipped_apps_declare_a_legal_version(void) {
+    printf("Testing every shipped app declares a legal Kelvin version...\n");
+
+    /* Lux uses `VERSION <n>`, Fluxio `version <n>;` -- one awk per dialect,
+     * printing the file name of anything missing or out of range. */
+    const char* scan =
+        "for f in apps/*.lux apps/fluxio/*.fx; do "
+        "  case \"$f\" in *.lux) pat='^ *VERSION +(-?[0-9]+)';; *) pat='^ *version +(-?[0-9]+) *;';; esac; "
+        "  v=$(grep -Eom1 \"$pat\" \"$f\" | grep -Eo -- '-?[0-9]+'); "
+        "  if [ -z \"$v\" ]; then echo \"$f: no version\"; "
+        "  elif [ \"$v\" -lt %d ]; then echo \"$f: $v is colder than the platform\"; fi; "
+        "done";
+    char cmd[1024], log[4096];
+    snprintf(cmd, sizeof(cmd), scan, CLOISTER_KELVIN);
+
+    /* run_tool needs the scratch dir for its log; the app tests above may
+     * not have run (they skip without built binaries). */
+    char mk[256];
+    snprintf(mk, sizeof(mk), "mkdir -p %s", VERDIR);
+    CHECK(system(mk) == 0, "scratch dir available for the scan log");
+
+    run_tool(cmd, log, sizeof(log));
+    if (log[0] != '\0') {
+        fprintf(stderr, "  offending sources:\n%s", log);
+    }
+    CHECK(log[0] == '\0', "every apps/*.lux and apps/fluxio/*.fx declares a version the platform accepts");
 }
 
 int main(void) {
@@ -617,6 +765,8 @@ int main(void) {
     test_fluxio_extern_end_to_end();
     test_fluxio_extern_void_end_to_end();
     test_uisf_library_link();
+    test_version_required_by_drivers();
+    test_shipped_apps_declare_a_legal_version();
 
     printf("\n%d/%d ABI conformance checks passed.\n", tests_run - tests_failed, tests_run);
     if (tests_failed > 0) {

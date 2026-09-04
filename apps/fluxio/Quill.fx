@@ -57,7 +57,7 @@
  * (luxc -base 0x701000 for the library, then fluxlink --lib-base
  * 0x700000 to merge it with this file's own compiled output). See
  * docs/quill_fluxio.md Phase B7. */
-version 400000;
+version 399000;
 
 extern void ui_new() = 0x70000C;                                                    /* index 0 */
 extern void ui_sbar_init(int addr, int x, int y, int w, int h, int min, int max, int val, int horiz) = 0x70002A; /* index 6 */

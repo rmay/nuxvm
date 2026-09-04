@@ -264,6 +264,7 @@ RESERVE ST_CHAN       4 ; ( last DRAW::chan! / cmd 11; 0=RGB until set )
 @CHAN_K8  1 ;
 @CHAN_K2  2 ;
 @CHAN_K1  3 ;
+@CHAN_C4  4 ; ( snap ink to the nearest of the 16 fixed system colours )
 
 @chan! { fd n -- }
     n ST_CHAN STOREI
@@ -278,9 +279,82 @@ RESERVE ST_CHAN       4 ; ( last DRAW::chan! / cmd 11; 0=RGB until set )
     fd CHAN_K8 chan!
 ;
 
-( Pack 0..255 luma as 0xYYGGBB with R=G=B. )
+( Pack 0..255 luma as 0xYYGGBB with R=G=B. Still the right thing under
+  CHAN_K8; under CHAN_C4 the host snaps the result to a palette gray. )
 @gray ( y -- color )
     255 AND dup 8 LSHIFT OR dup 8 LSHIFT OR
+;
+
+( Pack three 0..255 components into one 0xRRGGBB ink word. )
+@rgb ( r g b -- color )
+    3 frame! ( 0:b 1:g 2:r )
+    2 local@ 255 AND 16 LSHIFT
+    1 local@ 255 AND 8 LSHIFT OR
+    0 local@ 255 AND OR
+    3 unframe!
+;
+
+( --- The fixed 16-colour system palette ---------------------------------
+  Mirrors system_palette[] in src/system.c; the two are pinned together by
+  test_palette_matches_lux in src/test_vfs.c. Entries 0-3 are exactly the
+  CHAN_K2 levels in CMAP/GRAYMAP order (0 white .. 3 black), so a 2bpp gray
+  page widens to a 4bpp CMAP page index-for-index. 0xFF00FF is deliberately
+  absent -- it is the sprite transparency key.
+
+  The ORDER is load-bearing: each index pairs with its visual complement at
+  (i XOR 3), which is what lets CMAP::invert stay one 0x33333333 XOR per word.
+  See docs/palette.md. )
+@PAL_WHITE   0xFFFFFF ;
+@PAL_LTGRAY  0xAAAAAA ;
+@PAL_DKGRAY  0x555555 ;
+@PAL_BLACK   0x000000 ;
+@PAL_RED     0xDD0000 ;
+@PAL_ORANGE  0xEE7700 ;
+@PAL_BLUE    0x3366EE ;
+@PAL_CYAN    0x00CCCC ;
+@PAL_YELLOW  0xEEDD00 ;
+@PAL_DKGREEN 0x007700 ;
+@PAL_MAGENTA 0xDD00DD ;
+@PAL_DKBLUE  0x0000CC ;
+@PAL_DKRED   0x770000 ;
+@PAL_PURPLE  0x770099 ;
+@PAL_BROWN   0x996633 ;
+@PAL_TEAL    0x0077AA ;
+
+@CLUT_N 16 ;
+( CLUT_TAB, not CLUT: the dictionary is case-insensitive and the first
+  definition of a name wins (src/compiler.c, resolve_word), so a reservation
+  named CLUT would silently swallow every later call to @clut -- callers
+  would get the table's address pushed instead of the word running. Same
+  trap RoadEscape's PAINT/paint note describes. )
+RESERVE CLUT_TAB 64 ; ( CLUT_N * 4: index -> 0xRRGGBB, filled by init-clut )
+RESERVE ST_CLUT_OK 4 ;
+
+@init-clut ( -- )
+    PAL_WHITE   CLUT_TAB       STOREI
+    PAL_LTGRAY  CLUT_TAB  4 +  STOREI
+    PAL_DKGRAY  CLUT_TAB  8 +  STOREI
+    PAL_BLACK   CLUT_TAB 12 +  STOREI
+    PAL_RED     CLUT_TAB 16 +  STOREI
+    PAL_ORANGE  CLUT_TAB 20 +  STOREI
+    PAL_BLUE    CLUT_TAB 24 +  STOREI
+    PAL_CYAN    CLUT_TAB 28 +  STOREI
+    PAL_YELLOW  CLUT_TAB 32 +  STOREI
+    PAL_DKGREEN CLUT_TAB 36 +  STOREI
+    PAL_MAGENTA CLUT_TAB 40 +  STOREI
+    PAL_DKBLUE  CLUT_TAB 44 +  STOREI
+    PAL_DKRED   CLUT_TAB 48 +  STOREI
+    PAL_PURPLE  CLUT_TAB 52 +  STOREI
+    PAL_BROWN   CLUT_TAB 56 +  STOREI
+    PAL_TEAL    CLUT_TAB 60 +  STOREI
+    1 ST_CLUT_OK STOREI
+;
+
+( Map a 4bpp CMAP pixel value (0..15) to its ink word. Out-of-range clamps
+  into the table rather than reading past it. )
+@clut { i -- color }
+    ST_CLUT_OK LOADI 0 = [ init-clut ] ?
+    i CLUT_N 1 - AND 4 * CLUT_TAB + LOADI
 ;
 
 @begin-frame ( fd -- )

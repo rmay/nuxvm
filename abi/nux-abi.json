@@ -9,6 +9,45 @@
     "return_value": "Left on the data stack after OP_RET (0x25); the caller is responsible for consuming exactly the arity the callee's signature promises. No multi-value returns. Some Lux words are `( ... -- )` -- they push nothing back. A caller MUST know statically whether a given target pushes a value or not, since nothing at the call site distinguishes the two cases; Fluxio's `extern` declarations encode this explicitly ('extern void f(...)' vs 'extern int f(...)', src/fluxio_parser.c/fluxio_codegen.c, docs/quill_fluxio.md Phase B6/B7) -- calling a void target through the `int` form (or vice versa) desyncs the caller's stack accounting silently, not with a fault. See src/test_abi_conformance.c's test_fluxio_extern_void_end_to_end.",
     "no_change_needed": "Both luxc and fluxioc already emit this convention -- it's a property of the shared 55-opcode VM (include/opcodes.h), not something either compiler chose independently. Nothing to keep in sync beyond not breaking it."
   },
+  "guest_image_format": {
+    "$comment": "On-disk wrapper for runnable app images (apps/*.bin). The VM still executes raw bytecode -- Cloister, nux, and /sys/vm/new strip this header after verifying SHA-256 and Kelvin. Distinct from the in-payload NUX1 trampoline table below (that lives at MM_ABI_LIBRARY_LINK_BASE inside a fluxlink merge). luxc -base library blobs are NOT wrapped.",
+    "header_size": 48,
+    "endian": "big",
+    "layout": [
+      {
+        "field": "magic",
+        "offset": 0,
+        "size": 4,
+        "value": "0x4E555852",
+        "desc": "ASCII 'NUXR'."
+      },
+      {
+        "field": "kelvin",
+        "offset": 4,
+        "size": 4,
+        "desc": "Guest VERSION. Cloister rejects the image if kelvin_reject_reason() is non-NULL (colder than CLOISTER_KELVIN, zero, or negative). A hotter ROM still runs."
+      },
+      {
+        "field": "sha256",
+        "offset": 8,
+        "size": 32,
+        "desc": "SHA-256 of the payload only, not of this header. Mismatch is a hard load error."
+      },
+      {
+        "field": "payload_len",
+        "offset": 40,
+        "size": 4,
+        "desc": "Byte length of the bytecode that follows. Must equal file size minus 48."
+      },
+      {
+        "field": "reserved",
+        "offset": 44,
+        "size": 4,
+        "value": 0,
+        "desc": "Must be zero."
+      }
+    ]
+  },
   "linked_image_format": {
     "$comment": "Corrected twice before any fluxlink code was written, both times by tests/analysis catching a design bug early rather than a working linker being patched after the fact. (1) Phase B1 smoke-testing (src/test_abi_conformance.c, test_dual_image_single_blob): the VM restricts PC execution to a SINGLE contiguous [image_base, image_end) window (src/vm.c: vm_create sets image_end = base_address + program_size; execution outside it faults 'execute outside program', src/vm.c ~line 266) -- a linked library can't be a second, independently-loaded VM image, so it's concatenated into the SAME blob as the app that links it. No VM or host-runner (cloister.c/nux.c) changes needed. (2) The trampoline table's SIZE cannot vary with the export count: the library is compiled once via `luxc -base` to expect its own code at one fixed address, so if the table directly preceded the code and grew on each new export, the code's address -- and every internal CALL/JMP baked into it at compile time -- would silently shift on every recompile. Fixed with a fixed-size reserved trampoline region (MM_ABI_TRAMPOLINE_RESERVE, include/memory_map.h) instead of one sized to the current export count.",
     "layout": [

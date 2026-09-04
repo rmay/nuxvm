@@ -162,11 +162,25 @@ static FxTokenList* load_resolved(const char* path, PathSet* stack, PathSet* see
 }
 
 FxTokenList* fx_load_with_includes(const char* main_path) {
+    return fx_load_with_includes_tracked(main_path, NULL, NULL);
+}
+
+FxTokenList* fx_load_with_includes_tracked(const char* main_path,
+                                           char*** out_files, size_t* out_count) {
+    if (out_files) *out_files = NULL;
+    if (out_count) *out_count = 0;
     PathSet stack = { 0 };
     PathSet seen = { 0 };
     FxTokenList* result = load_resolved(main_path, &stack, &seen);
     pathset_free(&stack);
-    pathset_free(&seen);
+    /* `seen` is already exactly what the caller wants: every resolved path,
+     * deduped, main file first. Hand the array over rather than copying it. */
+    if (result && out_files) {
+        *out_files = seen.items;
+        if (out_count) *out_count = (size_t)seen.count;
+    } else {
+        pathset_free(&seen);
+    }
     if (!result) return NULL;
 
     FxToken eof;

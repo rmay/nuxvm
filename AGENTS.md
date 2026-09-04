@@ -6,7 +6,63 @@ Cloister is a single-app fantasy machine: one program owns the screen. I/O is Pl
 Never commit unless asked.
 
 # Versioning
-We use the Kelvin versioning system (spec: https://jtobin.io/kelvin-versioning). Anything hotter can run something just as hot or colder as itself, but no guarantees something colder will run on hotter. Nux opcodes and implementation is 300K, everything else is 400K unless otherwise specified.
+We use the Kelvin versioning system (spec: https://jtobin.io/kelvin-versioning). Anything hotter can run something just as hot or colder as itself, but no guarantees something colder will run on hotter. Nux opcodes and implementation is 300K, everything else is **399K** unless otherwise specified. Easel is otherwise specified, at 499K.
+
+These numbers live in `include/kelvin.h` and are **enforced by the compilers**,
+not merely documented: `luxc` and `fluxioc` reject a `VERSION` / `version;`
+colder than the platform (rule 5), equal to absolute zero (rule 3), or
+negative (rule 1). The check sits in the compiler rather than the CLI so that
+`cloister` and `nux`, which compile `.lux` in process, are gated too. A test
+pins the sentence above to the header, so cool both together.
+
+App `.bin` files are an 80-byte `NUXR` header plus raw bytecode: Kelvin,
+`image_sha256`, `payload_len`, and `source_sha256`. `luxc` / `fluxioc` /
+`fluxlink` write the header; Cloister, `nux`, and `/sys/vm/new` strip it, check
+it, and refuse a guest colder than this platform. Library builds
+(`luxc -base`) stay raw. Layout and field semantics: `include/rom.h`.
+
+`image_sha256` covers the header as well as the payload -- its own 32 bytes are
+read as zero to break the self-reference -- so no header field is
+unauthenticated. `source_sha256` is the digest of every source file the compile
+read (main file first, each file contributing its own SHA-256), so editing
+`lib/app.lux` moves the digest of every image that includes it.
+
+### Cooldown log
+
+Newest first. A component's version pins everything under it, so record why each release happened.
+
+| Version | What changed |
+|---|---|
+| everything-else 400K → **399K**, Easel 500K → **499K** | Added `/dev/draw` channel 4 (`c4`), which snaps ink to the 16-colour system palette (`docs/palette.md`), plus `lib/cmap.lux`'s 4bpp page format and Easel's `EAS4` file format. No opcodes were added and Nux is untouched, so it stays at 300K — but a ROM built against `c4` renders wrong on a pre-cooldown host, which is exactly what a cooldown is for. Easel re-releases because its foundation cooled (rule 5) and because its document format changed. |
+
+## What the ROM digest does and does not prove
+
+A digest a file carries about itself only catches **corruption**. Anyone who
+edits the payload can recompute `image_sha256`, and the image is self-consistent
+again -- so the header proves an image is intact, never that it is the one you
+compiled. Deliberate tampering is out of scope, and that is a deliberate choice:
+enforcing it at load time means the host has to carry a reference the tamperer
+cannot reach, and every such scheme rejects legitimate images too (an app you
+just rebuilt, a friend's `.bin` that happens to share a name with a shipped one).
+
+What does check an image against something outside itself is **`make
+verify-bins`**, at build time on your own machine:
+
+- it recompiles every app from source and requires the result to be bit-for-bit
+  identical to the shipped `.bin` -- so the images in the tree provably come
+  from the sources in the tree;
+- it then checks them against `abi/app-images.sha256` (regenerate with
+  `make pin-bins`, and commit it -- `.gitignore` excludes the `.bin` files
+  themselves, so the manifest is their committed record).
+
+It runs as the last suite in `make test`. `source_sha256` is an assertion by the
+compiler about which sources it read; `verify-bins` is what turns that assertion
+into evidence.
+
+Sharing an app with someone else gets no guarantee from any of this: their
+Cloister will load whatever it is handed, warning-free. Send the `.lux` source
+if you want them to know what they are running -- Cloister compiles `.lux` in
+process, so they build it themselves.
 
 ## Kelvin versioning spec
 

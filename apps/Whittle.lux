@@ -6,14 +6,13 @@
   Sprite File, magic "CSF1") — see docs/memory-map.md for the byte layout. )
 
 INCLUDE "lib/app.lux"
+INCLUDE "lib/doc.lux"
 INCLUDE "lib/core.lux"
 INCLUDE "lib/str.lux"
-INCLUDE "lib/ui.lux"
-INCLUDE "lib/sf.lux"
 INCLUDE "lib/icn.lux"
 
 MODULE WHITTLE
-VERSION 400000
+VERSION 399000
 
 IMPORT APP
 IMPORT UI
@@ -22,7 +21,9 @@ IMPORT EVENT
 IMPORT STR
 IMPORT VFS
 IMPORT SF
+IMPORT DIALOG
 IMPORT ICN
+IMPORT DOC
 
 @KEY_COLOR 0xFF00FF ;
 
@@ -46,19 +47,18 @@ RESERVE drag 4 ;
 RESERVE playing 4 ;
 RESERVE play-tick 4 ;
 RESERVE play-frame 4 ;
-RESERVE file-dirty 4 ;
+RESERVE new-size 4 ;
 RESERVE next-slot 4 ;
 RESERVE editing-name 4 ;
 RESERVE edit-len 4 ;
 RESERVE name-edit-mode 4 ;
 RESERVE confirm-kind 4 ;      ( 0=none, 1=delete-sprite confirm open )
-RESERVE save-as 4 ;
+
 RESERVE sprite-counter 4 ;
 RESERVE icon-io 4 ; ( 0=none, 1=Import Icon pending, 2=Export Icon pending -- which
                             branch on-sf-ok takes; see menu-import-icon/menu-export-icon )
 
 RESERVE EDIT_BUF 32 ;          ( 32 bytes: sprite-name text-input buffer )
-RESERVE PATH 256 ;          ( 256 bytes: current file path )
 RESERVE VFS_PATH 256 ;          ( 256 bytes: /sys/file/ scratch )
 RESERVE NBUF 32 ;          ( 32 bytes: int-to-str scratch )
 RESERVE HDR 16 ;          ( 16 bytes: file-header staging )
@@ -223,7 +223,7 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
                     doc-nsprites LOADI 1 + doc-nsprites STOREI
                     sidx cur-sprite STOREI
                     0 cur-frame STOREI
-                    1 file-dirty STOREI
+                    DOC::dirty!
                 UNGIRD
             ] ?:
         UNGIRD
@@ -264,7 +264,7 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
             doc-nsprites LOADI 1 - 0 MAX cur-sprite STOREI
         ] ?
         0 cur-frame STOREI
-        1 file-dirty STOREI
+        DOC::dirty!
     UNGIRD
 ;
 
@@ -282,7 +282,7 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
                         sidx fi slot sprite-set-frame-slot
                         sidx sprite-count-addr LOADI 1 + sidx sprite-count-addr STOREI
                         fi cur-frame STOREI
-                        1 file-dirty STOREI
+                        DOC::dirty!
                     UNGIRD
                 ] ?:
             UNGIRD
@@ -323,7 +323,7 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
                     sidx fi sprite-frame-slot newslot copy-slot
                     sidx fi newslot sprite-insert-frame-after
                     fi 1 + cur-frame STOREI
-                    1 file-dirty STOREI
+                    DOC::dirty!
                 ] ?:
             UNGIRD
         ] ?:
@@ -351,7 +351,7 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
             cur-frame LOADI sidx sprite-count-addr LOADI >= [
                 sidx sprite-count-addr LOADI 1 - 0 MAX cur-frame STOREI
             ] ?
-            1 file-dirty STOREI
+            DOC::dirty!
         ] ?:
     UNGIRD
 ;
@@ -386,7 +386,7 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
             ] |:
         UNGIRD
     UNGIRD
-    1 file-dirty STOREI
+    DOC::dirty!
 ;
 
 @flip-v ( -- )
@@ -417,7 +417,7 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
             ] |:
         UNGIRD
     UNGIRD
-    1 file-dirty STOREI
+    DOC::dirty!
 ;
 
 @fill-frame ( -- )
@@ -439,10 +439,10 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
             ] |:
         UNGIRD
     UNGIRD
-    1 file-dirty STOREI
+    DOC::dirty!
 ;
 
-@clear-frame ( -- ) cur-slot blank-slot 1 file-dirty STOREI ;
+@clear-frame ( -- ) cur-slot blank-slot DOC::dirty! ;
 
 @paint-px ( px py -- )
     { px py }
@@ -451,7 +451,7 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
             cur-frame-addr px py
             cur-color LOADI color-r cur-color LOADI color-g cur-color LOADI color-b
             frame-pixel!
-            1 file-dirty STOREI
+            DOC::dirty!
         ] ?
     UNGIRD
 ;
@@ -467,21 +467,24 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
         0 next-slot STOREI
         0 sprite-counter STOREI
         0 playing STOREI
-        0 PATH store-byte
-        0 file-dirty STOREI
         new-sprite
     UNGIRD
 ;
 
-@menu-new-8  ( val -- ) drop 8  new-doc ;
-@menu-new-16 ( val -- ) drop 16 new-doc ;
-@menu-new-24 ( val -- ) drop 24 new-doc ;
-@menu-new-32 ( val -- ) drop 32 new-doc ;
+@reset-doc ( -- )
+    new-size LOADI dup 0 = [ drop 16 ] ?
+    new-doc
+;
+
+@menu-new-8  ( val -- ) drop 8  new-size STOREI DOC::menu-new ;
+@menu-new-16 ( val -- ) drop 16 new-size STOREI DOC::menu-new ;
+@menu-new-24 ( val -- ) drop 24 new-size STOREI DOC::menu-new ;
+@menu-new-32 ( val -- ) drop 32 new-size STOREI DOC::menu-new ;
 
 ( --- File I/O --- )
 
-@do-save ( -- )
-    PATH VFS_PATH VFS::sys-file 6 VFS::open-mode
+@save-bytes { p -- }
+    p VFS_PATH VFS::sys-file 6 VFS::open-mode
     dup 0 >= [
         GIRD fd
             T"CSF1" HDR STR::strcpy
@@ -493,13 +496,12 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
             fd FRAME_BANK MAX_FRAMES SLOT_BYTES * VFS::write drop
             fd SPRITE_TAB MAX_SPRITES SPRITE_REC_BYTES * VFS::write drop
             fd VFS::close drop
-            0 file-dirty STOREI
         UNGIRD
     ] [ drop ] ?:
 ;
 
-@load-file ( -- )
-    PATH VFS_PATH VFS::sys-file 0 VFS::open-mode
+@load-bytes { p -- }
+    p VFS_PATH VFS::sys-file 0 VFS::open-mode
     dup 0 >= [
         GIRD fd
             fd HDR 12 VFS::read
@@ -521,7 +523,6 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
                         0 cur-sprite STOREI
                         0 cur-frame STOREI
                         0 playing STOREI
-                        0 file-dirty STOREI
                     ] [
                         fd VFS::close drop
                     ] ?:
@@ -602,14 +603,14 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
                             py 1 + py!
                         ] |:
                     UNGIRD
-                    1 file-dirty STOREI
+                    DOC::dirty!
                 ] ?
             UNGIRD
         UNGIRD
     ] [ drop ] ?:
 ;
 
-@on-sf-ok ( path -- )
+@whittle-sf-ok ( path -- )
     icon-io LOADI 2 = [
         0 icon-io STOREI
         dup load-byte 47 = [ 1 + ] ?
@@ -622,25 +623,16 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
         ICON_PATH STR::strcpy
         do-import-icon
     ] [
-    save-as LOADI [
-        0 save-as STOREI
-        dup load-byte 47 = [ 1 + ] ?
-        PATH STR::strcpy
-        do-save
-    ] [
-        dup load-byte 47 = [ 1 + ] ?
-        PATH STR::strcpy
-        load-file
-    ] ?:
+        DOC::pick
     ] ?:
     ] ?:
 ;
 
-@on-sf-cancel ( -- ) 0 save-as STOREI 0 icon-io STOREI ;
+@on-sf-cancel ( -- ) 0 icon-io STOREI DOC::cancel ;
 
-@menu-open ( -- ) SF::show ;
-@menu-save-as ( -- ) 1 save-as STOREI PATH SF::show-save ;
-@menu-save ( -- ) PATH load-byte 0 = [ menu-save-as ] [ do-save ] ?: ;
+@menu-open ( -- ) DOC::menu-open ;
+@menu-save-as ( -- ) DOC::menu-save-as ;
+@menu-save ( -- ) DOC::menu-save ;
 
 @menu-import-icon ( -- ) 1 icon-io STOREI SF::show ;
 @menu-export-icon ( -- ) 2 icon-io STOREI T"icon.icn" SF::show-save ;
@@ -669,7 +661,7 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
         EDIT_BUF cur-sprite LOADI sprite-name STR::strcpy
     ] ?
     0 editing-name STOREI
-    1 file-dirty STOREI
+    DOC::dirty!
     0 APP::modal!
 ;
 
@@ -1018,6 +1010,12 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
 
 @on-mouse ( mpkt -- )
     GIRD mpkt
+        DIALOG::open? [
+            mpkt DIALOG::mouse
+        ] [
+        SF::open? [
+            mpkt SF::mouse
+        ] [
         confirm-kind LOADI 0 > [
             mpkt UI::overlay-feed
             UI::overlay-handle
@@ -1047,11 +1045,19 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
                 UNGIRD
             ] ?:
         ] ?:
+        ] ?:
+        ] ?:
     UNGIRD
 ;
 
 @on-kbd ( kpkt -- )
     GIRD kpkt
+        DIALOG::open? [
+            kpkt DIALOG::kbd
+        ] [
+        SF::open? [
+            kpkt SF::kbd
+        ] [
         confirm-kind LOADI 0 > [
             kpkt EVENT::kbd-type EVENT::KEY_DOWN = [
                 kpkt EVENT::kbd-key EVENT::KEY_ESC = [ do-confirm-no ] ?
@@ -1070,6 +1076,8 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
                 ] ?
             ] ?
         ] ?:
+        ] ?:
+        ] ?:
     UNGIRD
 ;
 
@@ -1085,6 +1093,8 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
     draw-name-edit
     draw-confirm
     UI::draw
+    SF::open? [ SF::draw ] ?
+    DIALOG::draw
 ;
 
 @start
@@ -1092,9 +1102,14 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
     UI::new
     0 confirm-kind STOREI
     0 editing-name STOREI
-    16 new-doc
-    [ on-sf-ok ] SF::on-ok!
+    T"Whittle" T"untitled.csf" DOC::init
+    $load-bytes DOC::on-load!
+    $save-bytes DOC::on-save!
+    $reset-doc  DOC::on-new!
+    [ whittle-sf-ok ] SF::on-ok!
     [ on-sf-cancel ] SF::on-cancel!
+    16 new-size STOREI
+    reset-doc
     APP::width UI::menubar
     T"File" UI::menu
     T"New 8x8"   [ menu-new-8 ]         UI::item
@@ -1106,7 +1121,7 @@ RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- k
     T"Save As"   [ drop menu-save-as ]  UI::item
     T"Import Icon..." [ drop menu-import-icon ] UI::item
     T"Export Icon..." [ drop menu-export-icon ] UI::item
-    T"Quit"      [ drop HALT ]          UI::item
+    T"Quit"      [ drop DOC::menu-quit ] UI::item
     [ on-mouse ] APP::on-mouse!
     [ on-kbd ] APP::on-kbd!
     [ on-frame ] APP::on-frame!

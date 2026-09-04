@@ -176,6 +176,14 @@ void compiler_free(Compiler* c);
 // Returns NULL on error. The caller must free the returned array.
 uint8_t* compiler_compile(Compiler* c, size_t* out_len);
 
+/* Fingerprint of everything that fed this compile: SHA-256 of the main source
+ * text followed by the SHA-256 of each INCLUDEd file, in the order the
+ * compiler resolved them. Goes into the ROM's source_sha256 header field so an
+ * image records which sources produced it. Call before compiler_free -- it
+ * reads the include list off the compiler. */
+void compiler_source_digest(const Compiler* c, const char* main_src, size_t main_len,
+                            uint8_t out[32]);
+
 // High-level function to compile a source string
 uint8_t* compile_source(const char* source, int32_t base_addr, size_t* out_len, bool trace);
 

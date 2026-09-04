@@ -11,6 +11,7 @@
 #include "compiler.h"
 #include "dialog.h"
 #include "system.h"
+#include "rom.h"
 
 #define DEFAULT_WIN_WIDTH 960
 #define DEFAULT_WIN_HEIGHT 720
@@ -315,8 +316,14 @@ static bool load_app(const char* path, uint8_t** program_out, Machine** machine_
             return false;
         }
     } else {
-        program = (uint8_t*)file_content;
-        code_len = (size_t)fsize;
+        char romerr[256];
+        program = rom_open_image((uint8_t*)file_content, (size_t)fsize, &code_len,
+                                 NULL, NULL, NULL, romerr, sizeof(romerr));
+        free(file_content);
+        if (!program) {
+            fprintf(stderr, "cloister: %s: %s\n", path, romerr);
+            return false;
+        }
     }
 
     Machine* machine = machine_create(program, (uint32_t)code_len, GRAPHICAL_BASE_ADDRESS,

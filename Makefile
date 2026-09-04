@@ -26,15 +26,18 @@ SYS_SRCS = $(SRC_DIR)/system.c $(SRC_DIR)/machine.c $(SRC_DIR)/display.c
 COMPILER_SRCS = $(SRC_DIR)/lexer.c $(SRC_DIR)/compiler.c
 
 COMPILER_OBJS = $(OBJ_DIR)/lexer.o $(OBJ_DIR)/compiler.o
-NUX_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(SRC_DIR)/nux.c $(SRC_DIR)/fonts_stub.c
-LUXC_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(SRC_DIR)/luxc.c $(SRC_DIR)/fonts_stub.c
-REPL_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(SRC_DIR)/repl.c $(SRC_DIR)/fonts_stub.c
+ROM_SRCS = $(SRC_DIR)/sha256.c $(SRC_DIR)/rom.c
+ROM_OBJS = $(OBJ_DIR)/sha256.o $(OBJ_DIR)/rom.o
+
+NUX_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(SRC_DIR)/nux.c $(SRC_DIR)/fonts_stub.c $(ROM_SRCS)
+LUXC_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(SRC_DIR)/luxc.c $(SRC_DIR)/fonts_stub.c $(ROM_SRCS)
+REPL_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(SRC_DIR)/repl.c $(SRC_DIR)/fonts_stub.c $(ROM_SRCS)
 
 NUX_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(NUX_SRCS))
 LUXC_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(LUXC_SRCS))
 REPL_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(REPL_SRCS))
 
-CLOISTER_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(SRC_DIR)/dialog.c $(SRC_DIR)/cloister.c $(SRC_DIR)/fonts.c
+CLOISTER_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(SRC_DIR)/dialog.c $(SRC_DIR)/cloister.c $(SRC_DIR)/fonts.c $(ROM_SRCS)
 CLOISTER_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(CLOISTER_SRCS))
 
 FLUXIO_COMPILER_SRCS = $(SRC_DIR)/fluxio_lexer.c $(SRC_DIR)/fluxio_ast.c \
@@ -42,12 +45,12 @@ FLUXIO_COMPILER_SRCS = $(SRC_DIR)/fluxio_lexer.c $(SRC_DIR)/fluxio_ast.c \
 FLUXIO_COMPILER_OBJS = $(OBJ_DIR)/fluxio_lexer.o $(OBJ_DIR)/fluxio_ast.o \
                        $(OBJ_DIR)/fluxio_parser.o $(OBJ_DIR)/fluxio_codegen.o $(OBJ_DIR)/fluxio_include.o
 
-FLUXIOC_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(FLUXIO_COMPILER_SRCS) $(SRC_DIR)/fluxioc.c $(SRC_DIR)/fonts_stub.c
+FLUXIOC_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(FLUXIO_COMPILER_SRCS) $(SRC_DIR)/fluxioc.c $(SRC_DIR)/fonts_stub.c $(ROM_SRCS)
 FLUXIOC_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(FLUXIOC_SRCS))
 
 TARGETS = $(BIN_DIR)/nux $(BIN_DIR)/luxc $(BIN_DIR)/luxrepl $(BIN_DIR)/cloister $(BIN_DIR)/fluxioc $(BIN_DIR)/fluxlink \
           $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler $(BIN_DIR)/test_fluxio_compiler \
-          $(BIN_DIR)/test_abi_conformance
+          $(BIN_DIR)/test_abi_conformance $(BIN_DIR)/test_rom
 
 APP_LUX = $(wildcard apps/*.lux)
 APP_LUX_BINS = $(APP_LUX:.lux=.bin)
@@ -131,9 +134,9 @@ $(BIN_DIR)/cloister: $(CLOISTER_OBJS)
 	$(CC) $(CLOISTER_OBJS) -o $@ $(LDFLAGS) $(SDL_LIBS)
 	@echo "Built bin/cloister successfully!"
 
-$(BIN_DIR)/fluxlink: $(OBJ_DIR)/fluxlink.o
+$(BIN_DIR)/fluxlink: $(OBJ_DIR)/fluxlink.o $(ROM_OBJS)
 	@echo "Linking fluxlink..."
-	$(CC) $(OBJ_DIR)/fluxlink.o -o $@
+	$(CC) $(OBJ_DIR)/fluxlink.o $(ROM_OBJS) -o $@
 	@echo "Built bin/fluxlink successfully!"
 
 $(BIN_DIR)/fluxioc: $(FLUXIOC_OBJS)
@@ -155,34 +158,72 @@ $(OBJ_DIR)/dialog.o: $(SRC_DIR)/dialog.c
 
 FONT_OBJ = $(OBJ_DIR)/fonts.o
 
-$(BIN_DIR)/test_vfs: $(OBJ_DIR)/test_vfs.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/vm.o $(COMPILER_OBJS) $(FONT_OBJ)
+$(BIN_DIR)/test_vfs: $(OBJ_DIR)/test_vfs.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/vm.o $(COMPILER_OBJS) $(FONT_OBJ) $(ROM_OBJS)
 	@echo "Linking test_vfs..."
-	$(CC) $(OBJ_DIR)/test_vfs.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/vm.o $(COMPILER_OBJS) $(FONT_OBJ) -o $@ $(LDFLAGS)
+	$(CC) $(OBJ_DIR)/test_vfs.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/vm.o $(COMPILER_OBJS) $(FONT_OBJ) $(ROM_OBJS) -o $@ $(LDFLAGS)
 	@echo "Built bin/test_vfs successfully!"
 
-$(BIN_DIR)/test_vm: $(OBJ_DIR)/test_vm.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(COMPILER_OBJS) $(FONT_OBJ)
+$(BIN_DIR)/test_vm: $(OBJ_DIR)/test_vm.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(COMPILER_OBJS) $(FONT_OBJ) $(ROM_OBJS)
 	@echo "Linking test_vm..."
-	$(CC) $(OBJ_DIR)/test_vm.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(COMPILER_OBJS) $(FONT_OBJ) -o $@ $(LDFLAGS)
+	$(CC) $(OBJ_DIR)/test_vm.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(COMPILER_OBJS) $(FONT_OBJ) $(ROM_OBJS) -o $@ $(LDFLAGS)
 	@echo "Built bin/test_vm successfully!"
 
-$(BIN_DIR)/test_compiler: $(OBJ_DIR)/test_compiler.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ)
+$(BIN_DIR)/test_compiler: $(OBJ_DIR)/test_compiler.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ) $(ROM_OBJS)
 	@echo "Linking test_compiler..."
-	$(CC) $(OBJ_DIR)/test_compiler.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ) -o $@ $(LDFLAGS)
+	$(CC) $(OBJ_DIR)/test_compiler.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ) $(ROM_OBJS) -o $@ $(LDFLAGS)
 	@echo "Built bin/test_compiler successfully!"
 
 $(BIN_DIR)/test_fluxio_compiler: $(OBJ_DIR)/test_fluxio_compiler.o $(FLUXIO_COMPILER_OBJS) $(COMPILER_OBJS) \
-    $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ)
+    $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ) $(ROM_OBJS)
 	@echo "Linking test_fluxio_compiler..."
-	$(CC) $(OBJ_DIR)/test_fluxio_compiler.o $(FLUXIO_COMPILER_OBJS) $(COMPILER_OBJS) $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ) -o $@ $(LDFLAGS)
+	$(CC) $(OBJ_DIR)/test_fluxio_compiler.o $(FLUXIO_COMPILER_OBJS) $(COMPILER_OBJS) $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ) $(ROM_OBJS) -o $@ $(LDFLAGS)
 	@echo "Built bin/test_fluxio_compiler successfully!"
 
-$(BIN_DIR)/test_abi_conformance: $(OBJ_DIR)/test_abi_conformance.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ)
+$(BIN_DIR)/test_abi_conformance: $(OBJ_DIR)/test_abi_conformance.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ) $(ROM_OBJS)
 	@echo "Linking test_abi_conformance..."
-	$(CC) $(OBJ_DIR)/test_abi_conformance.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ) -o $@ $(LDFLAGS)
+	$(CC) $(OBJ_DIR)/test_abi_conformance.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ) $(ROM_OBJS) -o $@ $(LDFLAGS)
 	@echo "Built bin/test_abi_conformance successfully!"
 
-test: $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler $(BIN_DIR)/test_fluxio_compiler $(BIN_DIR)/test_abi_conformance
-	@vfs=FAIL; vm=FAIL; compiler=FAIL; fluxio=FAIL; abi=FAIL; fail=0; \
+$(BIN_DIR)/test_rom: $(OBJ_DIR)/test_rom.o $(ROM_OBJS)
+	@echo "Linking test_rom..."
+	$(CC) $(OBJ_DIR)/test_rom.o $(ROM_OBJS) -o $@ $(LDFLAGS)
+	@echo "Built bin/test_rom successfully!"
+
+# Host digest of on-disk app images (header + payload). sha256sum on Linux,
+# shasum -a 256 on macOS; both -c the same two-column format.
+HASHCMD := $(shell if command -v sha256sum >/dev/null 2>&1; then echo sha256sum; else echo "shasum -a 256"; fi)
+
+pin-bins: apps
+	$(HASHCMD) $(sort $(APP_BINS)) > abi/app-images.sha256
+
+# Two claims, checked in order:
+#   1. every shipped .bin is bit-for-bit reproducible from the source in this
+#      tree -- that is what makes the pinned digest mean "compiled from source"
+#      rather than "whatever was lying around when someone ran pin-bins";
+#   2. the shipped .bin files still match the committed manifest.
+# Fluxio apps recompile through fluxioc; Quill.fx additionally links against
+# lib/uisf.bin, so it is checked via its own make rule rather than duplicating
+# the link line here.
+verify-bins: apps $(BIN_DIR)/luxc $(BIN_DIR)/fluxioc
+	@set -e; \
+	tmp=$$(mktemp -d); \
+	trap 'rm -rf $$tmp' EXIT; \
+	for src in $(APP_LUX); do \
+	    out=$$tmp/$$(basename $$src .lux).bin; \
+	    $(BIN_DIR)/luxc -target graphical -o $$out $$src >/dev/null; \
+	    cmp $$out $${src%.lux}.bin || { echo "verify-bins: $$src does not reproduce $${src%.lux}.bin"; exit 1; }; \
+	done; \
+	for src in $(APP_FX); do \
+	    case $$src in *Quill.fx) continue;; esac; \
+	    out=$$tmp/$$(basename $$src .fx).bin; \
+	    $(BIN_DIR)/fluxioc -target graphical -o $$out $$src >/dev/null; \
+	    cmp $$out $${src%.fx}.bin || { echo "verify-bins: $$src does not reproduce $${src%.fx}.bin"; exit 1; }; \
+	done; \
+	echo "All app images reproduce from source."; \
+	$(HASHCMD) -c abi/app-images.sha256
+
+test: $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler $(BIN_DIR)/test_fluxio_compiler $(BIN_DIR)/test_abi_conformance $(BIN_DIR)/test_rom
+	@vfs=FAIL; vm=FAIL; compiler=FAIL; fluxio=FAIL; abi=FAIL; rom=FAIL; bins=FAIL; fail=0; \
 	echo "Running VFS tests..."; \
 	./$(BIN_DIR)/test_vfs && vfs=PASS || fail=1; \
 	echo "Running VM opcode tests..."; \
@@ -193,6 +234,10 @@ test: $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler $(BIN_DIR)
 	./$(BIN_DIR)/test_fluxio_compiler && fluxio=PASS || fail=1; \
 	echo "Running ABI conformance tests..."; \
 	./$(BIN_DIR)/test_abi_conformance && abi=PASS || fail=1; \
+	echo "Running ROM header tests..."; \
+	./$(BIN_DIR)/test_rom && rom=PASS || fail=1; \
+	echo "Verifying app image digests..."; \
+	$(MAKE) verify-bins && bins=PASS || fail=1; \
 	echo ""; \
 	echo "========== Test summary =========="; \
 	printf "  %-22s %s\n" "VFS" "$$vfs"; \
@@ -200,6 +245,8 @@ test: $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler $(BIN_DIR)
 	printf "  %-22s %s\n" "Compiler" "$$compiler"; \
 	printf "  %-22s %s\n" "Fluxio compiler" "$$fluxio"; \
 	printf "  %-22s %s\n" "ABI conformance" "$$abi"; \
+	printf "  %-22s %s\n" "ROM header" "$$rom"; \
+	printf "  %-22s %s\n" "App image SHA-256" "$$bins"; \
 	echo "----------------------------------"; \
 	if [ $$fail -ne 0 ]; then \
 		echo " One or more test suites failed."; \
@@ -222,4 +269,4 @@ asan:
 	$(MAKE) clean
 	$(MAKE) all CFLAGS="$(CFLAGS) -O1 -fsanitize=address,undefined" LDFLAGS="-fsanitize=address,undefined"
 
-.PHONY: all clean dir test apps uilib asan
+.PHONY: all clean dir test apps uilib asan pin-bins verify-bins

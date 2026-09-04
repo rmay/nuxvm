@@ -1,4 +1,4 @@
-version 400000;
+version 399000;
 
 /** fibonacci, bounded */
 recursive(32) int fib(int n) {

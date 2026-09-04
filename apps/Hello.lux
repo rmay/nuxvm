@@ -3,7 +3,7 @@
 INCLUDE "lib/app.lux"
 
 MODULE HELLO
-VERSION 400000
+VERSION 399000
 
 ( Compiler-allocated. This app is the reason docs/memory-map.md has a
   collision list: tx/ty were 0x8E000C/0x8E0010, which is lib/ui.lux's

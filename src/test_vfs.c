@@ -4,6 +4,7 @@
 #include "compiler.h"
 #include "host_fonts.h"
 #include "cff.h"
+#include "rom.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -366,6 +367,111 @@ static void test_draw_chan(void) {
     vfs_close(sys, fd);
     free_test_screen(sys);
     printf("  SetChan RGB/k8/k2/k1: OK\n");
+}
+
+static void test_draw_chan_c4(void) {
+    printf("Testing /dev/draw cmd 11 SetChan c4 (16-colour palette)...\n");
+    System* sys = make_test_screen(64, 48);
+    int32_t fd = vfs_open(sys, "/sys/draw", 0x02);
+    assert(fd >= 100);
+
+    uint8_t cmd[24];
+    const int32_t set_c4[2] = { 11, 4 };
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 2, set_c4)) == 8);
+
+    /* Every exact palette entry maps to itself (squared distance 0). */
+    for (int i = 0; i < 16; i++) {
+        uint32_t c = system_palette_entry(i);
+        const int32_t rect[6] = { 0, 10, 5, 8, 3, (int32_t)c };
+        assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 6, rect)) == 24);
+        assert_pixel_rgb(sys, 12, 6, (uint8_t)((c >> 16) & 0xFF),
+                         (uint8_t)((c >> 8) & 0xFF), (uint8_t)(c & 0xFF));
+    }
+
+    /* Off-palette ink snaps to the nearest entry. 0xFF1111 is nearest red
+     * (0xDD0000); 0x102030 is nearest black. */
+    const int32_t near_red[6] = { 0, 10, 5, 8, 3, 0xFF1111 };
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 6, near_red)) == 24);
+    assert_pixel_rgb(sys, 12, 6, 0xDD, 0x00, 0x00);
+
+    const int32_t near_black[6] = { 0, 10, 5, 8, 3, 0x102030 };
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 6, near_black)) == 24);
+    assert_pixel_rgb(sys, 12, 6, 0x00, 0x00, 0x00);
+
+    /* Palette entries 0-3 are exactly the k2 gray levels, in CMAP order
+     * (0 white .. 3 black), so a 2bpp page widens index-for-index. */
+    assert(system_palette_entry(0) == 0xFFFFFF);
+    assert(system_palette_entry(1) == 0xAAAAAA);
+    assert(system_palette_entry(2) == 0x555555);
+    assert(system_palette_entry(3) == 0x000000);
+
+    /* The sprite transparency key must stay out of gamut, or a legitimately
+     * opaque pixel could quantize into it. */
+    for (int i = 0; i < 16; i++) assert(system_palette_entry(i) != 0xFF00FF);
+
+    /* All 16 entries distinct -- a duplicate would make palette_snap's choice
+     * depend on table order, and would waste a slot. */
+    for (int i = 0; i < 16; i++)
+        for (int j = i + 1; j < 16; j++)
+            assert(system_palette_entry(i) != system_palette_entry(j));
+
+    /* CMAP::invert is a single 0x33333333 XOR, which is only correct because
+     * complements sit at (i XOR 3). Pin the two ends of that contract: the
+     * gray ramp must invert exactly as it did at 2bpp, and every pair must be
+     * mutually complementary (XOR 3 is an involution, so this holds by
+     * construction -- what is asserted here is the gray ordering that Easel's
+     * EAS3 load path and the k2 channel both depend on). */
+    assert(system_palette_entry(0 ^ 3) == 0x000000); /* white -> black */
+    assert(system_palette_entry(1 ^ 3) == 0x555555); /* lt gray -> dk gray */
+    assert(system_palette_entry(2 ^ 3) == 0xAAAAAA); /* dk gray -> lt gray */
+    assert(system_palette_entry(3 ^ 3) == 0xFFFFFF); /* black -> white */
+
+    assert(system_palette_entry(-1) == 0);
+    assert(system_palette_entry(16) == 0);
+
+    vfs_close(sys, fd);
+    free_test_screen(sys);
+    printf("  SetChan c4: OK\n");
+}
+
+/* The 16 palette values live in two places: system_palette[] in src/system.c
+ * and DRAW::C_* in lib/draw.lux. Nothing at runtime can notice them
+ * disagreeing -- a wrong ink just renders as a plausible neighbour -- so pin
+ * them here. Same discipline as the three /dev/draw wire encoders. */
+static void test_palette_matches_lux(void) {
+    printf("Testing lib/draw.lux palette matches system_palette[]...\n");
+    static const char* names[16] = {
+        "PAL_WHITE",  "PAL_LTGRAY",  "PAL_DKGRAY",  "PAL_BLACK",
+        "PAL_RED",    "PAL_ORANGE",  "PAL_BLUE",    "PAL_CYAN",
+        "PAL_YELLOW", "PAL_DKGREEN", "PAL_MAGENTA", "PAL_DKBLUE",
+        "PAL_DKRED",  "PAL_PURPLE",  "PAL_BROWN",   "PAL_TEAL",
+    };
+
+    FILE* f = fopen("lib/draw.lux", "rb");
+    assert(f != NULL);
+    static char src[512 * 1024];
+    size_t n = fread(src, 1, sizeof(src) - 1, f);
+    fclose(f);
+    src[n] = '\0';
+
+    for (int i = 0; i < 16; i++) {
+        char needle[64];
+        snprintf(needle, sizeof(needle), "@%s ", names[i]);
+        char* at = strstr(src, needle);
+        assert(at != NULL);          /* constant renamed or deleted */
+        at += strlen(needle);
+        while (*at == ' ') at++;
+        unsigned int v = 0;
+        assert(sscanf(at, "0x%X", &v) == 1);
+        if (v != system_palette_entry(i)) {
+            fprintf(stderr,
+                    "palette drift at index %d (%s): lib/draw.lux has 0x%06X, "
+                    "src/system.c has 0x%06X\n",
+                    i, names[i], v, system_palette_entry(i));
+            assert(v == system_palette_entry(i));
+        }
+    }
+    printf("  palette C <-> Lux: OK\n");
 }
 
 static void test_draw_tile_key_under_k8(void) {
@@ -1404,22 +1510,7 @@ static void test_child_menu_export(void) {
 }
 
 static uint8_t* load_bin_file(const char* path, size_t* out_len) {
-    FILE* f = fopen(path, "rb");
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz <= 0) { fclose(f); return NULL; }
-    uint8_t* buf = (uint8_t*)malloc((size_t)sz);
-    if (!buf) { fclose(f); return NULL; }
-    if (fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
-        free(buf);
-        fclose(f);
-        return NULL;
-    }
-    fclose(f);
-    *out_len = (size_t)sz;
-    return buf;
+    return rom_load_executable(path, out_len, NULL);
 }
 
 static bool pump_ok(Machine* m, int n) {
@@ -1711,6 +1802,8 @@ int main() {
     test_host_seek_stat();
     test_draw_file();
     test_draw_chan();
+    test_draw_chan_c4();
+    test_palette_matches_lux();
     test_draw_tile_key_under_k8();
     test_draw_scale_normalize();
     test_draw_char_scale18();

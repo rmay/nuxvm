@@ -1,4 +1,6 @@
 #include "compiler.h"
+#include "sha256.h"
+#include "kelvin.h"
 #include "opcodes.h"
 #include "memory_map.h"
 #include <stdio.h>
@@ -142,10 +144,14 @@ static void record_reservation(Compiler* c, const char* name, int32_t addr, int3
 /* Best-effort: warn (not a hard error) when two or more differently-named
  * `@NAME 0xHEX ;` constants share the exact same value -- exactly the bug
  * class fixed in docs/memory-map.md (lib/log.lux vs apps/Quill.lux, etc).
- * Deliberately excludes names containing "CLR"/"COLOR": this codebase's
+ * Deliberately excludes names containing "CLR"/"COLOR"/"PAL_": this codebase's
  * dominant source of *intentional* duplicate hex constants is every
  * app/library defining its own CLR_BG/CLR_TEXT/etc with the same RGB
- * values, which would otherwise drown out real collisions. Sub-range
+ * values, which would otherwise drown out real collisions. DRAW::PAL_* --
+ * the 16 fixed system palette entries -- is the same situation seen from the
+ * other side: those are 24-bit colours that look exactly like addresses, and
+ * PAL_LTGRAY (0xAAAAAA) in particular lands inside whatever app buffer
+ * happens to be reserved around 0xAA0000. Sub-range
  * overlap (one buffer's span containing another's base address, not just
  * an exact duplicate) isn't caught here -- see docs/memory-map.md's
  * "Collision checking" section for why that's out of scope for now. */
@@ -955,6 +961,21 @@ static bool compile_token(Compiler* c, Token t) {
                 fprintf(stderr, "Error: expected integer after VERSION (line %d)\n", t.line);
                 return false;
             }
+            /* Checked here rather than in luxc so that every path through the
+             * compiler enforces it -- cloister and nux compile .lux sources in
+             * process and never go near luxc's argument handling. luxc still
+             * owns the separate question of whether a VERSION is *required*
+             * (library builds are exempt); this is about whether a declared
+             * one is legal. */
+            const char* why = kelvin_reject_reason(val);
+            if (why) {
+                fprintf(stderr,
+                        "Error: VERSION %d is not a legal Kelvin version (line %d): %s.\n"
+                        "  This platform is %dK (Nux %dK); a guest must be at least as hot.\n"
+                        "  See AGENTS.md's versioning section and cooldown log.\n",
+                        val, t.line, why, CLOISTER_KELVIN / 1000, NUX_KELVIN / 1000);
+                return false;
+            }
             c->version_seen = true;
             c->version_value = val;
             return true;
@@ -1045,7 +1066,8 @@ static bool compile_word_def(Compiler* c) {
         Token body1 = c->token_list->tokens[c->pos + 1];
         if (body0.type == TOKEN_NUMBER && body1.type == TOKEN_SEMICOLON && body0.value &&
             (strncmp(body0.value, "0x", 2) == 0 || strncmp(body0.value, "0X", 2) == 0) &&
-            !contains_ci(final_name, "CLR") && !contains_ci(final_name, "COLOR")) {
+            !contains_ci(final_name, "CLR") && !contains_ci(final_name, "COLOR") &&
+            !contains_ci(final_name, "PAL_")) {
             int32_t val;
             if (parse_number(&body0, &val)) {
                 record_addr_const(c, final_name, val, name_tok.line);
@@ -1397,4 +1419,26 @@ uint8_t* compile_source(const char* source, int32_t base_addr, size_t* out_len, 
     compiler_free(c);
     token_list_free(list);
     return bytecode;
+}
+
+/* See compiler.h. Each file contributes its own SHA-256 rather than its raw
+ * bytes, so the construction is the same shape whatever the front end and the
+ * main source sits in the same slot as any include. Hashing include
+ * *contents* rather than paths is the point: editing lib/app.lux moves the
+ * digest of every image that pulls it in. */
+void compiler_source_digest(const Compiler* c, const char* main_src, size_t main_len,
+                            uint8_t out[32]) {
+    Sha256Ctx ctx;
+    sha256_init(&ctx);
+    uint8_t d[32];
+    sha256((const uint8_t*)main_src, main_len, d);
+    sha256_update(&ctx, d, sizeof(d));
+    for (size_t i = 0; c && i < c->included_count; i++) {
+        /* An unreadable include hashes as zeroes rather than aborting: the
+         * compile already succeeded, so the file was there a moment ago, and a
+         * digest that silently differs beats losing the image. */
+        (void)sha256_file(c->included_files[i], d);
+        sha256_update(&ctx, d, sizeof(d));
+    }
+    sha256_final(&ctx, out);
 }

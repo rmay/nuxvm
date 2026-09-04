@@ -1,0 +1,259 @@
+// Document session: path, dirty, File/Edit menus, confirm + Standard File.
+// INCLUDE "lib/doc.lux"  then  IMPORT DOC
+//
+// The app owns serialize/deserialize. DOC owns the session: current path,
+// unsaved-changes flag, window title with " *", File menu, and the
+// confirm-save sheet in front of New / Open / Quit.
+//
+//   [ load-bytes ] DOC::on-load!
+//   [ save-bytes ] DOC::on-save!
+//   [ reset-doc  ] DOC::on-new!
+//   T"My App" T"untitled.myapp" DOC::init
+//   UI::new
+//   APP::width UI::menubar
+//   DOC::file-menu
+//   DOC::edit-menu
+//
+// Edit items are omitted unless DOC::edit-menu is called. Revert is not
+// part of this kit; Easel keeps its own.
+
+INCLUDE "lib/sf.lux"
+INCLUDE "lib/dialog.lux"
+INCLUDE "lib/str.lux"
+
+MODULE DOC
+
+IMPORT APP
+IMPORT UI
+IMPORT SF
+IMPORT DIALOG
+IMPORT STR
+IMPORT VFS
+
+@PATH_MAX  512 ;
+@TITLE_MAX 256 ;
+
+@ACT_NONE  0 ;
+@ACT_NEW   1 ;
+@ACT_OPEN  2 ;
+@ACT_QUIT  3 ;
+@ACT_XT    4 ;
+
+RESERVE path-buf  512 ;
+RESERVE untitled  512 ;
+RESERVE app-title 256 ;
+RESERVE title-buf 256 ;
+RESERVE file-dirty 4 ;
+RESERVE save-as    4 ;
+RESERVE pending    4 ;
+RESERVE xt-new     4 ;
+RESERVE xt-load    4 ;
+RESERVE xt-save    4 ;
+RESERVE xt-quit    4 ;
+RESERVE xt-cut     4 ;
+RESERVE xt-copy    4 ;
+RESERVE xt-paste   4 ;
+RESERVE xt-selall  4 ;
+RESERVE xt-pending 4 ;
+
+@path     ( -- ptr ) path-buf ;
+@title    ( -- ptr ) title-buf ;
+@dirty?   ( -- f )   file-dirty LOADI ;
+
+@on-new!        ( xt -- ) xt-new    STOREI ;
+@on-load!       ( xt -- ) xt-load   STOREI ;
+@on-save!       ( xt -- ) xt-save   STOREI ;
+@on-quit!       ( xt -- ) xt-quit   STOREI ;
+@on-cut!        ( xt -- ) xt-cut    STOREI ;
+@on-copy!       ( xt -- ) xt-copy   STOREI ;
+@on-paste!      ( xt -- ) xt-paste  STOREI ;
+@on-select-all! ( xt -- ) xt-selall STOREI ;
+
+@call0 { xt -- }
+    xt 0 > [ xt CALL ] ?
+;
+
+@call-path { xt -- }
+    xt 0 > [ path-buf xt CALL ] ?
+;
+
+@sync-title ( -- )
+    path-buf STR::basename
+    dup load-byte 0 = [ drop app-title ] ?
+    title-buf STR::strcpy
+    file-dirty LOADI [
+        title-buf STR::strlen TITLE_MAX 3 - < [
+            T" *" title-buf title-buf STR::strlen + STR::strcpy
+        ] ?
+    ] ?
+    title-buf VFS::set-window-title
+;
+
+@dirty! ( -- )
+    1 file-dirty STOREI
+    APP::dirty!
+    sync-title
+;
+
+( Clear unsaved-changes. Still marks the frame dirty so the title redraws. )
+@clean! ( -- )
+    0 file-dirty STOREI
+    APP::dirty!
+    sync-title
+;
+
+@do-new ( -- )
+    untitled path-buf STR::strcpy
+    xt-new LOADI call0
+    clean!
+;
+
+@do-load ( -- )
+    xt-load LOADI call-path
+    clean!
+;
+
+@save ( -- )
+    xt-save LOADI call-path
+    clean!
+;
+
+@do-quit ( -- )
+    xt-quit LOADI dup 0 > [ CALL ] [ drop HALT ] ?:
+;
+
+@run-pending ( -- )
+    pending LOADI { act }
+        0 pending STOREI
+        act ACT_NEW  = [ do-new ] ?
+        act ACT_OPEN = [ SF::show ] ?
+        act ACT_QUIT = [ do-quit ] ?
+        act ACT_XT   = [ xt-pending LOADI call0 ] ?
+    UNGIRD
+;
+
+@after-save   ( -- ) save run-pending ;
+@after-dont   ( -- ) run-pending ;
+@after-cancel ( -- ) 0 pending STOREI APP::dirty! ;
+
+@confirm-then { act -- }
+    act pending STOREI
+    [ after-save ] [ after-dont ] [ after-cancel ] DIALOG::confirm-save
+    APP::dirty!
+;
+
+@menu-new ( -- )
+    file-dirty LOADI [
+        ACT_NEW confirm-then
+    ] [
+        do-new
+    ] ?:
+;
+
+@menu-open ( -- )
+    file-dirty LOADI [
+        ACT_OPEN confirm-then
+    ] [
+        SF::show
+    ] ?:
+;
+
+@menu-save ( -- ) save ;
+
+@save-as! ( -- ) 1 save-as STOREI ;
+
+@menu-save-as ( -- )
+    save-as!
+    path-buf SF::show-save
+;
+
+@menu-quit ( -- )
+    file-dirty LOADI [
+        ACT_QUIT confirm-then
+    ] [
+        do-quit
+    ] ?:
+;
+
+( If dirty, confirm-save then CALL xt; if clean, CALL xt now.
+  For File items that are not New/Open/Quit — Revert, New 16x16, etc. )
+@confirm-xt ( xt -- )
+    file-dirty LOADI [
+        xt-pending STOREI
+        ACT_XT confirm-then
+    ] [
+        CALL
+    ] ?:
+;
+
+( Not named `pick`: a quotation `[ pick ]` compiles the PICK opcode. )
+@on-sf-ok ( src -- )
+    dup load-byte 47 = [ 1 + ] ?
+    path-buf STR::strcpy
+    save-as LOADI [
+        0 save-as STOREI
+        save
+    ] [
+        do-load
+    ] ?:
+    APP::dirty!
+;
+@pick ( src -- ) on-sf-ok ;
+
+@cancel ( -- )
+    0 save-as STOREI
+    APP::dirty!
+;
+
+@file-new      ( val -- ) drop menu-new ;
+@file-open     ( val -- ) drop menu-open ;
+@file-save     ( val -- ) drop menu-save ;
+@file-save-as  ( val -- ) drop menu-save-as ;
+@file-quit     ( val -- ) drop menu-quit ;
+
+@edit-cut     ( val -- ) drop xt-cut    LOADI call0 ;
+@edit-copy    ( val -- ) drop xt-copy   LOADI call0 ;
+@edit-paste   ( val -- ) drop xt-paste  LOADI call0 ;
+@edit-selall  ( val -- ) drop xt-selall LOADI call0 ;
+
+@wire-sf ( -- )
+    [ on-sf-ok ] SF::on-ok!
+    [ cancel ]   SF::on-cancel!
+;
+
+@init { title-ptr default-path -- }
+    title-ptr app-title STR::strcpy
+    default-path untitled STR::strcpy
+    untitled path-buf STR::strcpy
+    0 file-dirty STOREI
+    0 save-as STOREI
+    0 pending STOREI
+    0 xt-new STOREI
+    0 xt-load STOREI
+    0 xt-save STOREI
+    0 xt-quit STOREI
+    0 xt-cut STOREI
+    0 xt-copy STOREI
+    0 xt-paste STOREI
+    0 xt-selall STOREI
+    0 xt-pending STOREI
+    wire-sf
+    sync-title
+;
+
+@file-menu ( -- )
+    T"File" UI::menu
+    T"New"     [ file-new ]     UI::item
+    T"Open"    [ file-open ]    UI::item
+    T"Save"    [ file-save ]    UI::item
+    T"Save As" [ file-save-as ] UI::item
+    T"Quit"    [ file-quit ]    UI::item
+;
+
+@edit-menu ( -- )
+    T"Edit" UI::menu
+    T"Cut"        [ edit-cut ]    UI::item
+    T"Copy"       [ edit-copy ]   UI::item
+    T"Paste"      [ edit-paste ]  UI::item
+    T"Select All" [ edit-selall ] UI::item
+;

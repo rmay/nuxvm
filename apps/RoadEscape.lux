@@ -1,4 +1,4 @@
-( Road Escape -- a top-down road chase in eight shades of gray. Arrows steer
+( Road Escape -- a top-down road chase in the 16-colour system palette. Arrows steer
   and set your speed, Space fires, three lives.
 
   The road is a scrolling ring of 8px horizontal slices, each holding the x
@@ -18,7 +18,7 @@ INCLUDE "lib/app.lux"
 INCLUDE "lib/ui.lux"
 
 MODULE ROADESCAPE
-VERSION 400000
+VERSION 399000
 
 IMPORT APP
 IMPORT UI
@@ -551,13 +551,22 @@ RESERVE pickup 128 ;  ( NPICKUP * PIK_STRIDE )
 
 ( --- Painting --- )
 
-@GRASS ( -- c ) 176 DRAW::gray ;
-@TAR   ( -- c ) 48 DRAW::gray ;
+@GRASS ( -- c ) DRAW::PAL_DKGREEN ;
+@TAR   ( -- c ) DRAW::PAL_DKGRAY ;
 ( The dictionary is case-insensitive (src/compiler.c, strcasecmp) and the
   first definition of a name wins, so a constant named PAINT would quietly
   swallow every later call to @paint and leave the whole repaint dead code. )
-@WHITE ( -- c ) 255 DRAW::gray ;
-@INK   ( -- c ) 0 DRAW::gray ;
+@WHITE ( -- c ) DRAW::PAL_WHITE ;
+@INK   ( -- c ) DRAW::PAL_BLACK ;
+( Pickups no longer have to earn contrast through luma alone: a fuel can is
+  yellow and an ammo crate is brown, so the two read apart at a glance
+  instead of as two pale boxes. )
+@CAN   ( -- c ) DRAW::PAL_YELLOW ;
+@CRATE ( -- c ) DRAW::PAL_BROWN ;
+( Traffic was two gray steps, 208 against 112, which is the contrast problem
+  the note above paint-car is about. Hue carries it now. )
+@CIVIL ( -- c ) DRAW::PAL_CYAN ;
+@HOSTILE ( -- c ) DRAW::PAL_RED ;
 
 ( A labelled bar reading n out of d. The multiply comes before the divide,
   so a gauge that is a fifth full still shows as a fifth: FUEL_MAX is 12000
@@ -644,16 +653,16 @@ RESERVE pickup 128 ;  ( NPICKUP * PIK_STRIDE )
 ;
 
 ( A can is a drum with a handle and a band; a crate is a box with a cross.
-  Both are pale so they read against the tarmac, and both are outlined in
-  black so they still read where they overlap a kerb. )
+  Both are light against the tarmac and outlined in black, so they still read
+  where they overlap a kerb. )
 @paint-can { x y -- }
-    ( Spout first, in the body's own pale gray rather than in ink: a black
-      spout on 48-gray tarmac is very nearly invisible, which left the can
-      reading as a plain box. The body is then drawn over its foot, and the
-      body's outline closes across it as the collar. )
-    APP::draw-fd x 5 + y 8 6 224 DRAW::gray DRAW::fill-rect
+    ( Spout first, in the body's own colour rather than in ink: a black spout
+      on dark tarmac is very nearly invisible, which left the can reading as
+      a plain box. The body is then drawn over its foot, and the body's
+      outline closes across it as the collar. )
+    APP::draw-fd x 5 + y 8 6 CAN DRAW::fill-rect
     APP::draw-fd x 5 + y 8 6 INK DRAW::draw-rect
-    APP::draw-fd x y 4 + PIK_W PIK_H 4 - 224 DRAW::gray DRAW::fill-rect
+    APP::draw-fd x y 4 + PIK_W PIK_H 4 - CAN DRAW::fill-rect
     APP::draw-fd x y 4 + PIK_W PIK_H 4 - INK DRAW::draw-rect
     APP::draw-fd x 3 + y 9 + PIK_W 6 - 3 INK DRAW::fill-rect
 ;
@@ -668,7 +677,7 @@ RESERVE pickup 128 ;  ( NPICKUP * PIK_STRIDE )
 ;
 
 @paint-crate { x y -- }
-    APP::draw-fd x y PIK_W PIK_H 160 DRAW::gray DRAW::fill-rect
+    APP::draw-fd x y PIK_W PIK_H CRATE DRAW::fill-rect
     APP::draw-fd x y PIK_W PIK_H INK DRAW::draw-rect
     ( Three rounds at x+2, x+7, x+12: 3px wide with 2px between them, and a
       clear pixel of crate between the outer two and the outline. )
@@ -700,7 +709,7 @@ RESERVE pickup 128 ;  ( NPICKUP * PIK_STRIDE )
                 e LOADI [
                     e 12 + LOADI e 8 + LOADI APP::lerp FP / { y }
                         e enemy-x y
-                        e 20 + LOADI K_CIVIL = [ 208 ] [ 112 ] ?: DRAW::gray
+                        e 20 + LOADI K_CIVIL = [ CIVIL ] [ HOSTILE ] ?:
                         paint-car
                     UNGIRD
                 ] ?
@@ -871,7 +880,7 @@ RESERVE pickup 128 ;  ( NPICKUP * PIK_STRIDE )
 
 @start
     T"Road Escape" APP::init
-    APP::grayscale!
+    APP::palette!
     APP::draw-fd DRAW::batch-begin
     UI::new
     0 kleft STOREI

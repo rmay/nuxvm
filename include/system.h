@@ -26,11 +26,19 @@
 #define FONT_GENEVA  2
 #define FONT_MONACO  3
 
-/* /dev/draw cmd 11 SetChan. 0 is RGB (default); k8/k2/k1 map ink to luma. */
+/* /dev/draw cmd 11 SetChan. 0 is RGB (default); k8/k2/k1 map ink to luma;
+ * c4 snaps ink to the nearest of the 16 fixed system palette entries.
+ * The palette is in src/system.c and mirrored in lib/draw.lux -- see
+ * docs/palette.md. */
 #define DRAW_CHAN_RGB 0
 #define DRAW_CHAN_K8  1
 #define DRAW_CHAN_K2  2
 #define DRAW_CHAN_K1  3
+#define DRAW_CHAN_C4  4
+
+/* Entry i of the fixed 16-colour system palette, as 0xRRGGBB.
+ * Out-of-range i returns 0. */
+uint32_t system_palette_entry(int i);
 
 typedef struct Machine Machine;
 

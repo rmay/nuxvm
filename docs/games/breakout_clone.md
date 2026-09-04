@@ -263,10 +263,12 @@ a clean frame to skip. Clear to white, then:
 - **Status bar**: Score / Lives / Level / Best, Chicago, via `DRAW::draw-str`
   and `STR::int-to-str`.
 - **Playfield**: a black border rectangle inset by `WALL`.
-- **Bricks**: each row is a solid `DRAW::fill-rect` in a different k8 gray
-  (`DRAW::gray`, luma `0, 36, 72, 108, 144, 180` from the top), outlined in
-  black. The app calls `APP::grayscale!` so those values stay gray even if a
-  later fill is written as RGB.
+- **Bricks**: each row is a solid `DRAW::fill-rect` in a different palette
+  colour — red, orange, yellow, dark green, cyan, blue from the top, the
+  classic arcade ramp warm-to-cool — outlined in black. The app calls
+  `APP::palette!`, so any ink it emits is snapped to the nearest of the 16
+  system colours; all six of these are exact entries and pass through
+  untouched. See `docs/palette.md`.
 - **Paddle and ball**: solid black rects.
 
 That is roughly 70 draw commands per frame, comfortably inside budget — a full

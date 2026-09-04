@@ -23,7 +23,7 @@
  *   bin/nux examples/fluxio/hello_cloister.bin
  */
 
-version 400000;
+version 399000;
 
 /** entry point */
 int main() {

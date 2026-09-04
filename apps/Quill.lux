@@ -12,15 +12,12 @@
   chunked I/O and manuscript.quill as the startup document also stay. )
 
 INCLUDE "lib/app.lux"
+INCLUDE "lib/doc.lux"
 INCLUDE "lib/core.lux"
-
 INCLUDE "lib/str.lux"
-INCLUDE "lib/ui.lux"
-INCLUDE "lib/sf.lux"
-INCLUDE "lib/dialog.lux"
 
 MODULE MAIN
-VERSION 400000
+VERSION 399000
 
 IMPORT APP
 IMPORT VFS
@@ -30,6 +27,7 @@ IMPORT STR
 IMPORT UI
 IMPORT SF
 IMPORT DIALOG
+IMPORT DOC
 
 ( --- Window geometry --- )
 @WIN_W      960 ;
@@ -73,7 +71,6 @@ RESERVE PASTE_BUF 0x10000 ;   ( PASTE_MAX )
 
 ( --- State --- )
 RESERVE file-len 4 ;
-RESERVE dirty 4 ;
 RESERVE cursor 4 ;
 RESERVE last-key 4 ;
 RESERVE caret-x 4 ;
@@ -86,12 +83,11 @@ RESERVE char-w-val 4 ;
 RESERVE hex-mode 4 ;
 RESERVE hex-nibble 4 ;
 RESERVE prev-cursor 4 ;
-RESERVE save-as 4 ;
 RESERVE scroll-y 4 ;
 RESERVE HEX_LINE_BUF 256 ;
 RESERVE sb-bar 56 ;
 RESERVE VFS_PATH_BUF 512 ;
-RESERVE current-path-buf 512 ;
+
 RESERVE CHUNK_PARAM_BLOCK 20 ;
 RESERVE file-fd 4 ;
 RESERVE file-offset 4 ;
@@ -222,7 +218,7 @@ RESERVE needs-redraw 4 ;
 
 @save-current-chunk ( -- )
     file-fd LOADI 0 >= [
-        dirty LOADI 1 = [
+        DOC::dirty? [
             ( Setup CMD_WRITE_CHUNK parameter block )
             file-fd LOADI CHUNK_PARAM_BLOCK STOREI
             FILE_BUF CHUNK_PARAM_BLOCK 4 + STOREI
@@ -239,7 +235,7 @@ RESERVE needs-redraw 4 ;
             
             ( Update orig-chunk-len )
             file-len LOADI orig-chunk-len STOREI
-            0 dirty STOREI
+            DOC::clean!
         ] ?
     ] ?
 ;
@@ -248,7 +244,7 @@ RESERVE needs-redraw 4 ;
     1 frame! ( 0:abs-pos )
     file-fd LOADI 0 >= [
         ( Write back current chunk if dirty )
-        dirty LOADI 1 = [ save-current-chunk ] ?
+        DOC::dirty? [ save-current-chunk ] ?
         
         ( Calculate chunk start offset: start = abs-pos - CHUNK_SIZE / 2 )
         0 local@ CHUNK_SIZE 2 / - ( start )
@@ -277,7 +273,7 @@ RESERVE needs-redraw 4 ;
         ( Set cursor position relative to chunk )
         0 local@ file-offset LOADI - cursor STOREI
         
-        0 dirty STOREI
+        DOC::clean!
     ] ?
     1 unframe!
 ;
@@ -335,7 +331,7 @@ RESERVE needs-redraw 4 ;
         FILE_BUF cursor LOADI + store-byte
         file-len LOADI 1 + file-len STOREI
         cursor LOADI 1 + cursor STOREI
-        1 dirty STOREI
+        DOC::dirty!
         rebuild-lines
     ] ?:
 ;
@@ -354,7 +350,7 @@ RESERVE needs-redraw 4 ;
         MEMORY::move-mem
         file-len LOADI 0 local@ + file-len STOREI
         cursor LOADI 0 local@ + cursor STOREI
-        1 dirty STOREI
+        DOC::dirty!
         rebuild-lines
     ] ?:
     2 unframe!
@@ -368,7 +364,7 @@ RESERVE needs-redraw 4 ;
         MEMORY::move-mem
         file-len LOADI 1 - file-len STOREI
         cursor LOADI 1 - cursor STOREI
-        1 dirty STOREI
+        DOC::dirty!
         rebuild-lines
     ] ?
 ;
@@ -617,7 +613,7 @@ RESERVE needs-redraw 4 ;
         FILE_BUF 0 local@ + FILE_BUF 1 local@ + file-len LOADI 0 local@ - MEMORY::move-mem
         file-len LOADI 0 local@ - 1 local@ + file-len STOREI
         1 local@ cursor STOREI
-        -1 anchor STOREI 1 dirty STOREI
+        -1 anchor STOREI DOC::dirty!
         rebuild-lines
         2 unframe!
     ] ?
@@ -678,7 +674,7 @@ RESERVE needs-redraw 4 ;
         240 AND OR
     ] ?:
     FILE_BUF cursor LOADI + store-byte
-    1 dirty STOREI
+    DOC::dirty!
     hex-nibble LOADI 0 = [
         1 hex-nibble STOREI
     ] [
@@ -836,7 +832,7 @@ RESERVE needs-redraw 4 ;
     ] ?:
 ;
 
-@path-basename ( -- ptr ) current-path-buf STR::basename ;
+@path-basename ( -- ptr ) DOC::path STR::basename ;
 
 @draw-status-line ( -- )
     APP::draw-fd 0 PANE_Y PANE_H + WIN_W STATUS_H 0xEEEEEE DRAW::fill-rect
@@ -846,7 +842,7 @@ RESERVE needs-redraw 4 ;
     STATUS_BUF STR::strlen 40 > [
         0 STATUS_BUF 40 + store-byte
     ] ?
-    dirty LOADI [
+    DOC::dirty? [
         T" *" STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
     ] ?
     T"  " STATUS_BUF STATUS_BUF STR::strlen + STR::strcpy
@@ -858,9 +854,10 @@ RESERVE needs-redraw 4 ;
     APP::draw-fd 4 PANE_Y PANE_H + 5 + STATUS_BUF CLR_TEXT FONT_SIZE DRAW::draw-str
 ;
 
-@save-file ( -- )
+@save-bytes ( p -- )
+    1 frame! ( 0:p )
     file-fd LOADI 0 >= [ file-fd LOADI VFS::close drop -1 file-fd STOREI ] ?
-    @current-path-buf VFS_PATH_BUF VFS::sys-file
+    0 local@ VFS_PATH_BUF VFS::sys-file
     dup 2 VFS::open-mode
     dup 0 < [
         drop 6 VFS::open-mode
@@ -870,23 +867,38 @@ RESERVE needs-redraw 4 ;
         file-len LOADI total-size STOREI
     ] [ drop ] ?:
     save-current-chunk
-    0 dirty STOREI
     1 needs-redraw STOREI
+    1 unframe!
 ;
 
-@new-document ( -- )
+@reset-doc ( -- )
     file-fd LOADI 0 >= [ file-fd LOADI VFS::close drop -1 file-fd STOREI ] ?
     0 file-len STOREI 0 cursor STOREI -1 anchor STOREI
     0 file-offset STOREI 0 total-size STOREI 0 orig-chunk-len STOREI
-    0 dirty STOREI 0 hex-nibble STOREI 0 scroll-y STOREI
-    T"new.quill" @current-path-buf STR::strcpy
+    0 hex-nibble STOREI 0 scroll-y STOREI
     rebuild-lines
     1 needs-redraw STOREI
 ;
 
-@confirm-save-new ( -- ) save-file new-document ;
-@confirm-dont-new ( -- ) new-document ;
-@confirm-cancel   ( -- ) 1 needs-redraw STOREI ;
+@load-bytes ( p -- )
+    1 frame! ( 0:p )
+    file-fd LOADI 0 >= [ file-fd LOADI VFS::close drop ] ?
+    0 local@ VFS_PATH_BUF VFS::sys-file 2 VFS::open-mode file-fd STOREI
+    file-fd LOADI 0 >= [
+        file-fd LOADI VFS::stat total-size STOREI
+        0 file-offset STOREI
+        file-fd LOADI FILE_BUF CHUNK_SIZE VFS::read
+        dup file-len STOREI
+        dup orig-chunk-len STOREI
+        0 cursor STOREI 0 scroll-y STOREI -1 anchor STOREI 0 hex-nibble STOREI
+        rebuild-lines
+    ] [
+        0 total-size STOREI 0 file-len STOREI 0 orig-chunk-len STOREI -1 file-fd STOREI
+        rebuild-lines
+    ] ?:
+    1 needs-redraw STOREI
+    1 unframe!
+;
 
 @refresh-text-pane ( -- )
     1 needs-redraw STOREI
@@ -984,10 +996,9 @@ RESERVE needs-redraw 4 ;
     dup 115 = [
         drop
         0 local@ EVENT::MOD_SHIFT AND [
-            1 save-as STOREI
-            @current-path-buf SF::show-save
+            DOC::menu-save-as
         ] [
-            save-file
+            DOC::menu-save
         ] ?:
     ] [
     dup 97 = [ drop select-all ] [
@@ -1100,58 +1111,7 @@ RESERVE needs-redraw 4 ;
     ] ?:
 ;
 
-@on-pick ( path -- )
-    1 frame! ( 0:path )
-    save-as LOADI [
-        0 save-as STOREI
-        0 local@
-        dup load-byte 47 = [ 1 + ] ?
-        @current-path-buf STR::strcpy
-        save-file
-    ] [
-        file-fd LOADI 0 >= [ file-fd LOADI VFS::close drop ] ?
-        0 local@
-        dup load-byte 47 = [ 1 + ] ?
-        @current-path-buf STR::strcpy
-        @current-path-buf VFS_PATH_BUF VFS::sys-file 2 VFS::open-mode file-fd STOREI
-        file-fd LOADI 0 >= [
-            file-fd LOADI VFS::stat total-size STOREI
-            0 file-offset STOREI
-            file-fd LOADI FILE_BUF CHUNK_SIZE VFS::read
-            dup file-len STOREI
-            dup orig-chunk-len STOREI
-            0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI 0 hex-nibble STOREI
-            rebuild-lines
-        ] [
-            0 total-size STOREI 0 file-len STOREI 0 orig-chunk-len STOREI -1 file-fd STOREI
-            rebuild-lines
-        ] ?:
-    ] ?:
-    1 needs-redraw STOREI
-    1 unframe!
-;
-
-@on-cancel ( -- )
-    0 save-as STOREI
-    1 needs-redraw STOREI
-;
-
-@menu-open ( -- ) SF::show ;
-@menu-save-as ( -- )
-    1 save-as STOREI
-    @current-path-buf SF::show-save
-;
-
 ( --- Menus --- )
-@menu-new ( -- )
-    dirty LOADI [
-        [ confirm-save-new ] [ confirm-dont-new ] [ confirm-cancel ] DIALOG::confirm-save
-        1 needs-redraw STOREI
-    ] [
-        new-document
-    ] ?:
-;
-@menu-quit ( -- ) HALT ;
 @menu-cut ( -- )
     hex-mode LOADI [ ] [
         sel-active? [ snarf-selection delete-selection 1 needs-redraw STOREI ] ?
@@ -1175,8 +1135,10 @@ RESERVE needs-redraw 4 ;
 
 @on-frame ( -- )
     UI::handle
+    APP::dirty? [ 1 needs-redraw STOREI ] ?
     needs-redraw LOADI [
         refresh
+        APP::dirty-off
     ] [
         UI::draw
         SF::open? [ SF::draw ] ?
@@ -1205,17 +1167,16 @@ RESERVE needs-redraw 4 ;
     
     UI::new
     WIN_W UI::menubar
-    T"File" UI::menu
-    T"New"  [ drop menu-new ]  UI::item
-    T"Open" [ drop menu-open ] UI::item
-    T"Save" [ drop save-file ] UI::item
-    T"Save As" [ drop menu-save-as ] UI::item
-    T"Quit" [ drop menu-quit ] UI::item
-    T"Edit" UI::menu
-    T"Cut"        [ drop menu-cut ]        UI::item
-    T"Copy"       [ drop menu-copy ]       UI::item
-    T"Paste"      [ drop paste-snarf ]     UI::item
-    T"Select All" [ drop menu-select-all ] UI::item
+    T"Quill" T"new.quill" DOC::init
+    $load-bytes DOC::on-load!
+    $save-bytes DOC::on-save!
+    $reset-doc  DOC::on-new!
+    $menu-cut        DOC::on-cut!
+    $menu-copy       DOC::on-copy!
+    $paste-snarf     DOC::on-paste!
+    $menu-select-all DOC::on-select-all!
+    DOC::file-menu
+    DOC::edit-menu
     T"View" UI::menu
     T"Toggle Hex" [ toggle-hex ] UI::check-item
     T"Toggle Hex" 0 UI::item-set
@@ -1224,23 +1185,9 @@ RESERVE needs-redraw 4 ;
     T"V" sb-x PANE_Y SB_W PANE_H 0 0 0 [ on-scroll ] UI::vscroll
     T"V" UI::comp-find UI::C_PAY + LOADI sb-bar STOREI
     VISIBLE_LINES sb-bar LOADI UI::BAR_PAGE + STOREI
-    [ on-pick ] SF::on-ok!
-    [ on-cancel ] SF::on-cancel!
-    
-    T"manuscript.quill" @current-path-buf STR::strcpy
-    @current-path-buf VFS_PATH_BUF VFS::sys-file 2 VFS::open-mode file-fd STOREI
-    file-fd LOADI 0 >= [
-        file-fd LOADI VFS::stat total-size STOREI
-        0 file-offset STOREI
-        file-fd LOADI FILE_BUF CHUNK_SIZE VFS::read
-        dup file-len STOREI
-        dup orig-chunk-len STOREI
-        rebuild-lines
-    ] [
-        0 total-size STOREI 0 file-len STOREI 0 orig-chunk-len STOREI -1 file-fd STOREI
-        rebuild-lines
-    ] ?:
-    0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI 0 drag STOREI 0 mouse-held STOREI 0 hex-nibble STOREI
+
+    T"manuscript.quill" DOC::pick
+    0 cursor STOREI 0 scroll-y STOREI -1 anchor STOREI 0 drag STOREI 0 mouse-held STOREI 0 hex-nibble STOREI
     1 needs-redraw STOREI
     
     [ on-mouse ] APP::on-mouse!

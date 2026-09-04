@@ -407,8 +407,60 @@ void system_set_resolution(System* sys, int32_t width, int32_t height) {
 
 // --- /sys/draw support (initial rect implementation) ---
 
+/* The fixed 16-colour system palette, as 0xRRGGBB. Entries 0-3 are exactly
+ * the DRAW_CHAN_K2 levels in GRAYMAP/CMAP order (0 = white .. 3 = black), so
+ * a 2bpp gray page widens to a 4bpp CMAP page index-for-index with no
+ * remapping. Deliberately excludes 0xFF00FF, which is the sprite
+ * transparency key (apps/Whittle.lux) and must stay out of gamut.
+ *
+ * The ORDER is load-bearing: every index is paired with its visual
+ * complement at (i XOR 3), so CMAP::invert stays one 0x33333333 XOR per word
+ * -- the same cost as GRAYMAP::invert -- instead of a per-pixel lookup.
+ * white/black and the two grays invert exactly as they did at 2bpp; then
+ * red/cyan, orange/blue, yellow/dark blue, green/magenta, dark red/teal.
+ * purple/brown is the leftover pair and is a weak complement; that is a
+ * deliberate taste call, not an oversight.
+ *
+ * This table is mirrored in lib/draw.lux as DRAW::C_* / DRAW::CLUT. The two
+ * are pinned together by test_palette_matches_lux in src/test_vfs.c -- if you
+ * change a value here, change it there. See docs/palette.md. */
+static const uint32_t system_palette[16] = {
+    0xFFFFFF, /*  0 white    */  0xAAAAAA, /*  1 light gray */
+    0x555555, /*  2 dark gray*/  0x000000, /*  3 black      */
+    0xDD0000, /*  4 red      */  0xEE7700, /*  5 orange     */
+    0x3366EE, /*  6 blue     */  0x00CCCC, /*  7 cyan       */
+    0xEEDD00, /*  8 yellow   */  0x007700, /*  9 dark green */
+    0xDD00DD, /* 10 magenta  */  0x0000CC, /* 11 dark blue  */
+    0x770000, /* 12 dark red */  0x770099, /* 13 purple     */
+    0x996633, /* 14 brown    */  0x0077AA, /* 15 teal       */
+};
+
+uint32_t system_palette_entry(int i) {
+    if (i < 0 || i >= 16) return 0;
+    return system_palette[i];
+}
+
+/* Nearest palette entry by squared RGB distance. An exact palette colour
+ * always maps to itself (distance 0), so correct callers are untouched. */
+static uint32_t palette_snap(uint32_t color) {
+    int32_t r = (int32_t)((color >> 16) & 0xFF);
+    int32_t g = (int32_t)((color >> 8) & 0xFF);
+    int32_t b = (int32_t)(color & 0xFF);
+    uint32_t best = system_palette[0];
+    int32_t best_d = INT32_MAX;
+    for (int i = 0; i < 16; i++) {
+        int32_t dr = r - (int32_t)((system_palette[i] >> 16) & 0xFF);
+        int32_t dg = g - (int32_t)((system_palette[i] >> 8) & 0xFF);
+        int32_t db = b - (int32_t)(system_palette[i] & 0xFF);
+        int32_t d = dr * dr + dg * dg + db * db;
+        if (d < best_d) { best_d = d; best = system_palette[i]; }
+    }
+    return best;
+}
+
 uint32_t system_map_color(const System* sys, uint32_t color) {
     if (!sys || sys->draw_chan == DRAW_CHAN_RGB) return color;
+    if (sys->draw_chan == DRAW_CHAN_C4) return palette_snap(color);
     uint8_t r = (uint8_t)((color >> 16) & 0xFF);
     uint8_t g = (uint8_t)((color >> 8) & 0xFF);
     uint8_t b = (uint8_t)(color & 0xFF);

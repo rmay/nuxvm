@@ -753,7 +753,7 @@ There is no Undo. **Open** and **Quit** do not ask about unsaved work.
 
 ## 9. Easel — pixel painting
 
-Easel is a MacPaint clone: you draw onto a 2-bit grayscale page (white, light gray, dark gray, black), not onto objects. Nib remains the place to select and rearrange shapes. The four gray inks are the 2×2 picker at the left of the pattern strip.
+Easel is a MacPaint clone: you draw onto a 4-bit colour page — 16 inks from the system palette — not onto objects. Nib remains the place to select and rearrange shapes. The sixteen inks are the 4×4 picker at the left of the pattern strip; its top row is the old white / light gray / dark gray / black ramp, and the twelve colours follow underneath.
 
 ```bash
 ./bin/cloister apps/Easel.bin
@@ -826,12 +826,12 @@ With Lasso or Marquee active and a selection made: drag inside it to move; Optio
 | --- | --- |
 | **New** | Empty page named `untitled.eas`. Dirty pages get the Save changes? panel. |
 | **Open** | Standard File picker. Dirty pages get the Save changes? panel first. |
-| **Save** | Write the current path as EAS3. |
+| **Save** | Write the current path as EAS4. |
 | **Save As** | Put-file picker: choose a folder and name, then write. |
 | **Revert** | Reload the current path from disk, discarding unsaved changes (with the Save changes? panel first). |
 | **Quit** | Dirty pages get the Save changes? panel, then halts Easel. |
 
-A failed save, or opening a file that isn't a valid EAS3 page, raises a one-button alert rather than failing silently.
+A failed save, or opening a file that isn't a valid EAS page, raises a one-button alert rather than failing silently.
 
 **Edit**
 
@@ -966,18 +966,20 @@ text 90 70 90 70 0 1 Hello
 - Text payload is the rest of the line after the six numbers. Backslash escapes: `\\`, `\n`, `\r`, `\s` (space).
 - Unknown kinds are skipped. A file whose first line is not `NIB 1` is left unchanged.
 
-### EAS3
+### EAS4
 
 Saved by **File > Save**. Binary, not text:
 
 ```
-EAS3          4 bytes magic
+EAS4          4 bytes magic
 u16le width   576
 u16le height  720
-packed 2bpp   144 bytes per row, MSB-first (bits 7-6 = leftmost pixel), 720 rows
+packed 4bpp   288 bytes per row, MSB-first (bits 7-4 = leftmost pixel), 720 rows
 ```
 
-Four gray levels per pixel: 0 white, 1 light, 2 dark, 3 black. Total size is 103,688 bytes. A file whose magic is not `EAS3`, or whose size is not 576×720, is left unchanged.
+One palette index per pixel, 0-15 — see [palette.md](palette.md) for the sixteen colours. Total size is 207,368 bytes.
+
+**EAS3**, the older format, still opens. It is the same header with `EAS3` as the magic and a 2bpp body (144 bytes per row, four gray levels: 0 white, 1 light, 2 dark, 3 black; 103,688 bytes total). Because palette entries 0-3 are exactly those four grays in the same order, an old file widens index-for-index and comes back looking identical. Easel always saves EAS4; there is no way to write EAS3 again, so keep a copy if you need one. A file whose magic is neither, or whose size is not 576×720, is left unchanged.
 
 ---
 
@@ -993,7 +995,7 @@ Four gray levels per pixel: 0 white, 1 light, 2 dark, 3 black. Total size is 103
 | 8,192 filled cells | Tabula |
 | 63 characters per cell | Tabula |
 | 256 objects, 63 characters per label | Nib |
-| 576×720, 2-bit gray, one undo | Easel |
+| 576×720, 4-bit colour (16-entry palette), one undo | Easel |
 | Integer formula arithmetic | Tabula |
 | `SUM` is the only function | Tabula |
 | No spaces inside formulas | Tabula |

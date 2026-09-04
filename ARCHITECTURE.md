@@ -20,8 +20,11 @@ The Lux↔Fluxio calling contract lives in `abi/nux-abi.json`.
    interrupt vectors. SCI (`0x100D0`) is a private trap that implements
    those file operations — not a guest-facing HAL.
 4. **Kelvin versioning.** Nux opcodes and VM implementation are **300K**.
-   Everything else is **400K** unless marked otherwise. Hotter can run
-   colder; the reverse is not guaranteed. See `AGENTS.md`.
+   Everything else is **399K** unless marked otherwise (Easel is, at
+   **499K**). Hotter can run colder; the reverse is not guaranteed. The
+   everything-else number cools whenever the guest-visible contract moves —
+   `AGENTS.md` holds the current value and the cooldown log; do not copy a
+   number from here.
 
 Settled choices:
 
@@ -222,10 +225,14 @@ interrupt vectors.
 
 ### `/dev/draw` commands
 
-Packed little-endian, written to the draw fd. Lux: `lib/draw.lux`.
-Fluxio: builtins in `fluxio_codegen.c`. The host implements them in
-`src/vfs.c` → `src/system.c`. Adding a command is allowed; adding an
-opcode is not.
+A stream of 32-bit VM words written to the draw fd: word 0 is the command
+tag and every field gets its own word. **The words are big-endian**, because
+that is what `write_mem32` in `src/vm.c` stores — the MSB at the lowest
+address. (This is the opposite of `DRAW::store-int-le`/`store-word-le`,
+which really are little-endian and are used for *file formats*, not for this
+wire.) Lux: `lib/draw.lux`. Fluxio: builtins in `fluxio_codegen.c`. The host
+implements them in `src/vfs.c` → `src/system.c`. Adding a command is
+allowed; adding an opcode is not.
 
 | Cmd | Name |
 |---|---|
@@ -240,11 +247,18 @@ opcode is not.
 | 8 | FillPat (dither) |
 | 9 | DrawCFFGlyph |
 | 10 | BlitTile (RGB bitmap, optional key color) |
-| 11 | SetChan (0 RGB, 1 k8, 2 k2, 3 k1) |
+| 11 | SetChan (0 RGB, 1 k8, 2 k2, 3 k1, 4 c4) |
 
 Ovals, roundrects, and lines are spans of FillRect in Lux, not extra
 commands. Cmd 10 is the sprite/tile primitive; `lib/tilemap.lux` and
 Whittle consume it.
+
+Every command carries a full 24-bit `0xRRGGBB` ink word; the framebuffer is
+32bpp throughout. SetChan does not change that — it selects a *quantizer*
+applied to ink at draw time (`system_map_color`, `src/system.c`). k8/k2/k1
+collapse ink to Rec. 601 luma at 256/4/2 levels; c4 snaps it to the nearest
+of the 16 fixed system-palette entries. Channel 0 leaves ink alone. See
+`docs/palette.md`.
 
 ## Cloister
 

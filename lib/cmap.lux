@@ -1,0 +1,282 @@
+( Packed 4bpp colour page. Sixteen palette indices per pixel (see
+  docs/palette.md and DRAW::CLUT), same 576x720 geometry as lib/bitmap.lux
+  and lib/graymap.lux. Rows are MSB-first: bits 7-4 of a byte are the
+  leftmost pixel; within a 32-bit word, pixels 0..7 occupy bits 31-28 ..
+  3-0. Selection masks, brushes, and 8x8 patterns stay 1bpp in BITMAP /
+  PATTERNS -- only the document page is colour.
+
+  This is the 4bpp sibling of lib/graymap.lux, deliberately duplicated
+  rather than parameterised over bit depth: the speed of both comes from
+  shift amounts the compiler can fold, and the two formats have to coexist
+  anyway so that Easel can still read a 2bpp EAS3 page.
+
+  Because palette entries 0..3 are exactly GRAYMAP's four levels in the same
+  order (0 white .. 3 black), a 2bpp page widens into a 4bpp page
+  index-for-index, with no value remapping. )
+
+INCLUDE "lib/core.lux"
+
+MODULE CMAP
+
+@PAGE_W      576 ;
+@PAGE_H      720 ;
+@ROW_BYTES   288 ; ( PAGE_W / 2 )
+@PAGE_BYTES  207360 ; ( ROW_BYTES * PAGE_H )
+@PPW           8 ; ( pixels per 32-bit word )
+
+( The four grays keep GRAYMAP's names and values so ported code reads the
+  same; the other twelve are named in DRAW as C_*. )
+@WHITE  0 ;
+@LT     1 ;
+@DK     2 ;
+@BLACK  3 ;
+
+@addr { base x y -- addr }
+    base y ROW_BYTES * + x 2 / +
+;
+
+@shift { x -- s }
+    1 x 1 AND - 4 *
+;
+
+@get { base x y -- v }
+    base x y addr load-byte
+    x shift RSHIFT 15 AND
+;
+
+@set { base x y v -- }
+    v 15 AND { g }
+        base x y addr { a }
+            a load-byte 15 x shift LSHIFT NOT AND
+            g x shift LSHIFT OR
+            a store-byte
+        UNGIRD
+    UNGIRD
+;
+
+@word@ { base wx y -- w }
+    base y ROW_BYTES * + wx 4 * + LOADI
+;
+
+@word! { base wx y w -- }
+    w base y ROW_BYTES * + wx 4 * + STOREI
+;
+
+@qr8 { v -- q r }
+    v 8 / v 7 AND
+;
+
+( 4-bit field for pixel i (0=leftmost) inside a word. )
+@pix-mask { i -- m }
+    15 28 i 4 * - LSHIFT
+;
+
+@span-mask { wx wx0 wx1 bo0 bo1 -- mask }
+    wx wx0 = [ bo0 ] [ 0 ] ?: { lo }
+        wx wx1 = [ bo1 ] [ 7 ] ?: { hi }
+            0 { m }
+                lo { i }
+                    [ i hi <= ]
+                    [
+                        m i pix-mask OR m!
+                        i 1 + i!
+                    ] |:
+                m
+            UNGIRD
+        UNGIRD
+    UNGIRD
+;
+
+( Replicate a 0..15 index into all 8 pixels of a word. )
+@rep-word { v -- w }
+    v 15 AND { n }
+        n n 4 LSHIFT OR { b }
+            b b 8 LSHIFT OR { h }
+                h h 16 LSHIFT OR
+            UNGIRD
+        UNGIRD
+    UNGIRD
+;
+
+@hspan { base x y n v -- }
+    n 0 > [
+        v rep-word { full }
+            x { x0 }
+                x0 n + 1 - { xlast }
+                    x0 qr8 { wx0 bo0 }
+                        xlast qr8 { wx1 bo1 }
+                            wx0 { wx }
+                                [ wx wx1 <= ]
+                                [
+                                    wx wx0 wx1 bo0 bo1 span-mask { sm }
+                                        base wx y
+                                        base wx y word@ sm NOT AND
+                                        full sm AND OR
+                                        word!
+                                    UNGIRD
+                                    wx 1 + wx!
+                                ] |:
+                            UNGIRD
+                        UNGIRD
+                    UNGIRD
+                UNGIRD
+            UNGIRD
+        UNGIRD
+    ] ?
+;
+
+( 8x8 1bpp pattern row -> 8-pixel 4bpp word: pattern 1 stamps `ink`, 0 stamps
+  white. Eight pattern bits are exactly one 4bpp word, so unlike GRAYMAP's
+  2bpp version there is no half-word to replicate. )
+@pat-cmap-word { pat-addr py ink -- w }
+    pat-addr py 7 AND + load-byte { prow }
+        ink 15 AND { k }
+            0 { acc }
+                0 { i }
+                    [ i 8 < ]
+                    [
+                        prow 7 i - RSHIFT 1 AND [
+                            acc k 28 i 4 * - LSHIFT OR acc!
+                        ] ?
+                        i 1 + i!
+                    ] |:
+                acc
+            UNGIRD
+        UNGIRD
+    UNGIRD
+;
+
+@hspan-pat { base x y n pat-addr py ink -- }
+    n 0 > [
+        pat-addr py ink pat-cmap-word { full }
+            x { x0 }
+                x0 n + 1 - { xlast }
+                    x0 qr8 { wx0 bo0 }
+                        xlast qr8 { wx1 bo1 }
+                            wx0 { wx }
+                                [ wx wx1 <= ]
+                                [
+                                    wx wx0 wx1 bo0 bo1 span-mask { sm }
+                                        base wx y
+                                        base wx y word@ sm NOT AND
+                                        full sm AND OR
+                                        word!
+                                    UNGIRD
+                                    wx 1 + wx!
+                                ] |:
+                            UNGIRD
+                        UNGIRD
+                    UNGIRD
+                UNGIRD
+            UNGIRD
+        UNGIRD
+    ] ?
+;
+
+@fill { base v -- }
+    v rep-word { w }
+        base { p }
+            base PAGE_BYTES + { end }
+                [ p end < ]
+                [
+                    w p STOREI
+                    p 4 + p!
+                ] |:
+            UNGIRD
+        UNGIRD
+    UNGIRD
+;
+
+@clear { base -- }
+    base 0 fill
+;
+
+@copy { src dst -- }
+    src { s }
+        dst { d }
+            dst PAGE_BYTES + { end }
+                [ d end < ]
+                [
+                    s LOADI d STOREI
+                    s 4 + s!
+                    d 4 + d!
+                ] |:
+            UNGIRD
+        UNGIRD
+    UNGIRD
+;
+
+( Replace every pixel with its palette complement. The palette is ordered so
+  that a colour's complement sits at (i XOR 3), which makes this one XOR per
+  word -- the same cost as GRAYMAP::invert, which XORed 0xFFFFFFFF for the
+  same reason at 2bpp. The four grays behave identically to before
+  (0<->3, 1<->2); the colours pair red/cyan, orange/blue, yellow/dark blue,
+  green/magenta, dark red/teal, purple/brown. Involutive: invert twice is
+  the identity. )
+@INVERT_MASK 0x33333333 ;
+
+@invert { base -- }
+    base { p }
+        base PAGE_BYTES + { end }
+            [ p end < ]
+            [
+                p LOADI INVERT_MASK XOR p STOREI
+                p 4 + p!
+            ] |:
+        UNGIRD
+    UNGIRD
+;
+
+( Widen a 2bpp GRAYMAP page into this 4bpp format -- the EAS3 -> EAS4 load
+  path. Levels 0..3 carry across unchanged, because palette entries 0..3 are
+  exactly GRAYMAP's four grays in the same order.
+
+  Word-at-a-time, not pixel-at-a-time: one 2bpp source word is 16 pixels and
+  becomes exactly two 4bpp destination words, so the whole page converts with
+  plain LOADI/STOREI and never touches load-byte/store-byte. That matters --
+  core.lux synthesises byte access as an aligned load/mask/shift/store
+  sequence, and the naive per-pixel version cost ~115M cycles (half a second)
+  for one page against ~3M here.
+
+  Geometry is fixed on both sides: GRAYMAP is 144 bytes = 36 words per row,
+  CMAP is 288 bytes = 72 words per row, so source word wx feeds destination
+  words 2*wx and 2*wx+1 on the same row. src and dst must not overlap. )
+@GM_ROW_BYTES 144 ;
+@GM_ROW_WORDS  36 ;
+
+@widen-2bpp { src dst -- }
+    0 { y }
+        [ y PAGE_H < ]
+        [
+            0 { wx }
+                [ wx GM_ROW_WORDS < ]
+                [
+                    src y GM_ROW_BYTES * + wx 4 * + LOADI { sw }
+                        0 { d0 }
+                            0 { d1 }
+                                0 { i }
+                                    [ i 8 < ]
+                                    [
+                                        ( pixel i -> low destination word )
+                                        sw 30 i 2 * - RSHIFT 3 AND
+                                        28 i 4 * - LSHIFT d0 OR d0!
+                                        ( pixel i+8 -> high destination word )
+                                        sw 14 i 2 * - RSHIFT 3 AND
+                                        28 i 4 * - LSHIFT d1 OR d1!
+                                        i 1 + i!
+                                    ] |:
+                                UNGIRD
+                                dst y ROW_BYTES * + wx 8 * + { da }
+                                    d0 da STOREI
+                                    d1 da 4 + STOREI
+                                UNGIRD
+                            UNGIRD
+                        UNGIRD
+                    UNGIRD
+                    wx 1 + wx!
+                ] |:
+            UNGIRD
+            y 1 + y!
+        ] |:
+    UNGIRD
+;

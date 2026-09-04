@@ -5,6 +5,7 @@
 #include "compiler.h"
 #include "opcodes.h"
 #include "vm.h"
+#include "rom.h"
 
 static void usage(const char* prog) {
     fprintf(stderr,
@@ -297,6 +298,14 @@ int main(int argc, char** argv) {
         free(source);
         return 0;
     }
+
+    /* App images get an NUXR header (Kelvin + SHA-256 of the payload).
+     * Library builds (`-base`) stay raw so fluxlink can splice them into a
+     * merged image at a fixed code address. */
+    int32_t kelvin = compiler->version_value;
+    bool wrap = !base_override_arg && compiler->version_seen;
+    uint8_t source_sha[ROM_SHA256_LEN];
+    compiler_source_digest(compiler, source, strlen(source), source_sha);
     compiler_free(compiler);
     token_list_free(token_list);
 
@@ -313,18 +322,32 @@ int main(int argc, char** argv) {
         strcat(out_filename, ".bin");
     }
 
-    FILE* out_f = fopen(out_filename, "wb");
-    if (!out_f) {
-        fprintf(stderr, "Error opening output file: %s\n", out_filename);
-        free(bytecode);
-        free(source);
-        return 1;
+    if (wrap) {
+        uint8_t sha[ROM_SHA256_LEN];
+        if (!rom_write_file(out_filename, bytecode, code_len, kelvin, source_sha, sha)) {
+            fprintf(stderr, "Error opening output file: %s\n", out_filename);
+            free(bytecode);
+            free(source);
+            return 1;
+        }
+        char hex[65];
+        char srchex[65];
+        rom_sha256_hex(sha, hex);
+        rom_sha256_hex(source_sha, srchex);
+        printf("Compiled %s to %s (%zu bytes, VERSION %d, sha256=%s, source=%s)\n",
+               filename, out_filename, code_len, kelvin, hex, srchex);
+    } else {
+        FILE* out_f = fopen(out_filename, "wb");
+        if (!out_f) {
+            fprintf(stderr, "Error opening output file: %s\n", out_filename);
+            free(bytecode);
+            free(source);
+            return 1;
+        }
+        fwrite(bytecode, 1, code_len, out_f);
+        fclose(out_f);
+        printf("Compiled %s to %s (%zu bytes)\n", filename, out_filename, code_len);
     }
-
-    fwrite(bytecode, 1, code_len, out_f);
-    fclose(out_f);
-
-    printf("Compiled %s to %s (%zu bytes)\n", filename, out_filename, code_len);
 
     free(bytecode);
     free(source);

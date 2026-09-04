@@ -1,6 +1,6 @@
 # Road Escape — design notes
 
-`apps/RoadEscape.lux`. A top-down road chase in eight shades of gray. Arrows
+`apps/RoadEscape.lux`. A top-down road chase in the 16-colour system palette. Arrows
 steer and set your speed, Space fires, three lives, and the road never ends —
 but the tank and the magazine do, so the cans and crates on the tarmac are the
 only reason the run continues.
@@ -244,15 +244,20 @@ and the dashboard. `DRAW::batch-begin` is called once at startup so those go to
 `/dev/draw` in batches rather than one `VFS::write` each; `DRAW::begin-frame` /
 `end-frame` flush it, so nothing else has to.
 
-Eight-bit gray throughout (`APP::grayscale!`, `DRAW::gray`): grass 176,
-tarmac 48, kerbs and lane markings 255, civilians 208, interceptors 112, the
-player's car white — all outlined in black, with a black windshield band and
-black wheels so a light car still reads against the grass and a dark one still
-reads against the tarmac.
+The 16-colour system palette throughout (`APP::palette!`, `DRAW::PAL_*` --
+see `docs/palette.md`): grass dark green, tarmac dark gray, kerbs and lane
+markings white, civilians cyan, interceptors red, the player's car white --
+all outlined in black, with a black windshield band and black wheels so a
+light car still reads against the grass and a dark one still reads against
+the tarmac.
 
-A can is 224 with a band and a spout, and a crate is 160 stencilled with three
-rounds — a 1px tip over a 3px body each — which says what is inside without a
-legend. Two pixel-level details decide whether either reads at 18px:
+Civilians and interceptors used to be two steps of gray, 208 against 112,
+which is a thin margin to hang a scoring rule on at speed. Hue carries that
+distinction now, and the luma contrast is no longer load-bearing.
+
+A fuel can is yellow with a band and a spout, and an ammo crate is brown
+stencilled with three rounds — a 1px tip over a 3px body each — which says
+what is inside twice over, by colour and by stencil. Two pixel-level details decide whether either reads at 18px:
 
 - The spout is drawn in the body's **pale gray, not ink**. Black on 48-gray
   tarmac is very nearly invisible, and the first version's black spout left

@@ -1,11 +1,13 @@
 #include "fluxio_token.h"
 #include "fluxio_include.h"
 #include "fluxio_parser.h"
+#include "kelvin.h"
 #include "fluxio_codegen.h"
 #include "machine.h"
 #include "vfs.h"
 #include "vm.h"
 #include "opcodes.h"
+#include "rom.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1424,6 +1426,46 @@ static void test_float_print(void) {
     }
 }
 
+/* The Kelvin gate lives in include/kelvin.h and is called from both front
+ * ends, so Fluxio must reject exactly what Lux rejects. This test exists to
+ * keep the two from drifting -- the shared header is only half the guarantee
+ * if one parser forgets to call it. See AGENTS.md. */
+static void test_kelvin_version_enforced(void) {
+    printf("Testing Kelvin versioning is enforced on version;...\n");
+    char src[256];
+
+    /* Legal: exactly the platform, and hotter than it. */
+    snprintf(src, sizeof(src),
+             "version %d;\n/** e */\nint main() { return 0; }", CLOISTER_KELVIN);
+    assert(!must_fail_compile(src));
+    snprintf(src, sizeof(src),
+             "version %d;\n/** e */\nint main() { return 0; }", CLOISTER_KELVIN + 100000);
+    assert(!must_fail_compile(src));
+
+    /* Illegal by one: colder than the platform that must support it. */
+    snprintf(src, sizeof(src),
+             "version %d;\n/** e */\nint main() { return 0; }", CLOISTER_KELVIN - 1);
+    assert(must_fail_compile(src));
+
+    /* Illegal: the VM's own version, absolute zero, and a negative. */
+    snprintf(src, sizeof(src),
+             "version %d;\n/** e */\nint main() { return 0; }", NUX_KELVIN);
+    assert(must_fail_compile(src));
+    assert(must_fail_compile("version 0;\n/** e */\nint main() { return 0; }"));
+    assert(must_fail_compile("version -5;\n/** e */\nint main() { return 0; }"));
+
+    /* Malformed: an integer literal and a terminating ';' are both required.
+     * A `version` that quietly parses as something else is worse than none,
+     * because the file then builds while declaring nothing. */
+    assert(must_fail_compile("version twelve;\n/** e */\nint main() { return 0; }"));
+    char nosemi[256];
+    snprintf(nosemi, sizeof(nosemi),
+             "version %d\n/** e */\nint main() { return 0; }", CLOISTER_KELVIN);
+    assert(must_fail_compile(nosemi));
+
+    printf("  Kelvin version gate (Fluxio): OK\n");
+}
+
 static void test_error_local_struct_decay(void) {
     printf("Testing error: local struct used as a value (no stable address)...\n");
     assert(must_fail_compile(
@@ -1875,14 +1917,9 @@ static Machine* quill_fx_machine(const char* dir, char* out_bin_path, size_t out
     assert(system("make apps/fluxio/Quill.bin >/tmp/nuxvm_test_quill_fx_build.log 2>&1") == 0);
 
     snprintf(out_bin_path, out_bin_path_cap, "apps/fluxio/Quill.bin");
-    FILE* bf = fopen(out_bin_path, "rb");
-    assert(bf != NULL);
-    fseek(bf, 0, SEEK_END);
-    long blen = ftell(bf);
-    fseek(bf, 0, SEEK_SET);
-    uint8_t* bc = malloc((size_t) blen);
-    assert(fread(bc, 1, (size_t) blen, bf) == (size_t) blen);
-    fclose(bf);
+    size_t blen = 0;
+    uint8_t* bc = rom_load_executable(out_bin_path, &blen, NULL);
+    assert(bc != NULL);
 
     Machine* m = machine_create(bc, (uint32_t) blen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
     free(bc);
@@ -4594,14 +4631,9 @@ static void test_hello_cloister_fx_runs(void) {
 
     assert(system("./bin/fluxioc -target graphical -o apps/fluxio/HelloCloister.bin apps/fluxio/HelloCloister.fx >/tmp/nuxvm_test_hello_cloister_build.log 2>&1") == 0);
 
-    FILE* bf = fopen("apps/fluxio/HelloCloister.bin", "rb");
-    assert(bf != NULL);
-    fseek(bf, 0, SEEK_END);
-    long blen = ftell(bf);
-    fseek(bf, 0, SEEK_SET);
-    uint8_t* bc = malloc((size_t) blen);
-    assert(fread(bc, 1, (size_t) blen, bf) == (size_t) blen);
-    fclose(bf);
+    size_t blen = 0;
+    uint8_t* bc = rom_load_executable("apps/fluxio/HelloCloister.bin", &blen, NULL);
+    assert(bc != NULL);
 
     Machine* m = machine_create(bc, (uint32_t) blen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
     free(bc);
@@ -4653,14 +4685,9 @@ static Machine* snake_fx_machine(void) {
 
     assert(system("./bin/fluxioc -target graphical -o apps/fluxio/Snake.bin apps/fluxio/Snake.fx >/tmp/nuxvm_test_snake_fx_build.log 2>&1") == 0);
 
-    FILE* bf = fopen("apps/fluxio/Snake.bin", "rb");
-    assert(bf != NULL);
-    fseek(bf, 0, SEEK_END);
-    long blen = ftell(bf);
-    fseek(bf, 0, SEEK_SET);
-    uint8_t* bc = malloc((size_t) blen);
-    assert(fread(bc, 1, (size_t) blen, bf) == (size_t) blen);
-    fclose(bf);
+    size_t blen = 0;
+    uint8_t* bc = rom_load_executable("apps/fluxio/Snake.bin", &blen, NULL);
+    assert(bc != NULL);
 
     mkdir(SNAKE_FX_SANDBOX, 0755);
     Machine* m = machine_create(bc, (uint32_t) blen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
@@ -4905,6 +4932,7 @@ int main(void) {
     test_snake_fx_tick_clock();
     test_include_circular_error();
     test_include_missing_file_error();
+    test_kelvin_version_enforced();
     test_error_local_struct_decay();
     test_error_assign_whole_struct();
     test_error_unknown_field();

@@ -2,14 +2,13 @@
   ./bin/cloister apps/Illumos.bin )
 
 INCLUDE "lib/app.lux"
+INCLUDE "lib/doc.lux"
 INCLUDE "lib/core.lux"
 INCLUDE "lib/str.lux"
-INCLUDE "lib/ui.lux"
-INCLUDE "lib/sf.lux"
 INCLUDE "lib/cff.lux"
 
 MODULE MAIN
-VERSION 400000
+VERSION 399000
 
 IMPORT APP
 IMPORT VFS
@@ -18,24 +17,25 @@ IMPORT EVENT
 IMPORT STR
 IMPORT UI
 IMPORT SF
+IMPORT DIALOG
 IMPORT CFF
 IMPORT MEMORY
+IMPORT DOC
 
 ( The loaded CFF font blob. CFF::LEN24 is the largest of the three
   supported tile sizes, so that is the bound. )
 RESERVE FONT 18688 ;
-RESERVE PATH 512 ;
 RESERVE PANG 384 ;
 RESERVE HEXBUF 16 ;
 RESERVE VFS_PATH 512 ;
 
 RESERVE sel 4 ;
-RESERVE file-dirty 4 ;
+RESERVE new-tile 4 ;
 RESERVE guide 4 ;
 RESERVE pang-len 4 ;
 RESERVE drag-w 4 ;
 RESERVE paint-m 4 ;
-RESERVE save-as 4 ;
+
 RESERVE cell 4 ;
 RESERVE pang-x 4 ;
 RESERVE pang-y 4 ;
@@ -56,16 +56,7 @@ RESERVE col-full 4 ; ( 1 = draw-collection must redraw all 256 cells )
 
 
 
-@mark-dirty ( -- )
-    1 file-dirty STOREI
-    APP::dirty!
-    sync-title
-;
-
-@sync-title ( -- )
-    file-dirty LOADI [ T"Illumos *" ] [ T"Illumos" ] ?:
-    VFS::set-window-title
-;
+@mark-dirty ( -- ) DOC::dirty! ;
 
 @sync-cell ( -- )
     CFF::tile
@@ -86,17 +77,15 @@ RESERVE col-full 4 ; ( 1 = draw-collection must redraw all 256 cells )
     PANG STR::strlen pang-len STOREI
 ;
 
-@do-new ( t -- )
+@reset-doc ( -- )
+    new-tile LOADI dup 0 = [ drop 16 ] ?
     FONT OVER CFF::use
     CFF::blank
     sync-cell
     65 sel STOREI
-    0 file-dirty STOREI
-    T"untitled.cff" PATH STR::strcpy
     pang-reset
     1 col-full STOREI
     APP::dirty!
-    sync-title
 ;
 
 @hex-nib ( n -- ch )
@@ -152,23 +141,25 @@ RESERVE col-full 4 ; ( 1 = draw-collection must redraw all 256 cells )
     APP::draw-fd ED_X ED_Y guide LOADI cell LOADI * + ed-w CLR_GRID DRAW::dash-h
 ;
 
-( Draws one collection cell. Only the selected cell's highlight/thumbnail
-  actually changes frame to frame, so draw-collection redraws just this
-  instead of all 256 cells whenever it can -- that full pass was costing
-  well over a million VM instructions every frame the menu was open. )
+( Draws one collection cell. draw-all clears the whole window before it
+  paints, so the grid it draws has to be a full 256-cell pass -- it sets
+  col-full itself. The incremental branch in draw-collection exists for a
+  future caller that repaints only the regions it damaged; that full pass
+  costs well over a million VM instructions, so it must not run on every
+  mouse-move (see the UI::menu-active guard in on-mouse). )
 @col-draw-cell ( i -- )
-    dup 15 AND COL_CELL * COL_X + GIRD x
-    dup 4 SHR COL_CELL * COL_Y + GIRD y
-    dup sel LOADI = [
-        APP::draw-fd x y COL_CELL COL_CELL CLR_FG DRAW::fill-rect
-        APP::draw-fd x 4 + y 4 + dup 0xFFFFFF 1 FONT CFF::bytes DRAW::cff-glyph
-    ] [
-        APP::draw-fd x y COL_CELL COL_CELL CLR_BG DRAW::fill-rect
-        APP::draw-fd x y COL_CELL COL_CELL CLR_GRID DRAW::draw-rect
-        APP::draw-fd x 4 + y 4 + dup CLR_FG 1 FONT CFF::bytes DRAW::cff-glyph
-    ] ?:
-    drop
-    UNGIRD UNGIRD
+    GIRD i
+    i 15 AND COL_CELL * COL_X + GIRD x
+    i 4 SHR COL_CELL * COL_Y + GIRD y
+        i sel LOADI = [
+            APP::draw-fd x y COL_CELL COL_CELL CLR_FG DRAW::fill-rect
+            APP::draw-fd x 4 + y 4 + i 0xFFFFFF 1 FONT CFF::bytes DRAW::cff-glyph
+        ] [
+            APP::draw-fd x y COL_CELL COL_CELL CLR_BG DRAW::fill-rect
+            APP::draw-fd x y COL_CELL COL_CELL CLR_GRID DRAW::draw-rect
+            APP::draw-fd x 4 + y 4 + i CLR_FG 1 FONT CFF::bytes DRAW::cff-glyph
+        ] ?:
+    UNGIRD UNGIRD UNGIRD
 ;
 
 @draw-collection ( -- )
@@ -211,7 +202,9 @@ RESERVE col-full 4 ; ( 1 = draw-collection must redraw all 256 cells )
     APP::draw-fd 0 0 APP::width APP::height CLR_BG DRAW::fill-rect
     draw-editor
     draw-hint
-    ( draw-collection )
+    ( the fill-rect above wiped the grid, so this pass must be a full one )
+    1 col-full STOREI
+    draw-collection
     draw-pangram
     UI::draw
 ;
@@ -308,62 +301,35 @@ RESERVE col-full 4 ; ( 1 = draw-collection must redraw all 256 cells )
     do-erase
 ;
 
-@save-file ( -- )
-    PATH VFS_PATH VFS::sys-file 6 VFS::open-mode
+@save-bytes { p -- }
+    p VFS_PATH VFS::sys-file 6 VFS::open-mode
     dup 0 >= [
         dup CFF::save drop
         VFS::close drop
-        0 file-dirty STOREI
-        sync-title
         APP::dirty!
     ] [ drop ] ?:
 ;
 
-@load-path ( path -- )
-    dup load-byte 47 = [ 1 + ] ?
-    PATH STR::strcpy
-    PATH VFS_PATH VFS::sys-file 0 VFS::open-mode
+@load-bytes { p -- }
+    p VFS_PATH VFS::sys-file 0 VFS::open-mode
     dup 0 >= [
         dup CFF::load [
             sync-cell
-            0 file-dirty STOREI
             65 sel STOREI
             1 col-full STOREI
-            sync-title
             APP::dirty!
         ] ?
         VFS::close drop
     ] [ drop ] ?:
 ;
 
-@on-pick ( path -- )
-    save-as LOADI [
-        0 save-as STOREI
-        dup load-byte 47 = [ 1 + ] ?
-        PATH STR::strcpy
-        save-file
-    ] [
-        load-path
-    ] ?:
-    APP::dirty!
-;
-
-@on-cancel ( -- )
-    0 save-as STOREI
-    APP::dirty!
-;
-
-@menu-open ( val -- ) drop SF::show ;
-@menu-save ( val -- ) drop save-file ;
-@menu-save-as ( val -- )
-    drop
-    1 save-as STOREI
-    PATH SF::show-save
-;
-@menu-quit ( val -- ) drop HALT ;
-@menu-new-8 ( val -- ) drop 8 do-new ;
-@menu-new-16 ( val -- ) drop 16 do-new ;
-@menu-new-24 ( val -- ) drop 24 do-new ;
+@menu-open ( val -- ) drop DOC::menu-open ;
+@menu-save ( val -- ) drop DOC::menu-save ;
+@menu-save-as ( val -- ) drop DOC::menu-save-as ;
+@menu-quit ( val -- ) drop DOC::menu-quit ;
+@menu-new-8 ( val -- ) drop 8 new-tile STOREI DOC::menu-new ;
+@menu-new-16 ( val -- ) drop 16 new-tile STOREI DOC::menu-new ;
+@menu-new-24 ( val -- ) drop 24 new-tile STOREI DOC::menu-new ;
 @menu-cut ( val -- ) drop cut-glyph ;
 @menu-snarf ( val -- ) drop snarf-glyph ;
 @menu-paste ( val -- ) drop paste-glyph ;
@@ -380,6 +346,9 @@ RESERVE col-full 4 ; ( 1 = draw-collection must redraw all 256 cells )
 @menu-mright ( val -- ) drop sel LOADI 1 + 255 AND sel STOREI APP::dirty! ;
 
 @on-mouse ( mpkt -- )
+    DIALOG::open? [
+        DIALOG::mouse
+    ] [
     SF::open? [
         SF::mouse
     ] [
@@ -387,11 +356,18 @@ RESERVE col-full 4 ; ( 1 = draw-collection must redraw all 256 cells )
             0 drag-w STOREI
             0 paint-m STOREI
         ] ?
-        UI::menu-open?
-        OVER UI::feed
-        UI::menu-open? OR [
+        UI::menu-active GIRD was
+        dup UI::feed
+        was -1 > UI::menu-open? OR [
             drop
-            APP::dirty!
+            ( Only a dropdown that was already drawn and has now moved or closed
+              leaves stale pixels behind and needs a full repaint. Opening one
+              from nothing paints over pixels that are already correct, and
+              hovering a different item inside an open menu leaves the dropdown
+              rectangle exactly where it was -- UI::draw on the clean path in
+              on-frame covers both. Dirtying on every event here would run
+              draw-all's 256-cell collection pass on every mouse-move. )
+            was -1 > was UI::menu-active = 0 = AND [ APP::dirty! ] ?
         ] [
             dup EVENT::mouse-type EVENT::MOUSE_UP = [
                 drop
@@ -435,20 +411,21 @@ RESERVE col-full 4 ; ( 1 = draw-collection must redraw all 256 cells )
                 3 unframe!
             ] ?:
         ] ?:
+        UNGIRD
+    ] ?:
     ] ?:
 ;
 
 @handle-cmd ( key mods -- )
     2 frame! ( 0:mods 1:key )
     1 local@ 32 OR
-    dup 111 = [ drop SF::show ] [
+    dup 111 = [ drop DOC::menu-open ] [
     dup 115 = [
         drop
         0 local@ EVENT::MOD_SHIFT AND [
-            1 save-as STOREI
-            PATH SF::show-save
+            DOC::menu-save-as
         ] [
-            save-file
+            DOC::menu-save
         ] ?:
     ] [
     dup 120 = [ drop cut-glyph ] [
@@ -460,6 +437,9 @@ RESERVE col-full 4 ; ( 1 = draw-collection must redraw all 256 cells )
 ;
 
 @on-kbd ( kpkt -- )
+    DIALOG::open? [
+        DIALOG::kbd
+    ] [
     SF::open? [
         SF::kbd
     ] [
@@ -524,33 +504,37 @@ RESERVE col-full 4 ; ( 1 = draw-collection must redraw all 256 cells )
         ] ?
         drop
     ] ?:
+    ] ?:
 ;
 
 @on-frame ( -- )
     UI::handle
-    APP::dirty? SF::open? OR [
+    APP::dirty? SF::open? OR DIALOG::open? OR [
         draw-all
         APP::dirty-off
     ] [
         UI::draw
     ] ?:
     SF::open? [ SF::draw ] ?
+    DIALOG::draw
 ;
 
 @try-chicago ( -- )
     T"/sys/file/resources/chicago12x12.cff" 0 VFS::open-mode
     dup 0 >= [
         dup CFF::load [
-            T"resources/chicago12x12.cff" PATH STR::strcpy
+            T"resources/chicago12x12.cff" DOC::path STR::strcpy
             sync-cell
-            0 file-dirty STOREI
+            DOC::clean!
         ] [
-            16 do-new
+            16 new-tile STOREI
+            reset-doc
         ] ?:
         VFS::close drop
     ] [
         drop
-        16 do-new
+        16 new-tile STOREI
+        reset-doc
     ] ?:
 ;
 
@@ -560,6 +544,10 @@ RESERVE col-full 4 ; ( 1 = draw-collection must redraw all 256 cells )
     FONT 16 CFF::use
     UI::new
     APP::width UI::menubar
+    T"Illumos" T"untitled.cff" DOC::init
+    $load-bytes DOC::on-load!
+    $save-bytes DOC::on-save!
+    $reset-doc  DOC::on-new!
     T"File" UI::menu
     T"New 8x8"   [ menu-new-8 ]  UI::item
     T"New 16x16" [ menu-new-16 ] UI::item
@@ -588,8 +576,6 @@ RESERVE col-full 4 ; ( 1 = draw-collection must redraw all 256 cells )
     T"Down"  [ menu-mdown ]  UI::item
     T"Left"  [ menu-mleft ]  UI::item
     T"Right" [ menu-mright ] UI::item
-    [ on-pick ] SF::on-ok!
-    [ on-cancel ] SF::on-cancel!
     pang-reset
     65 sel STOREI
     -1 last-sel STOREI

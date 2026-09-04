@@ -14,7 +14,7 @@ INCLUDE "lib/app.lux"
 INCLUDE "lib/ui.lux"
 
 MODULE BREAKOUT
-VERSION 400000
+VERSION 399000
 
 IMPORT APP
 IMPORT UI
@@ -384,9 +384,19 @@ RESERVE bricks 240 ;  ( NBRICK words: 0 empty, else row+1 )
     APP::draw-fd APP::width 100 - 8 nbuf 0x000000 1 DRAW::draw-str
 ;
 
-( v is row+1. Six rows, six luma steps; darker at the top. )
+( v is row+1. Six rows, six palette colours, warm at the top cooling down --
+  the classic arcade ramp. All six are exact system-palette entries, so the
+  c4 channel passes them through without snapping. )
 @brick-ink { v -- color }
-    v 1 - 36 * DRAW::gray
+    v 1 = [ DRAW::PAL_RED ] [
+        v 2 = [ DRAW::PAL_ORANGE ] [
+            v 3 = [ DRAW::PAL_YELLOW ] [
+                v 4 = [ DRAW::PAL_DKGREEN ] [
+                    v 5 = [ DRAW::PAL_CYAN ] [ DRAW::PAL_BLUE ] ?:
+                ] ?:
+            ] ?:
+        ] ?:
+    ] ?:
 ;
 
 @paint-brick { i v -- }
@@ -520,7 +530,7 @@ RESERVE bricks 240 ;  ( NBRICK words: 0 empty, else row+1 )
 
 @start
     T"Breakout" APP::init
-    APP::grayscale!
+    APP::palette!
     UI::new
     0 kleft STOREI
     0 kright STOREI

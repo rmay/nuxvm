@@ -5,6 +5,7 @@
 #include "vm.h"
 #include "machine.h"
 #include "compiler.h"
+#include "rom.h"
 
 static bool has_suffix_ci(const char* s, const char* suffix) {
     size_t sl = strlen(s), xl = strlen(suffix);
@@ -174,10 +175,20 @@ int main(int argc, char** argv) {
         }
         fsize = (long)code_len;
     } else {
-        program = load_program(filename, &fsize);
-        if (!program) {
+        uint8_t* raw = load_program(filename, &fsize);
+        if (!raw) {
             return 1;
         }
+        char romerr[256];
+        size_t payload_len = 0;
+        program = rom_open_image(raw, (size_t)fsize, &payload_len, NULL, NULL, NULL,
+                                 romerr, sizeof(romerr));
+        free(raw);
+        if (!program) {
+            fprintf(stderr, "nux: %s: %s\n", filename, romerr);
+            return 1;
+        }
+        fsize = (long)payload_len;
     }
 
     uint32_t total_memory = nux_guest_memory_size(HEADLESS_BASE_ADDRESS, (uint32_t)fsize);

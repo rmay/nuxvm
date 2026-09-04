@@ -8,6 +8,8 @@
 #include "fluxio_codegen.h"
 #include "opcodes.h"
 #include "vm.h"
+#include "rom.h"
+#include "sha256.h"
 
 static void usage(const char* prog) {
     fprintf(stderr,
@@ -142,7 +144,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    FxTokenList* tokens = fx_load_with_includes(filename);
+    char** source_files = NULL;
+    size_t source_file_count = 0;
+    FxTokenList* tokens = fx_load_with_includes_tracked(filename, &source_files, &source_file_count);
     if (!tokens) {
         fprintf(stderr, "Lexing failed\n");
         return 1;
@@ -165,6 +169,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    int32_t kelvin = program->version_value;
     size_t code_len = 0;
     uint8_t* bytecode = fx_codegen(program, base_address, &code_len);
     fx_program_free(program);
@@ -199,17 +204,34 @@ int main(int argc, char** argv) {
         strcat(out_filename, ".bin");
     }
 
-    FILE* out_f = fopen(out_filename, "wb");
-    if (!out_f) {
+    /* Same construction as luxc's compiler_source_digest: the SHA-256 of each
+     * source file that fed the compile, main file first, hashed in order. */
+    uint8_t source_sha[ROM_SHA256_LEN];
+    {
+        Sha256Ctx ctx;
+        sha256_init(&ctx);
+        for (size_t i = 0; i < source_file_count; i++) {
+            uint8_t d[ROM_SHA256_LEN];
+            (void)sha256_file(source_files[i], d);
+            sha256_update(&ctx, d, sizeof(d));
+        }
+        sha256_final(&ctx, source_sha);
+    }
+
+    uint8_t sha[ROM_SHA256_LEN];
+    if (!rom_write_file(out_filename, bytecode, code_len, kelvin, source_sha, sha)) {
         fprintf(stderr, "Error opening output file: %s\n", out_filename);
         free(bytecode);
         return 1;
     }
-
-    fwrite(bytecode, 1, code_len, out_f);
-    fclose(out_f);
-
-    printf("Compiled %s to %s (%zu bytes)\n", filename, out_filename, code_len);
+    char hex[65];
+    char srchex[65];
+    rom_sha256_hex(sha, hex);
+    rom_sha256_hex(source_sha, srchex);
+    printf("Compiled %s to %s (%zu bytes, VERSION %d, sha256=%s, source=%s)\n",
+           filename, out_filename, code_len, kelvin, hex, srchex);
+    for (size_t i = 0; i < source_file_count; i++) free(source_files[i]);
+    free(source_files);
 
     free(bytecode);
     return 0;

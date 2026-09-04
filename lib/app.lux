@@ -362,6 +362,9 @@ RESERVE esc-btn-hov 4 ; ( 0=none, 1=continue, 2=restart, 3=quit )
 ( Channel is RGB until an app asks. Call after init, which opens /dev/draw. )
 @grayscale! ( -- ) draw-fd DRAW::grayscale ;
 @color!     ( -- ) draw-fd DRAW::CHAN_RGB DRAW::chan! ;
+( The fixed 16-colour system palette: any ink snaps to its nearest entry, so
+  an app gets colour without being trusted to stay on-palette. )
+@palette!   ( -- ) draw-fd DRAW::CHAN_C4 DRAW::chan! ;
 
 @loop ( -- )
     [ 1 ] [
