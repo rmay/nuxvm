@@ -263,9 +263,10 @@ a clean frame to skip. Clear to white, then:
 - **Status bar**: Score / Lives / Level / Best, Chicago, via `DRAW::draw-str`
   and `STR::int-to-str`.
 - **Playfield**: a black border rectangle inset by `WALL`.
-- **Bricks**: rows alternate solid `DRAW::fill-rect` with `DRAW::fill-pat`
-  patterns 0 (50% checker), 2 (25%) and 3 (75%), so the wall reads as banded on
-  a 1-bit System 6 screen without depending on colour.
+- **Bricks**: each row is a solid `DRAW::fill-rect` in a different k8 gray
+  (`DRAW::gray`, luma `0, 36, 72, 108, 144, 180` from the top), outlined in
+  black. The app calls `APP::grayscale!` so those values stay gray even if a
+  later fill is written as RGB.
 - **Paddle and ball**: solid black rects.
 
 That is roughly 70 draw commands per frame, comfortably inside budget — a full

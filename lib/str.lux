@@ -54,6 +54,30 @@ MODULE STR
     strlen
 ;
 
+( Pointer to the last '/' in a C string, or 0 if none. )
+@last-slash ( ptr -- slash-ptr|0 )
+    0 SWAP
+    [ dup load-byte 0 > ] [
+        dup load-byte 47 = [
+            SWAP drop
+            dup
+        ] ?
+        1 +
+    ] |:
+    drop
+;
+
+( Pointer to the last path component. Points into `path`; no slash means
+  the whole string. A trailing slash yields the empty component after it. )
+@basename ( path -- ptr )
+    dup last-slash
+    dup [
+        SWAP drop 1 +
+    ] [
+        drop
+    ] ?:
+;
+
 @streq ( s1 s2 -- bool )
     2 frame! ( 0:s2 1:s1 )
     1 local@ 0 local@ ( p1 p2 )

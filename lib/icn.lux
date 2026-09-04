@@ -28,11 +28,11 @@ MODULE ICN
 @ROW_BYTES  2 ; ( SIZE / 8 )
 @BYTES     32 ; ( SIZE * ROW_BYTES )
 
-( 8-byte ICN1 file-header staging buffer: magic(4) + count u16-LE(2) +
-  size u8(1) + reserved u8(1). Documented in docs/memory-map.md alongside
-  the rest of the library-scratch band -- do not move without updating it. )
-@hdr       0x8E0200 ;
+( ICN1 file-header staging buffer: magic(4) + count u16-LE(2) +
+  size u8(1) + reserved u8(1). Compiler-allocated, so there is no longer a
+  hand-picked address here to keep in step with docs/memory-map.md. )
 @HDR_BYTES 8 ;
+RESERVE hdr 8 ;
 
 @addr { base index row -- addr }
     base index BYTES * + row ROW_BYTES * +

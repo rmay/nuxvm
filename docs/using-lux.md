@@ -241,11 +241,32 @@ Naming conventions:
 - `@name@` — getter. Pushes the value onto the stack.
 - `@name-get` / `@name-set` — used when the getter/setter shape needs extra args.
 
+App state goes in `RESERVE name <bytes> ;` declarations, which let the
+compiler pick a non-overlapping address rather than making you hand-pick one
+out of [`memory-map.md`](memory-map.md):
+
+```forth
+RESERVE CUR_VAL 4 ;
+RESERVE GRID  240 ;
+```
+
+Large buffers and addresses the host agrees on are still hand-picked — see
+[`reserve-directive.md`](reserve-directive.md). To find out where a
+reservation landed, ask the compiler:
+
+```bash
+./bin/luxc -target graphical -symbols /tmp/app.symtab.json apps/Calculator.lux
+```
+
+The dump's `reservations` array carries each name's data address and size.
+
 For example, to fill a rectangle through `/dev/draw`:
 
 ```forth
 dfd LOADI 10 20 8 8 0x000000 DRAW::fill-rect
 ```
+
+Productivity apps that want a System 6 grayscale screen call `APP::grayscale!` after `APP::init` (which opens `/dev/draw`). That writes cmd 11 (`k8`); later fills still take RGB colors, and the host stores Rec. 601 luma. `APP::color!` switches back. Color apps such as Whittle leave the default RGB channel.
 
 ## Troubleshooting
 
@@ -259,6 +280,7 @@ dfd LOADI 10 20 8 8 0x000000 DRAW::fill-rect
 ## Further reading
 
 - [`lux_tutorial.md`](lux_tutorial.md) — the language itself: words, quotations, modules, combinators.
+- [`reserve-directive.md`](reserve-directive.md) — compiler-managed app state (`RESERVE`).
 - [`opcodes.md`](opcodes.md) — bytecode opcode reference.
 - [`NUX_ARCHITECTURE.md`](NUX_ARCHITECTURE.md) — VM internals and memory map.
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — VM, Plan 9 VFS, Cloister.

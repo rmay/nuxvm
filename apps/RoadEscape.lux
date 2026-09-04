@@ -1,0 +1,895 @@
+( Road Escape -- a top-down road chase in eight shades of gray. Arrows steer
+  and set your speed, Space fires, three lives.
+
+  The road is a scrolling ring of 8px horizontal slices, each holding the x
+  of its left kerb. Nothing shifts: pushing a new slice moves `head` back one
+  and overwrites the cell that just fell off the bottom, so a frame costs the
+  same however long you have been driving. Traffic rides an *offset from the
+  kerb* rather than an absolute x, so cars follow the curve for free.
+
+  Motion is fixed point with 8 fractional bits, and drawing interpolates
+  between the previous simulation step and the current one, as in Breakout.
+
+  Design notes: docs/games/road_escape.md
+
+  ./bin/cloister apps/RoadEscape.bin )
+
+INCLUDE "lib/app.lux"
+INCLUDE "lib/ui.lux"
+
+MODULE ROADESCAPE
+VERSION 400000
+
+IMPORT APP
+IMPORT UI
+IMPORT DRAW
+IMPORT EVENT
+IMPORT STR
+IMPORT VFS
+
+( Read out of this source by scan_lux_win_size (src/cloister.c) to size the
+  SDL window before the ROM boots. Everything below lays out from
+  APP::width/APP::height, so an ESC-menu restart re-derives its geometry. )
+@WIN_W 448 ;
+@WIN_H 480 ;
+
+( --- Geometry --- )
+@BAR_H     44 ;   ( two rows: score/lives/best over fuel/ammo/speed )
+@SLICE_H    8 ;
+@NSLICE    92 ;   ( enough 8px slices to floor a 720px-tall canvas: the
+                    app lays out from APP::height, not from WIN_H )
+@ROAD_W   200 ;
+@KERB_W     4 ;
+@SHOULDER  24 ;   ( how close the kerb may come to the window edge )
+@CAR_W     20 ;
+@CAR_H     32 ;
+@CAR_GAP   72 ;   ( player's inset from the bottom of the canvas )
+@BULLET_W   4 ;
+@BULLET_H  10 ;
+@PIK_W     18 ;   ( cans and crates are the same box; 18 rather than 16 so
+                    the crate's three rounds clear its outline on both sides )
+@PIK_H     18 ;
+
+( --- Fixed point: one unit is 1/256 px --- )
+@FP        256 ;
+@SLICE_FP 2048 ;  ( SLICE_H * FP -- one slice of travel )
+@MIN_SPEED 256 ;  ( 1 px/step )
+@CRUISE    512 ;  ( 2 px/step )
+@MAX_SPEED 1536 ; ( 6 px/step )
+@ACCEL      16 ;
+@STEER    1024 ;  ( 4 px/step )
+@SHOT     2048 ;  ( 8 px/step, screen-relative: always outruns the traffic )
+@FIRE_GAP    8 ;  ( steps between shots )
+@CRASH_MS   45 ;  ( steps spent stopped after a wreck )
+
+( --- Fuel and ammunition. Neither is refilled by a wreck: only a new game
+      resets them, which is what makes a can worth crossing two lanes for.
+      Fuel burns with *distance*, not time, so the throttle is what costs
+      you -- see @burn-fuel. --- )
+@FUEL_MAX  12000 ;  ( ~66s at CRUISE, ~28s flat out )
+@FUEL_CAN   4000 ;  ( a third of a tank )
+@FUEL_LOW   3000 ;  ( gauge starts flashing )
+@AMMO_START   20 ;
+@AMMO_MAX     99 ;
+@AMMO_CRATE   25 ;  ( a crate is worth going out of your lane for )
+
+( --- Traffic and pickups --- )
+@NENEMY      8 ;
+@ENE_STRIDE 32 ;
+@NBULLET     6 ;
+@BUL_STRIDE 16 ;
+@K_CIVIL     0 ;  ( pale: hitting or shooting one costs you )
+@K_ENEMY     1 ;
+@NPICKUP     4 ;
+@PIK_STRIDE 32 ;
+@P_FUEL      0 ;
+@P_AMMO      1 ;
+
+( --- States --- )
+@S_TITLE 0 ;
+@S_PLAY  1 ;
+@S_CRASH 2 ;
+@S_OVER  3 ;
+
+( --- State. 0x870000 is a free slice of the app small-state band; see
+      docs/memory-map.md for the occupied addresses it clears. --- )
+RESERVE state 4 ;
+RESERVE lives 4 ;
+RESERVE score 4 ;
+RESERVE best 4 ;
+RESERVE speed 4 ;  ( fixed point, per simulation step )
+RESERVE dist 4 ;  ( fixed point, total distance travelled )
+RESERVE pdist 4 ;  ( dist before the current step )
+RESERVE pushed 4 ;  ( slices pushed so far; dist / SLICE_FP )
+RESERVE carx 4 ;  ( player left edge, fixed point )
+RESERVE pcarx 4 ;
+RESERVE kleft 4 ;  ( held-key flags )
+RESERVE kright 4 ;
+RESERVE kup 4 ;
+RESERVE kdown 4 ;
+RESERVE kfire 4 ;
+RESERVE head 4 ;  ( ring index of the newest -- topmost -- road slice )
+RESERVE rlx 4 ;  ( that slice's left kerb )
+RESERVE rtgt 4 ;  ( kerb the road is curving toward )
+RESERVE rrun 4 ;  ( slices left before a new target is picked )
+RESERVE seed 4 ;
+RESERVE crash-t 4 ;
+RESERVE spawn-t 4 ;
+RESERVE fire-t 4 ;
+RESERVE nbuf 32 ;  ( int-to-str scratch )
+RESERVE fuel 4 ;
+RESERVE ammo 4 ;
+RESERVE spawn-p 4 ;  ( steps until the next can or crate )
+RESERVE blink 4 ;  ( free-running step counter; drives the low-fuel flash )
+RESERVE dry 4 ;  ( 1 when the run ended with an empty tank, not a wreck )
+RESERVE road 368 ;  ( NSLICE words: left kerb x of each slice )
+RESERVE enemy 256 ;  ( NENEMY * ENE_STRIDE )
+RESERVE bullet 96 ;  ( NBULLET * BUL_STRIDE )
+RESERVE pickup 128 ;  ( NPICKUP * PIK_STRIDE )
+
+( --- Playfield --- )
+@play-t ( -- y ) BAR_H ;
+@car-y  ( -- y ) APP::height CAR_GAP - ;
+@kerb-min ( -- x ) SHOULDER ;
+@kerb-max ( -- x ) APP::width ROAD_W - SHOULDER - ;
+
+@car-l ( -- x ) carx LOADI FP / ;
+@car-r ( -- x ) car-l CAR_W + 1 - ;
+
+@random ( max -- n )
+    seed LOADI 1103515245 * 12345 +
+    dup seed STOREI
+    0x7FFFFFFF AND
+    SWAP MOD
+;
+
+@beep ( id -- ) APP::beep ;
+
+@load-best
+    T"/sys/file/.roadescape_hi" best VFS::load-i32 drop
+;
+
+@save-best
+    T"/sys/file/.roadescape_hi" best VFS::save-i32 drop
+;
+
+@record-best
+    score LOADI best LOADI > [
+        score LOADI best STOREI
+        save-best
+    ] ?
+;
+
+@add-score { n -- }
+    score LOADI n + 0 MAX score STOREI
+;
+
+( --- Records --- )
+
+@ent { i -- addr } enemy i ENE_STRIDE * + ;
+@bul { i -- addr } bullet i BUL_STRIDE * + ;
+( Named pik, not pick: PICK is a VM builtin, builtins are matched before
+  the dictionary, and the match is case-insensitive -- @pick would compile to
+  a stack PICK at every call site and never be reached. )
+@pik { i -- addr } pickup i PIK_STRIDE * + ;
+
+( enemy: +0 live  +4 ox (px from kerb)  +8 y (fp)  +12 prev y (fp)
+         +16 speed (fp)  +20 kind )
+( bullet: +0 live  +4 x (px, left edge)  +8 y (fp)  +12 prev y (fp) )
+( pickup: +0 live  +4 ox (px from kerb)  +8 y (fp)  +12 prev y (fp)  +16 kind )
+
+@clear-traffic
+    0 { i }
+        [ i NENEMY < ] [ 0 i ent STOREI i 1 + i! ] |:
+    UNGIRD
+    0 { i }
+        [ i NBULLET < ] [ 0 i bul STOREI i 1 + i! ] |:
+    UNGIRD
+    0 { i }
+        [ i NPICKUP < ] [ 0 i pik STOREI i 1 + i! ] |:
+    UNGIRD
+;
+
+( --- The road ring ---
+
+  Slice j counts down the screen from the top; its ring cell is
+  (head + j) MOD NSLICE, so pushing a slice is one decrement of head rather
+  than a 92-word shift. Slice 0 sits one whole slice above play-t and slides
+  into view as `scroll` grows, which is what makes the road move. )
+
+@scroll-of { d -- px } d SLICE_FP MOD FP / ;
+@sim-scroll ( -- px ) dist LOADI scroll-of ;
+
+@slice-at { j -- lx }
+    head LOADI j + NSLICE MOD 4 * road + LOADI
+;
+
+( Ring index for a screen y, using the simulation's own scroll. )
+@slice-index { y -- j }
+    y play-t - SLICE_H + sim-scroll - SLICE_H /
+    0 MAX NSLICE 1 - MIN
+;
+
+@kerb-at { y -- lx } y slice-index slice-at ;
+
+( One more slice of road, curving toward rtgt. Only the newest cell is
+  written; the one it overwrites has already scrolled off the bottom. )
+@push-slice
+    rrun LOADI 1 - rrun STOREI
+    rrun LOADI 0 <= [
+        kerb-max kerb-min - 1 + random kerb-min + rtgt STOREI
+        20 40 random + rrun STOREI
+    ] ?
+    rtgt LOADI rlx LOADI - { d }
+        d 0 > [ rlx LOADI 2 + ] [
+            d 0 < [ rlx LOADI 2 - ] [ rlx LOADI ] ?:
+        ] ?:
+        kerb-min MAX kerb-max MIN rlx STOREI
+    UNGIRD
+    head LOADI NSLICE 1 - + NSLICE MOD head STOREI
+    rlx LOADI head LOADI 4 * road + STOREI
+    1 add-score
+;
+
+@fill-road
+    APP::width ROAD_W - 2 / rlx STOREI
+    rlx LOADI rtgt STOREI
+    30 rrun STOREI
+    0 head STOREI
+    0 { i }
+        [ i NSLICE < ] [ rlx LOADI i 4 * road + STOREI i 1 + i! ] |:
+    UNGIRD
+;
+
+( --- Collision --- )
+
+@overlap? { ax ay aw ah bx by bw bh -- f }
+    ax bx bw + <
+    ax aw + bx > AND
+    ay by bh + < AND
+    ay ah + by > AND
+;
+
+( --- Crash --- )
+
+@place-again ( placed by @crash when the last life goes )
+    UI::overlay-clear
+    T"Play Again"
+    APP::width 100 - 2 /
+    APP::height 2 / 30 +
+    100 20 [ drop new-game ] UI::overlay-button
+;
+
+@respawn
+    APP::width CAR_W - 2 / FP * carx STOREI
+    carx LOADI pcarx STOREI
+    CRUISE speed STOREI
+    clear-traffic
+    30 spawn-t STOREI
+    120 spawn-p STOREI
+    0 fire-t STOREI
+    S_PLAY state STOREI
+;
+
+@crash
+    state LOADI S_PLAY = [
+        110 beep
+        lives LOADI 1 - lives STOREI
+        lives LOADI 0 <= [
+            0 dry STOREI
+            S_OVER state STOREI
+            record-best
+            place-again
+        ] [
+            S_CRASH state STOREI
+            CRASH_MS crash-t STOREI
+        ] ?:
+    ] ?
+;
+
+( --- Traffic simulation --- )
+
+@spawn-enemy
+    -1 { slot }
+        0 { i }
+            [ i NENEMY < slot 0 < AND ] [
+                i ent LOADI 0 = [ i slot! ] ?
+                i 1 + i!
+            ] |:
+        UNGIRD
+        slot 0 >= [
+            slot ent { e }
+                1 e STOREI
+                ROAD_W CAR_W - random e 4 + STOREI
+                play-t CAR_H - FP * dup e 8 + STOREI e 12 + STOREI
+                128 256 random + e 16 + STOREI
+                3 random 0 = [ K_CIVIL ] [ K_ENEMY ] ?: e 20 + STOREI
+            UNGIRD
+        ] ?
+    UNGIRD
+;
+
+@enemy-x { e -- x }
+    e 8 + LOADI FP / kerb-at e 4 + LOADI +
+;
+
+( --- Pickups. Cans and crates are painted on the tarmac rather than driven,
+      so unlike traffic they hold no speed of their own: they slide down the
+      screen at exactly yours. Like traffic they store an offset from the
+      kerb, so they sit in a lane through a curve. --- )
+
+@pickup-x { p -- x }
+    p 8 + LOADI FP / kerb-at p 4 + LOADI +
+;
+
+@spawn-pickup
+    -1 { slot }
+        0 { i }
+            [ i NPICKUP < slot 0 < AND ] [
+                i pik LOADI 0 = [ i slot! ] ?
+                i 1 + i!
+            ] |:
+        UNGIRD
+        slot 0 >= [
+            slot pik { p }
+                1 p STOREI
+                ROAD_W PIK_W - random p 4 + STOREI
+                play-t PIK_H - FP * dup p 8 + STOREI p 12 + STOREI
+                ( An empty tank ends the run outright and no amount of
+                  shooting gets you out of it, so a low tank forces the next
+                  drop to be a can rather than leaving it to the dice. )
+                fuel LOADI FUEL_LOW < [ P_FUEL ] [ 2 random ] ?: p 16 + STOREI
+            UNGIRD
+        ] ?
+    UNGIRD
+;
+
+@move-pickups
+    0 { i }
+        [ i NPICKUP < ] [
+            i pik { p }
+                p LOADI [
+                    p 8 + LOADI p 12 + STOREI
+                    p 8 + LOADI speed LOADI + p 8 + STOREI
+                    p 8 + LOADI FP / APP::height > [ 0 p STOREI ] ?
+                ] ?
+            UNGIRD
+            i 1 + i!
+        ] |:
+    UNGIRD
+;
+
+@take-pickup { p -- }
+    0 p STOREI
+    p 16 + LOADI P_FUEL = [
+        fuel LOADI FUEL_CAN + FUEL_MAX MIN fuel STOREI
+        330 beep
+    ] [
+        ammo LOADI AMMO_CRATE + AMMO_MAX MIN ammo STOREI
+        550 beep
+    ] ?:
+;
+
+@pickup-hits
+    0 { i }
+        [ i NPICKUP < ] [
+            i pik { p }
+                p LOADI [
+                    car-l car-y CAR_W CAR_H
+                    p pickup-x p 8 + LOADI FP / PIK_W PIK_H
+                    overlap? [ p take-pickup ] ?
+                ] ?
+            UNGIRD
+            i 1 + i!
+        ] |:
+    UNGIRD
+;
+
+( Traffic holds a world speed; what you see is the difference between it and
+  yours, so flooring the throttle is what brings the cars toward you. )
+@move-enemies
+    0 { i }
+        [ i NENEMY < ] [
+            i ent { e }
+                e LOADI [
+                    e 8 + LOADI e 12 + STOREI
+                    e 8 + LOADI speed LOADI + e 16 + LOADI - e 8 + STOREI
+                    e 8 + LOADI FP / APP::height > [ 0 e STOREI ] ?
+                ] ?
+            UNGIRD
+            i 1 + i!
+        ] |:
+    UNGIRD
+;
+
+@move-bullets
+    0 { i }
+        [ i NBULLET < ] [
+            i bul { b }
+                b LOADI [
+                    b 8 + LOADI b 12 + STOREI
+                    b 8 + LOADI SHOT - b 8 + STOREI
+                    b 8 + LOADI FP / BULLET_H + play-t < [ 0 b STOREI ] ?
+                ] ?
+            UNGIRD
+            i 1 + i!
+        ] |:
+    UNGIRD
+;
+
+( An empty gun still takes the cooldown, so holding Space on nothing gives
+  one dry click every FIRE_GAP steps rather than one per step. )
+@fire
+    fire-t LOADI 0 > [ ] [
+        ammo LOADI 0 <= [
+            FIRE_GAP fire-t STOREI
+            98 beep
+        ] [
+            -1 { slot }
+                0 { i }
+                    [ i NBULLET < slot 0 < AND ] [
+                        i bul LOADI 0 = [ i slot! ] ?
+                        i 1 + i!
+                    ] |:
+                UNGIRD
+                slot 0 >= [
+                    slot bul { b }
+                        1 b STOREI
+                        car-l CAR_W 2 / + BULLET_W 2 / - b 4 + STOREI
+                        car-y FP * dup b 8 + STOREI b 12 + STOREI
+                    UNGIRD
+                    ammo LOADI 1 - ammo STOREI
+                    FIRE_GAP fire-t STOREI
+                    880 beep
+                ] ?
+            UNGIRD
+        ] ?:
+    ] ?:
+;
+
+( A civilian is worth avoiding, not shooting: taking one out costs more than
+  an interceptor is worth, which is the only thing keeping Space honest. )
+@kill-enemy { e -- }
+    0 e STOREI
+    e 20 + LOADI K_CIVIL = [
+        -150 add-score
+        165 beep
+    ] [
+        100 add-score
+        440 beep
+    ] ?:
+;
+
+@bullet-hits
+    0 { i }
+        [ i NBULLET < ] [
+            i bul { b }
+                b LOADI [
+                    0 { j }
+                        [ j NENEMY < b LOADI AND ] [
+                            j ent { e }
+                                e LOADI [
+                                    b 4 + LOADI b 8 + LOADI FP /
+                                    BULLET_W BULLET_H
+                                    e enemy-x e 8 + LOADI FP / CAR_W CAR_H
+                                    overlap? [
+                                        0 b STOREI
+                                        e kill-enemy
+                                    ] ?
+                                ] ?
+                            UNGIRD
+                            j 1 + j!
+                        ] |:
+                    UNGIRD
+                ] ?
+            UNGIRD
+            i 1 + i!
+        ] |:
+    UNGIRD
+;
+
+@car-hits
+    0 { i }
+        [ i NENEMY < state LOADI S_PLAY = AND ] [
+            i ent { e }
+                e LOADI [
+                    car-l car-y CAR_W CAR_H
+                    e enemy-x e 8 + LOADI FP / CAR_W CAR_H
+                    overlap? [ crash ] ?
+                ] ?
+            UNGIRD
+            i 1 + i!
+        ] |:
+    UNGIRD
+;
+
+( Both ends of the car are tested: the road curves, so a nose that is still
+  on the tarmac says nothing about the tail. )
+@off-road? ( -- f )
+    car-y kerb-at { top-l }
+    car-y CAR_H + 1 - kerb-at { bot-l }
+        car-l top-l <
+        car-r top-l ROAD_W + >= OR
+        car-l bot-l < OR
+        car-r bot-l ROAD_W + >= OR
+    UNGIRD UNGIRD
+;
+
+( --- Player --- )
+
+@drive
+    kup LOADI [ speed LOADI ACCEL + MAX_SPEED MIN speed STOREI ] ?
+    kdown LOADI [ speed LOADI ACCEL - MIN_SPEED MAX speed STOREI ] ?
+    kleft LOADI [ carx LOADI STEER - carx STOREI ] ?
+    kright LOADI [ carx LOADI STEER + carx STOREI ] ?
+    carx LOADI 0 MAX APP::width CAR_W - FP * MIN carx STOREI
+;
+
+( Fuel goes with distance rather than with time, so the throttle is what
+  costs you and cruising is the frugal choice. Running dry ends the run
+  whatever your lives say -- there is nothing left to drive with. )
+@burn-fuel
+    fuel LOADI speed LOADI FP / 1 + - 0 MAX fuel STOREI
+    fuel LOADI 0 <= [
+        1 dry STOREI
+        S_OVER state STOREI
+        110 beep
+        record-best
+        place-again
+    ] ?
+;
+
+@advance-road
+    dist LOADI speed LOADI + dist STOREI
+    dist LOADI SLICE_FP / { want }
+        [ pushed LOADI want < ] [
+            push-slice
+            pushed LOADI 1 + pushed STOREI
+        ] |:
+    UNGIRD
+;
+
+( --- Painting --- )
+
+@GRASS ( -- c ) 176 DRAW::gray ;
+@TAR   ( -- c ) 48 DRAW::gray ;
+( The dictionary is case-insensitive (src/compiler.c, strcasecmp) and the
+  first definition of a name wins, so a constant named PAINT would quietly
+  swallow every later call to @paint and leave the whole repaint dead code. )
+@WHITE ( -- c ) 255 DRAW::gray ;
+@INK   ( -- c ) 0 DRAW::gray ;
+
+( A labelled bar reading n out of d. The multiply comes before the divide,
+  so a gauge that is a fifth full still shows as a fifth: FUEL_MAX is 12000
+  against a 108px bar, and dividing first would floor every reading to 0. )
+@gauge { x y w n d -- }
+    APP::draw-fd x y w 10 INK DRAW::draw-rect
+    n 0 > d 0 > AND [
+        n w 2 - * d / { f }
+            f 0 > [ APP::draw-fd x 1 + y 1 + f 8 INK DRAW::fill-rect ] ?
+        UNGIRD
+    ] ?
+;
+
+( Two rows: the run's tally over the car's dashboard. )
+@paint-bar
+    APP::draw-fd 0 0 APP::width BAR_H WHITE DRAW::fill-rect
+    APP::draw-fd 0 BAR_H 1 - APP::width 1 INK DRAW::fill-rect
+
+    APP::draw-fd 8 4 T"Score" INK 1 DRAW::draw-str
+    score LOADI nbuf STR::int-to-str
+    APP::draw-fd 56 4 nbuf INK 1 DRAW::draw-str
+    APP::draw-fd 150 4 T"Lives" INK 1 DRAW::draw-str
+    lives LOADI nbuf STR::int-to-str
+    APP::draw-fd 200 4 nbuf INK 1 DRAW::draw-str
+    APP::draw-fd 290 4 T"Best" INK 1 DRAW::draw-str
+    best LOADI nbuf STR::int-to-str
+    APP::draw-fd 334 4 nbuf INK 1 DRAW::draw-str
+
+    APP::draw-fd 8 25 T"Fuel" INK 1 DRAW::draw-str
+    ( Below FUEL_LOW the gauge flashes rather than merely reading short: an
+      empty tank ends the run outright, so it has to be impossible to miss.
+      @blink counts simulation steps, so the flash is on the same wall clock
+      as everything else and does not race the frame rate. )
+    fuel LOADI FUEL_LOW >= blink LOADI 16 MOD 8 < OR [
+        44 24 110 fuel LOADI FUEL_MAX gauge
+    ] [
+        APP::draw-fd 44 24 110 10 INK DRAW::draw-rect
+    ] ?:
+
+    APP::draw-fd 174 25 T"Ammo" INK 1 DRAW::draw-str
+    ammo LOADI nbuf STR::int-to-str
+    APP::draw-fd 226 25 nbuf INK 1 DRAW::draw-str
+
+    APP::draw-fd 290 25 T"Spd" INK 1 DRAW::draw-str
+    330 24 90 speed LOADI MIN_SPEED - MAX_SPEED MIN_SPEED - gauge
+;
+
+( One road slice, clipped to the playfield. j is its position down the
+  screen; the ring cell it draws is (head + j) MOD NSLICE. )
+@paint-slice { j ds -- }
+    play-t j SLICE_H * + SLICE_H - ds + { y }
+    y play-t MAX { y0 }
+        y SLICE_H + y0 - { h }
+            h 0 > y0 APP::height < AND [
+                j slice-at { lx }
+                    APP::draw-fd lx y0 ROAD_W h TAR DRAW::fill-rect
+                    APP::draw-fd lx KERB_W - y0 KERB_W h WHITE DRAW::fill-rect
+                    APP::draw-fd lx ROAD_W + y0 KERB_W h WHITE DRAW::fill-rect
+                    head LOADI j + NSLICE MOD 4 MOD 2 < [
+                        APP::draw-fd lx ROAD_W 2 / + 2 - y0 4 h
+                        WHITE DRAW::fill-rect
+                    ] ?
+                UNGIRD
+            ] ?
+        UNGIRD
+    UNGIRD UNGIRD
+;
+
+@paint-road
+    APP::draw-fd 0 play-t APP::width APP::height play-t - GRASS DRAW::fill-rect
+    pdist LOADI dist LOADI APP::lerp scroll-of { ds }
+        0 { j }
+            [ j NSLICE < ] [ j ds paint-slice j 1 + j! ] |:
+        UNGIRD
+    UNGIRD
+;
+
+@paint-car { x y body -- }
+    APP::draw-fd x y CAR_W CAR_H body DRAW::fill-rect
+    APP::draw-fd x y CAR_W CAR_H INK DRAW::draw-rect
+    APP::draw-fd x 3 + y 7 + CAR_W 6 - 9 INK DRAW::fill-rect
+    APP::draw-fd x 1 - y 5 + 3 8 INK DRAW::fill-rect
+    APP::draw-fd x CAR_W + 2 - y 5 + 3 8 INK DRAW::fill-rect
+;
+
+( A can is a drum with a handle and a band; a crate is a box with a cross.
+  Both are pale so they read against the tarmac, and both are outlined in
+  black so they still read where they overlap a kerb. )
+@paint-can { x y -- }
+    ( Spout first, in the body's own pale gray rather than in ink: a black
+      spout on 48-gray tarmac is very nearly invisible, which left the can
+      reading as a plain box. The body is then drawn over its foot, and the
+      body's outline closes across it as the collar. )
+    APP::draw-fd x 5 + y 8 6 224 DRAW::gray DRAW::fill-rect
+    APP::draw-fd x 5 + y 8 6 INK DRAW::draw-rect
+    APP::draw-fd x y 4 + PIK_W PIK_H 4 - 224 DRAW::gray DRAW::fill-rect
+    APP::draw-fd x y 4 + PIK_W PIK_H 4 - INK DRAW::draw-rect
+    APP::draw-fd x 3 + y 9 + PIK_W 6 - 3 INK DRAW::fill-rect
+;
+
+( One round: a 1px tip over a 3px body, 10px tall all told. Three of them
+  stencilled across the crate say what is inside without a legend. The body
+  is 3 rather than 4 so the rounds keep a 2px gap: at 4 they left a single
+  pale pixel between them and read as one dark slab. )
+@paint-round { x y -- }
+    APP::draw-fd x 1 + y 1 2 INK DRAW::fill-rect
+    APP::draw-fd x y 2 + 3 8 INK DRAW::fill-rect
+;
+
+@paint-crate { x y -- }
+    APP::draw-fd x y PIK_W PIK_H 160 DRAW::gray DRAW::fill-rect
+    APP::draw-fd x y PIK_W PIK_H INK DRAW::draw-rect
+    ( Three rounds at x+2, x+7, x+12: 3px wide with 2px between them, and a
+      clear pixel of crate between the outer two and the outline. )
+    x 2 +  y 4 + paint-round
+    x 7 +  y 4 + paint-round
+    x 12 + y 4 + paint-round
+;
+
+@paint-pickups
+    0 { i }
+        [ i NPICKUP < ] [
+            i pik { p }
+                p LOADI [
+                    p 12 + LOADI p 8 + LOADI APP::lerp FP / { y }
+                        p pickup-x y
+                        p 16 + LOADI P_FUEL = [ paint-can ] [ paint-crate ] ?:
+                    UNGIRD
+                ] ?
+            UNGIRD
+            i 1 + i!
+        ] |:
+    UNGIRD
+;
+
+@paint-traffic
+    0 { i }
+        [ i NENEMY < ] [
+            i ent { e }
+                e LOADI [
+                    e 12 + LOADI e 8 + LOADI APP::lerp FP / { y }
+                        e enemy-x y
+                        e 20 + LOADI K_CIVIL = [ 208 ] [ 112 ] ?: DRAW::gray
+                        paint-car
+                    UNGIRD
+                ] ?
+            UNGIRD
+            i 1 + i!
+        ] |:
+    UNGIRD
+;
+
+@paint-bullets
+    0 { i }
+        [ i NBULLET < ] [
+            i bul { b }
+                b LOADI [
+                    b 4 + LOADI
+                    b 12 + LOADI b 8 + LOADI APP::lerp FP /
+                    { x y }
+                        APP::draw-fd x y BULLET_W BULLET_H WHITE DRAW::fill-rect
+                        APP::draw-fd x y BULLET_W BULLET_H INK DRAW::draw-rect
+                    UNGIRD
+                ] ?
+            UNGIRD
+            i 1 + i!
+        ] |:
+    UNGIRD
+;
+
+@paint-banner { title sub -- }
+    APP::width 280 - 2 / { x0 }
+    APP::height 130 - 2 / { y0 }
+        APP::draw-fd x0 y0 280 130 INK DRAW::fill-rect
+        APP::draw-fd x0 2 + y0 2 + 276 126 WHITE DRAW::fill-rect
+        APP::draw-fd x0 24 + y0 22 + title INK 1 DRAW::draw-str
+        APP::draw-fd x0 16 + y0 48 + sub INK 1 DRAW::draw-str
+    UNGIRD UNGIRD
+;
+
+@paint
+    paint-road
+    paint-pickups
+    paint-traffic
+    paint-bullets
+    state LOADI S_CRASH = [ ] [
+        pcarx LOADI carx LOADI APP::lerp FP / car-y WHITE paint-car
+    ] ?:
+    paint-bar
+    state LOADI S_TITLE = [
+        T"ROAD ESCAPE" T"Arrows drive, Space fires" paint-banner
+        UI::overlay-draw
+    ] ?
+    state LOADI S_CRASH = [
+        T"WRECKED" T"Hold the road next time" paint-banner
+    ] ?
+    state LOADI S_OVER = [
+        dry LOADI [
+            T"OUT OF FUEL" T"The cans are on the road for a reason" paint-banner
+        ] [
+            T"GAME OVER" T"Press Enter to drive again" paint-banner
+        ] ?:
+        UI::overlay-draw
+    ] ?
+;
+
+( --- Rounds --- )
+
+@place-start
+    UI::overlay-clear
+    T"Start"
+    APP::width 80 - 2 /
+    APP::height 2 / 30 +
+    80 20 [ drop new-game ] UI::overlay-button
+;
+
+@new-game
+    3 lives STOREI
+    0 score STOREI
+    FUEL_MAX fuel STOREI
+    AMMO_START ammo STOREI
+    0 dry STOREI
+    0 blink STOREI
+    0 dist STOREI
+    0 pdist STOREI
+    0 pushed STOREI
+    fill-road
+    respawn
+    UI::overlay-clear
+;
+
+( --- Event handlers --- )
+
+@key-set { key down -- }
+    key EVENT::KEY_LEFT_ARROW =  key 97 = OR  [ down kleft STOREI ] ?
+    key EVENT::KEY_RIGHT_ARROW = key 100 = OR [ down kright STOREI ] ?
+    key EVENT::KEY_UP_ARROW =    key 119 = OR [ down kup STOREI ] ?
+    key EVENT::KEY_DOWN_ARROW =  key 115 = OR [ down kdown STOREI ] ?
+    key EVENT::KEY_SPACE = [ down kfire STOREI ] ?
+;
+
+@confirm? { key -- f }
+    key EVENT::KEY_ENTER =
+    key EVENT::KEY_SPACE = OR
+;
+
+@on-kbd { kpkt -- }
+    kpkt EVENT::kbd-type kpkt EVENT::kbd-key { t key }
+        t EVENT::KEY_DOWN = [
+            key 1 key-set
+            state LOADI S_TITLE = key confirm? AND [ new-game ] ?
+            state LOADI S_OVER = key confirm? AND [ new-game ] ?
+        ] ?
+        t EVENT::KEY_UP = [ key 0 key-set ] ?
+    UNGIRD
+;
+
+@on-mouse { mpkt -- }
+    state LOADI S_PLAY = [ ] [
+        mpkt UI::overlay-feed
+        UI::overlay-handle
+    ] ?:
+;
+
+( Simulation. Runs on APP's fixed 16ms clock, so the car covers the same
+  ground per second whatever the display refresh is. )
+@on-tick
+    APP::esc-open? [ ] [
+        state LOADI S_CRASH = [
+            crash-t LOADI 1 - crash-t STOREI
+            crash-t LOADI 0 <= [ respawn ] ?
+        ] ?
+        state LOADI S_PLAY = [
+            ( Collapse the interpolation window onto the current step. )
+            dist LOADI pdist STOREI
+            carx LOADI pcarx STOREI
+
+            drive
+            advance-road
+            fire-t LOADI 0 > [ fire-t LOADI 1 - fire-t STOREI ] ?
+            kfire LOADI [ fire ] ?
+
+            move-bullets
+            move-enemies
+            move-pickups
+            bullet-hits
+
+            spawn-t LOADI 1 - spawn-t STOREI
+            spawn-t LOADI 0 <= [
+                spawn-enemy
+                25 45 random + spawn-t STOREI
+            ] ?
+            spawn-p LOADI 1 - spawn-p STOREI
+            spawn-p LOADI 0 <= [
+                spawn-pickup
+                140 90 random + spawn-p STOREI
+            ] ?
+
+            pickup-hits
+            car-hits
+            state LOADI S_PLAY = off-road? AND [ crash ] ?
+            state LOADI S_PLAY = [ burn-fuel ] ?
+            blink LOADI 1 + blink STOREI
+        ] ?
+    ] ?:
+;
+
+@on-frame
+    paint
+;
+
+@start
+    T"Road Escape" APP::init
+    APP::grayscale!
+    APP::draw-fd DRAW::batch-begin
+    UI::new
+    0 kleft STOREI
+    0 kright STOREI
+    0 kup STOREI
+    0 kdown STOREI
+    0 kfire STOREI
+    APP::now-ms 1 OR seed STOREI
+    load-best
+    new-game
+    S_TITLE state STOREI
+    place-start
+    [ on-mouse ] APP::on-mouse!
+    [ on-kbd ] APP::on-kbd!
+    [ on-tick ] APP::on-tick!
+    [ on-frame ] APP::on-frame!
+    APP::loop
+;
+
+ROADESCAPE::start
+HALT

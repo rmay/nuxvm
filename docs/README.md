@@ -98,6 +98,7 @@ nuxvm/
 
 - [user-manual.md](user-manual.md) — Quill, Illumos, Tabula, Nib, and Easel (Cloister guest apps).
 - [games/breakout_clone.md](games/breakout_clone.md) — Breakout: fixed-point ball motion, sub-step collision, and the fixed-timestep game loop.
+- [games/road_escape.md](games/road_escape.md) — Road Escape: a scrolling road as a ring buffer, traffic that rides the kerb, fuel and ammo pickups, and grayscale presentation.
 - [game-loop.md](game-loop.md) — why `APP::on-tick!` exists: the key-up fix and the simulation/render split.
 - [using-lux.md](using-lux.md) / [lux_tutorial.md](lux_tutorial.md) — the Lux language and toolchain.
 - [using-fluxio.md](using-fluxio.md) / [fluxio_tutorial.md](fluxio_tutorial.md) — the Fluxio language and toolchain.

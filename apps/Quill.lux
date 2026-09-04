@@ -17,6 +17,7 @@ INCLUDE "lib/core.lux"
 INCLUDE "lib/str.lux"
 INCLUDE "lib/ui.lux"
 INCLUDE "lib/sf.lux"
+INCLUDE "lib/dialog.lux"
 
 MODULE MAIN
 VERSION 400000
@@ -28,6 +29,7 @@ IMPORT EVENT
 IMPORT STR
 IMPORT UI
 IMPORT SF
+IMPORT DIALOG
 
 ( --- Window geometry --- )
 @WIN_W      960 ;
@@ -41,12 +43,12 @@ IMPORT SF
 @LINE_H     20 ;
 @CARET_H    14 ;
 @FONT_SIZE  18 ;
-@COLUMNS-VAL 0x91007C ;
+RESERVE COLUMNS-VAL 4 ;
 @COLUMNS ( -- n ) COLUMNS-VAL LOADI ;
-@VISIBLE_LINES-VAL 0x910080 ;
+RESERVE VISIBLE_LINES-VAL 4 ;
 @VISIBLE_LINES ( -- n ) VISIBLE_LINES-VAL LOADI ;
 @STATUS_H   28 ;
-@STATUS_BUF 0x910300 ;
+RESERVE STATUS_BUF 256 ;
 
 @CLR_BG     0xFFFFFF ;
 @CLR_FRAME  0xAAAAAA ;
@@ -55,69 +57,59 @@ IMPORT SF
 @CLR_HEX_CARET 0x0000FF ;
 @CLR_SEL    0xCCDDFF ;
 
-@CONFIRM_PANEL_W 260 ;
-@CONFIRM_PANEL_H 170 ;
-@CONFIRM_BTN_W   180 ;
-@CONFIRM_BTN_H   30 ;
-@CONFIRM_BTN_GAP 10 ;
-@CLR_CONFIRM_DIM    0x000000 ;
-@CLR_CONFIRM_PANEL  0x303030 ;
-@CLR_CONFIRM_BORDER 0xAAAAAA ;
-@CLR_CONFIRM_TEXT   0xFFFFFF ;
-@CLR_CONFIRM_BTN    0x505050 ;
-
 ( --- Memory layout ---
-  PASTE_BUF used to be 0xA00000, flush against lib/mem.lux's heap band
-  (MM_LUX_HEAP_BASE, include/memory_map.h) -- moved into the App
-  Bulk-Buffer band (MM_APP_BULK_BUFFER_BASE..MM_APP_BULK_BUFFER_END,
-  0x900000..0xA00000) alongside FONT_DATA, clear of mem.lux. See
-  docs/memory-map.md. )
-@FILE_BUF       0x800000 ;
+  Each of these has a declared bound, so the compiler places them
+  (docs/reserve-directive.md). FILE_BUF used to sit at 0x800000, a 1MB span
+  that covered the globals of every library Quill includes -- inert only
+  because those libraries' addresses happened to be read and written through
+  their own accessors. LINE_STARTS below is the one buffer still placed by
+  hand; see the note there. )
 @FILE_BUF_MAX   0x100000 ;
-@FONT_DATA      0x900000 ;
+RESERVE FILE_BUF 0x100000 ;   ( FILE_BUF_MAX )
 @FONT_BYTES     8448 ;
-@PASTE_BUF      0x903000 ;
+RESERVE FONT_DATA 8448 ;      ( FONT_BYTES )
 @PASTE_MAX      0x10000 ;
+RESERVE PASTE_BUF 0x10000 ;   ( PASTE_MAX )
 
 ( --- State --- )
-@file-len   0x910010 ;
-@dirty      0x910014 ;
-@cursor     0x910018 ;
-@last-key   0x910024 ;
-@caret-x    0x910034 ;
-@caret-y    0x910038 ;
-@target-col 0x91003C ;
-@anchor     0x910040 ;
-@drag       0x910044 ;
-@frame-count      0x910048 ;
-@char-w-val       0x910054 ;
-@hex-mode         0x910058 ;
-@hex-nibble       0x910084 ;
-@confirm-new-open 0x910088 ;
-@prev-cursor      0x91008C ;
-@save-as          0x910090 ;
-@scroll-y         0x91005C ;
-@HEX_LINE_BUF     0x910100 ;
-@sb-bar           0x910200 ;
-@PATH_BUF         0x930000 ;
-@VFS_PATH_BUF     0x940000 ;
-@current-path-buf 0x950000 ;
-@CHUNK_PARAM_BLOCK 0x951000 ;
-@file-fd          0x910060 ;
-@file-offset      0x910064 ;
-@total-size       0x910068 ;
-@orig-chunk-len   0x91006C ;
+RESERVE file-len 4 ;
+RESERVE dirty 4 ;
+RESERVE cursor 4 ;
+RESERVE last-key 4 ;
+RESERVE caret-x 4 ;
+RESERVE caret-y 4 ;
+RESERVE target-col 4 ;
+RESERVE anchor 4 ;
+RESERVE drag 4 ;
+RESERVE frame-count 4 ;
+RESERVE char-w-val 4 ;
+RESERVE hex-mode 4 ;
+RESERVE hex-nibble 4 ;
+RESERVE prev-cursor 4 ;
+RESERVE save-as 4 ;
+RESERVE scroll-y 4 ;
+RESERVE HEX_LINE_BUF 256 ;
+RESERVE sb-bar 56 ;
+RESERVE VFS_PATH_BUF 512 ;
+RESERVE current-path-buf 512 ;
+RESERVE CHUNK_PARAM_BLOCK 20 ;
+RESERVE file-fd 4 ;
+RESERVE file-offset 4 ;
+RESERVE total-size 4 ;
+RESERVE orig-chunk-len 4 ;
 @CHUNK_SIZE       65536 ;
-@line-count       0x910070 ;
-@mouse-held       0x910074 ;
-@needs-redraw     0x910078 ;
-( Was 0xA10000, inside lib/mem.lux's heap band -- moved to sit right after
-  PASTE_BUF in the App Bulk-Buffer band. NOTE: worst case (every line
-  blank) this needs up to 4 bytes * FILE_BUF_MAX entries, which exceeds
-  the band -- pre-existing headroom assumption, unchanged by this move:
-  Quill never includes lib/mem.lux, so overrunning into its heap band is
-  harmless in practice, just not formally bounded. )
-@LINE_STARTS      0x913000 ;
+RESERVE line-count 4 ;
+RESERVE mouse-held 4 ;
+RESERVE needs-redraw 4 ;
+( The one buffer here that is NOT RESERVE'd, because it has no bound to
+  declare: worst case (every line blank) it needs 4 bytes * FILE_BUF_MAX
+  entries -- 4MB, larger than the whole reservation band. Reserving it would
+  mean first capping the line count and making the indexer respect that cap,
+  which is a change to how Quill handles pathological files, not a change of
+  address. Until then it keeps a hand-picked address, and it now has the
+  whole former app-buffer band to itself: every other Quill buffer moved out,
+  so an overrun has more clear room than it did before, not less. )
+@LINE_STARTS      0x900000 ;
 
 ( --- Font width --- )
 @char-w ( -- w ) char-w-val LOADI ;
@@ -194,14 +186,6 @@ IMPORT SF
 ;
 
 ( --- Lazy Loading Helpers --- )
-
-( Construct /sys/file/<path> in VFS_PATH_BUF )
-@make-vfs-path ( path-ptr -- vfs-path-ptr )
-    dup
-    T"/sys/file/" VFS_PATH_BUF STR::strcpy
-    VFS_PATH_BUF T"/sys/file/" STR::strlen + STR::strcpy
-    VFS_PATH_BUF
-;
 
 ( Calculate A * B / C safely )
 @mul-div ( A B C -- res )
@@ -852,15 +836,7 @@ IMPORT SF
     ] ?:
 ;
 
-@path-basename ( -- ptr )
-    current-path-buf dup
-    [ dup load-byte ] [
-        dup load-byte 47 = [
-            1 + swap drop dup
-        ] [ 1 + ] ?:
-    ] |:
-    drop
-;
+@path-basename ( -- ptr ) current-path-buf STR::basename ;
 
 @draw-status-line ( -- )
     APP::draw-fd 0 PANE_Y PANE_H + WIN_W STATUS_H 0xEEEEEE DRAW::fill-rect
@@ -884,7 +860,7 @@ IMPORT SF
 
 @save-file ( -- )
     file-fd LOADI 0 >= [ file-fd LOADI VFS::close drop -1 file-fd STOREI ] ?
-    @current-path-buf make-vfs-path
+    @current-path-buf VFS_PATH_BUF VFS::sys-file
     dup 2 VFS::open-mode
     dup 0 < [
         drop 6 VFS::open-mode
@@ -898,24 +874,6 @@ IMPORT SF
     1 needs-redraw STOREI
 ;
 
-( --- File > New confirm dialog --- )
-
-@confirm-panel-x ( -- x ) WIN_W CONFIRM_PANEL_W UI::center-coord ;
-@confirm-panel-y ( -- y ) WIN_H CONFIRM_PANEL_H UI::center-coord ;
-@confirm-btn-x ( -- x ) confirm-panel-x CONFIRM_PANEL_W CONFIRM_BTN_W UI::modal-center-btn-x ;
-@confirm-btn-y ( i -- y ) confirm-panel-y 46 + swap CONFIRM_BTN_H CONFIRM_BTN_GAP + * + ;
-
-@confirm-hit-btn ( i px py -- flag )
-    3 frame! ( 0:py 1:px 2:i )
-    1 local@ confirm-btn-x < [ 0 ] [
-    1 local@ confirm-btn-x CONFIRM_BTN_W + >= [ 0 ] [
-    0 local@ 2 local@ confirm-btn-y < [ 0 ] [
-    0 local@ 2 local@ confirm-btn-y CONFIRM_BTN_H + >= [ 0 ] [
-    1
-    ] ?: ] ?: ] ?: ] ?:
-    3 unframe!
-;
-
 @new-document ( -- )
     file-fd LOADI 0 >= [ file-fd LOADI VFS::close drop -1 file-fd STOREI ] ?
     0 file-len STOREI 0 cursor STOREI -1 anchor STOREI
@@ -926,57 +884,9 @@ IMPORT SF
     1 needs-redraw STOREI
 ;
 
-@confirm-new-mouse ( mpkt -- )
-    1 frame! ( 0:mpkt )
-    0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
-        0 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
-            save-file
-            0 confirm-new-open STOREI
-            0 APP::modal!
-            new-document
-        ] [
-            1 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
-                0 confirm-new-open STOREI
-                0 APP::modal!
-                new-document
-            ] [
-                2 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
-                    0 confirm-new-open STOREI
-                    0 APP::modal!
-                    1 needs-redraw STOREI
-                ] ?
-            ] ?:
-        ] ?:
-    ] ?
-    1 unframe!
-;
-
-@confirm-new-kbd ( kpkt -- )
-    dup EVENT::kbd-type EVENT::KEY_DOWN = [
-        dup EVENT::kbd-key EVENT::KEY_ESC = [
-            0 confirm-new-open STOREI
-            0 APP::modal!
-            1 needs-redraw STOREI
-        ] ?
-    ] ?
-    drop
-;
-
-@confirm-new-draw ( -- )
-    confirm-new-open LOADI [
-        APP::draw-fd 0 0 WIN_W WIN_H CLR_CONFIRM_DIM DRAW::fill-rect
-        confirm-panel-x confirm-panel-y confirm-btn-x 3 frame! ( 0:bx 1:py 2:px )
-        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_PANEL CLR_CONFIRM_BORDER UI::draw-modal-panel
-        APP::draw-fd 2 local@ 26 + 1 local@ 16 + T"Save changes?" CLR_CONFIRM_TEXT 16 DRAW::draw-str
-        APP::draw-fd 0 local@ 0 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
-        APP::draw-fd 0 local@ 68 + 0 confirm-btn-y 9 + T"Save" CLR_CONFIRM_TEXT 16 DRAW::draw-str
-        APP::draw-fd 0 local@ 1 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
-        APP::draw-fd 0 local@ 34 + 1 confirm-btn-y 9 + T"Don't Save" CLR_CONFIRM_TEXT 16 DRAW::draw-str
-        APP::draw-fd 0 local@ 2 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
-        APP::draw-fd 0 local@ 52 + 2 confirm-btn-y 9 + T"Cancel" CLR_CONFIRM_TEXT 16 DRAW::draw-str
-        3 unframe!
-    ] ?
-;
+@confirm-save-new ( -- ) save-file new-document ;
+@confirm-dont-new ( -- ) new-document ;
+@confirm-cancel   ( -- ) 1 needs-redraw STOREI ;
 
 @refresh-text-pane ( -- )
     1 needs-redraw STOREI
@@ -992,7 +902,7 @@ IMPORT SF
     draw-status-line
     UI::draw
     SF::open? [ SF::draw ] ?
-    confirm-new-draw
+    DIALOG::draw
     0 needs-redraw STOREI
 ;
 
@@ -1006,8 +916,8 @@ IMPORT SF
 ( --- Interaction --- )
 
 @on-mouse ( mpkt -- )
-    confirm-new-open LOADI [
-        confirm-new-mouse
+    DIALOG::open? [
+        DIALOG::mouse
     ] [
     SF::open? [
         SF::mouse
@@ -1087,8 +997,8 @@ IMPORT SF
 ;
 
 @on-kbd ( kpkt -- )
-    confirm-new-open LOADI [
-        confirm-new-kbd
+    DIALOG::open? [
+        DIALOG::kbd
     ] [
     SF::open? [
         SF::kbd
@@ -1174,22 +1084,15 @@ IMPORT SF
 
 @snarf-selection ( -- )
     sel-active? [
-        T"/sys/snarf" VFS::open dup 0 >= [
-            ( fd )
-            dup FILE_BUF sel-lo + sel-hi sel-lo - VFS::write drop
-            VFS::close drop
-        ] [ drop ] ?:
+        FILE_BUF sel-lo + sel-hi sel-lo - VFS::snarf-write drop
     ] ?
 ;
 
 @paste-snarf ( -- )
     hex-mode LOADI [ ] [
-        T"/sys/snarf" VFS::open dup 0 >= [
-            dup PASTE_BUF PASTE_MAX VFS::read
-            swap VFS::close drop
-            dup 0 > [
-                PASTE_BUF swap type-bytes
-            ] [ drop ] ?:
+        PASTE_BUF PASTE_MAX VFS::snarf-read
+        dup 0 > [
+            PASTE_BUF swap type-bytes
             1 needs-redraw STOREI
             ensure-visible
             cursor LOADI rc-from-idx swap drop target-col STOREI
@@ -1210,7 +1113,7 @@ IMPORT SF
         0 local@
         dup load-byte 47 = [ 1 + ] ?
         @current-path-buf STR::strcpy
-        @current-path-buf make-vfs-path 2 VFS::open-mode file-fd STOREI
+        @current-path-buf VFS_PATH_BUF VFS::sys-file 2 VFS::open-mode file-fd STOREI
         file-fd LOADI 0 >= [
             file-fd LOADI VFS::stat total-size STOREI
             0 file-offset STOREI
@@ -1242,8 +1145,7 @@ IMPORT SF
 ( --- Menus --- )
 @menu-new ( -- )
     dirty LOADI [
-        1 confirm-new-open STOREI
-        1 APP::modal!
+        [ confirm-save-new ] [ confirm-dont-new ] [ confirm-cancel ] DIALOG::confirm-save
         1 needs-redraw STOREI
     ] [
         new-document
@@ -1278,7 +1180,7 @@ IMPORT SF
     ] [
         UI::draw
         SF::open? [ SF::draw ] ?
-        confirm-new-draw
+        DIALOG::draw
     ] ?:
 ;
 
@@ -1297,6 +1199,7 @@ IMPORT SF
 
 @start
     T"Quill" APP::init
+    APP::grayscale!
     APP::draw-fd FONT_SIZE DRAW::set-font-size
     PANE_H LINE_H / VISIBLE_LINES-VAL STOREI
     
@@ -1325,7 +1228,7 @@ IMPORT SF
     [ on-cancel ] SF::on-cancel!
     
     T"manuscript.quill" @current-path-buf STR::strcpy
-    @current-path-buf make-vfs-path 2 VFS::open-mode file-fd STOREI
+    @current-path-buf VFS_PATH_BUF VFS::sys-file 2 VFS::open-mode file-fd STOREI
     file-fd LOADI 0 >= [
         file-fd LOADI VFS::stat total-size STOREI
         0 file-offset STOREI
@@ -1337,7 +1240,7 @@ IMPORT SF
         0 total-size STOREI 0 file-len STOREI 0 orig-chunk-len STOREI -1 file-fd STOREI
         rebuild-lines
     ] ?:
-    0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI 0 drag STOREI 0 mouse-held STOREI 0 hex-nibble STOREI 0 confirm-new-open STOREI
+    0 cursor STOREI 0 scroll-y STOREI 0 dirty STOREI -1 anchor STOREI 0 drag STOREI 0 mouse-held STOREI 0 hex-nibble STOREI
     1 needs-redraw STOREI
     
     [ on-mouse ] APP::on-mouse!

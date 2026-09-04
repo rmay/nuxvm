@@ -407,10 +407,29 @@ void system_set_resolution(System* sys, int32_t width, int32_t height) {
 
 // --- /sys/draw support (initial rect implementation) ---
 
+uint32_t system_map_color(const System* sys, uint32_t color) {
+    if (!sys || sys->draw_chan == DRAW_CHAN_RGB) return color;
+    uint8_t r = (uint8_t)((color >> 16) & 0xFF);
+    uint8_t g = (uint8_t)((color >> 8) & 0xFF);
+    uint8_t b = (uint8_t)(color & 0xFF);
+    /* Rec. 601 integer luma. */
+    uint8_t y = (uint8_t)((77u * r + 150u * g + 29u * b) >> 8);
+    if (sys->draw_chan == DRAW_CHAN_K1) {
+        y = y < 128 ? 0 : 0xFF;
+    } else if (sys->draw_chan == DRAW_CHAN_K2) {
+        static const uint8_t levels[4] = { 0x00, 0x55, 0xAA, 0xFF };
+        y = levels[y >> 6];
+    } else if (sys->draw_chan != DRAW_CHAN_K8) {
+        return color;
+    }
+    return ((uint32_t)y << 16) | ((uint32_t)y << 8) | y;
+}
+
 void system_fill_rect(System* sys, int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color) {
     if (!sys) return;
     if (w <= 0 || h <= 0) return;
 
+    color = system_map_color(sys, color);
     uint8_t r = (color >> 16) & 0xFF;
     uint8_t g = (color >>  8) & 0xFF;
     uint8_t b = (color       ) & 0xFF;
@@ -451,6 +470,7 @@ void system_fill_rect(System* sys, int32_t x, int32_t y, int32_t w, int32_t h, u
 
 void system_fill_pat(System* sys, int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color, int pat) {
     if (!sys || w <= 0 || h <= 0) return;
+    color = system_map_color(sys, color);
     uint8_t r = (color >> 16) & 0xFF;
     uint8_t g = (color >>  8) & 0xFF;
     uint8_t b = (color       ) & 0xFF;
@@ -558,6 +578,7 @@ int system_draw_char(System* sys, int32_t x, int32_t y, char c, uint32_t color, 
 
     double sc = system_normalize_draw_scale(sys, scale);
 
+    color = system_map_color(sys, color);
     uint8_t a = 0xFF;
     uint8_t r = (color >> 16) & 0xFF;
     uint8_t g = (color >> 8) & 0xFF;
@@ -709,6 +730,7 @@ void system_set_dialog_result(System* sys, const char* path) {
 
 void system_set_pixel(System* sys, int32_t x, int32_t y, uint32_t color) {
     if (!sys) return;
+    color = system_map_color(sys, color);
     int32_t sw = sys->screen_width ? sys->screen_width : 960;
     int32_t sh = sys->screen_height ? sys->screen_height : 720;
     if (x < 0 || y < 0 || x >= sw || y >= sh) return;
@@ -750,6 +772,7 @@ void system_draw_cff(System* sys, const uint8_t* font_data, int nbytes, char c, 
     }
     if (sc <= 0.0) sc = 1.0;
 
+    color = system_map_color(sys, color);
     uint8_t a = 0xFF;
     uint8_t r = (color >> 16) & 0xFF;
     uint8_t g = (color >> 8) & 0xFF;
@@ -810,12 +833,16 @@ void system_draw_tile(System* sys, const uint8_t* pixels, int size, int32_t x, i
             uint8_t r = pixels[src];
             uint8_t g = pixels[src + 1];
             uint8_t b = pixels[src + 2];
+            /* Key compare is on the source, before the channel map, so
+             * 0xFF00FF still keys out under k8. */
             if (use_key && r == kr && g == kg && b == kb) continue;
+            uint32_t mapped = system_map_color(sys,
+                ((uint32_t)r << 16) | ((uint32_t)g << 8) | b);
             int idx = (pixel_y * sw + pixel_x) * 4;
             fb[idx + 0] = 0xFF;
-            fb[idx + 1] = r;
-            fb[idx + 2] = g;
-            fb[idx + 3] = b;
+            fb[idx + 1] = (uint8_t)((mapped >> 16) & 0xFF);
+            fb[idx + 2] = (uint8_t)((mapped >> 8) & 0xFF);
+            fb[idx + 3] = (uint8_t)(mapped & 0xFF);
         }
     }
 }

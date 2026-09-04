@@ -27,6 +27,18 @@ static bool write_symtab(const char* path, Compiler* c) {
                 c->dictionary[i].name, c->dictionary[i].address,
                 (i + 1 < c->dict_count) ? "," : "");
     }
+    /* Reservations are reported separately because "symbols" holds *code*
+     * addresses: a RESERVE name resolves to its PUSH/RET stub, so the data
+     * address the compiler handed out isn't recoverable from that array.
+     * This is how C-side tests find app state once an app stops hard-coding
+     * hex addresses (see docs/reserve-directive.md). fluxlink reads only
+     * "symbols" and ignores the extra key. */
+    fprintf(f, "  ],\n  \"reservations\": [\n");
+    for (size_t i = 0; i < c->reservation_count; i++) {
+        fprintf(f, "    { \"name\": \"%s\", \"address\": %d, \"size\": %d }%s\n",
+                c->reservations[i].name, c->reservations[i].addr, c->reservations[i].size,
+                (i + 1 < c->reservation_count) ? "," : "");
+    }
     fprintf(f, "  ]\n}\n");
     fclose(f);
     return true;

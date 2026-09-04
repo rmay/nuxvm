@@ -1,5 +1,6 @@
 #include "compiler.h"
 #include "opcodes.h"
+#include "memory_map.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -122,6 +123,22 @@ static void record_addr_const(Compiler* c, const char* name, int32_t value, int 
     c->addr_const_count++;
 }
 
+/* One entry per `RESERVE <name> <bytes> ;`. Reservations can't collide with
+ * each other (a single monotonic bump pointer hands them out), so this table
+ * exists for the two things that read spans back: the hand-picked-constant
+ * overlap warning below, and luxc's -symbols dump. */
+static void record_reservation(Compiler* c, const char* name, int32_t addr, int32_t size, int line) {
+    if (c->reservation_count >= c->reservation_cap) {
+        c->reservation_cap = c->reservation_cap == 0 ? 32 : c->reservation_cap * 2;
+        c->reservations = realloc(c->reservations, c->reservation_cap * sizeof(*c->reservations));
+    }
+    c->reservations[c->reservation_count].name = strdup(name);
+    c->reservations[c->reservation_count].addr = addr;
+    c->reservations[c->reservation_count].size = size;
+    c->reservations[c->reservation_count].line = line;
+    c->reservation_count++;
+}
+
 /* Best-effort: warn (not a hard error) when two or more differently-named
  * `@NAME 0xHEX ;` constants share the exact same value -- exactly the bug
  * class fixed in docs/memory-map.md (lib/log.lux vs apps/Quill.lux, etc).
@@ -148,6 +165,37 @@ static void warn_duplicate_addr_consts(Compiler* c) {
             fprintf(stderr, "  %s (line %d)\n", c->addr_consts[j].name, c->addr_consts[j].line);
             free(c->addr_consts[j].name);
             c->addr_consts[j].name = NULL;
+        }
+    }
+}
+
+/* The other half of the check: a hand-picked `@NAME 0xHEX ;` that lands
+ * inside a span the compiler handed out for a RESERVE. Unlike the
+ * exact-duplicate scan above this one *can* see sizes, because a
+ * reservation declares its byte count -- so it catches the containment case
+ * (a constant sitting in the middle of a reserved buffer) that constants
+ * alone can never catch. Matters while the tree is half-migrated; once a
+ * file uses RESERVE throughout there is nothing left for it to find. */
+static void warn_consts_inside_reservations(Compiler* c) {
+    for (size_t i = 0; i < c->addr_const_count; i++) {
+        if (c->addr_consts[i].name == NULL) continue;
+        /* A name ending in END is an exclusive upper bound (lib/mem.lux's
+         * HEAP_END is literally the reservation band's base address), not a
+         * cell anyone stores into -- same spirit as the CLR/COLOR exclusion
+         * above, keeping the signal clean. */
+        const char* nm = c->addr_consts[i].name;
+        size_t nlen = strlen(nm);
+        if (nlen >= 3 && strcasecmp(nm + nlen - 3, "END") == 0) continue;
+        int32_t v = c->addr_consts[i].value;
+        for (size_t j = 0; j < c->reservation_count; j++) {
+            int32_t lo = c->reservations[j].addr;
+            int32_t hi = lo + c->reservations[j].size;
+            if (v < lo || v >= hi) continue;
+            fprintf(stderr, "Warning: constant %s (line %d) = 0x%X is inside the span reserved for %s (line %d, 0x%X..0x%X) -- see docs/reserve-directive.md\n",
+                    c->addr_consts[i].name, c->addr_consts[i].line, (unsigned int)v,
+                    c->reservations[j].name, c->reservations[j].line,
+                    (unsigned int)lo, (unsigned int)hi);
+            break;
         }
     }
 }
@@ -338,7 +386,8 @@ static bool is_fields_terminator(Token t) {
     }
     if (t.type == TOKEN_WORD && t.value) {
         if (strcmp(t.value, "MODULE") == 0 || strcmp(t.value, "IMPORT") == 0 ||
-            strcmp(t.value, "INCLUDE") == 0 || strcasecmp(t.value, "FIELDS") == 0) {
+            strcmp(t.value, "INCLUDE") == 0 || strcasecmp(t.value, "FIELDS") == 0 ||
+            strcasecmp(t.value, "RESERVE") == 0) {
             return true;
         }
     }
@@ -425,6 +474,79 @@ static bool compile_fields(Compiler* c) {
     return true;
 }
 
+
+/* `RESERVE <name> <bytes> ;` -- the compiler picks the address.
+ *
+ * Emits exactly what `@NAME 0xHEX ;` emits (PUSH addr; RET), so a reserved
+ * name is indistinguishable from a hand-picked address constant at every
+ * use site: LOADI/STOREI, base+index arithmetic, FIELDS offsets on top of
+ * it. Only the origin of the number changes -- it comes from a monotonic
+ * bump pointer over MM_LUX_RESERVE_BASE..END instead of the author's head,
+ * which is what makes collisions between reservations impossible.
+ *
+ * Allocation order is token order after preprocess_includes(), so the
+ * addresses are stable for a given source tree but shift when a RESERVE is
+ * inserted ahead of others. That's fine for a self-contained program; see
+ * docs/reserve-directive.md, and include/memory_map.h:57 for the same
+ * caveat on fluxlink's trampoline table. */
+static bool compile_reserve(Compiler* c) {
+    Token name_tok = advance(c);
+    if (name_tok.type != TOKEN_WORD || !name_tok.value) {
+        fprintf(stderr, "RESERVE expects a name\n");
+        return false;
+    }
+
+    Token size_tok = advance(c);
+    int32_t size = 0;
+    if (size_tok.type != TOKEN_NUMBER || !parse_number(&size_tok, &size)) {
+        fprintf(stderr, "RESERVE %s expects a byte count\n", name_tok.value);
+        return false;
+    }
+    if (size <= 0) {
+        fprintf(stderr, "RESERVE %s: byte count must be positive (got %d)\n",
+                name_tok.value, size);
+        return false;
+    }
+
+    if (peek(c).type == TOKEN_SEMICOLON) {
+        advance(c);
+    }
+
+    /* Word-align every reservation: the VM's LOADI/STOREI work on 32-bit
+     * words, and an unaligned scalar cell would be a footgun no author
+     * asked for. */
+    int32_t addr = (c->reserve_next + 3) & ~3;
+    int32_t end = addr + ((size + 3) & ~3);
+    if (end > MM_LUX_RESERVE_END || end < addr) {
+        fprintf(stderr,
+                "RESERVE %s (%d bytes): out of reservation space -- the band is 0x%X..0x%X (%d bytes) and 0x%X is already handed out. Large buffers still take a hand-picked address in the app bulk band; see docs/reserve-directive.md and docs/memory-map.md\n",
+                name_tok.value, size,
+                (unsigned int)MM_LUX_RESERVE_BASE, (unsigned int)MM_LUX_RESERVE_END,
+                (int)(MM_LUX_RESERVE_END - MM_LUX_RESERVE_BASE),
+                (unsigned int)(addr - MM_LUX_RESERVE_BASE));
+        return false;
+    }
+    c->reserve_next = end;
+
+    char qname[256];
+    qualify_name(c, name_tok.value, qname, sizeof(qname));
+    record_reservation(c, qname, addr, size, name_tok.line);
+
+    add_dict(c, qname, current_address(c));
+    emit_byte(c, OP_PUSH);
+    emit_int32(c, addr);
+    emit_byte(c, OP_RET);
+    return true;
+}
+
+/* Pass 2 counterpart: the tokens were consumed in pass 1, so here they just
+ * get stepped over -- otherwise `RESERVE`, the name and the size would
+ * compile as main-program code. */
+static void skip_reserve(Compiler* c) {
+    if (c->pos < (int)c->token_list->count) advance(c); /* name */
+    if (c->pos < (int)c->token_list->count && peek(c).type == TOKEN_NUMBER) advance(c);
+    if (peek(c).type == TOKEN_SEMICOLON) advance(c);
+}
 
 static void push_quot_stack(Compiler* c, int idx) {
     if (c->quot_stack_count >= c->quot_stack_cap) {
@@ -947,6 +1069,7 @@ Compiler* compiler_create(TokenList* list, int32_t base_addr, bool trace) {
     c->base_addr = base_addr;
     c->trace = trace;
     c->active_quot_idx = -1;
+    c->reserve_next = MM_LUX_RESERVE_BASE;
     return c;
 }
 
@@ -961,6 +1084,10 @@ void compiler_free(Compiler* c) {
         if (c->addr_consts[i].name) free(c->addr_consts[i].name);
     }
     if (c->addr_consts) free(c->addr_consts);
+    for (size_t i = 0; i < c->reservation_count; i++) {
+        if (c->reservations[i].name) free(c->reservations[i].name);
+    }
+    if (c->reservations) free(c->reservations);
     for (size_t i = 0; i < c->unresolved_count; i++) {
         free(c->unresolved[i].word);
     }
@@ -1102,6 +1229,8 @@ uint8_t* compiler_compile(Compiler* c, size_t* out_len) {
             if (!compile_word_def(c)) return NULL;
         } else if (t.type == TOKEN_WORD && t.value && strcasecmp(t.value, "FIELDS") == 0) {
             if (!compile_fields(c)) return NULL;
+        } else if (t.type == TOKEN_WORD && t.value && strcasecmp(t.value, "RESERVE") == 0) {
+            if (!compile_reserve(c)) return NULL;
         }
     }
     
@@ -1129,6 +1258,10 @@ uint8_t* compiler_compile(Compiler* c, size_t* out_len) {
         }
         if (t.type == TOKEN_WORD && t.value && strcasecmp(t.value, "FIELDS") == 0) {
             skip_fields(c);
+            continue;
+        }
+        if (t.type == TOKEN_WORD && t.value && strcasecmp(t.value, "RESERVE") == 0) {
+            skip_reserve(c);
             continue;
         }
         if (!compile_token(c, t)) return NULL;
@@ -1246,6 +1379,7 @@ uint8_t* compiler_compile(Compiler* c, size_t* out_len) {
     }
     
     warn_duplicate_addr_consts(c);
+    warn_consts_inside_reservations(c);
 
     *out_len = c->bytecode_len;
     uint8_t* result = malloc(c->bytecode_len);

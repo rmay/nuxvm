@@ -4,18 +4,27 @@
 
   HERE_ADDR used to be 0x8E0000, which collided with lib/ui.lux's base
   address; HEAP_START used to be 0xA00000 flush against the band start,
-  which collided with apps/Quill.lux's PASTE_BUF. Both are now
-  self-contained within this module's own band: the first 0x100 bytes hold
-  HERE_ADDR itself, the heap proper starts right after. See
-  docs/memory-map.md. )
+  which collided with apps/Quill.lux's PASTE_BUF. See docs/memory-map.md.
+
+  Both the bump pointer and the heap itself are now RESERVE'd, so this
+  module no longer owns a band of its own -- it is an ordinary consumer of
+  the reservation band like everything else, and the two hand-picked bounds
+  it used to keep in step with include/memory_map.h are gone.
+
+  256KB against a worst case of roughly 18KB: COMP_MAX (48) controls, each
+  allotting at most a CTL record plus a text field and its 256-byte buffer
+  (lib/ui.lux is the only caller in the tree). )
 
 INCLUDE "lib/core.lux"
 
 MODULE MEM
 
-@HEAP_START 0xA00100 ;
-@HEAP_END   0xC00000 ;
-@HERE_ADDR  0xA00000 ;
+@HEAP_BYTES 262144 ;
+RESERVE HEAP 262144 ;
+RESERVE HERE_ADDR 4 ;
+
+@HEAP_START ( -- addr ) HEAP ;
+@HEAP_END   ( -- addr ) HEAP HEAP_BYTES + ;
 
 @here ( -- addr ) HERE_ADDR LOADI ;
 

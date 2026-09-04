@@ -1486,6 +1486,7 @@ int main() {
     if (fd < 0) {
         return -1;
     }
+    set_chan(fd, 1); /* k8 grayscale */
     int kfd = vfs_open("/dev/kbd");
     int mfd = vfs_open("/dev/mouse");
     set_window_title("Quill (Fluxio)");

@@ -1,0 +1,199 @@
+( Packed 2bpp grayscale page. Four levels per pixel (0 white .. 3 black),
+  same 576x720 geometry as lib/bitmap.lux. Rows are MSB-first: bits 7-6 of
+  a byte are the leftmost pixel; within a 32-bit word, pixels 0..15 occupy
+  bits 31-30 .. 1-0. Selection masks, brushes, and 8x8 patterns stay 1bpp
+  in BITMAP / PATTERNS -- only the document page is gray. )
+
+INCLUDE "lib/core.lux"
+
+MODULE GRAYMAP
+
+@PAGE_W      576 ;
+@PAGE_H      720 ;
+@ROW_BYTES   144 ; ( PAGE_W / 4 )
+@PAGE_BYTES  103680 ; ( ROW_BYTES * PAGE_H )
+@PPW          16 ; ( pixels per 32-bit word )
+
+@WHITE  0 ;
+@LT     1 ;
+@DK     2 ;
+@BLACK  3 ;
+
+@addr { base x y -- addr }
+    base y ROW_BYTES * + x 4 / +
+;
+
+@shift { x -- s }
+    3 x 3 AND - 2 *
+;
+
+@get { base x y -- v }
+    base x y addr load-byte
+    x shift RSHIFT 3 AND
+;
+
+@set { base x y v -- }
+    v 3 AND { g }
+        base x y addr { a }
+            a load-byte 3 x shift LSHIFT NOT AND
+            g x shift LSHIFT OR
+            a store-byte
+        UNGIRD
+    UNGIRD
+;
+
+@word@ { base wx y -- w }
+    base y ROW_BYTES * + wx 4 * + LOADI
+;
+
+@word! { base wx y w -- }
+    w base y ROW_BYTES * + wx 4 * + STOREI
+;
+
+@qr16 { v -- q r }
+    v 16 / v 15 AND
+;
+
+( 2-bit field for pixel i (0=leftmost) inside a word. )
+@pix-mask { i -- m }
+    3 30 i 2 * - LSHIFT
+;
+
+@span-mask { wx wx0 wx1 bo0 bo1 -- mask }
+    wx wx0 = [ bo0 ] [ 0 ] ?: { lo }
+        wx wx1 = [ bo1 ] [ 15 ] ?: { hi }
+            0 { m }
+                lo { i }
+                    [ i hi <= ]
+                    [
+                        m i pix-mask OR m!
+                        i 1 + i!
+                    ] |:
+                m
+            UNGIRD
+        UNGIRD
+    UNGIRD
+;
+
+( Replicate a 0..3 gray into all 16 pixels of a word. )
+@rep-word { v -- w }
+    v 1 AND 0 = [ 0 ] [ 0x55555555 ] ?:
+    v 2 AND 0 = [ ] [ 0xAAAAAAAA OR ] ?:
+;
+
+@hspan { base x y n v -- }
+    n 0 > [
+        v rep-word { full }
+            x { x0 }
+                x0 n + 1 - { xlast }
+                    x0 qr16 { wx0 bo0 }
+                        xlast qr16 { wx1 bo1 }
+                            wx0 { wx }
+                                [ wx wx1 <= ]
+                                [
+                                    wx wx0 wx1 bo0 bo1 span-mask { sm }
+                                        base wx y
+                                        base wx y word@ sm NOT AND
+                                        full sm AND OR
+                                        word!
+                                    UNGIRD
+                                    wx 1 + wx!
+                                ] |:
+                            UNGIRD
+                        UNGIRD
+                    UNGIRD
+                UNGIRD
+            UNGIRD
+        UNGIRD
+    ] ?
+;
+
+( 8x8 1bpp pattern row -> 16-pixel 2bpp word: pattern 1 stamps `ink`, 0 stamps white. )
+@pat-gray-word { pat-addr py ink -- w }
+    pat-addr py 7 AND + load-byte { prow }
+        0 { acc }
+            0 { i }
+                [ i 8 < ]
+                [
+                    prow 7 i - RSHIFT 1 AND [
+                        acc ink 30 i 2 * - LSHIFT OR acc!
+                    ] ?
+                    i 1 + i!
+                ] |:
+            acc acc 16 RSHIFT OR
+        UNGIRD
+    UNGIRD
+;
+
+@hspan-pat { base x y n pat-addr py ink -- }
+    n 0 > [
+        pat-addr py ink pat-gray-word { full }
+            x { x0 }
+                x0 n + 1 - { xlast }
+                    x0 qr16 { wx0 bo0 }
+                        xlast qr16 { wx1 bo1 }
+                            wx0 { wx }
+                                [ wx wx1 <= ]
+                                [
+                                    wx wx0 wx1 bo0 bo1 span-mask { sm }
+                                        base wx y
+                                        base wx y word@ sm NOT AND
+                                        full sm AND OR
+                                        word!
+                                    UNGIRD
+                                    wx 1 + wx!
+                                ] |:
+                            UNGIRD
+                        UNGIRD
+                    UNGIRD
+                UNGIRD
+            UNGIRD
+        UNGIRD
+    ] ?
+;
+
+@fill { base v -- }
+    v rep-word { w }
+        base { p }
+            base PAGE_BYTES + { end }
+                [ p end < ]
+                [
+                    w p STOREI
+                    p 4 + p!
+                ] |:
+            UNGIRD
+        UNGIRD
+    UNGIRD
+;
+
+@clear { base -- }
+    base 0 fill
+;
+
+@copy { src dst -- }
+    src { s }
+        dst { d }
+            dst PAGE_BYTES + { end }
+                [ d end < ]
+                [
+                    s LOADI d STOREI
+                    s 4 + s!
+                    d 4 + d!
+                ] |:
+            UNGIRD
+        UNGIRD
+    UNGIRD
+;
+
+( XOR all bits: 0<->3 and 1<->2, i.e. v' = 3 - v. )
+@invert { base -- }
+    base { p }
+        base PAGE_BYTES + { end }
+            [ p end < ]
+            [
+                p LOADI 0xFFFFFFFF XOR p STOREI
+                p 4 + p!
+            ] |:
+        UNGIRD
+    UNGIRD
+;

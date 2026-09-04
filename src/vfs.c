@@ -1036,7 +1036,8 @@ static int draw_write(VFSFile* file, const uint8_t* buf, int len) {
             case 2:   /* DrawString: header only; text length checked below */
                       need = 24; break;
             case 4:   /* SetFontSize */
-            case 5:   /* SetFont     */ need = 8;  break;
+            case 5:   /* SetFont     */
+            case 11:  /* SetChan     */ need = 8;  break;
             case 6:   /* BeginFrame  */
             case 7:   /* EndFrame    */ need = 4;  break;
             case 8:   /* FillPat     */ need = 28; break;
@@ -1077,6 +1078,12 @@ static int draw_write(VFSFile* file, const uint8_t* buf, int len) {
             }
             case 4: sys->font_size = (uint8_t)DRAW_W(1); break;
             case 5: sys->font_id   = (uint8_t)DRAW_W(1); break;
+            case 11: {
+                int32_t ch = DRAW_W(1);
+                if (ch >= DRAW_CHAN_RGB && ch <= DRAW_CHAN_K1)
+                    sys->draw_chan = (uint8_t)ch;
+                break;
+            }
             case 6: system_begin_frame(sys); break;
             case 7: system_end_frame(sys); break;
             case 8:

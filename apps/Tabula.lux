@@ -10,6 +10,7 @@ INCLUDE "lib/core.lux"
 INCLUDE "lib/str.lux"
 INCLUDE "lib/ui.lux"
 INCLUDE "lib/sf.lux"
+INCLUDE "lib/dialog.lux"
 
 MODULE MAIN
 VERSION 400000
@@ -21,6 +22,7 @@ IMPORT EVENT
 IMPORT STR
 IMPORT UI
 IMPORT SF
+IMPORT DIALOG
 
 ( --- Geometry --- )
 @WIN_W         960 ;
@@ -54,20 +56,9 @@ IMPORT SF
 @CLR_FRAME     0xAAAAAA ;
 @CLR_HINT      0x444444 ;
 
-@CONFIRM_PANEL_W 260 ;
-@CONFIRM_PANEL_H 170 ;
-@CONFIRM_BTN_W   180 ;
-@CONFIRM_BTN_H    30 ;
-@CONFIRM_BTN_GAP  10 ;
-@CLR_CONFIRM_DIM    0x000000 ;
-@CLR_CONFIRM_PANEL  0x303030 ;
-@CLR_CONFIRM_BORDER 0xAAAAAA ;
-@CLR_CONFIRM_TEXT   0xFFFFFF ;
-@CLR_CONFIRM_BTN    0x505050 ;
-
-( --- Cell pool (MM_APP_BULK_BUFFER 0x900000..0xA00000) ---
+( --- Cell pool ---
   record: int row, byte col, byte type, byte text[64], pad[2] = 72 )
-@POOL          0x900000 ;
+RESERVE POOL 589824 ;   ( MAX_CELLS * CELL_SIZE )
 @MAX_CELLS      8192 ;
 @CELL_SIZE        72 ;
 @CELL_COL          4 ;
@@ -99,89 +90,75 @@ IMPORT SF
 @VISIT_BUDGET    256 ;
 @EVAL_MAX         64 ;
 
-@PATH          0x990000 ;
-@VFS_PATH      0x990100 ;
-@EDIT_BUF      0x990200 ;
-@STATUS_BUF    0x990280 ;
-@LINE_BUF      0x990300 ;
-@NAME_BUF      0x9903A0 ;
-@SNARF_BUF     0x990400 ;
+RESERVE PATH 256 ;
+RESERVE VFS_PATH 256 ;
+RESERVE EDIT_BUF 128 ;
+RESERVE STATUS_BUF 128 ;
+RESERVE LINE_BUF 160 ;
+RESERVE NAME_BUF 96 ;
+RESERVE SNARF_BUF 8192 ;  ( SNARF_MAX )
 @SNARF_MAX      8192 ;
-@FILE_BUF      0x992400 ;
+RESERVE FILE_BUF 393216 ; ( FILE_MAX )
 @FILE_MAX     0x60000 ;
-@CLIP_BUF      0x9F2400 ;
-@EMPTY         0x9F2480 ;
-@CACHE_VAL     0x9F2500 ;
-@CACHE_FLG     0x9FA500 ;
-@NUM_BUF       0x9FC500 ;
+RESERVE CLIP_BUF 128 ;
+RESERVE EMPTY 128 ;
+RESERVE CACHE_VAL 32768 ; ( MAX_CELLS * 4 )
+RESERVE CACHE_FLG 8192 ;  ( MAX_CELLS * 1 )
+RESERVE NUM_BUF 32 ;
 
 ( --- Small state (MM_APP_SMALL_STATE) --- )
-@active-col        0x8A0100 ;
-@active-row        0x8A0104 ;
-@anchor-col        0x8A0108 ;
-@anchor-row        0x8A010C ;
-@view-col          0x8A0110 ;
-@view-row          0x8A0114 ;
-@file-dirty        0x8A0118 ;
-@editing           0x8A011C ;
-@edit-len          0x8A0120 ;
-@drag              0x8A0124 ;
-@mouse-held        0x8A0128 ;
-@confirm-new-open  0x8A012C ;
-@vbar              0x8A0130 ;
-@hbar              0x8A0134 ;
-@used-row          0x8A0138 ;
-@down-col          0x8A013C ;
-@down-row          0x8A0140 ;
-@prev-col          0x8A0144 ;
-@prev-row          0x8A0148 ;
-@extend-mod        0x8A014C ;
-@used-n            0x8A0150 ;
+RESERVE active-col 4 ;
+RESERVE active-row 4 ;
+RESERVE anchor-col 4 ;
+RESERVE anchor-row 4 ;
+RESERVE view-col 4 ;
+RESERVE view-row 4 ;
+RESERVE file-dirty 4 ;
+RESERVE editing 4 ;
+RESERVE edit-len 4 ;
+RESERVE drag 4 ;
+RESERVE mouse-held 4 ;
+RESERVE vbar 4 ;
+RESERVE hbar 4 ;
+RESERVE used-row 4 ;
+RESERVE down-col 4 ;
+RESERVE down-row 4 ;
+RESERVE prev-col 4 ;
+RESERVE prev-row 4 ;
+RESERVE extend-mod 4 ;
+RESERVE used-n 4 ;
 @tmp-c0            0x8A0154 ;
 @tmp-c1            0x8A0158 ;
 @tmp-r0            0x8A015C ;
 @tmp-r1            0x8A0160 ;
-@tmp-x             0x8A0164 ;
-@tmp-y             0x8A0168 ;
-@calc-run          0x8A016C ;
-@calc-i            0x8A0170 ;
-@eval-depth        0x8A0174 ;
-@parse-p           0x8A0178 ;
-@parse-err         0x8A017C ;
-@loading           0x8A0180 ;
-@stopped-f         0x8A0184 ;
-@force-str         0x8A0188 ;
-@p-col             0x8A018C ;
-@p-row             0x8A0190 ;
-@p-err             0x8A0194 ;
-@p-acc             0x8A0198 ;
-@p-ca              0x8A019C ;
-@p-cb              0x8A01A0 ;
-@p-ra              0x8A01A4 ;
-@p-rb              0x8A01A8 ;
-@save-as           0x8A01AC ;
+RESERVE tmp-x 4 ;
+RESERVE tmp-y 4 ;
+RESERVE calc-run 4 ;
+RESERVE calc-i 4 ;
+RESERVE eval-depth 4 ;
+RESERVE parse-p 4 ;
+RESERVE parse-err 4 ;
+RESERVE loading 4 ;
+RESERVE stopped-f 4 ;
+RESERVE force-str 4 ;
+RESERVE p-col 4 ;
+RESERVE p-row 4 ;
+RESERVE p-err 4 ;
+RESERVE p-acc 4 ;
+RESERVE p-ca 4 ;
+RESERVE p-cb 4 ;
+RESERVE p-ra 4 ;
+RESERVE p-rb 4 ;
+RESERVE save-as 4 ;
 
-@make-vfs-path ( path-ptr -- vfs-path-ptr )
-    dup load-byte 47 = [ 1 + ] ?
-    T"/sys/file/" VFS_PATH STR::strcpy
-    VFS_PATH T"/sys/file/" STR::strlen + STR::strcpy
-    VFS_PATH
-;
+
 
 @mark-dirty ( -- )
     1 file-dirty STOREI
     APP::dirty!
 ;
 
-@path-basename ( -- ptr )
-    PATH dup
-    [ dup load-byte ] [
-        dup load-byte 47 = [
-            1 + swap drop dup
-        ] [ 1 + ] ?:
-    ] |:
-    drop
-;
+@path-basename ( -- ptr ) PATH STR::basename ;
 
 @cell-at ( i -- addr ) CELL_SIZE * POOL + ;
 
@@ -354,7 +331,7 @@ IMPORT SF
 ;
 
 @end-calc-modal ( -- )
-    editing LOADI confirm-new-open LOADI OR SF::open? OR 0 = [
+    editing LOADI DIALOG::open? OR SF::open? OR 0 = [
         0 APP::modal!
     ] ?
 ;
@@ -793,7 +770,7 @@ IMPORT SF
 
 @end-edit ( -- )
     0 editing STOREI
-    confirm-new-open LOADI SF::open? OR 0 = [ 0 APP::modal! ] ?
+    DIALOG::open? SF::open? OR 0 = [ 0 APP::modal! ] ?
 ;
 
 @begin-edit ( -- )
@@ -1078,42 +1055,6 @@ IMPORT SF
     APP::draw-fd 8 STATUS_Y 6 + STATUS_BUF CLR_FG FONT_SIZE DRAW::draw-str
 ;
 
-@confirm-panel-x ( -- x ) WIN_W CONFIRM_PANEL_W - 2 / ;
-@confirm-panel-y ( -- y ) WIN_H CONFIRM_PANEL_H - 2 / ;
-@confirm-btn-x ( -- x ) confirm-panel-x CONFIRM_PANEL_W CONFIRM_BTN_W - 2 / + ;
-@confirm-btn-y ( i -- y ) confirm-panel-y 46 + swap CONFIRM_BTN_H CONFIRM_BTN_GAP + * + ;
-
-@confirm-hit-btn ( i px py -- flag )
-    3 frame! ( 0:py 1:px 2:i )
-    1 local@ confirm-btn-x < [ 0 ] [
-    1 local@ confirm-btn-x CONFIRM_BTN_W + >= [ 0 ] [
-    0 local@ 2 local@ confirm-btn-y < [ 0 ] [
-    0 local@ 2 local@ confirm-btn-y CONFIRM_BTN_H + >= [ 0 ] [
-    1
-    ] ?: ] ?: ] ?: ] ?:
-    3 unframe!
-;
-
-@confirm-new-draw ( -- )
-    confirm-new-open LOADI [
-        APP::draw-fd 0 0 WIN_W WIN_H CLR_CONFIRM_DIM DRAW::fill-rect
-        confirm-panel-x confirm-panel-y confirm-btn-x 3 frame! ( 0:bx 1:py 2:px )
-        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W CONFIRM_PANEL_H CLR_CONFIRM_PANEL DRAW::fill-rect
-        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd 2 local@ 1 local@ CONFIRM_PANEL_H + 1 - CONFIRM_PANEL_W 1 CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd 2 local@ 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd 2 local@ CONFIRM_PANEL_W + 1 - 1 local@ 1 CONFIRM_PANEL_H CLR_CONFIRM_BORDER DRAW::fill-rect
-        APP::draw-fd 2 local@ 26 + 1 local@ 16 + T"Save changes?" CLR_CONFIRM_TEXT 16 DRAW::draw-str
-        APP::draw-fd 0 local@ 0 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
-        APP::draw-fd 0 local@ 68 + 0 confirm-btn-y 9 + T"Save" CLR_CONFIRM_TEXT 16 DRAW::draw-str
-        APP::draw-fd 0 local@ 1 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
-        APP::draw-fd 0 local@ 34 + 1 confirm-btn-y 9 + T"Don't Save" CLR_CONFIRM_TEXT 16 DRAW::draw-str
-        APP::draw-fd 0 local@ 2 confirm-btn-y CONFIRM_BTN_W CONFIRM_BTN_H CLR_CONFIRM_BTN DRAW::fill-rect
-        APP::draw-fd 0 local@ 52 + 2 confirm-btn-y 9 + T"Cancel" CLR_CONFIRM_TEXT 16 DRAW::draw-str
-        3 unframe!
-    ] ?
-;
-
 @draw-all ( -- )
     APP::draw-fd 0 0 WIN_W WIN_H CLR_BG DRAW::fill-rect
     draw-headers
@@ -1126,7 +1067,7 @@ IMPORT SF
     draw-status
     UI::draw
     SF::open? [ SF::draw ] ?
-    confirm-new-draw
+    DIALOG::draw
 ;
 
 ( --- File --- )
@@ -1246,7 +1187,7 @@ IMPORT SF
 
 @save-file ( -- )
     commit-edit
-    PATH make-vfs-path 6 VFS::open-mode
+    PATH VFS_PATH VFS::sys-file 6 VFS::open-mode
     dup 0 >= [
         dup write-all
         VFS::close drop
@@ -1331,7 +1272,7 @@ IMPORT SF
     dup load-byte 47 = [ 1 + ] ?
     PATH STR::strcpy
     clear-pool
-    PATH make-vfs-path 0 VFS::open-mode
+    PATH VFS_PATH VFS::sys-file 0 VFS::open-mode
     dup 0 >= [
         dup FILE_BUF FILE_MAX 1 - VFS::read { n }
         n 0 < [ 0 n! ] ?
@@ -1357,48 +1298,11 @@ IMPORT SF
     0 view-col STOREI 1 view-row STOREI
     0 file-dirty STOREI
     0 editing STOREI
-    0 confirm-new-open STOREI
     0 loading STOREI
     0 force-str STOREI
     0 APP::modal!
     ensure-visible
     APP::dirty!
-;
-
-@confirm-new-mouse ( mpkt -- )
-    1 frame! ( 0:mpkt )
-    0 local@ EVENT::mouse-type EVENT::MOUSE_DOWN = [
-        0 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
-            save-file
-            0 confirm-new-open STOREI
-            0 APP::modal!
-            new-document
-        ] [
-            1 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
-                0 confirm-new-open STOREI
-                0 APP::modal!
-                new-document
-            ] [
-                2 0 local@ EVENT::mouse-x 0 local@ EVENT::mouse-y confirm-hit-btn [
-                    0 confirm-new-open STOREI
-                    0 APP::modal!
-                    APP::dirty!
-                ] ?
-            ] ?:
-        ] ?:
-    ] ?
-    1 unframe!
-;
-
-@confirm-new-kbd ( kpkt -- )
-    dup EVENT::kbd-type EVENT::KEY_DOWN = [
-        dup EVENT::kbd-key EVENT::KEY_ESC = [
-            0 confirm-new-open STOREI
-            0 APP::modal!
-            APP::dirty!
-        ] ?
-    ] ?
-    drop
 ;
 
 @on-pick ( path -- )
@@ -1419,8 +1323,7 @@ IMPORT SF
 @menu-new ( -- )
     commit-edit
     file-dirty LOADI [
-        1 confirm-new-open STOREI
-        1 APP::modal!
+        [ save-file new-document ] [ new-document ] [ APP::dirty! ] DIALOG::confirm-save
         APP::dirty!
     ] [
         new-document
@@ -1438,37 +1341,37 @@ IMPORT SF
 ( --- Snarf --- )
 
 @snarf-selection ( -- )
-    T"/sys/snarf" VFS::open dup 0 >= [
-        { fd }
-        0 { n }
+    0 { n }
         sel-r0 { r }
-        [ r sel-r1 <= n SNARF_MAX 2 - < AND ]
-        [
-            sel-c0 { c }
-            [ c sel-c1 <= n SNARF_MAX 2 - < AND ]
+            [ r sel-r1 <= n SNARF_MAX 2 - < AND ]
             [
-                c r cell-text { ptr }
-                [ ptr load-byte 0 > n SNARF_MAX 2 - < AND ]
-                [
-                    ptr load-byte SNARF_BUF n + store-byte
-                    n 1 + n!
-                    ptr 1 + ptr!
-                ] |:
-                c sel-c1 < [
-                    9 SNARF_BUF n + store-byte
+                sel-c0 { c }
+                    [ c sel-c1 <= n SNARF_MAX 2 - < AND ]
+                    [
+                        c r cell-text { ptr }
+                            [ ptr load-byte 0 > n SNARF_MAX 2 - < AND ]
+                            [
+                                ptr load-byte SNARF_BUF n + store-byte
+                                n 1 + n!
+                                ptr 1 + ptr!
+                            ] |:
+                        UNGIRD
+                        c sel-c1 < [
+                            9 SNARF_BUF n + store-byte
+                            n 1 + n!
+                        ] ?
+                        c 1 + c!
+                    ] |:
+                UNGIRD
+                r sel-r1 < [
+                    10 SNARF_BUF n + store-byte
                     n 1 + n!
                 ] ?
-                c 1 + c!
+                r 1 + r!
             ] |:
-            r sel-r1 < [
-                10 SNARF_BUF n + store-byte
-                n 1 + n!
-            ] ?
-            r 1 + r!
-        ] |:
-        fd SNARF_BUF n VFS::write drop
-        fd VFS::close drop
-    ] [ drop ] ?:
+        UNGIRD
+        SNARF_BUF n VFS::snarf-write drop
+    UNGIRD
 ;
 
 @clear-selection ( -- )
@@ -1487,9 +1390,7 @@ IMPORT SF
 
 @paste-snarf ( -- )
     commit-edit
-    T"/sys/snarf" VFS::open dup 0 >= [
-        dup SNARF_BUF SNARF_MAX 1 - VFS::read { n }
-        VFS::close drop
+    SNARF_BUF SNARF_MAX 1 - VFS::snarf-read { n }
         n 0 < [ 0 n! ] ?
         0 SNARF_BUF n + store-byte
         SNARF_BUF { p }
@@ -1526,7 +1427,7 @@ IMPORT SF
             c COLS < r ROW_MAX <= AND [ c r LINE_BUF cell-set ] ?
         ] ?
         APP::dirty!
-    ] [ drop ] ?:
+    UNGIRD
 ;
 
 @select-all ( -- )
@@ -1650,8 +1551,8 @@ IMPORT SF
     calc-run LOADI CALC_RUN = [
         drop
     ] [
-    confirm-new-open LOADI [
-        confirm-new-mouse
+    DIALOG::open? [
+        DIALOG::mouse
     ] [
     SF::open? [
         SF::mouse
@@ -1700,8 +1601,8 @@ IMPORT SF
         ] ?
         drop
     ] [
-    confirm-new-open LOADI [
-        confirm-new-kbd
+    DIALOG::open? [
+        DIALOG::kbd
     ] [
     SF::open? [
         SF::kbd
@@ -1787,19 +1688,20 @@ IMPORT SF
 @on-frame ( -- )
     UI::handle
     calc-step
-    APP::dirty? SF::open? OR confirm-new-open LOADI OR calc-run LOADI OR [
+    APP::dirty? SF::open? OR DIALOG::open? OR calc-run LOADI OR [
         sync-bars
         draw-all
         APP::dirty-off
     ] [
         UI::draw
         SF::open? [ SF::draw ] ?
-        confirm-new-draw
+        DIALOG::draw
     ] ?:
 ;
 
 @start
     T"Tabula" APP::init
+    APP::grayscale!
     APP::draw-fd FONT_SIZE DRAW::set-font-size
     0 EMPTY store-byte
     UI::new

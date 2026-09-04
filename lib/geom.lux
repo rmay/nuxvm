@@ -51,3 +51,7 @@ MODULE GEOM
     a2 b2 MIN
     a3 b3 MIN
 ;
+
+@clamp { n lo hi -- n }
+    n lo MAX hi MIN
+;

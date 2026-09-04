@@ -60,36 +60,34 @@ IMPORT VFS
 
 ( --- State. 0x880000 is a free slice of the app small-state band; see
       docs/memory-map.md for the occupied addresses it clears. --- )
-@bx      0x880000 ;  ( ball left edge, fixed point )
-@by      0x880004 ;  ( ball top edge, fixed point )
-@vx      0x880008 ;  ( fixed point )
-@vy      0x88000C ;
-@px      0x880010 ;  ( paddle left edge, whole px )
-@pw      0x880014 ;  ( paddle width, whole px )
-@kleft   0x880018 ;  ( held-key flags )
-@kright  0x88001C ;
-@state   0x880020 ;
-@lives   0x880024 ;
-@score   0x880028 ;
-@best    0x88002C ;
-@level   0x880030 ;
-@left-n  0x880034 ;  ( bricks remaining )
-@speed   0x880038 ;  ( fixed point )
-@side    0x88003C ;  ( which way the next serve leans )
-@afd     0x880040 ;
+RESERVE bx 4 ;  ( ball left edge, fixed point )
+RESERVE by 4 ;  ( ball top edge, fixed point )
+RESERVE vx 4 ;  ( fixed point )
+RESERVE vy 4 ;
+RESERVE px 4 ;  ( paddle left edge, whole px )
+RESERVE pw 4 ;  ( paddle width, whole px )
+RESERVE kleft 4 ;  ( held-key flags )
+RESERVE kright 4 ;
+RESERVE state 4 ;
+RESERVE lives 4 ;
+RESERVE score 4 ;
+RESERVE best 4 ;
+RESERVE level 4 ;
+RESERVE left-n 4 ;  ( bricks remaining )
+RESERVE speed 4 ;  ( fixed point )
+RESERVE side 4 ;  ( which way the next serve leans )
 ( Where the ball and paddle stood before the current simulation step. Drawing
   interpolates between these and the live values -- see @paint-field. )
-@pbx     0x880044 ;  ( fixed point )
-@pby     0x880048 ;  ( fixed point )
-@ppx     0x88004C ;  ( whole px )
-@nbuf    0x880050 ;  ( int-to-str scratch )
-@abuf    0x880070 ;  ( /dev/audio packet )
+RESERVE pbx 4 ;  ( fixed point )
+RESERVE pby 4 ;  ( fixed point )
+RESERVE ppx 4 ;  ( whole px )
+RESERVE nbuf 32 ;  ( int-to-str scratch )
 ( The interpolated positions @paint-field actually drew, in whole px. Kept in
   memory so a headless probe can measure per-frame smoothness. )
-@dbx     0x880080 ;
-@dby     0x880084 ;
-@dpx     0x880088 ;
-@bricks  0x881000 ;  ( NBRICK words: 0 empty, else row+1 )
+RESERVE dbx 4 ;
+RESERVE dby 4 ;
+RESERVE dpx 4 ;
+RESERVE bricks 240 ;  ( NBRICK words: 0 empty, else row+1 )
 
 ( --- Playfield edges. The wall is exactly as wide as the brick grid, so the
       two always line up whatever the window size turns out to be. --- )
@@ -105,32 +103,14 @@ IMPORT VFS
 @ball-b ( -- y ) ball-t BALL + 1 - ;
 @pad-mid ( -- x ) px LOADI pw LOADI 2 / + ;
 
-@beep { id -- }
-    afd LOADI 0 < [ ] [
-        id abuf DRAW::store-int-le
-        afd LOADI abuf 4 VFS::write drop
-    ] ?:
-;
+@beep ( id -- ) APP::beep ;
 
 @load-best
-    T"/sys/file/.breakout_hi" VFS::open
-    dup 0 < [
-        drop
-        0 best STOREI
-    ] [
-        dup best 4 VFS::read drop
-        VFS::close drop
-    ] ?:
+    T"/sys/file/.breakout_hi" best VFS::load-i32 drop
 ;
 
 @save-best
-    T"/sys/file/.breakout_hi" VFS::open
-    dup 0 < [
-        drop
-    ] [
-        dup best 4 VFS::write drop
-        VFS::close drop
-    ] ?:
+    T"/sys/file/.breakout_hi" best VFS::save-i32 drop
 ;
 
 @record-best
@@ -404,17 +384,15 @@ IMPORT VFS
     APP::draw-fd APP::width 100 - 8 nbuf 0x000000 1 DRAW::draw-str
 ;
 
-( Rows band by fill so the wall reads on a 1-bit screen without colour. )
+( v is row+1. Six rows, six luma steps; darker at the top. )
+@brick-ink { v -- color }
+    v 1 - 36 * DRAW::gray
+;
+
 @paint-brick { i v -- }
     play-l i COLS MOD BRICK_W * + 1 + { x }
     BRICK_TOP i COLS / BRICK_H * + 1 + { y }
-        v 3 MOD 0 = [
-            APP::draw-fd x y BRICK_W 2 - BRICK_H 2 - 0x000000 DRAW::fill-rect
-        ] [
-            APP::draw-fd x y BRICK_W 2 - BRICK_H 2 - 0x000000
-            v 3 MOD 1 = [ 2 ] [ 3 ] ?:
-            DRAW::fill-pat
-        ] ?:
+        APP::draw-fd x y BRICK_W 2 - BRICK_H 2 - v brick-ink DRAW::fill-rect
         APP::draw-fd x y BRICK_W 2 - BRICK_H 2 - 0x000000 DRAW::draw-rect
     UNGIRD UNGIRD
 ;
@@ -542,11 +520,11 @@ IMPORT VFS
 
 @start
     T"Breakout" APP::init
+    APP::grayscale!
     UI::new
     0 kleft STOREI
     0 kright STOREI
     S_TITLE state STOREI
-    T"/dev/audio" VFS::open afd STOREI
     load-best
     new-game
     S_TITLE state STOREI

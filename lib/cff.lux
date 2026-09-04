@@ -13,10 +13,13 @@ IMPORT MEMORY
 @LEN16 8448 ;
 @LEN24 18688 ;
 
-@base-addr 0x8E0000 ;
-@tile-sz   0x8E0004 ;
-@file-len  0x8E0008 ;
-@scratch   0x8E0100 ;
+RESERVE base-addr 4 ;
+RESERVE tile-sz   4 ;
+RESERVE file-len  4 ;
+( One glyph's bitmap, for the shift/rotate helpers. glyph-bytes is
+  (tile/8)^2 * 8, so the largest supported tile (24) needs 72 bytes; 256
+  keeps the headroom the hand-picked layout had. )
+RESERVE scratch 256 ;
 
 @base  ( -- addr ) base-addr LOADI ;
 @tile  ( -- n )    tile-sz LOADI ;

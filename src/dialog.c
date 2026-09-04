@@ -86,6 +86,7 @@ static void dlg_fill_rect(System* sys, int32_t x, int32_t y, int32_t w, int32_t 
     uint8_t* fb = sys->screen_pixels;
     if (!fb) return;
     int32_t sw = sys->screen_width, sh = sys->screen_height;
+    color = system_map_color(sys, color);
     uint8_t r = (color >> 16) & 0xFF, g = (color >> 8) & 0xFF, b = color & 0xFF;
     for (int32_t py = y; py < y + h; py++) {
         if (py < 0 || py >= sh) continue;
@@ -108,6 +109,7 @@ static void dlg_draw_bitmap(System* sys, int32_t x, int32_t y, const uint16_t* b
     uint8_t* fb = sys->screen_pixels;
     if (!fb) return;
     int32_t sw = sys->screen_width, sh = sys->screen_height;
+    color = system_map_color(sys, color);
     uint8_t r = (color >> 16) & 0xFF, g = (color >> 8) & 0xFF, b = color & 0xFF;
     for (int row = 0; row < rows; row++) {
         uint16_t bits = bitmap[row];
@@ -135,6 +137,7 @@ static int dlg_draw_char(System* sys, int32_t x, int32_t y, char c, uint32_t col
         return 0;
     }
 
+    color = system_map_color(sys, color);
     uint8_t r = (color >> 16) & 0xFF, g = (color >> 8) & 0xFF, b = color & 0xFF;
     int tile_size = cff_tile_size((int)host_font_chicago_len());
     if (tile_size <= 0) tile_size = 16;

@@ -7,6 +7,14 @@ a name here — new bands get added to `memory_map.h` with a comment
 explaining what they're for, not hand-picked locally in some app or library
 file. That ad hoc practice is exactly what produced the collisions below.
 
+**New state should not be hand-picked at all.** The Lux
+`RESERVE <name> <bytes> ;` directive makes the compiler allocate the
+address, which is what actually removes the collision class documented
+below — the hand-picked bands and the incident list exist for the 576
+declarations that predate it. See [`reserve-directive.md`](reserve-directive.md)
+for what it does and does not cover (bulk buffers, headless programs and
+genuine host/VM contracts still take a hand-picked address).
+
 Reserved address space ends at `MM_TOTAL_MEMORY` (16 MB,
 `MM_FX_BULK_GLOBALS_END`). Hosts size the contiguous guest buffer with
 `nux_guest_memory_size()` in `include/vm.h`: graphical machines (Cloister,
@@ -18,16 +26,22 @@ child VMs) get this full map; headless `nux` / `luxrepl` get
 | Fluxio small-scalar globals | `0x001000`–`0x010000` | `fluxio_codegen.c` (`FX_GLOBALS_BASE`/`FX_DEVICE_BOUNDARY`) | Bump-allocated ordinary `int`/`byte` scalars and small arrays for Fluxio programs. ~60KB budget — not for large buffers. |
 | SCI trap | `0x010000`–`0x011000` | `include/system.h` | VFS syscall registers (`SCI_PORT` / CMD / ARGs). Not device ports. |
 | Headless program code | starts at `0x011000` | `nux` | Where a compiled `.bin` loads for `-target headless`. |
-| Shared small Lux flags/state | `0x500000`–`0x510000` | small cross-cutting Lux library state | `lib/log.lux` at `0x500000`; `lib/time.lux` 16-byte `/dev/time` scratch at `0x500100`. Kept separate from `lib/memory.lux`'s dialog-state block (`0x520000`+). |
+| Shared small Lux flags/state *(legacy)* | `0x500000`–`0x510000` | — | **Empty.** Held `lib/log.lux`'s enabled flag and `lib/time.lux`'s `/dev/time` scratch; both are now `RESERVE`d. |
 | Graphical program code | starts at `0x600000` | `cloister` | Where a compiled `.bin` loads for `-target graphical` (both Lux and Fluxio). |
 | ABI library-link band | `0x700000`–`0x800000` | `fluxlink` (planned, `docs/quill_fluxio.md` Phase B3) | Trampoline stub + linked Lux library code/data, so a Fluxio program's `extern` calls have a fixed target. A Lux "library build" targets this band via a `luxc -base` override. |
-| App small-state band | `0x800000`–`0x900000` | individual Lux apps/libraries | Hand-picked small globals (window state, widget bookkeeping): Snake, UIDemo, SF, `lib/app.lux` (`0x8C0000`–`0x8C00AF`, including the fixed-timestep clock cells at `0x8C008C`–`0x8C00AF`: sim hook, ms accumulator, last-sampled ms, `/dev/time` fd and its 16-byte snapshot buffer — see `docs/games/breakout_clone.md` §7), Calculator, `lib/ui.lux`, `lib/cff.lux`, `lib/draw.lux`, Illumos, `lib/tilemap.lux` (`0x8D1000`–`0x8D1500`: layout/tileset-registry state), Whittle (`0x8A0000`–`0x8A03A0`: doc/UI state + name/path/header scratch buffers), Breakout (`0x880000`–`0x88008C`: ball/paddle/score state, previous-step and interpolated draw positions, and scratch buffers, plus a 240-byte brick grid at `0x881000`–`0x8810F0` — see `docs/games/breakout_clone.md`), `lib/ninep.lux` (`0x8D2000`–`0x8D2540`: 512-byte message build/parse buffer, a 16-entry named-file table, and an 8-entry fid table for the 9P2000 subset server; each caller-owned 16-byte connection block lives in the caller's own app-state, not here), `lib/icn.lux` (`0x8E0200`, 8 bytes: ICN1 file-header staging for `ICN::load`/`save` — see `docs/icn-format.md`; clear of `lib/cff.lux`'s `0x8E0000`–`0x8E0008` header and `0x8E0100`+ shift scratch, and `lib/ui.lux`'s `0x8E0F00`+ slabs). Only one app occupies a VM at a time today, so collisions *between different apps* here are inert — but large buffers don't belong here. |
-| App bulk-buffer band | `0x900000`–`0xA00000` | individual Lux apps | Large hand-authored buffers: font glyph data, paste buffers, line caches, path scratch buffers. Whittle's sprite editor reserves `0x900000`–`0x9C0000` (`FRAME_BANK`: 256 fixed 3072-byte RGB tile-pixel slots) and `0x9C0000`–`0x9C0600` (`SPRITE_TAB`: 16 fixed 96-byte sprite records, each holding a name, frame count/speed, and up to 16 frame-bank slot indices) — saved to disk as CSF (Cloister Sprite File, magic `"CSF1"`). Easel's 576×720 page is packed 1bpp via `lib/bitmap.lux` (`BITMAP::PAGE_BYTES` = 51,840): `CANVAS` `0x900000`, `UNDO` `0x90D000`, EAS2 save/load staging (`PACK`) `0x920000`, transform scratch (`TMP`) `0x934000`, `SEL_MASK` `0x991000` (lasso's filled-interior selection mask), 38 `PATTERNS` (8 bytes each) `0x990300`, 32 `BRUSHES` (16×16 1bpp masks, 32 bytes each) `0x990500`, 20 `TOOL_ICONS` (System-6-style 16×16 1bpp `lib/icn.lux` glyphs, one per palette tool, 32 bytes each) `0x990900`, the EASS clipboard payload (`SNARF_BUF`) `0x9A0000`, three CFF system fonts (`FONT_CHICAGO`/`FONT_GENEVA`/`FONT_MONACO`) from `0x9A8000`, and the floating text block's source bytes (`TEXT_BUF`) `0x9AE600`. |
-| `lib/mem.lux` heap | `0xA00000`–`0xC00000` | `lib/mem.lux` exclusively | Bump-allocator heap + its own `HERE_ADDR` metadata (first 0x100 bytes). Nothing else may place a global in this range. |
+| App small-state band *(legacy)* | `0x800000`–`0x900000` | — | **Empty.** Held every app's and library's hand-picked small globals until they moved to `RESERVE`. Nothing new goes here. |
+| App bulk-buffer band *(legacy)* | `0x900000`–`0xA00000` | `apps/Quill.lux` | Held the large hand-authored buffers (font blobs, file/paste buffers, canvases). All migrated to `RESERVE` except Quill's `LINE_STARTS`, which has no declarable bound — worst case 4 bytes × `FILE_BUF_MAX` = 4 MB — and now has the band to itself. |
+| Compiler-managed Lux reservations | `0xA00000`–`0xD00000` | `src/compiler.c` exclusively | Bump-allocated by the Lux `RESERVE <name> <bytes> ;` directive — see [`reserve-directive.md`](reserve-directive.md). Holds all app and library state, including `lib/mem.lux`'s heap (itself a reservation, which is why the old separate 2 MB heap band is gone). **Nothing may hand-pick an address in this range**; `luxc` warns if a `@NAME 0xHEX ;` constant lands in a reserved span. |
 | Fluxio bulk-array globals | `0xD00000`–`0x1000000` | `fluxio_codegen.c` (planned, `docs/quill_fluxio.md` Phase 0 deliverable 4) | Bump allocator for large global `byte[]`/`int[]` arrays that don't fit the small-scalar budget (e.g. a 1MB text-editor file buffer). |
 | Unreserved | `0x1000000`+ (`MM_TOTAL_MEMORY` and above) | — | Available for future bands — add them to `memory_map.h`, not locally. |
 
 ## Collisions found and fixed
+
+*Historical record.* These six were found by surveying hand-picked addresses
+and fixed by moving them; the bands they refer to (the app small-state and
+bulk buffer bands, `lib/mem.lux`'s old heap band) no longer hold live state.
+They are kept because they are the evidence for why `RESERVE` exists — every
+one of them is a bug that a compiler-chosen address makes unrepresentable.
 
 Surveying every hand-picked global address across `apps/*.lux`/`lib/*.lux`
 turned up real, live collisions — harmless only because each compiled
@@ -70,20 +84,28 @@ like these stop being inert.
 
 ## Known remaining gap
 
-`apps/Quill.lux`'s `LINE_STARTS` (now `0x913000`) is sized dynamically at
-runtime — up to 4 bytes per line, worst case (every line blank) up to
-`FILE_BUF_MAX` lines — which can exceed the 1MB App Bulk-Buffer band and
-spill into `lib/mem.lux`'s heap band. This is a pre-existing headroom
-assumption, not introduced by the address moves above: `apps/Quill.lux`
-never includes `lib/mem.lux`, so the overrun is harmless in practice, just
-not formally bounded. Worth revisiting if `lib/mem.lux` and `Quill` are
-ever linked into the same image (see Phase B).
+`apps/Quill.lux`'s `LINE_STARTS` (now `0x900000`) is the last hand-picked
+buffer in the tree. It is sized dynamically at runtime — up to 4 bytes per
+line, worst case (every line blank) `FILE_BUF_MAX` lines, i.e. 4MB — so
+there is no bound to hand `RESERVE`. Giving it one means capping Quill's
+line count and making the indexer respect that cap: a change to how Quill
+handles pathological files, not a change of address, and deliberately not
+bundled into the migration.
+
+It is better off than it was: every other Quill buffer moved into the
+reservation band, so `LINE_STARTS` now has the whole former App Bulk-Buffer
+band to itself, and `lib/mem.lux`'s heap — which an overrun used to run
+into — is no longer adjacent to it.
 
 ## Collision checking
 
-Lux still requires hand-authored addresses — there is no compiler-managed
-allocator for it (a larger, separate change, out of scope for now). `luxc`
-now runs a best-effort compile-time check (`record_addr_const`/
+Lux now has a compiler-managed allocator — `RESERVE` (see
+[`reserve-directive.md`](reserve-directive.md)) — and state declared through
+it cannot collide at all. The checks below cover what is still hand-authored:
+the 576 pre-existing constants, plus bulk buffers and host/VM contracts,
+which `RESERVE` deliberately doesn't take over.
+
+`luxc` runs a best-effort compile-time check (`record_addr_const`/
 `warn_duplicate_addr_consts` in `src/compiler.c`): every `@NAME 0xHEX ;`
 constant across the whole compiled unit (including transitively-included
 files), except ones named like a color constant (`CLR`/`COLOR`, the
@@ -93,3 +115,10 @@ stderr. This is a warning, not a hard error — sub-range overlap (one
 buffer's span containing another's base address, not just an exact
 duplicate, like the original `log.lux`/`FILE_BUF` case) isn't caught, since
 Lux constants carry no size information to check against.
+
+A second check (`warn_consts_inside_reservations`) does catch containment,
+in the one place sizes exist: a hand-picked `@NAME 0xHEX ;` landing inside a
+span handed out by `RESERVE`. Names ending in `END` are skipped — those are
+exclusive upper bounds (`MEM::HEAP_END` is literally the reservation band's
+base address), not cells. This is what keeps a half-migrated file honest;
+once a file uses `RESERVE` throughout, there is nothing left for it to find.

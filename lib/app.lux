@@ -14,25 +14,27 @@ IMPORT EVENT
 IMPORT UI
 IMPORT TIME
 
-( --- State --- )
-( Using 0x8C0000 range to avoid collision with DRAW::BUF at 0x8F0000 )
-@dfd      0x8C0000 ;
-@mfd      0x8C0004 ;
-@kfd      0x8C0008 ;
-@nfd      0x8C0058 ;
-@npkt     0x8C0060 ; ( 32 bytes for /dev/menu picks )
-@v-frame  0x8C000C ;
-@v-mouse  0x8C0010 ;
-@v-kbd    0x8C0014 ;
-@v-resume 0x8C0018 ;
-@mpkt     0x8C0020 ; ( 8 bytes )
-@kpkt     0x8C0030 ; ( 8 bytes: Type, pad, KeyCode(2), Modifiers(4) )
-@win-w    0x8C0040 ;
-@win-h    0x8C0044 ;
-@dirty-f  0x8C0048 ;
-@text-font-id  0x8C0080 ;
-@text-font-grp 0x8C0084 ;
-@v-font        0x8C0088 ;
+( --- State ---
+  Compiler-allocated (docs/reserve-directive.md). These used to be picked
+  by hand out of the 0x8C0000 range specifically to dodge DRAW::BUF at
+  0x8F0000 -- that kind of reasoning is what RESERVE removes. )
+RESERVE dfd      4 ;
+RESERVE mfd      4 ;
+RESERVE kfd      4 ;
+RESERVE nfd      4 ;
+RESERVE npkt    32 ; ( /dev/menu picks )
+RESERVE v-frame  4 ;
+RESERVE v-mouse  4 ;
+RESERVE v-kbd    4 ;
+RESERVE v-resume 4 ;
+RESERVE mpkt     8 ;
+RESERVE kpkt     8 ; ( Type, pad, KeyCode(2), Modifiers(4) )
+RESERVE win-w    4 ;
+RESERVE win-h    4 ;
+RESERVE dirty-f  4 ;
+RESERVE text-font-id  4 ;
+RESERVE text-font-grp 4 ;
+RESERVE v-font        4 ;
 
 ( --- Fixed-timestep simulation clock ---
   Painting happens once per rendered frame, but simulation runs on its own
@@ -40,11 +42,13 @@ IMPORT TIME
   to draw, or on the host's refresh rate. An app registers on-tick! for
   physics/state and on-frame! for drawing; an app that registers no on-tick
   never reads the clock and behaves exactly as it did before. )
-@v-tick    0x8C008C ;  ( simulation hook, 0 = not registered )
-@tick-acc  0x8C0090 ;  ( unspent milliseconds )
-@tick-ms   0x8C0094 ;  ( monotonic ms sampled on the previous frame )
-@tfd       0x8C0098 ;  ( persistent /dev/time fd, 0 = not open )
-@tbuf      0x8C00A0 ;  ( 16-byte /dev/time snapshot )
+RESERVE v-tick    4 ;  ( simulation hook, 0 = not registered )
+RESERVE tick-acc  4 ;  ( unspent milliseconds )
+RESERVE tick-ms   4 ;  ( monotonic ms sampled on the previous frame )
+RESERVE tfd       4 ;  ( persistent /dev/time fd, 0 = not open )
+RESERVE tbuf     16 ;  ( /dev/time snapshot )
+RESERVE afd       4 ;  ( persistent /dev/audio fd, 0 = not open )
+RESERVE abuf      4 ;  ( /dev/audio packet )
 
 @STEP_MS   16 ;   ( ~60 simulation steps a second )
 @MAX_STEPS  5 ;   ( catch-up cap for one rendered frame )
@@ -54,8 +58,8 @@ IMPORT TIME
 @modal-f  ( -- addr ) UI::APP_MODAL ;
 
 ( --- ESC Popup State --- )
-@esc-open     0x8C0050 ;
-@esc-btn-hov  0x8C0054 ; ( 0=none, 1=continue, 2=restart, 3=quit )
+RESERVE esc-open    4 ;
+RESERVE esc-btn-hov 4 ; ( 0=none, 1=continue, 2=restart, 3=quit )
 
 ( --- Accessors --- )
 @draw-fd  ( -- fd ) dfd LOADI ;
@@ -239,6 +243,21 @@ IMPORT TIME
     drop
 ;
 
+( Optional; init already calls this via open-devices. A caller that skips
+  APP::init can still beep if it opens the device itself. Missing
+  /dev/audio stores 0, and beep is then a no-op. )
+@audio-open ( -- )
+    T"/dev/audio" VFS::open dup 0 < [ drop 0 ] ?
+    afd STOREI
+;
+
+@beep { id -- }
+    afd LOADI 0 > [
+        id abuf DRAW::store-int-le
+        afd LOADI abuf 4 VFS::write drop
+    ] ?
+;
+
 ( --- Device Initialization --- )
 
 @open-devices ( -- )
@@ -269,6 +288,9 @@ IMPORT TIME
     ( /dev/menu is optional; a missing file means the app owns its bar. )
     T"/dev/menu" VFS::open dup 0 < [ drop 0 ] ?
     nfd STOREI
+
+    ( /dev/audio is optional: beep is a no-op when the host has no device. )
+    audio-open
     nfd LOADI UI::export-fd!
 
     ( Canvas size from /dev/draw: LE u16 w, u16 h. Fallback 960×720. )
@@ -336,6 +358,10 @@ IMPORT TIME
     0 modal-f STOREI
     dirty!
 ;
+
+( Channel is RGB until an app asks. Call after init, which opens /dev/draw. )
+@grayscale! ( -- ) draw-fd DRAW::grayscale ;
+@color!     ( -- ) draw-fd DRAW::CHAN_RGB DRAW::chan! ;
 
 @loop ( -- )
     [ 1 ] [

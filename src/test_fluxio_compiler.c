@@ -715,6 +715,29 @@ static void test_fill_rect_pixel_exact(void) {
     free(bc);
 }
 
+static void test_set_chan_k8_maps_fill(void) {
+    printf("Testing set_chan(k8) maps fill_rect to luma...\n");
+    size_t len;
+    uint8_t* bc = must_compile(
+        "/** e */\n"
+        "int main() {\n"
+        "    int fd = vfs_open(\"/dev/draw\");\n"
+        "    set_chan(fd, 1);\n"
+        "    begin_frame(fd);\n"
+        "    fill_rect(fd, 5, 5, 10, 10, 0x00FF00);\n"
+        "    end_frame(fd);\n"
+        "    return 0;\n"
+        "}", &len);
+    Machine* m = run_machine_pumped(bc, len, 1);
+    assert(m->cpu->halted);
+    int sw = m->system->screen_width ? m->system->screen_width : 960;
+    uint8_t* fb = m->system->screen_pixels;
+    uint8_t* pixel = fb + (size_t) 10 * sw * 4 + (size_t) 10 * 4;
+    assert(pixel[1] == 149 && pixel[2] == 149 && pixel[3] == 149);
+    machine_free(m);
+    free(bc);
+}
+
 /* Phase A3, docs/quill_fluxio.md: draw_bytes(fd,x,y,color,scale,buf,len)
  * has the same wire format as draw_str, sourced from a runtime byte[]
  * instead of a compile-time string literal (needed for Quill to draw live
@@ -1031,7 +1054,7 @@ static void test_escape_menu_quit_click_sets_flag(void) {
         "    escmenu_init(320, 240);\n"
         "    escmenu_key(27);\n"
         "    int bx = escmenu_btn_x();\n"
-        "    int by = escmenu_btn_y(1);\n"
+        "    int by = escmenu_btn_y(2);\n"
         "    int consumed = escmenu_mouse(3, 1, bx + 5, by + 5);\n"
         "    int wants_quit = escmenu_wants_quit();\n"
         "    int still_open = escmenu_is_open();\n"
@@ -1042,7 +1065,7 @@ static void test_escape_menu_quit_click_sets_flag(void) {
 }
 
 static void test_escape_menu_resume_click_closes(void) {
-    printf("Testing escape_menu: clicking Resume closes the menu without setting the quit flag...\n");
+    printf("Testing escape_menu: clicking Continue closes the menu without setting the quit flag...\n");
     char libpath[1024];
     escmenu_include_path(libpath, sizeof(libpath));
     char dir[] = "/tmp/fluxio_test_escmenu_resume_XXXXXX";
@@ -1063,6 +1086,31 @@ static void test_escape_menu_resume_click_closes(void) {
         "}\n", libpath);
     write_temp_file(dir, "main.fx", main_src);
     check_include_result(dir, "main.fx", 100);
+}
+
+static void test_escape_menu_restart_click_sets_flag(void) {
+    printf("Testing escape_menu: clicking Restart App sets escmenu_wants_restart() and closes the menu...\n");
+    char libpath[1024];
+    escmenu_include_path(libpath, sizeof(libpath));
+    char dir[] = "/tmp/fluxio_test_escmenu_restart_XXXXXX";
+    assert(mkdtemp(dir) != NULL);
+    char main_src[2048];
+    snprintf(main_src, sizeof(main_src),
+        "include \"%s\";\n"
+        "/** e */\n"
+        "int main() {\n"
+        "    escmenu_init(320, 240);\n"
+        "    escmenu_key(27);\n"
+        "    int bx = escmenu_btn_x();\n"
+        "    int by = escmenu_btn_y(1);\n"
+        "    int consumed = escmenu_mouse(3, 1, bx + 5, by + 5);\n"
+        "    int wants_restart = escmenu_wants_restart();\n"
+        "    int still_open = escmenu_is_open();\n"
+        "    int wants_quit = escmenu_wants_quit();\n"
+        "    return consumed*1000 + wants_restart*100 + still_open*10 + wants_quit;\n"
+        "}\n", libpath);
+    write_temp_file(dir, "main.fx", main_src);
+    check_include_result(dir, "main.fx", 1100);
 }
 
 static void test_escape_menu_click_outside_buttons_is_noop(void) {
@@ -1109,12 +1157,12 @@ static void test_escape_menu_inert_while_closed(void) {
 
 /* Renders the menu into a real framebuffer via machine_create() (needed
  * for fill_rect's System dependency, unlike the logic-only tests above)
- * and checks a pixel inside the panel: the app's own white background
- * shows through while closed, and the panel's dark fill color shows once
- * Esc opens it -- proving escmenu_draw actually paints something, not
- * just that the logic-only state machine above is self-consistent. */
+ * and checks a pixel inside the panel: the app's green background shows
+ * through while closed, and the System 6 white sheet shows once Esc
+ * opens it -- proving escmenu_draw actually paints something, not just
+ * that the logic-only state machine above is self-consistent. */
 static void test_escape_menu_renders_when_open(void) {
-    printf("Testing escape_menu: escmenu_draw paints the panel only while open...\n");
+    printf("Testing escape_menu: escmenu_draw paints the System 6 panel only while open...\n");
     char libpath[1024];
     escmenu_include_path(libpath, sizeof(libpath));
     char dir[] = "/tmp/fluxio_test_escmenu_draw_XXXXXX";
@@ -1130,7 +1178,7 @@ static void test_escape_menu_renders_when_open(void) {
         "    int h = size & 0xFFFF;\n"
         "    escmenu_init(w, h);\n"
         "    begin_frame(fd);\n"
-        "    fill_rect(fd, 0, 0, w, h, 0xFFFFFF);\n"
+        "    fill_rect(fd, 0, 0, w, h, 0x00AA00);\n"
         "    %s\n"
         "    escmenu_draw(fd);\n"
         "    end_frame(fd);\n"
@@ -1156,19 +1204,21 @@ static void test_escape_menu_renders_when_open(void) {
     Machine* om = run_machine_pumped(obc, olen, 1);
     assert(cm->cpu->halted && om->cpu->halted);
 
-    /* Default 640x480 canvas (src/system.c) -> panel at x=[210,430),
-     * y=[175,305); sample 5px inside the top-left corner, past the
-     * 1px border, well clear of any button/text glyph. */
+    /* Default 640x480 canvas (src/system.c) -> 200x160 sheet centered at
+     * x=[220,420), y=[160,320). Sample 10px inside the top-left, past the
+     * 2px black frame, above the title at y+15 and well clear of buttons. */
     int sw = cm->system->screen_width ? cm->system->screen_width : 640;
     uint8_t* cfb = cm->system->screen_pixels;
     uint8_t* ofb = om->system->screen_pixels;
-    uint8_t* cpix = cfb + (size_t) 180 * sw * 4 + (size_t) 215 * 4;
-    uint8_t* opix = ofb + (size_t) 180 * sw * 4 + (size_t) 215 * 4;
+    uint8_t* cpix = cfb + (size_t) 165 * sw * 4 + (size_t) 230 * 4;
+    uint8_t* opix = ofb + (size_t) 165 * sw * 4 + (size_t) 230 * 4;
+    uint8_t* frame = ofb + (size_t) 159 * sw * 4 + (size_t) 219 * 4;
 
-    /* Closed: app's own white fill_rect shows through untouched. */
-    assert(cpix[1] == 0xFF && cpix[2] == 0xFF && cpix[3] == 0xFF);
-    /* Open: escmenu's panel color (0x303030) painted over it. */
-    assert(opix[1] == 0x30 && opix[2] == 0x30 && opix[3] == 0x30);
+    /* Closed: app's own green fill_rect shows through untouched. */
+    assert(cpix[1] == 0x00 && cpix[2] == 0xAA && cpix[3] == 0x00);
+    /* Open: white System 6 panel, black 2px frame. */
+    assert(opix[1] == 0xFF && opix[2] == 0xFF && opix[3] == 0xFF);
+    assert(frame[1] == 0x00 && frame[2] == 0x00 && frame[3] == 0x00);
 
     machine_free(cm);
     machine_free(om);
@@ -3252,18 +3302,21 @@ static void test_quill_fx_hex_menu_checkbox_syncs_via_home_key(void) {
     remove(quill_fx_path("quill_scratch.txt"));
 }
 
-/* Counts blue-ish pixels (channel[3] high, channel[1]/[2] low, matching
- * clr_hex_caret = 0x0000FF's channel layout) in a screen region -- used
- * to confirm the hex-mode caret box actually renders in blue, not the
- * text-mode caret's red. */
-static int quill_fx_blue_pixels(Machine* m, int x0, int x1, int y0, int y1) {
+/* Hex caret is clr_hex_caret = 0x0000FF, stored as Rec. 601 k8 luma
+ * (29*255)>>8 = 28. Used to tell the hex-mode outline from the text-mode
+ * caret (0xCC0000 → luma 61). */
+#define QUILL_FX_HEX_CARET_LUMA 28
+
+static int quill_fx_hex_caret_pixels(Machine* m, int x0, int x1, int y0, int y1) {
     int sw = m->system->screen_width;
     uint8_t* fb = m->system->screen_pixels;
     int count = 0;
     for (int y = y0; y < y1; y++) {
         for (int x = x0; x < x1; x++) {
             uint8_t* p = fb + (size_t) y * (size_t) sw * 4 + (size_t) x * 4;
-            if (p[3] > 0xB0 && p[1] < 0x40 && p[2] < 0x40) {
+            if (p[1] == QUILL_FX_HEX_CARET_LUMA &&
+                p[2] == QUILL_FX_HEX_CARET_LUMA &&
+                p[3] == QUILL_FX_HEX_CARET_LUMA) {
                 count++;
             }
         }
@@ -3312,9 +3365,9 @@ static void test_quill_fx_hex_caret_is_hollow_blue_box(void) {
     }
     assert(!m->cpu->halted);
 
-    /* No blue caret should exist in text mode. */
-    int text_mode_blue = quill_fx_blue_pixels(m, 0, 500, 40, 60);
-    assert(text_mode_blue == 0);
+    /* No hex-caret ink should exist in text mode. */
+    int text_mode_hex = quill_fx_hex_caret_pixels(m, 0, 500, 40, 60);
+    assert(text_mode_hex == 0);
 
     uint8_t home[8] = { 0, 0, 23, 0, 0, 0, 0, 0 }; /* Home -> hex mode */
     assert(vfs_write(m->system, kc, home, 8) == 8);
@@ -3330,7 +3383,9 @@ static void test_quill_fx_hex_caret_is_hollow_blue_box(void) {
     for (int y = 40; y < 60; y++) {
         for (int x = 0; x < 300; x++) {
             uint8_t* p = fb + (size_t) y * (size_t) sw * 4 + (size_t) x * 4;
-            if (p[3] > 0xB0 && p[1] < 0x40 && p[2] < 0x40) {
+            if (p[1] == QUILL_FX_HEX_CARET_LUMA &&
+                p[2] == QUILL_FX_HEX_CARET_LUMA &&
+                p[3] == QUILL_FX_HEX_CARET_LUMA) {
                 if (x < minx) {
                     minx = x;
                 }
@@ -3346,12 +3401,12 @@ static void test_quill_fx_hex_caret_is_hollow_blue_box(void) {
             }
         }
     }
-    assert(maxx >= minx); /* a blue box exists at all */
+    assert(maxx >= minx); /* a hex-caret box exists at all */
     int box_w = maxx - minx + 1;
     int box_h = maxy - miny + 1;
     int box_area = box_w * box_h;
-    int blue_count = quill_fx_blue_pixels(m, minx, maxx + 1, miny, maxy + 1);
-    assert(blue_count * 2 < box_area); /* hollow: filled well under half its bounding box, not ~100% like a solid fill */
+    int caret_count = quill_fx_hex_caret_pixels(m, minx, maxx + 1, miny, maxy + 1);
+    assert(caret_count * 2 < box_area); /* hollow: filled well under half its bounding box, not ~100% like a solid fill */
 
     vfs_close(m->system, kc);
     machine_free(m);
@@ -4510,6 +4565,7 @@ static void test_fluxioc_examples_compile(void) {
         "./bin/fluxioc -target headless -o /tmp/nuxvm_fx_hello_console.bin examples/fluxio/hello_console.fx >/tmp/nuxvm_fx_ex.log 2>&1",
         "./bin/fluxioc -target headless -o /tmp/nuxvm_fx_fib.bin examples/fluxio/fib.fx >/tmp/nuxvm_fx_ex.log 2>&1",
         "./bin/fluxioc -target graphical -o apps/fluxio/HelloCloister.bin apps/fluxio/HelloCloister.fx >/tmp/nuxvm_fx_ex.log 2>&1",
+        "./bin/fluxioc -target graphical -o apps/fluxio/Snake.bin apps/fluxio/Snake.fx >/tmp/nuxvm_fx_ex.log 2>&1",
         NULL
     };
     for (int i = 0; cmds[i]; i++) {
@@ -4577,6 +4633,138 @@ static void test_hello_cloister_fx_runs(void) {
     printf("  HelloCloister.fx: OK\n");
 }
 
+#define SNAKE_FX_SANDBOX "/tmp/nuxvm_test_snake_fx_sandbox"
+#define SNAKE_FX_STEP_MS 16
+#define SNAKE_FX_SPEED 10
+
+static Machine* snake_fx_machine(void) {
+    FILE* probe = fopen("./bin/fluxioc", "rb");
+    if (!probe) {
+        printf("  (skipped: ./bin/fluxioc not built yet -- run from repo root after `make`)\n");
+        return NULL;
+    }
+    fclose(probe);
+    probe = fopen("apps/fluxio/Snake.fx", "rb");
+    if (!probe) {
+        printf("  (skipped: apps/fluxio/Snake.fx not found -- run from repo root)\n");
+        return NULL;
+    }
+    fclose(probe);
+
+    assert(system("./bin/fluxioc -target graphical -o apps/fluxio/Snake.bin apps/fluxio/Snake.fx >/tmp/nuxvm_test_snake_fx_build.log 2>&1") == 0);
+
+    FILE* bf = fopen("apps/fluxio/Snake.bin", "rb");
+    assert(bf != NULL);
+    fseek(bf, 0, SEEK_END);
+    long blen = ftell(bf);
+    fseek(bf, 0, SEEK_SET);
+    uint8_t* bc = malloc((size_t) blen);
+    assert(fread(bc, 1, (size_t) blen, bf) == (size_t) blen);
+    fclose(bf);
+
+    mkdir(SNAKE_FX_SANDBOX, 0755);
+    Machine* m = machine_create(bc, (uint32_t) blen, GRAPHICAL_BASE_ADDRESS, 32 * 1024 * 1024, false);
+    free(bc);
+    assert(m != NULL);
+    system_set_sandbox_root(m->system, SNAKE_FX_SANDBOX);
+    system_set_resolution(m->system, 960, 720);
+    return m;
+}
+
+static void snake_fx_pump(Machine* m, int n) {
+    for (int i = 0; i < n; i++) {
+        machine_tick(m);
+        assert(m->cpu->halted || m->cpu->running);
+    }
+}
+
+static void snake_fx_key(Machine* m, int32_t kc, int key) {
+    uint8_t pkt[8] = {
+        0, 0,
+        (uint8_t) (key & 0xFF), (uint8_t) ((key >> 8) & 0xFF),
+        0, 0, 0, 0
+    };
+    assert(vfs_write(m->system, kc, pkt, 8) == 8);
+    snake_fx_pump(m, 8);
+}
+
+/* Same layout math as apps/fluxio/Snake.fx layout()/cell_x()/cell_y(). */
+static void snake_fx_cell_center(int gx, int gy, int* ox, int* oy) {
+    int tile = (720 - 28) / 20;
+    int off_x = (960 - tile * 20) / 2;
+    int off_y = ((720 - 28) - tile * 20) / 2 + 28;
+    int s = tile - 2;
+    *ox = gx * tile + off_x + 1 + s / 2;
+    *oy = gy * tile + off_y + 1 + s / 2;
+}
+
+static void snake_fx_pixel(Machine* m, int x, int y, uint8_t* r, uint8_t* g, uint8_t* b) {
+    int sw = m->system->screen_width;
+    uint8_t* p = m->system->screen_pixels + (size_t) y * (size_t) sw * 4 + (size_t) x * 4;
+    *r = p[1];
+    *g = p[2];
+    *b = p[3];
+}
+
+static int snake_fx_is_black(Machine* m, int gx, int gy) {
+    int x, y;
+    uint8_t r, g, b;
+    snake_fx_cell_center(gx, gy, &x, &y);
+    snake_fx_pixel(m, x, y, &r, &g, &b);
+    return r == 0 && g == 0 && b == 0;
+}
+
+static int snake_fx_is_white(Machine* m, int gx, int gy) {
+    int x, y;
+    uint8_t r, g, b;
+    snake_fx_cell_center(gx, gy, &x, &y);
+    snake_fx_pixel(m, x, y, &r, &g, &b);
+    return r == 0xFF && g == 0xFF && b == 0xFF;
+}
+
+static void test_snake_fx_tick_clock(void) {
+    printf("Testing apps/fluxio/Snake.fx: Enter starts a round; the snake crawls on the simulation clock...\n");
+    Machine* m = snake_fx_machine();
+    if (!m) return;
+
+    system_freeze_monotonic_ms(m->system, 1000);
+
+    int32_t cfd = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t pfd = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(cfd >= 100 && pfd >= 100);
+    assert(vfs_bind(m->system, pfd, "/dev/kbd") == 0);
+    vfs_close(m->system, pfd);
+
+    snake_fx_pump(m, 40);
+    assert(!m->cpu->halted);
+    assert(m->system->screen_pixels != NULL);
+
+    /* Title card is up: the starting head cell is not painted yet. */
+    assert(snake_fx_is_white(m, 10, 10));
+
+    snake_fx_key(m, cfd, 13); /* Enter */
+    snake_fx_pump(m, 20);
+    assert(snake_fx_is_black(m, 10, 10));
+    assert(snake_fx_is_white(m, 11, 10));
+
+    /* Frozen clock: extra frames must not crawl. */
+    snake_fx_pump(m, 16);
+    assert(snake_fx_is_black(m, 10, 10));
+    assert(snake_fx_is_white(m, 11, 10));
+
+    /* `speed` (10) steps of 16 ms is exactly one crawl. */
+    for (int i = 0; i < SNAKE_FX_SPEED; i++) {
+        m->system->time_ms += SNAKE_FX_STEP_MS;
+        snake_fx_pump(m, 8);
+    }
+    assert(snake_fx_is_black(m, 11, 10));
+    assert(snake_fx_is_white(m, 12, 10));
+
+    vfs_close(m->system, cfd);
+    machine_free(m);
+    printf("  Snake.fx tick clock: OK\n");
+}
+
 int main(void) {
     /* Unbuffered so progress lines interleave correctly with the compiler's
      * own stderr diagnostics (several tests below intentionally compile
@@ -4624,6 +4812,7 @@ int main(void) {
     test_canvas_size();
     test_draw_sequence_no_fault();
     test_fill_rect_pixel_exact();
+    test_set_chan_k8_maps_fill();
     test_draw_bytes_matches_draw_str();
     test_draw_bytes_oversized_len_clamped();
     test_poll_no_events();
@@ -4641,6 +4830,7 @@ int main(void) {
     test_escape_menu_esc_toggles_open();
     test_escape_menu_quit_click_sets_flag();
     test_escape_menu_resume_click_closes();
+    test_escape_menu_restart_click_sets_flag();
     test_escape_menu_click_outside_buttons_is_noop();
     test_escape_menu_inert_while_closed();
     test_escape_menu_renders_when_open();
@@ -4712,6 +4902,7 @@ int main(void) {
     test_quill_fx_file_save_as_creates_new_file();
     test_fluxioc_examples_compile();
     test_hello_cloister_fx_runs();
+    test_snake_fx_tick_clock();
     test_include_circular_error();
     test_include_missing_file_error();
     test_error_local_struct_decay();

@@ -1,49 +1,29 @@
-( --- SYSTEM MEMORY MAP ---
-  Standardized memory addresses for shared libraries.
-  The gap between VideoFramebufferEnd (0x511000) and
-  UserMemoryOffset (0x600000) is used for system state. )
+( --- SHARED CONTROL STATE + MEMORY HELPERS ---
+  Was the "system memory map": a block of hand-picked addresses in the gap
+  between the framebuffer and user memory. The addresses are gone -- state
+  here is compiler-allocated now -- so what remains is the shared control
+  cells and the byte-move helpers. )
 
 MODULE MEMORY
 
-( --- Controls System State (0x520000 range) --- )
-@CTRL_X 0x520000 ;
-@CTRL_Y 0x520004 ;
-@CTRL_W 0x520008 ;
-@CTRL_H 0x52000C ;
-@CTRL_BASE 0x520010 ;
-@CTRL_TEMP 0x520014 ;
+( --- Controls System State ---
+  The six cells lib/core.lux's x@/y@/w@/h@/base@/temp@ accessors sit on,
+  also used directly by lib/draw.lux's string blitter. Compiler-allocated
+  (docs/reserve-directive.md).
 
-( --- Floating Point / Math State --- )
-@FP_ADDR 0x521000 ;
-@FP_STACK 0x521400 ;
-
-( --- File System Iteration --- )
-@FILE_DIR_QUOT 0x522000 ;
-@FILE_DIR_MAX  0x522004 ;
-
-( --- Dialog System State (0x530000 range) --- )
-@DIALOG_ITEMS_BUF 0x530000 ;
-@DIALOG_LIST_BASE 0x530800 ;
-@DIALOG_RESULT_PTR_ADDR 0x530818 ;
-@DIALOG_CALLBACK_ADDR 0x53081C ;
-@DIALOG_SAVED_SCREEN_ADDR 0x530820 ;
-@DIALOG_SAVED_CTRL_ADDR 0x530824 ;
-@DIALOG_SAVED_MOUSE_ADDR 0x530828 ;
-@DIALOG_TITLE_PTR_ADDR 0x53082C ;
-@DIALOG_OK_PTR_ADDR 0x530830 ;
-@DIALOG_CANCEL_PTR_ADDR 0x530834 ;
-@DIALOG_W_ADDR 0x530838 ;
-@DIALOG_H_ADDR 0x53083C ;
-@DIALOG_DRAWING_ADDR 0x530840 ;
-@DIALOG_SAVED_PANE 0x530844 ;
-@DIALOG_SCRATCH_BUF 0x530900 ;
-
-( --- File Dialog State --- )
-@FILE_DIALOG_ITEMS_BUF 0x531000 ;
-@FILE_DIALOG_LIST_BASE 0x533000 ;
-@FILE_DIALOG_CURRENT_PATH 0x533200 ;
-@FILE_DIALOG_SELECTED_DIR 0x533400 ;
-@FILE_DIALOG_FILTER_EXT_ADDR 0x533600 ;
+  Everything else that used to live here -- 24 constants for a dialog and
+  file-dialog system (DIALOG_*, FILE_DIALOG_*, FP_*, FILE_DIR_*) spanning
+  0x521000-0x533600 -- was dead: nothing in lib/ or apps/ referenced any of
+  them, and none appear in abi/uisf.exports.json. They were dropped rather
+  than reserved, since reserving ~78KB of buffers no code reads would spend
+  most of the reservation band on nothing. lib/dialog.lux is the modal
+  dialog implementation that is actually live. )
+RESERVE CTRL_X    4 ;
+RESERVE CTRL_Y    4 ;
+RESERVE CTRL_W    4 ;
+RESERVE CTRL_H    4 ;
+RESERVE CTRL_BASE 4 ;
+RESERVE CTRL_TEMP 4 ;
 
 ( --- Memory Manipulation --- )
 

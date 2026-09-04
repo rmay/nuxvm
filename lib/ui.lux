@@ -40,7 +40,7 @@ MODULE UI
 @MI_RADIO     2 ;
 @MI_SEP       3 ;
 ( Shared with APP::modal-f: one cell, "is a modal dialog open". )
-@APP_MODAL   0x8C004C ;
+RESERVE APP_MODAL 4 ; ( lib/app.lux's APP::modal-f is a word alias of this )
 
 ( --- Hit Testing --- )
 
@@ -914,7 +914,7 @@ MODULE UI
     3 unframe!
 ;
 
-@SL_NBUF 0x8E0F20 ;
+RESERVE SL_NBUF 32 ; ( slider value formatted as decimal text )
 
 @slider-ticks ( fd addr -- )
     2 frame! ( 0:addr 1:fd )
@@ -1694,11 +1694,11 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 @EV_CLOSE   6 ;
 @EV_DRAG    7 ;
 
-@CS_HEAD  0x8E0010 ;
-@CS_FOCUS 0x8E0014 ;
-@CS_ENAME 0x8E0018 ;
-@CS_EKIND 0x8E001C ;
-@CS_DRAG  0x8E0020 ;
+RESERVE CS_HEAD  4 ;
+RESERVE CS_FOCUS 4 ;
+RESERVE CS_ENAME 4 ;
+RESERVE CS_EKIND 4 ;
+RESERVE CS_DRAG  4 ;
 
 @TITLE_H 18 ;
 @WIN_BORDER 1 ;
@@ -1722,46 +1722,55 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 ( ===== Components ===== )
 ( One table. Every kind has text, x y w h, and a handler quotation. )
 ( feed posts to the ring; handle runs handlers after feed returns. )
-@Q_BASE  0x8E1000 ;
+( Slab sizes are now stated as MAX * SIZE rather than implied by the
+  distance to the next hand-picked address -- see docs/reserve-directive.md.
+  Raising a _MAX below resizes its slab automatically; before, the two could
+  drift apart silently. )
 @Q_MAX   8 ;
-@Q_HEAD  0x8E0F00 ;
-@Q_TAIL  0x8E0F04 ;
-@Q_CNT   0x8E0F08 ;
+RESERVE Q_BASE 96 ; ( Q_MAX * 12 )
+RESERVE Q_HEAD  4 ;
+RESERVE Q_TAIL  4 ;
+RESERVE Q_CNT   4 ;
 
-@CB_SLAB 0x8E1600 ;
-@CB_N    0x8E0F0C ;
 @CB_MAX  8 ;
+RESERVE CB_SLAB 192 ; ( CB_MAX * CB_SIZE )
+RESERVE CB_N      4 ;
 
-@RD_SLAB 0x8E1800 ;
-@RD_N    0x8E0F10 ;
 @RD_MAX  8 ;
+RESERVE RD_SLAB 192 ; ( RD_MAX * CB_SIZE -- radios reuse the checkbox record )
+RESERVE RD_N      4 ;
 
-@SL_SLAB  0x8E1A00 ;
-@SL_N     0x8E0F14 ;
-@SL_DRAG  0x8E0F18 ;
 @SL_MAXN  8 ;
+RESERVE SL_SLAB 320 ; ( SL_MAXN * SL_SIZE )
+RESERVE SL_N      4 ;
+RESERVE SL_DRAG   4 ;
 
-@BN_SLAB  0x8E1D00 ;
-@BN_N     0x8E0F24 ;
-@BN_DRAG  0x8E0F28 ;
 @BN_MAX   16 ;
+RESERVE BN_SLAB 576 ; ( BN_MAX * BTN_SIZE )
+RESERVE BN_N      4 ;
+RESERVE BN_DRAG   4 ;
 
-@SBAR_SLAB 0x8E2800 ;
-@SBAR_N    0x8E0F48 ;
-@SBAR_DRAG 0x8E0F4C ;
 @SBAR_MAXN 8 ;
+RESERVE SBAR_SLAB 448 ; ( SBAR_MAXN * BAR_SIZE )
+RESERVE SBAR_N      4 ;
+RESERVE SBAR_DRAG   4 ;
 
-@MN_N      0x8E0F50 ; ( number of menus on the bar )
-@MI_N      0x8E0F54 ;
-@MB_CUR    0x8E0F58 ;
-@MB_ACTIVE 0x8E0F5C ;
+RESERVE MN_N      4 ; ( number of menus on the bar )
+RESERVE MI_N      4 ;
+RESERVE MB_CUR    4 ;
+RESERVE MB_ACTIVE 4 ;
+( MB_HOVER stays hand-picked: src/cloister.c reads this exact address to
+  line its menu-hover log up with the guest's (MB_HOVER_ADDR, behind
+  NUXVM_MENU_DEBUG=1). That makes it a host contract like the SCI registers,
+  and a compiler-chosen address -- which moves when reservations ahead of it
+  change -- is exactly the wrong thing for it. Keep the two in step. )
 @MB_HOVER  0x8E0F60 ;
-@MB_W      0x8E0F64 ;
-@MB_HAS    0x8E0F68 ;
-@MB_XFD    0x8E0F70 ; ( /dev/menu fd; 0 = draw the bar locally )
-@MB_LOCAL  0x8E0F74 ; ( 1 = also paint/feed the bar in the window )
-@CH_N      0x8E0F6C ;
-@CH_SLAB   0x8E1F40 ;
+RESERVE MB_W      4 ;
+RESERVE MB_HAS    4 ;
+RESERVE MB_XFD    4 ; ( /dev/menu fd; 0 = draw the bar locally )
+RESERVE MB_LOCAL  4 ; ( 1 = also paint/feed the bar in the window )
+RESERVE CH_N      4 ;
+RESERVE CH_SLAB 160 ; ( CH_MAX * CH_SIZE )
 @CH_MAX    8 ;
 @CH_SIZE   20 ;
 @CH_X       0 ;
@@ -1772,11 +1781,11 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 
 ( Labeled list — group-box chrome plus a selectable item column.
   Layout of the first five fields matches CH_ so list-draw can reuse
-  groupbox-draw. MM_APP_SMALL_STATE: slab at 0x8E5000, strings at 0x8E5100. )
-@LS_N      0x8E0F84 ;
-@LS_SLAB   0x8E5000 ;
-@LS_POOL   0x8E5100 ;
+  groupbox-draw. )
 @LS_MAX    4 ;
+RESERVE LS_N      4 ;
+RESERVE LS_SLAB 176 ; ( LS_MAX * LS_SIZE )
+RESERVE LS_POOL 8192 ; ( LS_MAX * LS_ITEM_MAX * LS_ITEM_LEN )
 @LS_ITEM_MAX 32 ;
 @LS_ITEM_LEN 64 ;
 @LS_SIZE   44 ;
@@ -1791,12 +1800,11 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 @LS_LASTT  32 ;
 @LS_LASTI  36 ;
 @LS_ACTIVE 40 ;
-@MN_SLAB   0x8E2A00 ;
-@MI_SLAB   0x8E2C00 ;
 @MN_MAX    8 ;
-@MI_MAX    48 ; ( Easel's 6-menu bar -- File/Edit/Goodies/Font/Size/Style -- needs
-                  33 items+seps; MI_SLAB (16 bytes/entry) still fits well under
-                  MB_XBUF at 0x8E3000 at this size )
+@MI_MAX    48 ; ( Easel's 6-menu bar -- File/Edit/Goodies/Font/Size/Style --
+                  needs 33 items+seps )
+RESERVE MN_SLAB 160 ; ( MN_MAX * MN_SIZE )
+RESERVE MI_SLAB 768 ; ( MI_MAX * MI_SIZE )
 @MN_SIZE   20 ;
 @MN_X       0 ;
 @MN_W       4 ;
@@ -1809,11 +1817,10 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 @MI_CHK     8 ;
 @MI_ROW    12 ;
 
-@COMP_TAB 0x8E2000 ;
-@COMP_N   0x8E0F2C ;
-@COMP_MAX 48 ; ( shared cap across every component kind -- menus, items, buttons,
-                 checkboxes, radios, sliders, scrollbars, lists; COMP_TAB
-                 (24 bytes/entry) still fits well under MN_SLAB at 0x8E2A00 )
+@COMP_MAX 48 ; ( shared cap across every component kind -- menus, items,
+                 buttons, checkboxes, radios, sliders, scrollbars, lists )
+RESERVE COMP_TAB 1152 ; ( COMP_MAX * C_SIZE )
+RESERVE COMP_N      4 ;
 @C_SIZE   24 ;
 @C_TEXT    0 ;
 @C_KIND    4 ;
@@ -1886,9 +1893,9 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
   just passes 0 for every handler param and drains events itself via
   this fixed-arity single-value wrapper around poll, instead of
   registering a callback. Docs/quill_fluxio.md Phase B6. )
-@UI_POLL_NAME 0x8E0F78 ;
-@UI_POLL_EV   0x8E0F7C ;
-@UI_POLL_VAL  0x8E0F80 ;
+RESERVE UI_POLL_NAME 4 ;
+RESERVE UI_POLL_EV   4 ;
+RESERVE UI_POLL_VAL  4 ;
 
 @poll-next ( -- ready? )
     poll
@@ -2485,7 +2492,10 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
     ] ?:
 ;
 
-@MB_XBUF 0x8E3000 ;
+( /dev/menu export wire buffer. Worst case is 2 + MN_MAX*(1+255+1) +
+  MI_MAX*(4+255) = 14490 bytes with maximum-length names; the hand-picked
+  layout only had 8192 here, so this also lifts a latent overflow. )
+RESERVE MB_XBUF 16384 ;
 
 @xcopy ( src dst n -- dst+n )
     3 frame! ( 0:n 1:dst 2:src )
@@ -3109,16 +3119,16 @@ FIELDS CTL name kind flags minx miny maxx maxy state value vmin vmax group label
 ;
 
 ( Overlay component table — modal menus. Does not touch the app table. )
-@OV_TAB   0x8E2400 ;
-@OV_SLAB  0x8E2600 ;
-@OV_Q     0x8E2500 ;
-@OV_N     0x8E0F30 ;
-@OV_BNN   0x8E0F34 ;
-@OV_DRAG  0x8E0F38 ;
-@OV_QH    0x8E0F3C ;
-@OV_QT    0x8E0F40 ;
-@OV_QC    0x8E0F44 ;
 @OV_MAX   8 ;
+RESERVE OV_TAB  192 ; ( OV_MAX * C_SIZE )
+RESERVE OV_SLAB 288 ; ( OV_MAX * BTN_SIZE )
+RESERVE OV_Q     96 ; ( Q_MAX * 12 )
+RESERVE OV_N      4 ;
+RESERVE OV_BNN    4 ;
+RESERVE OV_DRAG   4 ;
+RESERVE OV_QH     4 ;
+RESERVE OV_QT     4 ;
+RESERVE OV_QC     4 ;
 
 @ov-at ( i -- row ) C_SIZE * OV_TAB + ;
 

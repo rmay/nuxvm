@@ -347,6 +347,38 @@ dup PT.x@ swap PT.y@ +
 
 End the field list with `;`. Without it, the next word is treated as another field.
 
+### RESERVE
+
+`RESERVE` asks the compiler for memory instead of hand-picking an address:
+
+```forth
+RESERVE CUR_VAL 4 ;
+RESERVE GRID  240 ;
+```
+
+Each name becomes a word that pushes an address, exactly like the older
+`@CUR_VAL 0x8D0020 ;` idiom — so `LOADI`/`STOREI`, index arithmetic and
+`FIELDS` offsets all work the same way:
+
+```forth
+RESERVE COUNT 4 ;
+@bump COUNT LOADI 1 + COUNT STOREI ;
+0 COUNT STOREI  bump bump  COUNT LOADI .
+```
+
+Prints `2`.
+
+The byte count is required and positive; reservations are word-aligned and
+handed out in source order from a band the compiler owns, so two of them can
+never overlap. Inside a `MODULE` the name is qualified like any other word
+(`CALC::CUR_VAL`), which is how two modules share one cell.
+
+Use it for ordinary app and library state. Three things still take a
+hand-picked address: large buffers (the band is 1MB), anything the C host or
+the VM agrees on at a fixed address, and headless programs — the band sits
+above the memory a headless `nux` machine maps. See
+[`reserve-directive.md`](reserve-directive.md).
+
 ### A tiny window
 
 Graphics live in `lib/ui.lux`. After `APP::init` and `UI::new`:

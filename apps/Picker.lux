@@ -17,10 +17,10 @@ IMPORT STR
 IMPORT VFS
 
 ( MM_APP_SMALL_STATE / MM_APP_BULK_BUFFER )
-@focus 0x8A0000 ;
-@raw   0x910000 ;
-@tok   0x911000 ;
-@path  0x911100 ;
+RESERVE focus 4 ;
+RESERVE raw 4096 ;
+RESERVE tok 256 ;
+RESERVE path 256 ;
 
 @LUX T"Lux" ;
 @FX  T"Fluxio" ;
@@ -143,7 +143,7 @@ IMPORT VFS
 
 ( --- About Cloister --- )
 
-@about-open 0x8A0004 ;
+RESERVE about-open 4 ;
 
 @ABOUT_W 340 ;
 @ABOUT_H 260 ;
@@ -324,6 +324,7 @@ IMPORT VFS
 
 @start
     T"Cloister" APP::init
+    APP::grayscale!
     UI::new
     APP::width UI::menubar
     T"Cloister" UI::menu

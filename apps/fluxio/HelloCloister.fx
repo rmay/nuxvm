@@ -4,7 +4,7 @@
  *   ./bin/cloister            (pick HelloCloister.bin from the Fluxio column)
  *
  * Loops long enough to see, then HALTs back to the picker -- or press
- * Esc any time for the standardized pause menu (lib/escape_menu.fx),
+ * Esc any time for the System 6 System Menu (lib/escape_menu.fx),
  * which every Fluxio app should include the same way: poll kbd/mouse,
  * feed each event to escmenu_key/escmenu_mouse first (skipping the app's
  * own handling of anything they consume), draw the app's own frame, then
@@ -21,6 +21,7 @@ int main() {
     if (fd < 0) {
         return -1;
     }
+    set_chan(fd, 1); /* k8 grayscale */
     int kfd = vfs_open("/dev/kbd");
     int mfd = vfs_open("/dev/mouse");
 

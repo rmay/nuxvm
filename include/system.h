@@ -26,6 +26,12 @@
 #define FONT_GENEVA  2
 #define FONT_MONACO  3
 
+/* /dev/draw cmd 11 SetChan. 0 is RGB (default); k8/k2/k1 map ink to luma. */
+#define DRAW_CHAN_RGB 0
+#define DRAW_CHAN_K8  1
+#define DRAW_CHAN_K2  2
+#define DRAW_CHAN_K1  3
+
 typedef struct Machine Machine;
 
 typedef struct {
@@ -59,6 +65,7 @@ typedef struct System {
     uint32_t text_color;
     uint8_t font_id;
     uint8_t font_size;
+    uint8_t draw_chan; /* DRAW_CHAN_*: RGB / k8 / k2 / k1 */
 
     int32_t mouse_x;
     int32_t mouse_y;
@@ -126,6 +133,7 @@ void system_push_host_event(System* sys, uint32_t type, uint32_t data, uint32_t 
 void system_freeze_monotonic_ms(System* sys, uint32_t ms);
 void system_set_dialog_result(System* sys, const char* path);
 
+uint32_t system_map_color(const System* sys, uint32_t color);
 void system_fill_rect(System* sys, int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color);
 void system_fill_pat(System* sys, int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color, int pat);
 void system_draw_rect(System* sys, int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color);

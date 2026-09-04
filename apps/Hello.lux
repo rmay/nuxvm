@@ -5,9 +5,11 @@ INCLUDE "lib/app.lux"
 MODULE HELLO
 VERSION 400000
 
-( MM_APP_SMALL_STATE, same pocket as Snake/UIDemo/Picker — not 0x8E0000,
-  which is lib/ui.lux. )
-@tx 0x8A0000 ; @ty 0x8A0004 ;
+( Compiler-allocated. This app is the reason docs/memory-map.md has a
+  collision list: tx/ty were 0x8E000C/0x8E0010, which is lib/ui.lux's
+  control-list head, so every frame stored the text Y into it. )
+RESERVE tx 4 ;
+RESERVE ty 4 ;
 
 @on-frame
     ( Clear to black )
@@ -19,6 +21,7 @@ VERSION 400000
 
 @start
     T"Hello from Lux!" APP::init
+    APP::grayscale!
 
     ( Compute centered origin: "Hello" at scale 2 is 64px wide, 32px tall )
     APP::width 64 - 2 / tx STOREI

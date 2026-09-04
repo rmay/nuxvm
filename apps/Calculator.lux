@@ -18,14 +18,18 @@ IMPORT VFS
 IMPORT DRAW
 IMPORT EVENT
 
-( --- Calculator State --- )
-@CALC_X   0x8D000C ;
-@CALC_Y   0x8D0010 ;
-@CUR_VAL  0x8D0020 ; ( Current input being typed )
-@ACC_VAL  0x8D0024 ; ( Accumulator for operations )
-@PEND_OP  0x8D0028 ; ( 0=None, 1=Add, 2=Sub, 3=Mul, 4=Div )
-@DIRTY    0x8D002C ; ( 1 if needs redraw )
-@NEW_NUM  0x8D0030 ; ( 1 if next digit should clear CUR_VAL )
+( --- Calculator State ---
+  Addresses come from the compiler, not from docs/memory-map.md by hand:
+  RESERVE bump-allocates out of the reservation band so these cells can't
+  collide with lib/ui.lux, lib/app.lux or anything else linked in. See
+  docs/reserve-directive.md. )
+RESERVE CALC_X   4 ;
+RESERVE CALC_Y   4 ;
+RESERVE CUR_VAL  4 ; ( Current input being typed )
+RESERVE ACC_VAL  4 ; ( Accumulator for operations )
+RESERVE PEND_OP  4 ; ( 0=None, 1=Add, 2=Sub, 3=Mul, 4=Div )
+RESERVE DIRTY    4 ; ( 1 if needs redraw )
+RESERVE NEW_NUM  4 ; ( 1 if next digit should clear CUR_VAL )
 
 @k7 ( val -- ) drop 55 process-key ;
 @k8 ( val -- ) drop 56 process-key ;
@@ -168,6 +172,7 @@ IMPORT EVENT
 
 @start
     T"Calculator" APP::init
+    APP::grayscale!
     UI::new
     
     APP::width 220 - 2 / CALC_X STOREI

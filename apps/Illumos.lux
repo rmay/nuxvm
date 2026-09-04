@@ -21,24 +21,26 @@ IMPORT SF
 IMPORT CFF
 IMPORT MEMORY
 
-@FONT     0x900000 ;
-@PATH     0x910000 ;
-@PANG     0x910200 ;
-@HEXBUF   0x910380 ;
-@VFS_PATH 0x910500 ;
+( The loaded CFF font blob. CFF::LEN24 is the largest of the three
+  supported tile sizes, so that is the bound. )
+RESERVE FONT 18688 ;
+RESERVE PATH 512 ;
+RESERVE PANG 384 ;
+RESERVE HEXBUF 16 ;
+RESERVE VFS_PATH 512 ;
 
-@sel        0x911000 ;
-@file-dirty 0x911004 ;
-@guide      0x911008 ;
-@pang-len   0x91100C ;
-@drag-w     0x911010 ;
-@paint-m    0x911014 ;
-@save-as    0x911018 ;
-@cell       0x91101C ;
-@pang-x     0x911020 ;
-@pang-y     0x911024 ;
-@last-sel   0x911028 ; ( previously drawn collection selection, -1 = none yet )
-@col-full   0x91102C ; ( 1 = draw-collection must redraw all 256 cells )
+RESERVE sel 4 ;
+RESERVE file-dirty 4 ;
+RESERVE guide 4 ;
+RESERVE pang-len 4 ;
+RESERVE drag-w 4 ;
+RESERVE paint-m 4 ;
+RESERVE save-as 4 ;
+RESERVE cell 4 ;
+RESERVE pang-x 4 ;
+RESERVE pang-y 4 ;
+RESERVE last-sel 4 ; ( previously drawn collection selection, -1 = none yet )
+RESERVE col-full 4 ; ( 1 = draw-collection must redraw all 256 cells )
 
 @BAR_H     20 ;
 @ED_X      16 ;
@@ -52,12 +54,7 @@ IMPORT MEMORY
 @CLR_GRID  0xCCCCCC ;
 @CLR_HINT  0x444444 ;
 
-@make-vfs-path ( path-ptr -- vfs-path-ptr )
-    dup load-byte 47 = [ 1 + ] ?
-    T"/sys/file/" VFS_PATH STR::strcpy
-    VFS_PATH T"/sys/file/" STR::strlen + STR::strcpy
-    VFS_PATH
-;
+
 
 @mark-dirty ( -- )
     1 file-dirty STOREI
@@ -295,23 +292,15 @@ IMPORT MEMORY
 @glyph-bytes-n ( -- n ) CFF::glyph-bytes ;
 
 @snarf-glyph ( -- )
-    T"/sys/snarf" VFS::open dup 0 >= [
-        dup sel LOADI CFF::glyph glyph-bytes-n VFS::write drop
-        VFS::close drop
-    ] [ drop ] ?:
+    sel LOADI CFF::glyph glyph-bytes-n VFS::snarf-write drop
 ;
 
 @paste-glyph ( -- )
-    T"/sys/snarf" VFS::open dup 0 >= [
-        1 frame!
-        0 local@ CFF::scratch glyph-bytes-n VFS::read
-        glyph-bytes-n = [
-            CFF::scratch sel LOADI CFF::glyph glyph-bytes-n MEMORY::move-mem
-            mark-dirty
-        ] ?
-        0 local@ VFS::close drop
-        1 unframe!
-    ] [ drop ] ?:
+    CFF::scratch glyph-bytes-n VFS::snarf-read
+    glyph-bytes-n = [
+        CFF::scratch sel LOADI CFF::glyph glyph-bytes-n MEMORY::move-mem
+        mark-dirty
+    ] ?
 ;
 
 @cut-glyph ( -- )
@@ -320,7 +309,7 @@ IMPORT MEMORY
 ;
 
 @save-file ( -- )
-    PATH make-vfs-path 6 VFS::open-mode
+    PATH VFS_PATH VFS::sys-file 6 VFS::open-mode
     dup 0 >= [
         dup CFF::save drop
         VFS::close drop
@@ -333,7 +322,7 @@ IMPORT MEMORY
 @load-path ( path -- )
     dup load-byte 47 = [ 1 + ] ?
     PATH STR::strcpy
-    PATH make-vfs-path 0 VFS::open-mode
+    PATH VFS_PATH VFS::sys-file 0 VFS::open-mode
     dup 0 >= [
         dup CFF::load [
             sync-cell
@@ -567,6 +556,7 @@ IMPORT MEMORY
 
 @start
     T"Illumos" APP::init
+    APP::grayscale!
     FONT 16 CFF::use
     UI::new
     APP::width UI::menubar

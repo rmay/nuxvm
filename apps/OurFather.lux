@@ -24,8 +24,8 @@ IMPORT EVENT
 @Y_SHIFT 34 ;
 
 ( --- Small state --- )
-@font-grp 0x8A0000 ;
-@cur-font 0x8A0004 ;
+RESERVE font-grp 4 ;
+RESERVE cur-font 4 ;
 
 @set-font-and-redraw { id -- }
     id cur-font STOREI
@@ -113,6 +113,7 @@ IMPORT EVENT
 
 @start
     T"Our Father" APP::init
+    APP::grayscale!
     UI::new
     T"font" font-grp STOREI
     DRAW::GENEVA cur-font STOREI

@@ -28,42 +28,42 @@ IMPORT ICN
 
 @SLOT_BYTES 3072 ;             ( 32*32*3, fixed per-frame slot stride )
 @MAX_FRAMES 256 ;              ( shared frame-pixel bank, bump-allocated, never reclaimed within a session )
-@FRAME_BANK 0x900000 ;         ( 256*3072 = 786432 bytes )
+RESERVE FRAME_BANK 786432 ;    ( MAX_FRAMES * SLOT_BYTES )
 
 @SPRITE_REC_BYTES 96 ;         ( name(16) + count(4) + speed(4) + flist(16*4=64) = 88, padded )
 @MAX_SPRITES 16 ;
 @MAX_FRAMES_PER_SPRITE 16 ;
-@SPRITE_TAB 0x9C0000 ;         ( 16*96 = 1536 bytes )
-@ICON_BUF   0x9C0600 ;         ( one ICN::BYTES (32-byte) icon slot, for Import/Export Icon )
+RESERVE SPRITE_TAB 1536 ;      ( MAX_SPRITES * SPRITE_REC_BYTES )
+RESERVE ICON_BUF 32 ;          ( one ICN::BYTES icon slot, for Import/Export Icon )
 
 ( --- Small per-instance state --- )
-@doc-size      0x8A0000 ;
-@doc-nsprites  0x8A0004 ;
-@cur-sprite    0x8A0008 ;
-@cur-frame     0x8A000C ;
-@cur-color     0x8A0010 ;
-@drag          0x8A0014 ;
-@playing       0x8A0018 ;
-@play-tick     0x8A001C ;
-@play-frame    0x8A0020 ;
-@file-dirty    0x8A0024 ;
-@next-slot     0x8A0028 ;
-@editing-name  0x8A002C ;
-@edit-len      0x8A0030 ;
-@name-edit-mode 0x8A0034 ;
-@confirm-kind  0x8A0038 ;      ( 0=none, 1=delete-sprite confirm open )
-@save-as       0x8A003C ;
-@sprite-counter 0x8A0040 ;
-@icon-io       0x8A0044 ; ( 0=none, 1=Import Icon pending, 2=Export Icon pending -- which
+RESERVE doc-size 4 ;
+RESERVE doc-nsprites 4 ;
+RESERVE cur-sprite 4 ;
+RESERVE cur-frame 4 ;
+RESERVE cur-color 4 ;
+RESERVE drag 4 ;
+RESERVE playing 4 ;
+RESERVE play-tick 4 ;
+RESERVE play-frame 4 ;
+RESERVE file-dirty 4 ;
+RESERVE next-slot 4 ;
+RESERVE editing-name 4 ;
+RESERVE edit-len 4 ;
+RESERVE name-edit-mode 4 ;
+RESERVE confirm-kind 4 ;      ( 0=none, 1=delete-sprite confirm open )
+RESERVE save-as 4 ;
+RESERVE sprite-counter 4 ;
+RESERVE icon-io 4 ; ( 0=none, 1=Import Icon pending, 2=Export Icon pending -- which
                             branch on-sf-ok takes; see menu-import-icon/menu-export-icon )
 
-@EDIT_BUF  0x8A0100 ;          ( 32 bytes: sprite-name text-input buffer )
-@PATH      0x8A0140 ;          ( 256 bytes: current file path )
-@VFS_PATH  0x8A0240 ;          ( 256 bytes: /sys/file/ scratch )
-@NBUF      0x8A0340 ;          ( 32 bytes: int-to-str scratch )
-@HDR       0x8A0380 ;          ( 16 bytes: file-header staging )
-@PAL_RESULT 0x8A0390 ;
-@ICON_PATH  0x8A0400 ;          ( 256 bytes: Import/Export Icon's own path -- kept apart
+RESERVE EDIT_BUF 32 ;          ( 32 bytes: sprite-name text-input buffer )
+RESERVE PATH 256 ;          ( 256 bytes: current file path )
+RESERVE VFS_PATH 256 ;          ( 256 bytes: /sys/file/ scratch )
+RESERVE NBUF 32 ;          ( 32 bytes: int-to-str scratch )
+RESERVE HDR 16 ;          ( 16 bytes: file-header staging )
+RESERVE PAL_RESULT 4 ;
+RESERVE ICON_PATH 256 ;          ( 256 bytes: Import/Export Icon's own path -- kept apart
                                    from PATH so it never clobbers the sprite sheet's save
                                    location; see menu-import-icon/menu-export-icon )
 
@@ -480,15 +480,8 @@ IMPORT ICN
 
 ( --- File I/O --- )
 
-@make-vfs-path ( path-ptr -- vfs-path-ptr )
-    dup load-byte 47 = [ 1 + ] ?
-    T"/sys/file/" VFS_PATH STR::strcpy
-    VFS_PATH T"/sys/file/" STR::strlen + STR::strcpy
-    VFS_PATH
-;
-
 @do-save ( -- )
-    PATH make-vfs-path 6 VFS::open-mode
+    PATH VFS_PATH VFS::sys-file 6 VFS::open-mode
     dup 0 >= [
         GIRD fd
             T"CSF1" HDR STR::strcpy
@@ -506,7 +499,7 @@ IMPORT ICN
 ;
 
 @load-file ( -- )
-    PATH make-vfs-path 0 VFS::open-mode
+    PATH VFS_PATH VFS::sys-file 0 VFS::open-mode
     dup 0 >= [
         GIRD fd
             fd HDR 12 VFS::read
@@ -555,7 +548,7 @@ IMPORT ICN
   the common case is doc-size = 16 (via menu-new-16 or an imported icon),
   so nothing is clipped; a larger canvas just exports its corner. )
 @do-export-icon ( -- )
-    ICON_PATH make-vfs-path 6 VFS::open-mode
+    ICON_PATH VFS_PATH VFS::sys-file 6 VFS::open-mode
     dup 0 >= [
         GIRD fd
             ICON_BUF 0 ICN::clear
@@ -586,7 +579,7 @@ IMPORT ICN
   stamps the loaded icon's ink pixels in black -- new-doc's blank-slot
   already fills the frame with KEY_COLOR, so only ink pixels need writing. )
 @do-import-icon ( -- )
-    ICON_PATH make-vfs-path 0 VFS::open-mode
+    ICON_PATH VFS_PATH VFS::sys-file 0 VFS::open-mode
     dup 0 >= [
         GIRD fd
             fd ICON_BUF 1 ICN::load

@@ -390,10 +390,16 @@ void test_bus_read() {
     machine_free(m);
 }
 
-void test_time_scratch_is_ram() {
-    printf("Testing /dev/time scratch is ordinary RAM...\n");
+/* Guest scratch buffers are ordinary RAM, not device ports -- the property
+ * that had to hold when I/O moved from MMIO to the Plan 9 VFS. Checked at
+ * two addresses: the shared Lux flags band, and the reservation band, which
+ * is where lib/time.lux's /dev/time snapshot actually lives now that it is
+ * compiler-allocated (docs/reserve-directive.md). */
+static void assert_addr_is_ram(uint32_t addr) {
     uint8_t prog[] = {
-        OP_PUSH, 0x00, 0x50, 0x01, 0x00, /* 0x500100 TIME::BUF */
+        OP_PUSH,
+        (uint8_t) ((addr >> 24) & 0xFF), (uint8_t) ((addr >> 16) & 0xFF),
+        (uint8_t) ((addr >> 8) & 0xFF),  (uint8_t) (addr & 0xFF),
         OP_LOADI,
         OP_HALT
     };
@@ -406,7 +412,14 @@ void test_time_scratch_is_ram() {
     assert(vm_pop(m->cpu, &v) == true);
     assert(v == 0);
     machine_free(m);
-    printf("  time scratch RAM: OK\n");
+}
+
+void test_time_scratch_is_ram() {
+    printf("Testing guest scratch is ordinary RAM...\n");
+    assert_addr_is_ram(MM_SHARED_LUX_FLAGS_BASE + 0x100);
+    assert_addr_is_ram(MM_LUX_RESERVE_BASE);
+    assert_addr_is_ram(MM_LUX_RESERVE_END - 4);
+    printf("  scratch RAM: OK\n");
 }
 
 void test_yield() {

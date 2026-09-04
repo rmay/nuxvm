@@ -45,6 +45,9 @@ static const char* get_output(void) {
 // Helpers
 // -----------------------------------------------------------------------------
 static uint8_t* must_compile(const char* source, size_t* out_len);
+/* Defined further down, next to the app-driving harness; declared here
+ * because the per-app cell accessors above it use it. */
+static uint32_t lux_reservation_addr(const char* src, const char* name);
 
 static uint8_t* must_compile(const char* source, size_t* out_len) {
     uint8_t* bc = compile_source(source, HEADLESS_BASE_ADDRESS, out_len, false);
@@ -1483,6 +1486,196 @@ static void test_fields_directive(void) {
     printf("  FIELDS: OK\n");
 }
 
+/* RESERVE hands out addresses in MM_LUX_RESERVE_BASE..END (12MB up), which
+ * is above the 4MB machine run_and_capture() builds -- these tests need a
+ * VM with the full map, the way Cloister sizes one. */
+static VM* run_full_map(const uint8_t* bc, size_t len) {
+    VM* vm = vm_create(bc, (uint32_t)len, HEADLESS_BASE_ADDRESS, MM_TOTAL_MEMORY, false);
+    assert(vm != NULL);
+    vm_run(vm);
+    return vm;
+}
+
+/* lib/sf.lux's breadcrumb dropdown keeps up to 16 path-component offsets at
+ * `dd-off`, indexed `dd-n * 4 + dd-off`. `picked` and `cancld` were
+ * hand-placed 4 and 8 bytes past it, i.e. inside that array -- so walking a
+ * path with two or more components wrote component offsets straight through
+ * the "user picked a file" and "user cancelled" flags. Exactly the sub-range
+ * overlap the duplicate-address check cannot see, since a hand-picked
+ * constant carries no size.
+ *
+ * Runs on the full map: SF state is above the 4MB run_and_capture() machine. */
+static void test_sf_dropdown_does_not_clobber_result_flags(void) {
+    printf("Testing lib/sf.lux: breadcrumb table clear of the pick/cancel flags...\n");
+    size_t len;
+
+    /* A three-component path drives dd-build through several entries. */
+    const char* src =
+        "INCLUDE \"lib/sf.lux\"\n"
+        "MODULE MAIN\n"
+        "IMPORT SF\n"
+        "SF::clear-result!\n"
+        "T\"/apps/deep/leaf\" SF::cur STR::strcpy\n"
+        "SF::dd-build\n"
+        "SF::picked? SF::cancelled?\n";
+    uint8_t* bc = must_compile(src, &len);
+    VM* vm = run_full_map(bc, len);
+
+    int32_t cancelled, picked;
+    assert(vm_pop(vm, &cancelled));
+    assert(vm_pop(vm, &picked));
+
+    /* Building the breadcrumb is navigation, not a choice: neither flag may move. */
+    assert(picked == 0);
+    assert(cancelled == 0);
+
+    vm_free(vm);
+    free(bc);
+    printf("  SF breadcrumb vs result flags: OK\n");
+}
+
+static void test_reserve_directive(void) {
+    printf("Testing RESERVE directive...\n");
+    size_t len;
+    uint8_t* bc;
+    VM* vm;
+    int32_t a, b;
+
+    /* Distinct, word-aligned, in-band addresses, handed out in source order. */
+    bc = must_compile("RESERVE A 4 ;\nRESERVE B 4 ;\nA B\n", &len);
+    vm = run_full_map(bc, len);
+    assert(vm_pop(vm, &b) && vm_pop(vm, &a));
+    assert(a == (int32_t)MM_LUX_RESERVE_BASE);
+    assert(b == a + 4);
+    assert((a & 3) == 0 && (b & 3) == 0);
+    assert(b < (int32_t)MM_LUX_RESERVE_END);
+    vm_free(vm); free(bc);
+
+    /* A reserved cell is ordinary storage: store through the name, read back. */
+    bc = must_compile("RESERVE CUR 4 ;\n42 CUR STOREI\nCUR LOADI\n", &len);
+    vm = run_full_map(bc, len);
+    assert(vm_pop(vm, &a) && a == 42);
+    vm_free(vm); free(bc);
+
+    /* A sized reservation is a buffer: the next one starts past it, and
+     * indexing off the base stays inside it. */
+    bc = must_compile(
+        "RESERVE GRID 240 ;\n"
+        "RESERVE AFTER 4 ;\n"
+        "7 GRID 236 + STOREI\n"
+        "GRID 236 + LOADI\n"
+        "AFTER GRID -\n", &len);
+    vm = run_full_map(bc, len);
+    assert(vm_pop(vm, &b) && b == 240);
+    assert(vm_pop(vm, &a) && a == 7);
+    vm_free(vm); free(bc);
+
+    /* Non-multiple-of-4 sizes still leave the next reservation aligned. */
+    bc = must_compile("RESERVE ODD 5 ;\nRESERVE NEXT 4 ;\nNEXT ODD -\n", &len);
+    vm = run_full_map(bc, len);
+    assert(vm_pop(vm, &a) && a == 8);
+    vm_free(vm); free(bc);
+
+    /* MODULE-qualified, and reachable from another module -- this is what
+     * makes a shared cell (UI::APP_MODAL / APP::modal-f) expressible. */
+    bc = must_compile(
+        "MODULE CALC\n"
+        "RESERVE CUR_VAL 4 ;\n"
+        "MODULE MAIN\n"
+        "IMPORT CALC\n"
+        "9 CALC::CUR_VAL STOREI\n"
+        "CALC::CUR_VAL LOADI\n", &len);
+    vm = run_full_map(bc, len);
+    assert(vm_pop(vm, &a) && a == 9);
+    vm_free(vm); free(bc);
+
+    /* Reservations survive a word body -- the name resolves the same way a
+     * hand-picked address constant does. */
+    bc = must_compile(
+        "RESERVE N 4 ;\n"
+        "@bump N LOADI 1 + N STOREI ;\n"
+        "0 N STOREI bump bump bump N LOADI\n", &len);
+    vm = run_full_map(bc, len);
+    assert(vm_pop(vm, &a) && a == 3);
+    vm_free(vm); free(bc);
+
+    printf("  RESERVE: OK\n");
+}
+
+static void test_reserve_errors(void) {
+    printf("Testing RESERVE error cases...\n");
+    size_t len;
+    uint8_t* bc;
+
+    /* Sizes are derived from the band, not written as literals, so widening
+     * or narrowing MM_LUX_RESERVE_* can't silently turn these into
+     * reservations that fit. */
+    const unsigned band = (unsigned)(MM_LUX_RESERVE_END - MM_LUX_RESERVE_BASE);
+    char prog[256];
+
+    /* Bigger than the whole band: hard error, naming the band. */
+    snprintf(prog, sizeof(prog), "RESERVE HUGE %u ;\n1\n", band + 4);
+    bc = compile_capturing_stderr(prog, &len);
+    assert(bc == NULL);
+    assert(strstr(stderr_capture, "out of reservation space") != NULL);
+    assert(strstr(stderr_capture, "docs/reserve-directive.md") != NULL);
+
+    /* Exhausting the band across several reservations is the same error. */
+    snprintf(prog, sizeof(prog),
+             "RESERVE A %u ;\nRESERVE B %u ;\nRESERVE C %u ;\n1\n",
+             band / 2, band / 2, band / 2);
+    bc = compile_capturing_stderr(prog, &len);
+    assert(bc == NULL);
+    assert(strstr(stderr_capture, "out of reservation space") != NULL);
+
+    /* A missing or non-numeric byte count is an error, not a silent zero. */
+    bc = compile_capturing_stderr("RESERVE A ;\n1\n", &len);
+    assert(bc == NULL);
+    assert(strstr(stderr_capture, "expects a byte count") != NULL);
+
+    bc = compile_capturing_stderr("RESERVE 4 ;\n1\n", &len);
+    assert(bc == NULL);
+
+    bc = compile_capturing_stderr("RESERVE A 0 ;\n1\n", &len);
+    assert(bc == NULL);
+    assert(strstr(stderr_capture, "must be positive") != NULL);
+
+    printf("  RESERVE errors: OK\n");
+}
+
+static void test_reserve_overlap_warning(void) {
+    printf("Testing hand-picked constant inside a RESERVE span...\n");
+    size_t len;
+    uint8_t* bc;
+
+    /* The containment case the exact-duplicate scan can never catch: a
+     * constant pointing into the middle of a reserved buffer. The address is
+     * computed from the band base -- GRID is the first reservation in this
+     * program, so it starts there -- rather than written as a literal that
+     * would go stale if the band moved. */
+    char prog[256];
+    snprintf(prog, sizeof(prog),
+             "RESERVE GRID 240 ;\n@SNEAK 0x%X ;\n1\n",
+             (unsigned)(MM_LUX_RESERVE_BASE + 0x10));
+    bc = compile_capturing_stderr(prog, &len);
+    assert(bc != NULL);
+    assert(strstr(stderr_capture, "SNEAK") != NULL);
+    assert(strstr(stderr_capture, "GRID") != NULL);
+    assert(strstr(stderr_capture, "reserved") != NULL);
+    free(bc);
+
+    /* A constant outside every reserved span is silent. */
+    bc = compile_capturing_stderr(
+        "RESERVE GRID 240 ;\n"
+        "@FINE 0x8A0000 ;\n"
+        "1\n", &len);
+    assert(bc != NULL);
+    assert(strstr(stderr_capture, "Warning:") == NULL);
+    free(bc);
+
+    printf("  RESERVE overlap warning: OK\n");
+}
+
 static void test_yield_and_explicit_halt(void) {
     printf("Testing YIELD and explicit HALT...\n");
     size_t len;
@@ -2009,14 +2202,19 @@ static void quill_lux_read_doc(const char* name, uint8_t* got, int cap, int* n) 
     system_free(check);
 }
 
-static int quill_lux_blue_pixels(Machine* m, int x0, int x1, int y0, int y1) {
+/* Hex caret is 0x0000FF, stored as Rec. 601 k8 luma (29*255)>>8 = 28. */
+#define QUILL_HEX_CARET_LUMA 28
+
+static int quill_lux_hex_caret_pixels(Machine* m, int x0, int x1, int y0, int y1) {
     int sw = m->system->screen_width;
     uint8_t* fb = m->system->screen_pixels;
     int count = 0;
     for (int y = y0; y < y1; y++) {
         for (int x = x0; x < x1; x++) {
             uint8_t* p = fb + (size_t) y * (size_t) sw * 4 + (size_t) x * 4;
-            if (p[3] > 0xB0 && p[1] < 0x40 && p[2] < 0x40) {
+            if (p[1] == QUILL_HEX_CARET_LUMA &&
+                p[2] == QUILL_HEX_CARET_LUMA &&
+                p[3] == QUILL_HEX_CARET_LUMA) {
                 count++;
             }
         }
@@ -2240,7 +2438,7 @@ static void test_quill_lux_hex_caret_is_hollow_blue_box(void) {
     int32_t mc, kc;
     quill_lux_bind(m, &mc, &kc);
     quill_lux_pump(m, 8);
-    assert(quill_lux_blue_pixels(m, 0, 500, 40, 60) == 0);
+    assert(quill_lux_hex_caret_pixels(m, 0, 500, 40, 60) == 0);
 
     quill_lux_view_toggle_hex(m, mc);
 
@@ -2250,7 +2448,9 @@ static void test_quill_lux_hex_caret_is_hollow_blue_box(void) {
     for (int y = 40; y < 60; y++) {
         for (int x = 0; x < 300; x++) {
             uint8_t* p = fb + (size_t) y * (size_t) sw * 4 + (size_t) x * 4;
-            if (p[3] > 0xB0 && p[1] < 0x40 && p[2] < 0x40) {
+            if (p[1] == QUILL_HEX_CARET_LUMA &&
+                p[2] == QUILL_HEX_CARET_LUMA &&
+                p[3] == QUILL_HEX_CARET_LUMA) {
                 if (x < minx) minx = x;
                 if (x > maxx) maxx = x;
                 if (y < miny) miny = y;
@@ -2260,8 +2460,8 @@ static void test_quill_lux_hex_caret_is_hollow_blue_box(void) {
     }
     assert(maxx >= minx);
     int box_area = (maxx - minx + 1) * (maxy - miny + 1);
-    int blue_count = quill_lux_blue_pixels(m, minx, maxx + 1, miny, maxy + 1);
-    assert(blue_count * 2 < box_area);
+    int caret_count = quill_lux_hex_caret_pixels(m, minx, maxx + 1, miny, maxy + 1);
+    assert(caret_count * 2 < box_area);
 
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
@@ -2803,11 +3003,18 @@ static void test_tabula_high_row_sparse_save(void) {
 
 }
 
-#define TABULA_POOL      0x900000
+/* apps/Tabula.lux's pool and caches are RESERVE'd; addresses come from the
+ * compiler, sizes from MAX_CELLS * CELL_SIZE in the app itself. */
+static uint32_t tabula_cell(const char* field) {
+    char q[96];
+    snprintf(q, sizeof(q), "MAIN::%s", field);
+    return lux_reservation_addr("apps/Tabula.lux", q);
+}
+#define TABULA_POOL      tabula_cell("POOL")
 #define TABULA_CELL_SIZE 72
-#define TABULA_USED_N    0x8A0150
-#define TABULA_CACHE_VAL 0x9F2500
-#define TABULA_CACHE_FLG 0x9FA500
+#define TABULA_USED_N    tabula_cell("used-n")
+#define TABULA_CACHE_VAL tabula_cell("CACHE_VAL")
+#define TABULA_CACHE_FLG tabula_cell("CACHE_FLG")
 #define TABULA_FLG_OK    1
 #define TABULA_FLG_ERR   2
 #define TABULA_FLG_STOP  5
@@ -3162,6 +3369,7 @@ static void test_lux_apps_compile(void) {
         { "apps/Quill.lux", "apps/Quill.bin" },
         { "apps/Breakout.lux", "apps/Breakout.bin" },
         { "apps/Snake.lux", "apps/Snake.bin" },
+        { "apps/RoadEscape.lux", "apps/RoadEscape.bin" },
         { "apps/Tabula.lux", "apps/Tabula.bin" },
         { "apps/UIDemo.lux", "apps/UIDemo.bin" },
         { "apps/Whittle.lux", "apps/Whittle.bin" },
@@ -3179,14 +3387,21 @@ static void test_lux_apps_compile(void) {
 }
 
 /* apps/Breakout.lux state cells (see the @-constants at the top of the app). */
-#define BREAKOUT_BX     0x880000
-#define BREAKOUT_BY     0x880004
-#define BREAKOUT_VY     0x88000C
-#define BREAKOUT_PX     0x880010
-#define BREAKOUT_PW     0x880014
-#define BREAKOUT_STATE  0x880020
-#define BREAKOUT_LIVES  0x880024
-#define BREAKOUT_LEFT_N 0x880034
+/* apps/Breakout.lux's state is RESERVE'd; ask the compiler where each cell
+ * landed rather than repeating an address here (docs/reserve-directive.md). */
+static uint32_t breakout_cell(const char* field) {
+    char q[96];
+    snprintf(q, sizeof(q), "BREAKOUT::%s", field);
+    return lux_reservation_addr("apps/Breakout.lux", q);
+}
+#define BREAKOUT_BX     breakout_cell("bx")
+#define BREAKOUT_BY     breakout_cell("by")
+#define BREAKOUT_VY     breakout_cell("vy")
+#define BREAKOUT_PX     breakout_cell("px")
+#define BREAKOUT_PW     breakout_cell("pw")
+#define BREAKOUT_STATE  breakout_cell("state")
+#define BREAKOUT_LIVES  breakout_cell("lives")
+#define BREAKOUT_LEFT_N breakout_cell("left-n")
 #define BREAKOUT_S_TITLE 0
 #define BREAKOUT_S_SERVE 1
 #define BREAKOUT_S_PLAY  2
@@ -3206,6 +3421,13 @@ static void app_sim_steps(Machine* m, int n) {
     for (int i = 0; i < n; i++) {
         m->system->time_ms += APP_STEP_MS;
         quill_lux_pump(m, 1);
+        /* A guest fault leaves the VM stopped without halting it, and the loop
+         * above would otherwise pump a dead machine in silence -- every state
+         * cell frozen at whatever it held when the fault hit, which reads as a
+         * plausible-looking simulation that has simply stopped moving. Road
+         * Escape's crate art shipped one argument short of DRAW::fill-rect
+         * exactly once, and this is the line that names it. */
+        assert(m->cpu->halted || m->cpu->running);
     }
 }
 
@@ -3223,6 +3445,108 @@ static void app_hold_key(Machine* m, int32_t kc, int type, int key) {
 
 static int32_t app_cell(Machine* m, uint32_t addr) {
     return tabula_be32(m->cpu->memory + addr);
+}
+
+/* Resolve a RESERVE'd cell's address out of luxc's -symbols dump.
+ *
+ * apps/Calculator.lux no longer hard-codes its state addresses -- the
+ * compiler hands them out (docs/reserve-directive.md) -- so a host-driven
+ * test can't `#define` them the way the Snake/Breakout/Tabula tests above
+ * still do. This is the migration path for those: ask the compiler where
+ * it put the cell instead of writing the number down a second place.
+ * Deliberately a flat scan rather than a JSON parser; the dump's shape is
+ * fixed by write_symtab() in src/luxc.c. */
+static uint32_t lux_reservation_addr(const char* src, const char* name) {
+    /* One compile per source file, not per lookup: several tests ask for a
+     * handful of cells from the same app. */
+    static char cached_src[256];
+    static char buf[1 << 20];
+    if (strcmp(cached_src, src) != 0) {
+        char cmd[512];
+        const char* json = "/tmp/nuxvm_test_symtab.json";
+        snprintf(cmd, sizeof(cmd),
+                 "./bin/luxc -target graphical -symbols %s -o /tmp/nuxvm_test_symtab.bin %s "
+                 ">/tmp/nuxvm_test_app_build.log 2>&1",
+                 json, src);
+        assert(system(cmd) == 0);
+
+        FILE* f = fopen(json, "rb");
+        assert(f != NULL);
+        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+        buf[n] = '\0';
+        snprintf(cached_src, sizeof(cached_src), "%s", src);
+    }
+
+    /* Search inside "reservations" only: "symbols" lists the same names
+     * against their PUSH/RET stub's *code* address, and comes first. */
+    char* arr = strstr(buf, "\"reservations\"");
+    assert(arr != NULL);
+
+    char needle[160];
+    snprintf(needle, sizeof(needle), "\"name\": \"%s\", \"address\": ", name);
+    char* at = strstr(arr, needle);
+    assert(at != NULL);
+    return (uint32_t) strtoul(at + strlen(needle), NULL, 10);
+}
+
+/* Calculator was the first app converted from hand-picked hex addresses to
+ * RESERVE. Its state physically moved (0x8D00xx -> the reservation band), so
+ * this drives the real UI through a calculation to prove the relocation is
+ * transparent: nothing about the app depended on where those cells sat. */
+static void test_calculator_reserved_state(void) {
+    printf("Testing apps/Calculator.lux: arithmetic through RESERVE'd state...\n");
+
+    FILE* probe = fopen("./bin/luxc", "rb");
+    if (!probe) {
+        printf("  (skipped: ./bin/luxc not built yet -- run from repo root after `make`)\n");
+        return;
+    }
+    fclose(probe);
+
+    uint32_t cur_val = lux_reservation_addr("apps/Calculator.lux", "CALC::CUR_VAL");
+    uint32_t acc_val = lux_reservation_addr("apps/Calculator.lux", "CALC::ACC_VAL");
+    uint32_t calc_x  = lux_reservation_addr("apps/Calculator.lux", "CALC::CALC_X");
+    uint32_t calc_y  = lux_reservation_addr("apps/Calculator.lux", "CALC::CALC_Y");
+
+    /* Every cell landed in the compiler-managed band, word-aligned. */
+    assert(cur_val >= MM_LUX_RESERVE_BASE && cur_val < MM_LUX_RESERVE_END);
+    assert(acc_val >= MM_LUX_RESERVE_BASE && acc_val < MM_LUX_RESERVE_END);
+    assert((cur_val & 3) == 0 && (acc_val & 3) == 0);
+    assert(cur_val != acc_val && cur_val != calc_x && calc_x != calc_y);
+
+    Machine* m = lux_app_machine("apps/Calculator.lux", "apps/Calculator.bin");
+    if (!m) return;
+
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 30);
+
+    /* The keypad is laid out relative to CALC_X/CALC_Y, which the app
+     * computes at startup -- read them back rather than assuming a window
+     * size. Offsets and the 48x48 key size come from build-keys. */
+    int32_t bx = app_cell(m, calc_x);
+    int32_t by = app_cell(m, calc_y);
+    assert(bx > 0 && by > 0);
+
+    /* 7 * 6 = 42, clicked the way a user would. */
+    quill_lux_click(m, mc, bx + 10 + 24,  by + 65 + 24);   /* 7 */
+    quill_lux_click(m, mc, bx + 166 + 24, by + 117 + 24);  /* * */
+    quill_lux_click(m, mc, bx + 114 + 24, by + 117 + 24);  /* 6 */
+    quill_lux_click(m, mc, bx + 114 + 24, by + 221 + 24);  /* = */
+    quill_lux_pump(m, 10);
+    assert(app_cell(m, cur_val) == 42);
+
+    /* C clears both the display and the accumulator. */
+    quill_lux_click(m, mc, bx + 10 + 24, by + 221 + 24);   /* C */
+    quill_lux_pump(m, 10);
+    assert(app_cell(m, cur_val) == 0);
+    assert(app_cell(m, acc_val) == 0);
+
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    printf("  Calculator RESERVE'd state: OK\n");
 }
 
 /* The paddle moves while an arrow key is *held*, which is the one piece of
@@ -3294,16 +3618,20 @@ static void test_breakout_paddle_hold(void) {
 }
 
 /* apps/Snake.lux state cells (see the @-constants at the top of the app). */
-#define SNAKE_HEAD  0x8A0000
-#define SNAKE_STATE 0x8A0018
-#define SNAKE_TICK  0x8A001C
-#define SNAKE_SPEED 0x8A0020
+/* apps/Snake.lux's state is RESERVE'd, so its addresses are the compiler's
+ * to choose -- looked up from the -symbols dump instead of written down a
+ * second time here. See lux_reservation_addr(). */
 
 /* Snake moved onto the same fixed-timestep clock as Breakout: `tick`/`speed`
  * now count simulation steps rather than rendered frames. Check the crawl
  * still happens, and happens on the clock rather than on the frame. */
 static void test_snake_tick_clock(void) {
     printf("Testing apps/Snake.lux: the snake crawls on the simulation clock...\n");
+    uint32_t SNAKE_HEAD  = lux_reservation_addr("apps/Snake.lux", "SNAKE::head");
+    uint32_t SNAKE_STATE = lux_reservation_addr("apps/Snake.lux", "SNAKE::state");
+    uint32_t SNAKE_TICK  = lux_reservation_addr("apps/Snake.lux", "SNAKE::tick");
+    uint32_t SNAKE_SPEED = lux_reservation_addr("apps/Snake.lux", "SNAKE::speed");
+
     Machine* m = lux_app_machine("apps/Snake.lux", "apps/Snake.bin");
     if (!m) return;
 
@@ -3348,8 +3676,8 @@ static void test_snake_tick_clock(void) {
  * draw. Breakout's paddle is the cleanest probe: it moves PAD_SPEED px per
  * step, so px is a direct step counter. */
 /* Breakout's draw positions after interpolation (see @dbx/@dby/@dpx). */
-#define BREAKOUT_DBX 0x880080
-#define BREAKOUT_DBY 0x880084
+#define BREAKOUT_DBX breakout_cell("dbx")
+#define BREAKOUT_DBY breakout_cell("dby")
 
 /* A fixed 16ms step never divides a ~16.67ms frame, so roughly every 24th
  * frame runs two simulation steps. Painting raw simulation state made that
@@ -3533,6 +3861,369 @@ static void test_breakout_ball_play(void) {
     printf("  Breakout ball: OK\n");
 }
 
+/* apps/RoadEscape.lux state cells (see the @-constants at the top of the app). */
+/* apps/RoadEscape.lux's state is RESERVE'd -- addresses come from the
+ * compiler's -symbols dump, not from a copy kept here. */
+static uint32_t re_cell(const char* field) {
+    char q[96];
+    snprintf(q, sizeof(q), "ROADESCAPE::%s", field);
+    return lux_reservation_addr("apps/RoadEscape.lux", q);
+}
+#define RE_STATE   re_cell("state")
+#define RE_LIVES   re_cell("lives")
+#define RE_SCORE   re_cell("score")
+#define RE_SPEED   re_cell("speed")
+#define RE_DIST    re_cell("dist")
+#define RE_CARX    re_cell("carx")
+#define RE_HEAD    re_cell("head")
+#define RE_SPAWN_T re_cell("spawn-t")
+#define RE_FUEL     re_cell("fuel")
+#define RE_AMMO     re_cell("ammo")
+#define RE_SPAWN_P  re_cell("spawn-p")
+#define RE_PICKUP   re_cell("pickup")
+#define RE_FUEL_MAX 12000
+#define RE_AMMO_START 20
+#define RE_AMMO_CRATE 25
+#define RE_BLINK    re_cell("blink")
+#define RE_DRY      re_cell("dry")
+#define RE_S_OVER   3
+#define RE_ROAD    re_cell("road")
+#define RE_ENEMY   re_cell("enemy")
+#define RE_NSLICE  92
+#define RE_ROAD_W  200
+#define RE_CAR_W   20
+#define RE_S_TITLE 0
+#define RE_S_PLAY  1
+#define RE_S_CRASH 2
+
+/* Left kerb of the slice the player's car sits in -- ROADESCAPE::kerb-at,
+ * recomputed host-side from the ring. The car's y is APP::height - CAR_GAP. */
+static int32_t road_kerb_at(Machine* m, int32_t y) {
+    int32_t scroll = (app_cell(m, RE_DIST) % (8 * 256)) / 256;
+    int32_t j = (y - 44 + 8 - scroll) / 8;   /* 44 == BAR_H */
+    if (j < 0) j = 0;
+    if (j > RE_NSLICE - 1) j = RE_NSLICE - 1;
+    int32_t idx = (app_cell(m, RE_HEAD) + j) % RE_NSLICE;
+    return app_cell(m, RE_ROAD + 4 * idx);
+}
+
+/* The road is a ring of slices rather than an array that shifts, and traffic
+ * rides an offset from the kerb rather than an absolute x, so the two things
+ * worth pinning are that the ring stays a *continuous* road as it scrolls and
+ * that leaving it costs a life. */
+static void test_roadescape_road(void) {
+    printf("Testing apps/RoadEscape.lux: scrolling road, steering, crashes...\n");
+    Machine* m = lux_app_machine("apps/RoadEscape.lux", "apps/RoadEscape.bin");
+    if (!m) return;
+
+    system_freeze_monotonic_ms(m->system, 1000);
+
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    app_sim_steps(m, 30);
+    assert(app_cell(m, RE_STATE) == RE_S_TITLE);
+    /* The title screen is idle: nothing scrolls until a game starts. */
+    assert(app_cell(m, RE_DIST) == 0);
+
+    app_hold_key(m, kc, 0, 13);
+    app_hold_key(m, kc, 1, 13);
+    app_sim_steps(m, 10);
+    assert(app_cell(m, RE_STATE) == RE_S_PLAY);
+    assert(app_cell(m, RE_LIVES) == 3);
+
+    /* The road scrolls on its own, and distance is the score's floor. */
+    int32_t d0 = app_cell(m, RE_DIST);
+    assert(d0 > 0);
+    app_sim_steps(m, 60);
+    assert(app_cell(m, RE_DIST) > d0);
+    assert(app_cell(m, RE_SCORE) > 0);
+
+        /* Every slice of the ring is a legal kerb and no two neighbours are more
+     * than the 2px-per-slice curve apart: a road that scrolls by moving an
+     * index rather than the data still has to come out continuous. */
+    int32_t head = app_cell(m, RE_HEAD);
+    for (int j = 0; j < RE_NSLICE - 1; j++) {
+        int32_t a = app_cell(m, RE_ROAD + 4 * ((head + j) % RE_NSLICE));
+        int32_t b = app_cell(m, RE_ROAD + 4 * ((head + j + 1) % RE_NSLICE));
+        int32_t d = a > b ? a - b : b - a;
+        assert(d <= 2);
+        assert(a >= 24 && a <= 960 - RE_ROAD_W - 24);
+    }
+
+    /* Hold right and the car runs off the shoulder. The kerb drifts at most
+     * 2px a slice against 4px/step of steering, so it loses that race
+     * whichever way the road happens to be curving -- but stop stepping the
+     * moment it does, or the respawned car would just drive off again. */
+    int32_t lives0 = app_cell(m, RE_LIVES);
+    app_hold_key(m, kc, 0, 20);
+    int steps = 0;
+    while (app_cell(m, RE_STATE) == RE_S_PLAY && steps < 300) {
+        app_sim_steps(m, 1);
+        steps++;
+    }
+    app_hold_key(m, kc, 1, 20);
+    assert(app_cell(m, RE_STATE) == RE_S_CRASH);
+    assert(app_cell(m, RE_LIVES) == lives0 - 1);
+
+    /* CRASH_MS is 45 steps, after which the car is centred back on the road
+     * and driving again. */
+    app_sim_steps(m, 60);
+    assert(app_cell(m, RE_STATE) == RE_S_PLAY);
+    int32_t carl = app_cell(m, RE_CARX) / 256;
+    int32_t kerb = road_kerb_at(m, 720 - 72);
+    assert(carl >= kerb);
+    assert(carl + RE_CAR_W <= kerb + RE_ROAD_W);
+
+    /* The frame actually reaches the screen. Every other assertion here reads
+     * guest memory, which the simulation fills whether or not a single pixel
+     * is ever drawn -- and that is exactly how @paint first shipped: the
+     * dictionary is case-insensitive and first-definition-wins, so a colour
+     * constant named PAINT swallowed every call to @paint and the whole
+     * repaint was dead code with all the logic tests still green. */
+    {
+        uint64_t c0 = m->system->frame_commits;
+        for (int i = 0; i < 400 && m->system->frame_commits == c0; i++) {
+            quill_lux_pump(m, 1);
+        }
+        assert(m->system->frame_commits > c0);
+        const uint8_t* fb = m->system->screen_pixels;
+        assert(fb != NULL);
+        long lit = 0;
+        for (long i = 0; i < 960L * 720L * 4L; i++) lit += fb[i] != 0;
+        assert(lit > 100000);
+    }
+
+    /* Traffic shows up on its own -- spawn-t counts down from 30. */
+    app_sim_steps(m, 120);
+    int live = 0;
+    for (int i = 0; i < 8; i++) {
+        if (app_cell(m, RE_ENEMY + 32 * i)) live++;
+    }
+    assert(live > 0);
+
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    printf("  Road Escape road: OK\n");
+}
+
+/* Throttle. Its own machine and its own short window: the road curves 2px a
+ * slice and nothing here steers, so a long unattended drive ends in the
+ * shoulder -- which is test_roadescape_road's business, not this one's.
+ * fill-road lays 30 straight slices before the first curve, and both holds
+ * below finish well inside them. */
+static void test_roadescape_throttle(void) {
+    printf("Testing apps/RoadEscape.lux: throttle clamps at both ends...\n");
+    Machine* m = lux_app_machine("apps/RoadEscape.lux", "apps/RoadEscape.bin");
+    if (!m) return;
+
+    system_freeze_monotonic_ms(m->system, 1000);
+
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    app_sim_steps(m, 30);
+    app_hold_key(m, kc, 0, 13);
+    app_hold_key(m, kc, 1, 13);
+    app_sim_steps(m, 5);
+    assert(app_cell(m, RE_STATE) == RE_S_PLAY);
+    assert(app_cell(m, RE_SPEED) == 512); /* CRUISE */
+
+    /* Down: ACCEL is 16, so 40 steps is well past the 16 needed to floor it. */
+    app_hold_key(m, kc, 0, 18);
+    app_sim_steps(m, 40);
+    app_hold_key(m, kc, 1, 18);
+    assert(app_cell(m, RE_SPEED) == 256); /* MIN_SPEED */
+
+    /* Up: 80 steps of 16 covers the 1280 from floor to ceiling exactly. */
+    app_hold_key(m, kc, 0, 17);
+    app_sim_steps(m, 90);
+    app_hold_key(m, kc, 1, 17);
+    assert(app_cell(m, RE_STATE) == RE_S_PLAY);
+    assert(app_cell(m, RE_SPEED) == 1536); /* MAX_SPEED */
+
+    /* Released, it holds -- there is no drag, so speed is the driver's. */
+    app_sim_steps(m, 30);
+    assert(app_cell(m, RE_SPEED) == 1536);
+
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    printf("  Road Escape throttle: OK\n");
+}
+
+static void app_poke(Machine* m, uint32_t addr, int32_t v) {
+    uint8_t* p = m->cpu->memory + addr;
+    p[0] = (uint8_t) (v >> 24); p[1] = (uint8_t) (v >> 16);
+    p[2] = (uint8_t) (v >> 8);  p[3] = (uint8_t) v;
+}
+
+/* Gunnery. A spawn lands somewhere random at the top of the road and takes
+ * seconds to reach you, so the target is planted instead: one enemy record
+ * written straight into guest memory, dead ahead and a few car-lengths up.
+ * That also lets the civilian penalty be tested, which is the only thing
+ * stopping Space from being free money. */
+static void test_roadescape_gun(void) {
+    printf("Testing apps/RoadEscape.lux: bullets kill, civilians cost...\n");
+    Machine* m = lux_app_machine("apps/RoadEscape.lux", "apps/RoadEscape.bin");
+    if (!m) return;
+
+    system_freeze_monotonic_ms(m->system, 1000);
+
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    app_sim_steps(m, 30);
+    app_hold_key(m, kc, 0, 13);
+    app_hold_key(m, kc, 1, 13);
+    app_sim_steps(m, 5);
+    assert(app_cell(m, RE_STATE) == RE_S_PLAY);
+
+    int32_t car_y = 720 - 72;
+    int32_t car_l = app_cell(m, RE_CARX) / 256;
+
+    for (int kind = 1; kind >= 0; kind--) {  /* K_ENEMY then K_CIVIL */
+        /* Clear the traffic that spawned on its own and hold off the next
+         * wave, so the empty slot 0 below can only mean the shot landed. */
+        for (int i = 0; i < 8; i++) app_poke(m, RE_ENEMY + 32 * i, 0);
+        app_poke(m, RE_SPAWN_T, 10000);
+
+        int32_t e = RE_ENEMY;
+        /* +4 is an offset from the kerb, not an absolute x: that is how
+         * traffic follows the curve, so line it up through the kerb. */
+        app_poke(m, e + 4, car_l - road_kerb_at(m, car_y - 90));
+        app_poke(m, e + 8, (car_y - 90) * 256);
+        app_poke(m, e + 12, (car_y - 90) * 256);
+        app_poke(m, e + 16, 256);          /* same speed: it holds station */
+        app_poke(m, e + 20, kind);
+        app_poke(m, e + 0, 1);             /* live, written last */
+
+        int32_t score0 = app_cell(m, RE_SCORE);
+        int32_t ammo0 = app_cell(m, RE_AMMO);
+        assert(ammo0 > 0);
+        app_hold_key(m, kc, 0, 32);
+        app_sim_steps(m, 30);
+        app_hold_key(m, kc, 1, 32);
+
+        assert(app_cell(m, RE_STATE) == RE_S_PLAY);   /* shot it, not rammed it */
+        assert(app_cell(m, RE_ENEMY) == 0);            /* target destroyed */
+        int32_t delta = app_cell(m, RE_SCORE) - score0;
+        /* Distance keeps adding a point a slice underneath, so compare the
+         * kill's sign, not an exact figure: +100 for an interceptor, -150
+         * for a civilian. */
+        if (kind) assert(delta > 50);
+        else assert(delta < -50);
+        assert(app_cell(m, RE_AMMO) < ammo0);   /* shots came out of the magazine */
+    }
+
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    printf("  Road Escape gun: OK\n");
+}
+
+/* Fuel and ammunition. Both are consumables the road hands back, so the two
+ * things worth pinning are that they actually run down as you drive and
+ * shoot, and that driving over a can or a crate puts them back. */
+static void test_roadescape_supplies(void) {
+    printf("Testing apps/RoadEscape.lux: fuel burns, ammo empties, pickups refill...\n");
+    Machine* m = lux_app_machine("apps/RoadEscape.lux", "apps/RoadEscape.bin");
+    if (!m) return;
+
+    system_freeze_monotonic_ms(m->system, 1000);
+
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    app_sim_steps(m, 30);
+    app_hold_key(m, kc, 0, 13);
+    app_hold_key(m, kc, 1, 13);
+    app_sim_steps(m, 5);
+    assert(app_cell(m, RE_STATE) == RE_S_PLAY);
+    assert(app_cell(m, RE_FUEL) == RE_FUEL_MAX - app_cell(m, RE_BLINK) * 3);
+    assert(app_cell(m, RE_AMMO) == RE_AMMO_START);
+
+    /* Fuel goes with distance, not time, so the same 40 steps cost more at
+     * the top of the throttle than at the bottom. ACCEL is 16 and the burn is
+     * speed/FP + 1 per step, so this is a wide margin, not a knife edge. */
+    int32_t f0 = app_cell(m, RE_FUEL);
+    app_hold_key(m, kc, 0, 18);           /* down: settle at MIN_SPEED */
+    app_sim_steps(m, 40);
+    app_hold_key(m, kc, 1, 18);
+    int32_t slow_burn = f0 - app_cell(m, RE_FUEL);
+    assert(slow_burn > 0);
+
+    f0 = app_cell(m, RE_FUEL);
+    app_hold_key(m, kc, 0, 17);           /* up: climb toward MAX_SPEED */
+    app_sim_steps(m, 40);
+    app_hold_key(m, kc, 1, 17);
+    int32_t fast_burn = f0 - app_cell(m, RE_FUEL);
+    assert(fast_burn > slow_burn);
+
+    /* An empty tank ends the run outright, lives or no lives. Draining it by
+     * driving would take a minute of simulation, so poke it dry instead. */
+    assert(app_cell(m, RE_LIVES) == 3);
+    app_poke(m, RE_FUEL, 1);
+    app_sim_steps(m, 4);
+    assert(app_cell(m, RE_STATE) == RE_S_OVER);
+    assert(app_cell(m, RE_DRY) == 1);     /* the OUT OF FUEL banner, not GAME OVER */
+    assert(app_cell(m, RE_LIVES) == 3);
+
+    /* A fresh game refills both: a wreck does not, but Play Again does. */
+    app_hold_key(m, kc, 0, 13);
+    app_hold_key(m, kc, 1, 13);
+    app_sim_steps(m, 5);
+    assert(app_cell(m, RE_STATE) == RE_S_PLAY);
+    assert(app_cell(m, RE_DRY) == 0);
+    assert(app_cell(m, RE_AMMO) == RE_AMMO_START);
+    assert(app_cell(m, RE_FUEL) > RE_FUEL_MAX - 1000);
+
+    /* Hold fire until the magazine is empty. FIRE_GAP is 8 steps, so 20
+     * rounds need at least 160; the dry click afterwards costs nothing. */
+    app_poke(m, RE_SPAWN_P, 10000);       /* no crate may top it back up */
+    app_hold_key(m, kc, 0, 32);
+    app_sim_steps(m, 260);
+    app_hold_key(m, kc, 1, 32);
+    assert(app_cell(m, RE_AMMO) == 0);
+    app_sim_steps(m, 40);
+    assert(app_cell(m, RE_AMMO) == 0);    /* an empty gun stays empty */
+
+    /* Plant a crate dead ahead, one car-length up, and drive into it. A
+     * pickup carries no speed of its own -- it is painted on the tarmac --
+     * so it closes at exactly the player's speed. */
+    {
+        int32_t car_y = 720 - 72, car_l = app_cell(m, RE_CARX) / 256;
+        int32_t p = RE_PICKUP;
+        app_poke(m, p + 4, car_l + 2 - road_kerb_at(m, car_y - 40));
+        app_poke(m, p + 8, (car_y - 40) * 256);
+        app_poke(m, p + 12, (car_y - 40) * 256);
+        app_poke(m, p + 16, 1);           /* P_AMMO */
+        app_poke(m, p + 0, 1);
+        for (int i = 0; i < 120 && app_cell(m, RE_PICKUP); i++) app_sim_steps(m, 1);
+        assert(app_cell(m, RE_PICKUP) == 0);
+        assert(app_cell(m, RE_AMMO) == RE_AMMO_CRATE);
+    }
+
+    /* And a can, with the tank deliberately part-drained so the refill has
+     * somewhere to go. */
+    {
+        app_poke(m, RE_FUEL, 2000);
+        int32_t car_y = 720 - 72, car_l = app_cell(m, RE_CARX) / 256;
+        int32_t p = RE_PICKUP;
+        app_poke(m, p + 4, car_l + 2 - road_kerb_at(m, car_y - 40));
+        app_poke(m, p + 8, (car_y - 40) * 256);
+        app_poke(m, p + 12, (car_y - 40) * 256);
+        app_poke(m, p + 16, 0);           /* P_FUEL */
+        app_poke(m, p + 0, 1);
+        for (int i = 0; i < 120 && app_cell(m, RE_PICKUP); i++) app_sim_steps(m, 1);
+        assert(app_cell(m, RE_PICKUP) == 0);
+        assert(app_cell(m, RE_FUEL) > 5000);  /* 2000 + FUEL_CAN, less the burn */
+        assert(app_cell(m, RE_FUEL) <= RE_FUEL_MAX);
+    }
+
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    printf("  Road Escape supplies: OK\n");
+}
+
 static void test_illumos_paint_save(void) {
     printf("Testing apps/Illumos.lux: New 16x16, paint A and B, save untitled.cff...\n");
     Machine* probe = lux_app_machine("apps/Illumos.lux", "apps/Illumos.bin");
@@ -3678,21 +4369,21 @@ static void test_easel_paint_save(void) {
     /* pack-bits is now one whole-page BITMAP::copy rather than a per-pixel
      * scan, but the save can still straddle a frame boundary. */
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 51848, 2000);
+    int n = pump_until_file(m, "untitled.eas", 103688, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
     uint8_t got[64];
     memset(got, 0, sizeof(got));
-    assert(n == 51848);
+    assert(n == 103688);
     n = lux_app_read("untitled.eas", got, (int) sizeof(got));
     assert(n >= 8);
-    assert(got[0] == 'E' && got[1] == 'A' && got[2] == 'S' && got[3] == '2');
+    assert(got[0] == 'E' && got[1] == 'A' && got[2] == 'S' && got[3] == '3');
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     n = lux_app_read("untitled.eas", body, (int) sizeof(body));
-    assert(n == 51848);
+    assert(n == 103688);
     int nonzero = 0;
     for (int i = 8; i < n; i++) {
         if (body[i]) nonzero++;
@@ -3702,14 +4393,14 @@ static void test_easel_paint_save(void) {
 }
 
 static int easel_bit_set(const uint8_t* body, int n, int col, int row) {
-    /* EAS2 body starts after the 8-byte header and is a raw dump of the
-     * BITMAP page: ROW_BYTES=72 for PAGE_W=576, MSB-first bit order (see
-     * lib/bitmap.lux). col/row here are still canvas/page-space pixel
-     * coordinates -- the viewport sits at page origin (0,0) in every test
-     * below (none of them pan with the Hand tool). */
-    int off = 8 + row * 72 + col / 8;
+    /* EAS3 body starts after the 8-byte header and is a raw dump of the
+     * GRAYMAP page: ROW_BYTES=144 for PAGE_W=576, 2 bits/pixel, MSB-first
+     * (bits 7-6 of a byte are the leftmost pixel). Nonzero gray counts as
+     * ink so the existing 1/0 assertions still hold for black pencil. */
+    int off = 8 + row * 144 + col / 4;
     if (off < 0 || off >= n) return -1;
-    return (body[off] & (128 >> (col % 8))) != 0;
+    int shift = (3 - (col % 4)) * 2;
+    return ((body[off] >> shift) & 3) != 0;
 }
 
 static void test_easel_marquee_move(void) {
@@ -3747,15 +4438,15 @@ static void test_easel_marquee_move(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 51848, 2000);
+    int n = pump_until_file(m, "untitled.eas", 103688, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
-    assert(n == 51848);
-    uint8_t body[52000];
+    assert(n == 103688);
+    uint8_t body[104000];
     n = lux_app_read("untitled.eas", body, (int) sizeof(body));
-    assert(n == 51848);
+    assert(n == 103688);
 
     assert(easel_bit_set(body, n, 20, 30) == 0);   /* source now blank */
     assert(easel_bit_set(body, n, 70, 30) == 1);   /* destination now set */
@@ -3801,15 +4492,15 @@ static void test_easel_lasso_move(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 51848, 2000);
+    int n = pump_until_file(m, "untitled.eas", 103688, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
-    assert(n == 51848);
-    uint8_t body[52000];
+    assert(n == 103688);
+    uint8_t body[104000];
     n = lux_app_read("untitled.eas", body, (int) sizeof(body));
-    assert(n == 51848);
+    assert(n == 103688);
 
     assert(easel_bit_set(body, n, 20, 30) == 0);   /* source now blank */
     assert(easel_bit_set(body, n, 70, 30) == 1);   /* destination now set */
@@ -3848,15 +4539,15 @@ static void test_easel_copy_paste(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 51848, 2000);
+    int n = pump_until_file(m, "untitled.eas", 103688, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
-    assert(n == 51848);
-    uint8_t body[52000];
+    assert(n == 103688);
+    uint8_t body[104000];
     n = lux_app_read("untitled.eas", body, (int) sizeof(body));
-    assert(n == 51848);
+    assert(n == 103688);
 
     /* Original pixel untouched by Copy. */
     assert(easel_bit_set(body, n, 20, 30) == 1);
@@ -3891,13 +4582,13 @@ static Machine* easel_transform_setup(int32_t* mc, int32_t* kc) {
 
 static int easel_save_and_read(Machine* m, int32_t mc, int32_t kc, uint8_t* body, int cap) {
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 51848, 2000);
+    int n = pump_until_file(m, "untitled.eas", 103688, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
-    assert(n == 51848);
+    assert(n == 103688);
     n = lux_app_read("untitled.eas", body, cap);
-    assert(n == 51848);
+    assert(n == 103688);
     return n;
 }
 
@@ -3910,7 +4601,7 @@ static void test_easel_flip_h(void) {
     quill_lux_key(m, kc, 'h', 8); /* Cmd+H: Flip Horizontal */
     quill_lux_pump(m, 20);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 15, 23) == 0);   /* source now blank */
@@ -3927,7 +4618,7 @@ static void test_easel_flip_v(void) {
     quill_lux_key(m, kc, 'j', 8); /* Cmd+J: Flip Vertical */
     quill_lux_pump(m, 20);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 15, 23) == 0);   /* source now blank */
@@ -3944,7 +4635,7 @@ static void test_easel_rotate90(void) {
     quill_lux_key(m, kc, 'r', 8); /* Cmd+R: Rotate 90 */
     quill_lux_pump(m, 20);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 15, 23) == 0);   /* source now blank */
@@ -3962,7 +4653,7 @@ static void test_easel_fill(void) {
     quill_lux_key(m, kc, 'f', 8); /* Cmd+F: Fill (pattern 1 = solid black) */
     quill_lux_pump(m, 20);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     /* (12,22) was never painted -- Fill must have set it, not just the
@@ -4000,7 +4691,7 @@ static void test_easel_trace_edges(void) {
     quill_lux_key(m, kc, 'g', 8); /* Cmd+G: Trace Edges */
     quill_lux_pump(m, 20);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 25, 25) == 0);   /* square's interior, cleared */
@@ -4032,7 +4723,7 @@ static void test_easel_freeform_outline(void) {
     lux_mouse(m, mc, 4, 1, 180, 120); /* up -- closes the loop back to (50,50) */
     quill_lux_pump(m, 20);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 50, 75) == 1);   /* on the traced A-B edge */
@@ -4062,7 +4753,7 @@ static void test_easel_freeform_filled(void) {
     lux_mouse(m, mc, 4, 1, 180, 120);
     quill_lux_pump(m, 20);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 70, 90) == 1);   /* interior, now filled */
@@ -4097,7 +4788,7 @@ static void test_easel_polygon_filled(void) {
     quill_lux_click(m, mc, 130, 70);  /* click back on vertex 0 -- closes */
     quill_lux_pump(m, 20);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 83, 67) == 1);   /* triangle centroid, filled */
@@ -4132,7 +4823,7 @@ static void test_easel_polygon_outline_double_click_close(void) {
     quill_lux_click(m, mc, 180, 120); /* double-click on vertex 2 -- closes back to vertex 0 */
     quill_lux_pump(m, 20);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 75, 75) == 1);   /* midpoint of the v2->v0 closing edge */
@@ -4176,14 +4867,14 @@ static void test_easel_text_tool(void) {
 
     /* Nothing committed to CANVAS yet -- still floating. */
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n0 = pump_until_file(m, "untitled.eas", 51848, 2000);
-    assert(n0 == 51848);
-    uint8_t body0[52000];
+    int n0 = pump_until_file(m, "untitled.eas", 103688, 2000);
+    assert(n0 == 103688);
+    uint8_t body0[104000];
     n0 = lux_app_read("untitled.eas", body0, (int) sizeof(body0));
-    assert(n0 == 51848);
+    assert(n0 == 103688);
     assert(easel_any_bit_in_rect(body0, n0, 100, 100, 140, 116) == 0);
 
-    /* Both saves write a fixed 51848-byte EAS2 file, so pump_until_file's
+    /* Both saves write a fixed 103688-byte EAS3 file, so pump_until_file's
      * size check can't tell "still the old save" from "the new one landed" --
      * remove it first so the next save is unambiguously fresh. */
     lux_app_remove("untitled.eas");
@@ -4191,7 +4882,7 @@ static void test_easel_text_tool(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool (index 7) -- commits the text */
     quill_lux_pump(m, 20);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_any_bit_in_rect(body, n, 100, 100, 140, 116) == 1);   /* "hi" landed */
@@ -4236,7 +4927,7 @@ static void test_easel_text_style_bold(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t plain_body[52000];
+    uint8_t plain_body[104000];
     int plain_n = easel_save_and_read(m, mc, kc, plain_body, (int) sizeof(plain_body));
     int plain_count = easel_count_bits_in_rect(plain_body, plain_n, 100, 100, 116, 116);
     assert(plain_count > 0);
@@ -4260,7 +4951,7 @@ static void test_easel_text_style_bold(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t bold_body[52000];
+    uint8_t bold_body[104000];
     int bold_n = easel_save_and_read(m, mc, kc, bold_body, (int) sizeof(bold_body));
     int bold_count = easel_count_bits_in_rect(bold_body, bold_n, 100, 100, 116, 116);
 
@@ -4295,7 +4986,7 @@ static void test_easel_text_size_24(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_any_bit_in_rect(body, n, 100, 116, 132, 131) == 1);  /* only reachable at scale 2 */
@@ -4325,7 +5016,7 @@ static void test_easel_text_style_shadow(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t plain_body[52000];
+    uint8_t plain_body[104000];
     int plain_n = easel_save_and_read(m, mc, kc, plain_body, (int) sizeof(plain_body));
     int plain_count = easel_count_bits_in_rect(plain_body, plain_n, 100, 100, 116, 116);
     assert(plain_count > 0);
@@ -4349,7 +5040,7 @@ static void test_easel_text_style_shadow(void) {
     quill_lux_click(m, mc, 60, 132);   /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t shadow_body[52000];
+    uint8_t shadow_body[104000];
     int shadow_n = easel_save_and_read(m, mc, kc, shadow_body, (int) sizeof(shadow_body));
     int shadow_count = easel_count_bits_in_rect(shadow_body, shadow_n, 100, 100, 116, 116);
 
@@ -4383,7 +5074,7 @@ static void test_easel_text_style_outline(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t plain_body[52000];
+    uint8_t plain_body[104000];
     int plain_n = easel_save_and_read(m, mc, kc, plain_body, (int) sizeof(plain_body));
     int plain_count = easel_count_bits_in_rect(plain_body, plain_n, 100, 100, 116, 116);
     assert(plain_count > 0);
@@ -4407,7 +5098,7 @@ static void test_easel_text_style_outline(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t outline_body[52000];
+    uint8_t outline_body[104000];
     int outline_n = easel_save_and_read(m, mc, kc, outline_body, (int) sizeof(outline_body));
     int outline_count = easel_count_bits_in_rect(outline_body, outline_n, 100, 100, 116, 116);
 
@@ -4451,7 +5142,7 @@ static void test_easel_text_style_italic(void) {
     quill_lux_click(m, mc, 60, 132);  /* Pencil tool -- commits */
     quill_lux_pump(m, 20);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     /* Chicago's "H" only inks canvas rows 103-111 (source rows gy=3..11 of
@@ -4503,15 +5194,15 @@ static void test_easel_show_page(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_key(m, kc, 's', 8); /* Cmd+S */
-    int n = pump_until_file(m, "untitled.eas", 51848, 2000);
+    int n = pump_until_file(m, "untitled.eas", 103688, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
-    assert(n == 51848);
-    uint8_t body[52000];
+    assert(n == 103688);
+    uint8_t body[104000];
     n = lux_app_read("untitled.eas", body, (int) sizeof(body));
-    assert(n == 51848);
+    assert(n == 103688);
 
     assert(easel_bit_set(body, n, 96, 304) == 1);  /* painted at the panned viewport's origin */
     assert(easel_bit_set(body, n, 0, 0) == 0);     /* unpanned origin untouched */
@@ -4542,7 +5233,7 @@ static void test_easel_grid_snap(void) {
     lux_drag(m, mc, 83, 23, 137, 57);
     quill_lux_pump(m, 20);
 
-    uint8_t off_body[52000];
+    uint8_t off_body[104000];
     int off_n = easel_save_and_read(m, mc, kc, off_body, (int) sizeof(off_body));
     assert(easel_bit_set(off_body, off_n, 57, 37) == 1);
 
@@ -4561,7 +5252,7 @@ static void test_easel_grid_snap(void) {
     lux_drag(m, mc, 83, 23, 137, 57);
     quill_lux_pump(m, 20);
 
-    uint8_t on_body[52000];
+    uint8_t on_body[104000];
     int on_n = easel_save_and_read(m, mc, kc, on_body, (int) sizeof(on_body));
 
     assert(easel_bit_set(on_body, on_n, 57, 37) == 0);  /* snapped past this corner */
@@ -4607,7 +5298,7 @@ static void test_easel_brush_mirror(void) {
     quill_lux_click(m, mc, 130, 80);  /* dab at page (50,60) */
     quill_lux_pump(m, 20);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 50, 60) == 1);   /* the dab itself */
@@ -4644,7 +5335,7 @@ static void test_easel_dbl_click_pencil_fatbits(void) {
     quill_lux_click(m, mc, 80, 20);   /* paints through the FatBits mapping */
     quill_lux_pump(m, 20);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 210, 182) == 1);  /* FatBits-mapped pixel */
@@ -4674,7 +5365,7 @@ static void test_easel_dbl_click_eraser_clears_page(void) {
     quill_lux_click(m, mc, 60, 164);  /* double-click: erases the whole page */
     quill_lux_pump(m, 20);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 20, 30) == 0);
@@ -4708,7 +5399,7 @@ static void test_easel_dbl_click_marquee_select_all(void) {
     lux_drag(m, mc, 100, 50, 150, 50); /* drag from inside the selection, +50px */
     quill_lux_pump(m, 20);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 20, 30) == 0);  /* source now blank */
@@ -4745,7 +5436,7 @@ static void test_easel_dbl_click_hand_show_page(void) {
     quill_lux_click(m, mc, 80, 20);   /* paints the viewport's own top-left pixel */
     quill_lux_pump(m, 20);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
 
     assert(easel_bit_set(body, n, 96, 304) == 1);
@@ -4781,15 +5472,15 @@ static void test_easel_open_with_unsaved_changes_prompts(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_click(m, mc, 280, 222); /* Save */
-    int n = pump_until_file(m, "untitled.eas", 51848, 2000);
-    assert(n == 51848);
+    int n = pump_until_file(m, "untitled.eas", 103688, 2000);
+    assert(n == 103688);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
-    uint8_t body[52000];
+    uint8_t body[104000];
     n = lux_app_read("untitled.eas", body, (int) sizeof(body));
-    assert(n == 51848);
+    assert(n == 103688);
     assert(easel_bit_set(body, n, 20, 30) == 1);
 
 }
@@ -4813,8 +5504,8 @@ static void test_easel_revert_discards_unsaved_edits(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_key(m, kc, 's', 8);     /* Cmd+S: this pixel is what's on disk */
-    int n = pump_until_file(m, "untitled.eas", 51848, 2000);
-    assert(n == 51848);
+    int n = pump_until_file(m, "untitled.eas", 103688, 2000);
+    assert(n == 103688);
 
     quill_lux_click(m, mc, 150, 50);  /* pencil paints canvas (70,30), unsaved */
     quill_lux_pump(m, 20);
@@ -4829,15 +5520,15 @@ static void test_easel_revert_discards_unsaved_edits(void) {
     quill_lux_pump(m, 20);
 
     quill_lux_key(m, kc, 's', 8);     /* Cmd+S again to inspect the reloaded canvas */
-    n = pump_until_file(m, "untitled.eas", 51848, 2000);
+    n = pump_until_file(m, "untitled.eas", 103688, 2000);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     machine_free(m);
 
-    assert(n == 51848);
-    uint8_t body[52000];
+    assert(n == 103688);
+    uint8_t body[104000];
     n = lux_app_read("untitled.eas", body, (int) sizeof(body));
-    assert(n == 51848);
+    assert(n == 103688);
 
     assert(easel_bit_set(body, n, 20, 30) == 1);  /* saved edit survived the revert */
     assert(easel_bit_set(body, n, 70, 30) == 0);  /* unsaved edit was discarded */
@@ -4930,6 +5621,10 @@ int main(void) {
     test_regression_while_counter_under_read();
     test_regression_question_takes_one_quot();
     test_fields_directive();
+    test_sf_dropdown_does_not_clobber_result_flags();
+    test_reserve_directive();
+    test_reserve_errors();
+    test_reserve_overlap_warning();
     test_yield_and_explicit_halt();
     test_emit_inc_dec_negate();
     test_shift_and_operator_aliases();
@@ -4965,7 +5660,12 @@ int main(void) {
     test_breakout_paddle_hold();
     test_breakout_ball_play();
     test_app_fixed_timestep();
+    test_calculator_reserved_state();
     test_snake_tick_clock();
+    test_roadescape_road();
+    test_roadescape_throttle();
+    test_roadescape_gun();
+    test_roadescape_supplies();
     test_ball_render_smoothness();
     test_illumos_paint_save();
     test_illumos_collection_click();

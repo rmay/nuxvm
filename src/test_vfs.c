@@ -309,6 +309,106 @@ static void test_draw_file() {
     printf("/sys/draw rect tests passed.\n");
 }
 
+static void assert_pixel_rgb(System* sys, int x, int y, uint8_t r, uint8_t g, uint8_t b) {
+    size_t off = (size_t)(y * sys->screen_width + x) * 4;
+    assert(sys->screen_pixels[off + 0] == 0xFF);
+    assert(sys->screen_pixels[off + 1] == r);
+    assert(sys->screen_pixels[off + 2] == g);
+    assert(sys->screen_pixels[off + 3] == b);
+}
+
+static void test_draw_chan(void) {
+    printf("Testing /dev/draw cmd 11 SetChan...\n");
+    System* sys = make_test_screen(64, 48);
+    int32_t fd = vfs_open(sys, "/sys/draw", 0x02);
+    assert(fd >= 100);
+
+    uint8_t cmd[24];
+    const int32_t green[6] = { 0, 10, 5, 8, 3, 0x00FF00 };
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 6, green)) == 24);
+    assert_pixel_rgb(sys, 12, 6, 0x00, 0xFF, 0x00);
+
+    /* k8: Rec. 601 luma of 0x00FF00 is (150*255)>>8 = 149 */
+    const int32_t set_k8[2] = { 11, 1 };
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 2, set_k8)) == 8);
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 6, green)) == 24);
+    assert_pixel_rgb(sys, 12, 6, 149, 149, 149);
+
+    /* k2: luma of 0xFF0000 is (77*255)>>8 = 76; 76>>6 = 1 → 0x55 */
+    const int32_t set_k2[2] = { 11, 2 };
+    const int32_t red[6] = { 0, 10, 5, 8, 3, 0xFF0000 };
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 2, set_k2)) == 8);
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 6, red)) == 24);
+    assert_pixel_rgb(sys, 12, 6, 0x55, 0x55, 0x55);
+
+    /* k1: 0x7F0000 luma (77*127)>>8 = 38 → black; white stays white. */
+    const int32_t set_k1[2] = { 11, 3 };
+    const int32_t dim_red[6] = { 0, 10, 5, 8, 3, 0x7F0000 };
+    const int32_t white[6] = { 0, 20, 5, 4, 3, 0xFFFFFF };
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 2, set_k1)) == 8);
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 6, dim_red)) == 24);
+    assert_pixel_rgb(sys, 12, 6, 0x00, 0x00, 0x00);
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 6, white)) == 24);
+    assert_pixel_rgb(sys, 21, 6, 0xFF, 0xFF, 0xFF);
+
+    /* Back to RGB: green is green again. */
+    const int32_t set_rgb[2] = { 11, 0 };
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 2, set_rgb)) == 8);
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 6, green)) == 24);
+    assert_pixel_rgb(sys, 12, 6, 0x00, 0xFF, 0x00);
+
+    /* Unknown chan is ignored (stays RGB). */
+    const int32_t set_bad[2] = { 11, 99 };
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 2, set_bad)) == 8);
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 6, green)) == 24);
+    assert_pixel_rgb(sys, 12, 6, 0x00, 0xFF, 0x00);
+
+    vfs_close(sys, fd);
+    free_test_screen(sys);
+    printf("  SetChan RGB/k8/k2/k1: OK\n");
+}
+
+static void test_draw_tile_key_under_k8(void) {
+    printf("Testing BlitTile key color under k8...\n");
+    System* sys = make_test_screen(32, 32);
+    const int size = 4;
+    const uint32_t tile_ptr = 0;
+    const uint32_t nbytes = (uint32_t)(size * size * 3);
+    sys->memory = (uint8_t*)calloc(1, (size_t)nbytes);
+    sys->memory_size = nbytes;
+    assert(sys->memory != NULL);
+
+    for (int p = 0; p < size * size; p++) {
+        sys->memory[p * 3 + 0] = 0xFF;
+        sys->memory[p * 3 + 1] = 0x00;
+        sys->memory[p * 3 + 2] = 0x00;
+    }
+    sys->memory[0] = 0xFF;
+    sys->memory[1] = 0x00;
+    sys->memory[2] = 0xFF;
+
+    fill_screen_white(sys);
+    int32_t fd = vfs_open(sys, "/sys/draw", 0x02);
+    assert(fd >= 100);
+
+    uint8_t cmd[32];
+    const int32_t set_k8[2] = { 11, 1 };
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 2, set_k8)) == 8);
+    const int32_t tile_words[8] = { 10, 10, 10, size, 1, 0x00FF00FF,
+                                    (int32_t)tile_ptr, (int32_t)nbytes };
+    assert(vfs_write(sys, fd, cmd, pack_draw(cmd, 8, tile_words)) == 32);
+    vfs_close(sys, fd);
+
+    /* Magenta key pixel stays white. */
+    assert(!pixel_is_ink(sys, 10, 10));
+    /* Red source maps to luma (77*255)>>8 = 76. */
+    assert_pixel_rgb(sys, 11, 10, 76, 76, 76);
+
+    free(sys->memory);
+    free_test_screen(sys);
+    printf("  cmd 10 key under k8: OK\n");
+}
+
 static void test_draw_scale_normalize(void) {
     printf("Testing draw scale normalization...\n");
     System* sys = make_test_screen(64, 48);
@@ -1610,6 +1710,8 @@ int main() {
     test_snarf_shared();
     test_host_seek_stat();
     test_draw_file();
+    test_draw_chan();
+    test_draw_tile_key_under_k8();
     test_draw_scale_normalize();
     test_draw_char_scale18();
     test_draw_string_vfs_scale18();

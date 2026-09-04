@@ -1,5 +1,7 @@
 ( Virtual File System (VFS) Word Definitions )
 
+INCLUDE "lib/core.lux"
+
 MODULE VFS
 
 ( SCI Port Addresses )
@@ -142,4 +144,60 @@ MODULE VFS
 
 @set-window-title ( title-ptr -- )
     CMD_SET_WINDOW_TITLE swap 0 EXEC drop
+;
+
+( Join "/sys/file/" and `rel` into `dest`. A leading slash on `rel` is
+  stripped so both "foo.lux" and "/foo.lux" land at /sys/file/foo.lux.
+  `dest` is the caller's buffer; this word owns no scratch. )
+@sys-file { rel dest -- dest }
+    rel load-byte 47 = [ rel 1 + rel! ] ?
+    T"/sys/file/" dest strcpy-safe
+    rel dest strlen dest + strcpy-safe
+    dest
+;
+
+( Clipboard device. Payload format is the caller's problem. )
+@snarf-write { ptr len -- n }
+    T"/sys/snarf" open
+    dup 0 >= [
+        dup ptr len write
+        SWAP close drop
+    ] [
+        drop -1
+    ] ?:
+;
+
+@snarf-read { buf max -- n }
+    T"/sys/snarf" open
+    dup 0 >= [
+        dup buf max read
+        SWAP close drop
+    ] [
+        drop -1
+    ] ?:
+;
+
+( Raw 4-byte cell. `dest`/`src` are STOREI addresses, not host integers. )
+@load-i32 { path dest -- ok }
+    path open
+    dup 0 < [
+        drop
+        0 dest STOREI
+        0
+    ] [
+        dup dest 4 read drop
+        close drop
+        1
+    ] ?:
+;
+
+@save-i32 { path src -- ok }
+    path open
+    dup 0 < [
+        drop 0
+    ] [
+        dup src 4 write drop
+        close drop
+        1
+    ] ?:
 ;

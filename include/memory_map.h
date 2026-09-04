@@ -71,36 +71,42 @@
 #define MM_ABI_TRAMPOLINE_RESERVE 0x1000
 #define MM_ABI_LIBRARY_CODE_BASE (MM_ABI_LIBRARY_LINK_BASE + MM_ABI_TRAMPOLINE_RESERVE)
 
-/* --- App small-state band: MM_APP_SMALL_STATE_BASE .. MM_APP_SMALL_STATE_END ---
- * Hand-picked small globals for individual Lux apps/libraries (window
- * state, widget bookkeeping, etc: Snake, UIDemo, SF, lib/app.lux,
- * Calculator, lib/ui.lux, lib/cff.lux, lib/draw.lux, Illumos). Only one
- * app occupies a VM at a time today, so sub-collisions here between two
- * *different* apps are inert -- but nothing that expects to be linked in
- * (like lib/ui.lux, once Phase B lands) should assume it owns this whole
- * band. Large buffers do NOT belong here -- see MM_APP_BULK_BUFFER_BASE. */
+/* --- Legacy hand-picked app bands: MM_APP_SMALL_STATE_*, MM_APP_BULK_BUFFER_* ---
+ * These two bands held every Lux app's and library's hand-picked globals --
+ * window state and widget bookkeeping in the first, font blobs, file and
+ * paste buffers, canvases and line caches in the second. Both are now
+ * essentially empty: app and library state is compiler-allocated out of
+ * MM_LUX_RESERVE_BASE below (docs/reserve-directive.md), which is what
+ * ended the collisions docs/memory-map.md lists.
+ *
+ * One occupant is left, apps/Quill.lux's LINE_STARTS, which has no bound to
+ * declare (worst case 4 bytes * FILE_BUF_MAX = 4MB) and so cannot be
+ * reserved without first capping Quill's line count. It has the bulk band
+ * to itself. Do not put anything new in either band -- use RESERVE. */
 #define MM_APP_SMALL_STATE_BASE 0x800000
 #define MM_APP_SMALL_STATE_END  0x900000
-
-/* --- App bulk-buffer band: MM_APP_BULK_BUFFER_BASE .. MM_APP_BULK_BUFFER_END ---
- * Large hand-authored Lux buffers that used to be scattered ad hoc across
- * 0x800000-0xA10000 (font glyph data, file buffers, paste buffers, line
- * caches, path scratch buffers). Consolidated here specifically so they
- * stop colliding with lib/mem.lux's heap (which used to start right where
- * a paste buffer was also parked -- see docs/memory-map.md).
- *
- * apps/Easel.lux packs its 576x720 page 1bpp via lib/bitmap.lux and parks
- * CANVAS/UNDO/EAS2-staging/transform-scratch/SEL_MASK/PATTERNS/BRUSHES/
- * SNARF_BUF/fonts/TEXT_BUF across 0x900000-0x9B0000 -- see docs/memory-map.md
- * for the full layout. */
 #define MM_APP_BULK_BUFFER_BASE 0x900000
 #define MM_APP_BULK_BUFFER_END  0x0A00000
 
-/* --- lib/mem.lux bump-allocator heap: MM_LUX_HEAP_BASE .. MM_LUX_HEAP_END ---
- * Exclusively owned by lib/mem.lux (both its metadata pointer and the
- * heap it manages) -- nothing else may place a global in this range. */
-#define MM_LUX_HEAP_BASE 0x0A00000
-#define MM_LUX_HEAP_END  0x0C00000
+/* --- Compiler-managed Lux reservations: MM_LUX_RESERVE_BASE .. MM_LUX_RESERVE_END ---
+ * Bump-allocated by src/compiler.c for the Lux `RESERVE <name> <bytes> ;`
+ * directive, which replaces the hand-picked `@NAME 0xHEX ;` idiom for
+ * ordinary app/library state (docs/reserve-directive.md). Owned by the
+ * compiler alone -- nothing may hand-pick an address inside this band, and
+ * luxc warns if a `@NAME 0xHEX ;` constant lands in a reserved span.
+ * Deliberately placed in the gap between the Lux heap and the Fluxio bulk
+ * band so that a partially-migrated tree can't collide: no RESERVE address
+ * can ever equal an address some unmigrated app or library still picks by
+ * hand.
+ *
+ * 3MB, which is enough for an app's bulk pages too (Easel's canvas and undo
+ * page, Whittle's 768KB frame bank, Tabula's cell pool) -- only one app
+ * occupies a VM at a time, so the budget is libraries plus one app. This
+ * absorbed what used to be lib/mem.lux's separate 2MB heap band: that heap
+ * is now itself a RESERVE'd block inside this band (lib/mem.lux), which is
+ * why there is one allocator here instead of two adjacent ones. */
+#define MM_LUX_RESERVE_BASE 0x0A00000
+#define MM_LUX_RESERVE_END  0x0D00000
 
 /* --- Fluxio bulk-array globals band: MM_FX_BULK_GLOBALS_BASE .. MM_FX_BULK_GLOBALS_END ---
  * Bump-allocated by fluxio_codegen.c for large global byte[]/int[] arrays

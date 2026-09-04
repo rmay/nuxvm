@@ -753,7 +753,7 @@ There is no Undo. **Open** and **Quit** do not ask about unsaved work.
 
 ## 9. Easel — pixel painting
 
-Easel is a MacPaint clone: you draw onto a 1-bit bitmap page, not onto objects. Nib remains the place to select and rearrange shapes.
+Easel is a MacPaint clone: you draw onto a 2-bit grayscale page (white, light gray, dark gray, black), not onto objects. Nib remains the place to select and rearrange shapes. The four gray inks are the 2×2 picker at the left of the pattern strip.
 
 ```bash
 ./bin/cloister apps/Easel.bin
@@ -826,12 +826,12 @@ With Lasso or Marquee active and a selection made: drag inside it to move; Optio
 | --- | --- |
 | **New** | Empty page named `untitled.eas`. Dirty pages get the Save changes? panel. |
 | **Open** | Standard File picker. Dirty pages get the Save changes? panel first. |
-| **Save** | Write the current path as EAS2. |
+| **Save** | Write the current path as EAS3. |
 | **Save As** | Put-file picker: choose a folder and name, then write. |
 | **Revert** | Reload the current path from disk, discarding unsaved changes (with the Save changes? panel first). |
 | **Quit** | Dirty pages get the Save changes? panel, then halts Easel. |
 
-A failed save, or opening a file that isn't a valid EAS2 page, raises a one-button alert rather than failing silently.
+A failed save, or opening a file that isn't a valid EAS3 page, raises a one-button alert rather than failing silently.
 
 **Edit**
 
@@ -966,18 +966,18 @@ text 90 70 90 70 0 1 Hello
 - Text payload is the rest of the line after the six numbers. Backslash escapes: `\\`, `\n`, `\r`, `\s` (space).
 - Unknown kinds are skipped. A file whose first line is not `NIB 1` is left unchanged.
 
-### EAS1
+### EAS3
 
 Saved by **File > Save**. Binary, not text:
 
 ```
-EAS1          4 bytes magic
-u16le width   512
-u16le height  342
-packed bits   64 bytes per row, MSB first, 342 rows
+EAS3          4 bytes magic
+u16le width   576
+u16le height  720
+packed 2bpp   144 bytes per row, MSB-first (bits 7-6 = leftmost pixel), 720 rows
 ```
 
-Total size is 21,896 bytes. A file whose magic is not `EAS1`, or whose size is not 512×342, is left unchanged.
+Four gray levels per pixel: 0 white, 1 light, 2 dark, 3 black. Total size is 103,688 bytes. A file whose magic is not `EAS3`, or whose size is not 576×720, is left unchanged.
 
 ---
 
@@ -993,7 +993,7 @@ Total size is 21,896 bytes. A file whose magic is not `EAS1`, or whose size is n
 | 8,192 filled cells | Tabula |
 | 63 characters per cell | Tabula |
 | 256 objects, 63 characters per label | Nib |
-| 512×342, 1-bit, one undo | Easel |
+| 576×720, 2-bit gray, one undo | Easel |
 | Integer formula arithmetic | Tabula |
 | `SUM` is the only function | Tabula |
 | No spaces inside formulas | Tabula |

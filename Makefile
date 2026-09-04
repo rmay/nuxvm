@@ -182,16 +182,32 @@ $(BIN_DIR)/test_abi_conformance: $(OBJ_DIR)/test_abi_conformance.o $(OBJ_DIR)/co
 	@echo "Built bin/test_abi_conformance successfully!"
 
 test: $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler $(BIN_DIR)/test_fluxio_compiler $(BIN_DIR)/test_abi_conformance
-	@echo "Running VFS tests..."
-	@./$(BIN_DIR)/test_vfs
-	@echo "Running VM opcode tests..."
-	@./$(BIN_DIR)/test_vm
-	@echo "Running Compiler tests..."
-	@./$(BIN_DIR)/test_compiler
-	@echo "Running Fluxio compiler tests..."
-	@./$(BIN_DIR)/test_fluxio_compiler
-	@echo "Running ABI conformance tests..."
-	@./$(BIN_DIR)/test_abi_conformance
+	@vfs=FAIL; vm=FAIL; compiler=FAIL; fluxio=FAIL; abi=FAIL; fail=0; \
+	echo "Running VFS tests..."; \
+	./$(BIN_DIR)/test_vfs && vfs=PASS || fail=1; \
+	echo "Running VM opcode tests..."; \
+	./$(BIN_DIR)/test_vm && vm=PASS || fail=1; \
+	echo "Running Compiler tests..."; \
+	./$(BIN_DIR)/test_compiler && compiler=PASS || fail=1; \
+	echo "Running Fluxio compiler tests..."; \
+	./$(BIN_DIR)/test_fluxio_compiler && fluxio=PASS || fail=1; \
+	echo "Running ABI conformance tests..."; \
+	./$(BIN_DIR)/test_abi_conformance && abi=PASS || fail=1; \
+	echo ""; \
+	echo "========== Test summary =========="; \
+	printf "  %-22s %s\n" "VFS" "$$vfs"; \
+	printf "  %-22s %s\n" "VM opcodes" "$$vm"; \
+	printf "  %-22s %s\n" "Compiler" "$$compiler"; \
+	printf "  %-22s %s\n" "Fluxio compiler" "$$fluxio"; \
+	printf "  %-22s %s\n" "ABI conformance" "$$abi"; \
+	echo "----------------------------------"; \
+	if [ $$fail -ne 0 ]; then \
+		echo " One or more test suites failed."; \
+		echo "=================================="; \
+		exit 1; \
+	fi; \
+	echo " All test suites passed."; \
+	echo "=================================="
 
 clean:
 	rm -rf $(OBJ_DIR) $(BIN_DIR)

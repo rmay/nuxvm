@@ -46,44 +46,51 @@ IMPORT TIME
 @NAME_MAX   63 ;
 @NAME_H     16 ;
 
-@open-f  0x8B0000 ;
-@cur     0x8B0040 ;
-@raw     0x8B0140 ;
-@buf     0x8B1140 ;
-@tok     0x8B2140 ;
-@vpath   0x8B2240 ;
-@result  0x8B2340 ;
-@cnt     0x8B2440 ;
-@sel     0x8B2444 ;
-@vol     0x8B2448 ;
-@hidden  0x8B244C ;
-@last-t  0x8B2450 ;
-@last-i  0x8B2454 ;
-@bdrag   0x8B2458 ;
-@sdrag   0x8B245C ;
-@dd      0x8B2460 ;
-@dd-n    0x8B2464 ;
-@tx      0x8B2468 ;
-@ty      0x8B246C ;
-@tw      0x8B2470 ;
-@th      0x8B2474 ;
-@dlg-x   0x8B2478 ;
-@dlg-y   0x8B247C ;
-@ok-h    0x8B2480 ;
-@can-h   0x8B2484 ;
-@dd-off  0x8B2500 ;
-@picked  0x8B2504 ;
-@cancld  0x8B2508 ;
-@dx      0x8B2540 ;
-@dy      0x8B2544 ;
-@dw      0x8B2548 ;
-@dh      0x8B254C ;
-@sb      0x8B2580 ;
-@bn-open  0x8B2600 ;
-@bn-can   0x8B2640 ;
-@save-f   0x8B2700 ;
-@name     0x8B2740 ;
-@name-sel 0x8B2780 ;
+( Compiler-allocated (docs/reserve-directive.md). Stating each buffer's
+  real size is what turned up the dd-off bug: the breadcrumb table below is
+  16 entries wide, and `picked`/`cancld` used to be hand-placed 4 and 8
+  bytes into it, so walking a path wrote component offsets straight through
+  the pick/cancel flags. See test_sf_dropdown_does_not_clobber_result_flags
+  in src/test_compiler.c. )
+RESERVE open-f  4 ;
+RESERVE cur   256 ; ( current directory path )
+RESERVE raw  4096 ; ( one raw /dev directory read, NUL-terminated in place )
+RESERVE buf  4096 ; ( parsed entry list )
+RESERVE tok   256 ;
+RESERVE vpath 256 ;
+RESERVE result 256 ; ( the chosen path, read back via SF::path )
+RESERVE cnt     4 ;
+RESERVE sel     4 ;
+RESERVE vol     4 ;
+RESERVE hidden  4 ;
+RESERVE last-t  4 ;
+RESERVE last-i  4 ;
+RESERVE bdrag   4 ;
+RESERVE sdrag   4 ;
+RESERVE dd      4 ; ( breadcrumb dropdown open flag )
+RESERVE dd-n    4 ; ( entries in dd-off, capped at 16 by dd-build )
+RESERVE tx      4 ;
+RESERVE ty      4 ;
+RESERVE tw      4 ;
+RESERVE th      4 ;
+RESERVE dlg-x   4 ;
+RESERVE dlg-y   4 ;
+RESERVE ok-h    4 ;
+RESERVE can-h   4 ;
+( 16 path-component offsets, indexed dd-n * 4 + dd-off. )
+RESERVE dd-off 64 ;
+RESERVE picked  4 ;
+RESERVE cancld  4 ;
+RESERVE dx      4 ;
+RESERVE dy      4 ;
+RESERVE dw      4 ;
+RESERVE dh      4 ;
+RESERVE sb     56 ; ( UI::BAR_SIZE scrollbar record )
+RESERVE bn-open 36 ; ( UI::BTN_SIZE button record )
+RESERVE bn-can  36 ; ( UI::BTN_SIZE button record )
+RESERVE save-f  4 ;
+RESERVE name   64 ; ( NAME_MAX + NUL )
+RESERVE name-sel 4 ;
 
 @open?   open-f LOADI ;
 @path    result ;
@@ -131,17 +138,7 @@ IMPORT TIME
 @nw ( -- w ) LIST_W ;
 @nh ( -- h ) NAME_H ;
 
-@last-slash ( ptr -- slash-ptr|0 )
-    0 SWAP
-    [ dup load-byte 0 > ] [
-        dup load-byte 47 = [
-            SWAP drop
-            dup
-        ] ?
-        1 +
-    ] |:
-    drop
-;
+@last-slash ( ptr -- slash-ptr|0 ) STR::last-slash ;
 
 @set-name-from ( path -- )
     dup last-slash

@@ -47,16 +47,17 @@ IMPORT STR
 @MSIZE  512 ;    ( fixed negotiated message size )
 
 ( --- Library scratch state --- )
-@BUF        0x8D2000 ; ( 512-byte message build/parse buffer )
-@WPOS       0x8D2200 ;
-@RPOS       0x8D2204 ;
-@SRV_NFILES 0x8D2208 ;
-@NAMEBUF    0x8D2210 ; ( 64 bytes: scratch for a parsed wname )
+( Message build/parse buffer: exactly the negotiated MSIZE. )
+RESERVE BUF 512 ;
+RESERVE WPOS       4 ;
+RESERVE RPOS       4 ;
+RESERVE SRV_NFILES 4 ;
+RESERVE NAMEBUF   64 ; ( scratch for a parsed wname )
 @FILE_REC   32 ;
 @MAXFILES   16 ;
-@SRV_FILES  0x8D2300 ; ( 16*32 = 512 bytes )
+RESERVE SRV_FILES 512 ; ( MAXFILES * FILE_REC )
 @MAXFIDS    8 ;
-@SRV_FIDS   0x8D2500 ; ( 8*8 = 64 bytes )
+RESERVE SRV_FIDS   64 ; ( MAXFIDS * 8 )
 
 ( --- Connection accessors (conn is a 16-byte block the caller owns) --- )
 @CONN_FD      0 ;

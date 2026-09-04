@@ -1,7 +1,7 @@
 ( Easel: a MacPaint clone in progress -- see easel_plan.md for the full plan.
   File > New/Open/Save/Save As/Revert/Quit, all routed through one dirty-
   confirm sheet (Save/Don't Save/Cancel) when there are unsaved changes.
-  A failed save or a load that isn't a valid EAS2 file raises a
+  A failed save or a load that isn't a valid EAS3 file raises a
   one-button alert instead of failing silently. Edit > Undo / Cut / Copy / Paste /
   Invert / Clear / Fill / Trace Edges / Flip H / Flip V / Rotate 90,
   Goodies > Grid (draws dots and snaps shape-tool drags to the 8px grid) /
@@ -23,9 +23,9 @@
   Double-click shortcuts: Pencil toggles FatBits, Eraser clears the whole
   page, Lasso/Marquee selects all, Brush opens Brush Shape, Hand opens Show
   Page, a pattern swatch opens Edit Pattern. Viewport
-  is 480x416, 1-bit, in a 560x492 window
-  (geometry sized to the tools, not a fixed window size). Save is EAS2 (whole
-  576x720 page, no EAS1 back-compat reader -- see the EAS2 comment at the
+  is 480x416, 2-bit gray (four levels), in a 560x492 window
+  (geometry sized to the tools, not a fixed window size). Save is EAS3 (whole
+  576x720 2bpp page, no EAS2 back-compat reader -- see the EAS3 comment at the
   file-format section).
   ./bin/cloister apps/Easel.bin )
 
@@ -36,6 +36,7 @@ INCLUDE "lib/ui.lux"
 INCLUDE "lib/sf.lux"
 INCLUDE "lib/geom.lux"
 INCLUDE "lib/bitmap.lux"
+INCLUDE "lib/graymap.lux"
 INCLUDE "lib/time.lux"
 INCLUDE "lib/cff.lux"
 INCLUDE "lib/icn.lux"
@@ -52,6 +53,7 @@ IMPORT UI
 IMPORT SF
 IMPORT GEOM
 IMPORT BITMAP
+IMPORT GRAYMAP
 IMPORT TIME
 IMPORT CFF
 IMPORT ICN
@@ -74,9 +76,9 @@ IMPORT ICN
 @LW_Y          PAL_Y PAL_CELL_H 10 * + ; ( below the 10-row tool palette )
 @CANVAS_X       PAL_W ;
 @CANVAS_Y       BAR_H ;
-@CANVAS_W      480 ; ( a multiple of 32 -- see draw-canvas-1x's word scan )
+@CANVAS_W      480 ; ( a multiple of 16 -- see draw-canvas-1x's GRAYMAP word scan )
 @CANVAS_H      LW_Y LW_ROW_H LW_ROWS * + BAR_H - ; ( level with the tool palette + line-width strip )
-@CANVAS_WORDS   15 ; ( CANVAS_W / 32, exact )
+@CANVAS_WORDS   30 ; ( CANVAS_W / 16, exact -- GRAYMAP words are 16 pixels )
 @FONT_SIZE      16 ;
 @GRID            8 ;
 @PAGE_W    BITMAP::PAGE_W ; ( 576 -- full page width; CANVAS_W is only the viewport )
@@ -94,7 +96,7 @@ IMPORT ICN
 @FAT_VW         60 ; ( CANVAS_W / FAT_Z, exact -- Step 8's FatBits zoom window )
 @FAT_VH         52 ; ( CANVAS_H / FAT_Z, exact )
 @STK_MAX      4096 ;
-@PACK_BYTES  BITMAP::PAGE_BYTES 8 + ; ( 8-byte header + one full packed page -- EAS2 )
+@PACK_BYTES  GRAYMAP::PAGE_BYTES 8 + ; ( 8-byte header + one full 2bpp page -- EAS3 )
 ( Literal, not an expression: cloister.c's scan_lux_win_size scans source
   text for a bare integer right after this constant's name to size its
   window before compiling, and can't evaluate CANVAS_X CANVAS_W +. Every
@@ -242,120 +244,120 @@ IMPORT ICN
 @SP_VIEW_W         CANVAS_W SP_Z / ;
 @SP_VIEW_H         CANVAS_H SP_Z / ;
 
-( --- Bulk buffers (MM_APP_BULK_BUFFER 0x900000..0xA00000) ---
-  CANVAS/UNDO/TMP are now packed 1bpp BITMAP::PAGE_BYTES (51840) pages, not
-  one-byte-per-pixel CANVAS_BYTES (175104) -- see lib/bitmap.lux. TMP sits at
-  the address the rewrite plan reserves for a general page-sized SCRATCH
-  buffer (Step 5/6 will reuse it for selection transforms, never concurrently
-  with do-undo's swap use here). )
-@CANVAS        0x900000 ;
-@UNDO          0x90D000 ;
-@TMP           0x934000 ;
-@PACK          0x920000 ; ( EAS2 save/load staging: 8-byte header + BITMAP::PAGE_BYTES,
-                            51848 bytes -- fits the 0x919A80..0x934000 gap after UNDO with
-                            room to spare; must not reach STK at 0x987000 )
-@STK           0x987000 ;
-@PATH          0x990000 ;
-@VFS_PATH      0x990100 ;
-@PATTERNS      0x990300 ; ( 38 * 8 bytes, one row per byte -- see init-pats )
-@BRUSHES       0x990500 ; ( 32 * 32 bytes, 16x16 1bpp masks, 2 bytes/row -- see init-brushes )
-@TOOL_ICONS    0x990900 ; ( TOOLS * ICN::BYTES, one 16x16 System-6-style ICN per tool -- see
-                            init-tool-icons; ends 0x990B80, well clear of SEL_MASK below )
-@SEL_MASK      0x991000 ; ( BITMAP::PAGE_BYTES page: lasso's filled-interior selection mask )
-@SNARF_BUF     0x9A0000 ; ( EASS clipboard payload; a full-page selection packs to ~51.8 KB,
-                            over SNARF_CAP below -- snarf-copy refuses rather than overrun it )
+( --- Buffers ---
+  CANVAS/UNDO/TMP/PACK are packed 2bpp GRAYMAP::PAGE_BYTES (103680) pages.
+  SEL_MASK stays 1bpp BITMAP. VISIT is a 1bpp flood-fill mark page.
+  Every size below is stated rather than implied by the distance to the
+  next hand-picked address -- see docs/reserve-directive.md. )
+RESERVE CANVAS 103680 ;   ( GRAYMAP::PAGE_BYTES )
+RESERVE UNDO   103680 ;   ( GRAYMAP::PAGE_BYTES )
+RESERVE PACK   103688 ;   ( EAS3 staging: 8-byte header + GRAYMAP::PAGE_BYTES )
+RESERVE TMP    103680 ;   ( selection transforms; Show Page reduce reuses the front )
+RESERVE VISIT   51840 ;   ( BITMAP::PAGE_BYTES flood-fill marks )
+RESERVE STK     32768 ;   ( STK_MAX * 8 )
+RESERVE PATH      256 ;
+RESERVE VFS_PATH  256 ;
+RESERVE PATTERNS  304 ;   ( 38 * 8 bytes, one row per byte -- see init-pats )
+RESERVE BRUSHES  1024 ;   ( 32 * 32 bytes, 16x16 1bpp masks, 2 bytes/row -- see init-brushes )
+RESERVE TOOL_ICONS 640 ;  ( TOOLS * ICN::BYTES, one 16x16 System-6-style ICN per
+                            tool -- see init-tool-icons )
+RESERVE SEL_MASK 51840 ;  ( BITMAP::PAGE_BYTES: lasso's filled-interior selection mask )
+RESERVE SNARF_BUF 32768 ; ( SNARF_CAP. A full-page 2bpp selection packs to ~103 KB,
+                            over the cap -- snarf-copy refuses rather than overrun it )
 @SNARF_CAP     0x8000 ;
-@FONT_CHICAGO  0x9A8000 ; ( 3 system fonts, each a CFF_LEN_UF2 (16x16-tile) blob loaded at start )
-@FONT_GENEVA   0x9AA200 ;
-@FONT_MONACO   0x9AC400 ;
-@TEXT_BUF      0x9AE600 ; ( source bytes of the in-progress floating text block, up to TEXT_MAX;
-                            a newline byte (10) marks a Return rather than a glyph )
+RESERVE FONT_CHICAGO 8448 ; ( 3 system fonts, each a CFF::LEN16 (16x16-tile) blob )
+RESERVE FONT_GENEVA  8448 ;
+RESERVE FONT_MONACO  8448 ;
+RESERVE TEXT_BUF 2048 ;   ( TEXT_MAX source bytes of the in-progress floating text
+                            block; a newline byte (10) marks a Return, not a glyph )
 @TEXT_MAX          2048 ;
 
 ( --- Small state (MM_APP_SMALL_STATE) --- )
-@tool              0x8A0000 ;
-@pat-id            0x8A0004 ;
-@drag              0x8A0008 ;
-@mouse-held        0x8A000C ;
-@file-dirty        0x8A0010 ;
-@confirm-dirty-open  0x8A0014 ;
-@grid-f            0x8A0018 ;
-@fat-f             0x8A001C ;
+RESERVE tool 4 ;
+RESERVE pat-id 4 ;
+RESERVE drag 4 ;
+RESERVE mouse-held 4 ;
+RESERVE file-dirty 4 ;
+RESERVE confirm-dirty-open 4 ;
+RESERVE grid-f 4 ;
+RESERVE fat-f 4 ;
 ( 0x8A0020 formerly filled-f -- removed, see shape-filled? )
-@undo-ok           0x8A0024 ;
-@plot-mode         0x8A0028 ;
-@last-cx           0x8A002C ;
-@last-cy           0x8A0030 ;
+RESERVE undo-ok 4 ;
+RESERVE plot-mode 4 ;
+RESERVE last-cx 4 ;
+RESERVE last-cy 4 ;
 @shape-x0          0x8A0034 ;
 @shape-y0          0x8A0038 ;
 @shape-x1          0x8A003C ;
 @shape-y1          0x8A0040 ;
-@fat-ox            0x8A0044 ;
-@fat-oy            0x8A0048 ;
-@shift-mod         0x8A004C ;
-@stk-n             0x8A0050 ;
-@rng               0x8A0054 ;
-@erase-btn         0x8A0058 ;
-@save-as           0x8A005C ;
-@last-pat-id       0x8A0060 ; ( previously drawn pattern selection, -1 = none yet )
-@damage            0x8A0064 ; ( bitmask of DIRTY_* below: what changed since the last draw )
-@pen-width         0x8A0068 ; ( index into LW_VALUES; drives line/rect/oval outline thickness )
-@epat-last-idx     0x8A006C ; ( pattern-strip double-click tracking: last clicked swatch index )
-@epat-last-time    0x8A0070 ;
-@edit-pat-open     0x8A0074 ; ( 0/1: Edit Pattern modal open )
-@edit-pat-id       0x8A0078 ; ( which PATTERNS slot the editor is modifying )
-@brush-index       0x8A007C ; ( selected brush, 0..31, index into BRUSHES )
-@brush-pick-open   0x8A0080 ; ( 0/1: Brush Shape modal open )
-@br-last-idx       0x8A0084 ; ( tool-palette double-click tracking, separate from epat-last-* )
-@br-last-time      0x8A0088 ;
-@sel-active        0x8A008C ; ( 0/1: a marquee selection is currently marked )
+RESERVE fat-ox 4 ;
+RESERVE fat-oy 4 ;
+RESERVE shift-mod 4 ;
+RESERVE stk-n 4 ;
+RESERVE rng 4 ;
+RESERVE erase-btn 4 ;
+RESERVE save-as 4 ;
+RESERVE last-pat-id 4 ; ( previously drawn pattern selection, -1 = none yet )
+RESERVE damage 4 ; ( bitmask of DIRTY_* below: what changed since the last draw )
+RESERVE pen-width 4 ; ( index into LW_VALUES; drives line/rect/oval outline thickness )
+RESERVE epat-last-idx 4 ; ( pattern-strip double-click tracking: last clicked swatch index )
+RESERVE epat-last-time 4 ;
+RESERVE edit-pat-open 4 ; ( 0/1: Edit Pattern modal open )
+RESERVE edit-pat-id 4 ; ( which PATTERNS slot the editor is modifying )
+RESERVE brush-index 4 ; ( selected brush, 0..31, index into BRUSHES )
+RESERVE brush-pick-open 4 ; ( 0/1: Brush Shape modal open )
+RESERVE br-last-idx 4 ; ( tool-palette double-click tracking, separate from epat-last-* )
+RESERVE br-last-time 4 ;
+RESERVE sel-active 4 ; ( 0/1: a marquee selection is currently marked )
 @sel-x0            0x8A0090 ; ( canonical canvas-space rect, min<=max always once committed )
 @sel-y0            0x8A0094 ;
 @sel-x1            0x8A0098 ;
 @sel-y1            0x8A009C ;
-@move-dx           0x8A00A0 ; ( live translation while DRAG_MOVE, canvas px )
-@move-dy           0x8A00A4 ;
-@sel-mask-active   0x8A00A8 ; ( 0/1: selection is SEL_MASK-gated (lasso) vs full-rect (marquee) )
-@lasso-minx        0x8A00AC ; ( running bbox of the traced path, while DRAG_LASSO )
-@lasso-miny        0x8A00B0 ;
-@lasso-maxx        0x8A00B4 ;
-@lasso-maxy        0x8A00B8 ;
-@lasso-start-cx    0x8A00BC ; ( first point of the path, to close the loop on mouse-up )
-@lasso-start-cy    0x8A00C0 ;
-@poly-active       0x8A00C4 ; ( 0/1: polygon vertex-collection in progress )
-@poly-n            0x8A00C8 ; ( vertices placed so far, into POLY_VERTS )
-@poly-last-time    0x8A00CC ; ( last vertex click, for double-click-to-close )
-@poly-hover-cx     0x8A00D0 ; ( live cursor position, for the rubber-band preview segment )
-@poly-hover-cy     0x8A00D4 ;
-@text-active       0x8A00D8 ; ( 0/1: a floating, uncommitted text block is being edited )
+RESERVE move-dx 4 ; ( live translation while DRAG_MOVE, canvas px )
+RESERVE move-dy 4 ;
+RESERVE sel-mask-active 4 ; ( 0/1: selection is SEL_MASK-gated (lasso) vs full-rect (marquee) )
+RESERVE lasso-minx 4 ; ( running bbox of the traced path, while DRAG_LASSO )
+RESERVE lasso-miny 4 ;
+RESERVE lasso-maxx 4 ;
+RESERVE lasso-maxy 4 ;
+RESERVE lasso-start-cx 4 ; ( first point of the path, to close the loop on mouse-up )
+RESERVE lasso-start-cy 4 ;
+RESERVE poly-active 4 ; ( 0/1: polygon vertex-collection in progress )
+RESERVE poly-n 4 ; ( vertices placed so far, into POLY_VERTS )
+RESERVE poly-last-time 4 ; ( last vertex click, for double-click-to-close )
+RESERVE poly-hover-cx 4 ; ( live cursor position, for the rubber-band preview segment )
+RESERVE poly-hover-cy 4 ;
+RESERVE text-active 4 ; ( 0/1: a floating, uncommitted text block is being edited )
 @text-x0           0x8A00DC ; ( insertion origin -- left edge of line 1 )
 @text-y0           0x8A00E0 ;
-@text-len          0x8A00E4 ; ( bytes used in TEXT_BUF; a newline byte (10) starts a new line )
-@text-font         0x8A00E8 ; ( 0=Chicago, 1=Geneva, 2=Monaco )
-@text-size         0x8A00EC ; ( 0/1/2 -- point size index; text-scale below turns it into 1/2/3 )
-@text-style        0x8A00F0 ; ( STYLE_BOLD/STYLE_UNDERLINE bitmask; combinable )
-@font-grp          0x8A00F4 ; ( UI radio-group ids, allocated once at @start )
-@size-grp          0x8A00F8 ;
-@confirm-pending   0x8A00FC ; ( CONFIRM_ACT_* -- what the dirty-confirm sheet runs on Save/Don't Save )
-@view-x            0x8A0100 ; ( Hand tool: top-left of the viewport within the 576x720 page )
-@view-y            0x8A010C ;
-@hand-last-mx      0x8A0110 ; ( raw screen x/y at the last Hand-drag sample )
-@hand-last-my      0x8A0114 ;
-@show-page-open    0x8A0118 ; ( 0/1: Goodies > Show Page modal open )
-@sp-x              0x8A011C ; ( pending viewport origin while the modal is open -- OK commits
+RESERVE text-len 4 ; ( bytes used in TEXT_BUF; a newline byte (10) starts a new line )
+RESERVE text-font 4 ; ( 0=Chicago, 1=Geneva, 2=Monaco )
+RESERVE text-size 4 ; ( 0/1/2 -- point size index; text-scale below turns it into 1/2/3 )
+RESERVE text-style 4 ; ( STYLE_BOLD/STYLE_UNDERLINE bitmask; combinable )
+RESERVE font-grp 4 ; ( UI radio-group ids, allocated once at @start )
+RESERVE size-grp 4 ;
+RESERVE confirm-pending 4 ; ( CONFIRM_ACT_* -- what the dirty-confirm sheet runs on Save/Don't Save )
+RESERVE view-x 4 ; ( Hand tool: top-left of the viewport within the 576x720 page )
+RESERVE view-y 4 ;
+RESERVE hand-last-mx 4 ; ( raw screen x/y at the last Hand-drag sample )
+RESERVE hand-last-my 4 ;
+RESERVE show-page-open 4 ; ( 0/1: Goodies > Show Page modal open )
+RESERVE sp-x 4 ; ( pending viewport origin while the modal is open -- OK commits
                                  it into view-x/view-y, Cancel/Esc discards it )
-@sp-y              0x8A0120 ;
-@sp-drag           0x8A0124 ; ( 0/1: dragging the viewport rect on the mini-map )
-@tool-dbl-idx      0x8A0128 ; ( tool-palette double-click tracking for the Pencil/Eraser/
+RESERVE sp-y 4 ;
+RESERVE sp-drag 4 ; ( 0/1: dragging the viewport rect on the mini-map )
+RESERVE tool-dbl-idx 4 ; ( tool-palette double-click tracking for the Pencil/Eraser/
                                  Lasso/Marquee/Hand shortcuts below, separate from br-last-* )
-@tool-dbl-time     0x8A012C ;
-@mirror-h          0x8A0130 ; ( Goodies > Mirror H/V: brush dabs also stamp reflected about )
-@mirror-v          0x8A0134 ; ( the page center -- see brush-at )
-@last-tool         0x8A0138 ; ( previously drawn tool-palette selection, -1 = none yet )
-@hover-tool        0x8A013C ; ( palette cell under the cursor, -1 = none; drives the tooltip delay )
+RESERVE tool-dbl-time 4 ;
+RESERVE mirror-h 4 ; ( Goodies > Mirror H/V: brush dabs also stamp reflected about )
+RESERVE mirror-v 4 ; ( the page center -- see brush-at )
+RESERVE last-tool 4 ; ( previously drawn tool-palette selection, -1 = none yet )
+RESERVE hover-tool 4 ; ( palette cell under the cursor, -1 = none; drives the tooltip delay )
 @hover-t0          0x8A0140 ; ( TIME::milli@ when hover-tool last changed )
-@tooltip-shown     0x8A0144 ; ( 1 once the tooltip for hover-tool has been drawn this dwell, so
+RESERVE tooltip-shown 4 ; ( 1 once the tooltip for hover-tool has been drawn this dwell, so
                                 on-frame stops re-drawing it every frame while the mouse sits still )
+RESERVE ink 4 ; ( GRAYMAP 0..3, default BLACK. Pencil/brush/stroke paint this. )
+RESERVE last-ink 4 ; ( previously drawn gray-picker selection, -1 = none yet )
 
 ( Explicit damage bits, replacing the old single pat-full flag (whose narrow
   meaning -- "must draw-patterns redraw all swatches" -- was the exact bug: a
@@ -378,29 +380,13 @@ IMPORT ICN
 
 ( --- Path / dirty --- )
 
-@make-vfs-path ( path-ptr -- vfs-path-ptr )
-    dup load-byte 47 = [ 1 + ] ?
-    T"/sys/file/" VFS_PATH STR::strcpy
-    VFS_PATH T"/sys/file/" STR::strlen + STR::strcpy
-    VFS_PATH
-;
-
 @mark-dirty ( -- )
     1 file-dirty STOREI
     APP::dirty!
     sync-title
 ;
 
-@path-basename ( -- ptr )
-    PATH dup
-    [ dup load-byte ]
-    [
-        dup load-byte 47 = [
-            1 + swap drop dup
-        ] [ 1 + ] ?:
-    ] |:
-    drop
-;
+@path-basename ( -- ptr ) PATH STR::basename ;
 
 @sync-title ( -- )
     file-dirty LOADI [ T"Easel *" ] [ T"Easel" ] ?:
@@ -410,11 +396,15 @@ IMPORT ICN
 ( --- Canvas --- )
 
 @copy-buf { src dest -- }
-    src dest BITMAP::copy
+    src dest GRAYMAP::copy
 ;
 
 @clear-buf { dest -- }
-    dest BITMAP::clear
+    dest GRAYMAP::clear
+;
+
+@ink-rgb ( -- c )
+    255 ink LOADI 85 * - DRAW::gray
 ;
 
 ( Bounds against the whole 576x720 page, not just the current viewport --
@@ -426,7 +416,7 @@ IMPORT ICN
 
 @pix@ { x y -- v }
     x y in-can? [
-        CANVAS x y BITMAP::get
+        CANVAS x y GRAYMAP::get
     ] [ 0 ] ?:
 ;
 
@@ -437,7 +427,7 @@ IMPORT ICN
   have faulted the VM. `?` -- no else branch -- just skips the write. )
 @pix! { v x y -- }
     x y in-can? [
-        CANVAS x y v BITMAP::set
+        CANVAS x y v GRAYMAP::set
     ] ?
 ;
 
@@ -452,30 +442,21 @@ IMPORT ICN
   its own declared order, rather than landing on x/y left over underneath. )
 @plot-pat { x y -- }
     x y pat-bit { bit }
-        bit x y pix!
+        bit [ ink LOADI ] [ 0 ] ?: x y pix!
     UNGIRD
 ;
 
-@plot-black { x y -- } 1 x y pix! ;
+@plot-black { x y -- } ink LOADI x y pix! ;
 @plot-white { x y -- } 0 x y pix! ;
 
 @hspan-bit { bit x y n -- }
-    0 { k }
-        [ k n < ]
-        [
-            bit x k + y pix!
-            k 1 + k!
-        ] |:
-    UNGIRD
+    CANVAS x y n bit GRAYMAP::hspan
 ;
 
-( Delegates to BITMAP::hspan-pat (word-at-a-time, no per-pixel pix! bounds
-  check) instead of looping plot-pat one column at a time. Safe without extra
-  clipping here: both callers (fill-rect-pat, fill-oval-pat, via
-  commit-shape) only ever pass spans whose endpoints came from mouse
-  positions already clamped into canvas bounds by clip-can. )
+( Delegates to GRAYMAP::hspan-pat (word-at-a-time). Pattern 1s stamp the
+  current ink, 0s stamp white. Callers pass spans already clipped. )
 @hspan-pat { x y n -- }
-    CANVAS x y n PATTERNS pat-id LOADI 8 * + y BITMAP::hspan-pat
+    CANVAS x y n PATTERNS pat-id LOADI 8 * + y ink LOADI GRAYMAP::hspan-pat
 ;
 
 ( --- Brush shapes: 32 preset 16x16 1bpp masks, generated once at startup
@@ -669,7 +650,7 @@ IMPORT ICN
   TOOLTIP_DELAY ms of hovering a palette cell (see hover-tool/hover-t0
   and the draw call in on-frame). )
 @TOOLTIP_DELAY   600 ;
-@TOOL_LABELS  0x8A0400 ; ( TOOLS * 4 bytes: index -> label string pointer )
+RESERVE TOOL_LABELS 4 ; ( TOOLS * 4 bytes: index -> label string pointer )
 
 @tool-label { i -- ptr } TOOL_LABELS i 4 * + LOADI ;
 
@@ -1103,16 +1084,16 @@ IMPORT ICN
         minx { x }
             [ x maxx <= ]
             [
-                1 x miny pix!
-                1 x maxy pix!
+                ink LOADI x miny pix!
+                ink LOADI x maxy pix!
                 x 1 + x!
             ] |:
         UNGIRD
         miny { y }
             [ y maxy <= ]
             [
-                1 minx y pix!
-                1 maxx y pix!
+                ink LOADI minx y pix!
+                ink LOADI maxx y pix!
                 y 1 + y!
             ] |:
         UNGIRD
@@ -1150,7 +1131,7 @@ IMPORT ICN
 ;
 
 @hspan-black { x y n -- }
-    1 x y n hspan-bit
+    ink LOADI x y n hspan-bit
 ;
 
 @frame-oval-pix { x y w h -- }
@@ -1204,7 +1185,7 @@ IMPORT ICN
     0 { k }
         [ k n < ]
         [
-            1 x y k + pix!
+            ink LOADI x y k + pix!
             k 1 + k!
         ] |:
     UNGIRD
@@ -1235,7 +1216,7 @@ IMPORT ICN
 ( w x w black square centered at (x,y); w<=1 is a single pixel. )
 @plot-black-w { x y w -- }
     w 1 <= [
-        1 x y pix!
+        ink LOADI x y pix!
     ] [
         w 2 / { half }
             x half - { sx }
@@ -1397,10 +1378,10 @@ IMPORT ICN
                     [
                         d d py DRAW::oval-span { xoff spanw }
                             spanw 0 > [
-                                1 minx xoff + miny py + pix!
-                                1 maxx xoff - miny py + pix!
-                                1 minx xoff + maxy py - pix!
-                                1 maxx xoff - maxy py - pix!
+                                ink LOADI minx xoff + miny py + pix!
+                                ink LOADI maxx xoff - miny py + pix!
+                                ink LOADI minx xoff + maxy py - pix!
+                                ink LOADI maxx xoff - maxy py - pix!
                             ] ?
                         UNGIRD
                         py 1 + py!
@@ -1466,7 +1447,7 @@ IMPORT ICN
             x0 { i }
                 [ i x1 <= ]
                 [
-                    i y pix@ old = [
+                    i y pix@ old = VISIT i y BITMAP::get 0 = AND [
                         inside 0 = [
                             i y stk-push
                             1 inside!
@@ -1481,14 +1462,14 @@ IMPORT ICN
     ] ?:
 ;
 
-@apply-pat-over-twos ( -- )
+@apply-pat-over-visit ( -- )
     0 { y }
         [ y PAGE_H < ]
         [
             0 { x }
                 [ x PAGE_W < ]
                 [
-                    x y pix@ 2 = [
+                    VISIT x y BITMAP::get 0 > [
                         x y plot-pat
                     ] ?
                     x 1 + x!
@@ -1503,15 +1484,15 @@ IMPORT ICN
     sx sy in-can? 0 = [
     ] [
         sx sy pix@ 0 0 0 0 0 { old x y x0 x1 i }
-            old 2 = [
-            ] [
-                0 stk-n STOREI
-                sx sy stk-push
-                [ stk-n LOADI 0 > ]
-                [
-                    stk-pop y! x!
-                    y 0 < y PAGE_H >= OR [
-                    ] [
+            VISIT BITMAP::clear
+            0 stk-n STOREI
+            sx sy stk-push
+            [ stk-n LOADI 0 > ]
+            [
+                stk-pop y! x!
+                y 0 < y PAGE_H >= OR [
+                ] [
+                    VISIT x y BITMAP::get 0 = x y pix@ old = AND [
                         x x0!
                         [ x0 0 > x0 1 - y pix@ old = AND ]
                         [ x0 1 - x0! ] |:
@@ -1521,15 +1502,15 @@ IMPORT ICN
                         x0 i!
                         [ i x1 <= ]
                         [
-                            2 i y pix!
+                            VISIT i y 1 BITMAP::set
                             i 1 + i!
                         ] |:
                         y 1 - x0 x1 old seed-span
                         y 1 + x0 x1 old seed-span
-                    ] ?:
-                ] |:
-                apply-pat-over-twos
-            ] ?:
+                    ] ?
+                ] ?:
+            ] |:
+            apply-pat-over-visit
         UNGIRD
     ] ?:
 ;
@@ -1561,7 +1542,7 @@ IMPORT ICN
                 sel-x0 LOADI { x }
                     [ x sel-x1 LOADI <= ]
                     [
-                        x y pix@ 0 = [ 1 ] [ 0 ] ?: x y pix!
+                        x y pix@ 3 SWAP - x y pix!
                         x 1 + x!
                     ] |:
                 UNGIRD
@@ -1569,7 +1550,7 @@ IMPORT ICN
             ] |:
         UNGIRD
     ] [
-        CANVAS BITMAP::invert
+        CANVAS GRAYMAP::invert
     ] ?:
     mark-dirty
 ;
@@ -1618,7 +1599,7 @@ IMPORT ICN
             op-x0 { x }
                 [ x op-x1 <= ]
                 [
-                    x y pat-bit x y pix!
+                    x y plot-pat
                     x 1 + x!
                 ] |:
             UNGIRD
@@ -1646,8 +1627,8 @@ IMPORT ICN
                             x0 { x }
                                 [ x x1 <= ]
                                 [
-                                    CANVAS x y BITMAP::get { bit }
-                                        TMP x y bit BITMAP::set
+                                    CANVAS x y GRAYMAP::get { bit }
+                                        TMP x y bit GRAYMAP::set
                                     UNGIRD
                                     x 1 + x!
                                 ] |:
@@ -1661,12 +1642,12 @@ IMPORT ICN
                             x0 { x }
                                 [ x x1 <= ]
                                 [
-                                    TMP x y BITMAP::get 0 > [
-                                        x 1 - x0 < TMP x 1 - y BITMAP::get 0 = OR
-                                        x 1 + x1 > TMP x 1 + y BITMAP::get 0 = OR OR
-                                        y 1 - y0 < TMP x y 1 - BITMAP::get 0 = OR OR
-                                        y 1 + y1 > TMP x y 1 + BITMAP::get 0 = OR OR
-                                        [ 1 x y pix! ] [ 0 x y pix! ] ?:
+                                    TMP x y GRAYMAP::get 0 > [
+                                        x 1 - x0 < TMP x 1 - y GRAYMAP::get 0 = OR
+                                        x 1 + x1 > TMP x 1 + y GRAYMAP::get 0 = OR OR
+                                        y 1 - y0 < TMP x y 1 - GRAYMAP::get 0 = OR OR
+                                        y 1 + y1 > TMP x y 1 + GRAYMAP::get 0 = OR OR
+                                        [ ink LOADI x y pix! ] [ 0 x y pix! ] ?:
                                     ] [
                                         0 x y pix!
                                     ] ?:
@@ -1693,8 +1674,8 @@ IMPORT ICN
                     x0 { x }
                         [ x x1 <= ]
                         [
-                            CANVAS x y BITMAP::get { bit }
-                                TMP x y bit BITMAP::set
+                            CANVAS x y GRAYMAP::get { bit }
+                                TMP x y bit GRAYMAP::set
                             UNGIRD
                             x 1 + x!
                         ] |:
@@ -1702,7 +1683,7 @@ IMPORT ICN
                     x0 { x }
                         [ x x1 <= ]
                         [
-                            TMP x0 x1 + x - y BITMAP::get x y pix!
+                            TMP x0 x1 + x - y GRAYMAP::get x y pix!
                             x 1 + x!
                         ] |:
                     UNGIRD
@@ -1726,8 +1707,8 @@ IMPORT ICN
                             x0 { x }
                                 [ x x1 <= ]
                                 [
-                                    CANVAS x y BITMAP::get { bit }
-                                        TMP x y bit BITMAP::set
+                                    CANVAS x y GRAYMAP::get { bit }
+                                        TMP x y bit GRAYMAP::set
                                     UNGIRD
                                     x 1 + x!
                                 ] |:
@@ -1741,7 +1722,7 @@ IMPORT ICN
                             x0 { x }
                                 [ x x1 <= ]
                                 [
-                                    TMP x y0 y1 + y - BITMAP::get x y pix!
+                                    TMP x y0 y1 + y - GRAYMAP::get x y pix!
                                     x 1 + x!
                                 ] |:
                             UNGIRD
@@ -1771,8 +1752,8 @@ IMPORT ICN
                     ox0 { x }
                         [ x ox1 <= ]
                         [
-                            CANVAS x y BITMAP::get { bit }
-                                TMP x y bit BITMAP::set
+                            CANVAS x y GRAYMAP::get { bit }
+                                TMP x y bit GRAYMAP::set
                             UNGIRD
                             x 1 + x!
                         ] |:
@@ -1787,7 +1768,7 @@ IMPORT ICN
                     ox0 { x }
                         [ x ox1 <= ]
                         [
-                            TMP x y BITMAP::get
+                            TMP x y GRAYMAP::get
                             ox0 oy1 y - +
                             oy0 x ox0 - +
                             { bit dx dy }
@@ -2054,8 +2035,8 @@ IMPORT ICN
                 [ x sel-x1 LOADI <= ]
                 [
                     x y sel-px-active? [
-                        CANVAS x y BITMAP::get { bit }
-                            TMP x y bit BITMAP::set
+                        CANVAS x y GRAYMAP::get { bit }
+                            TMP x y bit GRAYMAP::set
                         UNGIRD
                         0 x y pix!
                     ] ?
@@ -2083,7 +2064,7 @@ IMPORT ICN
                 [ x sel-x1 LOADI <= ]
                 [
                     x y sel-px-active? [
-                        TMP x y BITMAP::get { bit }
+                        TMP x y GRAYMAP::get { bit }
                             x move-dx LOADI + { nx }
                                 y move-dy LOADI + { ny }
                                     nx 0 >= nx PAGE_W < AND ny 0 >= AND ny PAGE_H < AND [
@@ -2156,7 +2137,7 @@ IMPORT ICN
                 [ x sel-x1 LOADI <= ]
                 [
                     x y sel-px-active? [
-                        TMP x y BITMAP::get { bit }
+                        TMP x y GRAYMAP::get { bit }
                             x move-dx LOADI + { nx }
                                 y move-dy LOADI + { ny }
                                     ( only draw what's actually inside the current viewport --
@@ -2167,7 +2148,7 @@ IMPORT ICN
                                         APP::draw-fd
                                         nx view-x LOADI - CANVAS_X +
                                         ny view-y LOADI - CANVAS_Y +
-                                        bit 0 = [ CLR_WHITE ] [ CLR_FG ] ?:
+                                        255 bit 85 * - DRAW::gray
                                         DRAW::pix
                                     ] ?
                                 UNGIRD
@@ -2272,7 +2253,7 @@ IMPORT ICN
                                 lasso-minx LOADI { x2 }
                                     [ x2 lasso-maxx LOADI <= ]
                                     [
-                                        SEL_MASK x2 y2 BITMAP::get CANVAS x2 y2 BITMAP::get AND [
+                                        SEL_MASK x2 y2 BITMAP::get CANVAS x2 y2 GRAYMAP::get AND [
                                             1 found!
                                             x2 minx MIN minx!
                                             x2 maxx MAX maxx!
@@ -2426,7 +2407,7 @@ IMPORT ICN
                                     0 { ox }
                                         [ ox sc < ]
                                         [
-                                            1 cx gx sc * ox + ishift + + cy gy sc * oy + + pix!
+                                            ink LOADI cx gx sc * ox + ishift + + cy gy sc * oy + + pix!
                                             ox 1 + ox!
                                         ] |:
                                     UNGIRD
@@ -2469,7 +2450,7 @@ IMPORT ICN
                                             0 { ux }
                                                 [ ux w < ]
                                                 [
-                                                    1 cx ux + cy 16 text-scale * + 1 - pix!
+                                                    ink LOADI cx ux + cy 16 text-scale * + 1 - pix!
                                                     ux 1 + ux!
                                                 ] |:
                                             UNGIRD
@@ -2567,22 +2548,21 @@ IMPORT ICN
 
 @snarf-w ( -- w ) sel-x1 LOADI sel-x0 LOADI - 1 + ;
 @snarf-h ( -- h ) sel-y1 LOADI sel-y0 LOADI - 1 + ;
-@snarf-rb ( -- rb ) snarf-w 7 + 8 / ;
+@snarf-rb ( -- rb ) snarf-w 3 + 4 / ;
 
 @write-snarf-magic { d w h -- }
     69 d store-byte
     65 d 1 + store-byte
     83 d 2 + store-byte
-    83 d 3 + store-byte
+    71 d 3 + store-byte ( 'G' -- EASG, 2bpp selection )
     w d 4 + DRAW::store-word-le
     h d 6 + DRAW::store-word-le
 ;
 
-( Packs the active selection's rect out of CANVAS into SNARF_BUF as "EASS"
-  (magic, w/h u16 LE, then packed rows -- mirrors the EAS1 file format's
-  layout). Pixels sel-px-active? says aren't part of the selection (only
-  possible for a lasso) pack as 0, so a paste reproduces the traced shape,
-  not its whole bounding box. )
+( Packs the active selection's rect out of CANVAS into SNARF_BUF as "EASG"
+  (magic, w/h u16 LE, then packed 2bpp rows). Pixels sel-px-active? says
+  aren't part of the selection pack as 0, so a paste reproduces the traced
+  shape, not its whole bounding box. )
 @snarf-pack ( -- len )
     SNARF_BUF snarf-w snarf-h write-snarf-magic
     SNARF_BUF 8 + { d }
@@ -2593,18 +2573,19 @@ IMPORT ICN
                     [ bx snarf-rb < ]
                     [
                         0 { b }
-                            0 { bit }
-                                [ bit 8 < ]
+                            0 { px }
+                                [ px 4 < ]
                                 [
-                                    bx 8 * bit + { cx }
+                                    bx 4 * px + { cx }
                                         cx snarf-w < [
-                                            sel-x0 LOADI cx + sel-y0 LOADI ry + sel-px-active?
-                                            sel-x0 LOADI cx + sel-y0 LOADI ry + pix@ AND [
-                                                b 128 bit RSHIFT OR b!
+                                            sel-x0 LOADI cx + sel-y0 LOADI ry + sel-px-active? [
+                                                sel-x0 LOADI cx + sel-y0 LOADI ry + pix@
+                                                6 px 2 * - LSHIFT
+                                                b OR b!
                                             ] ?
                                         ] ?
                                     UNGIRD
-                                    bit 1 + bit!
+                                    px 1 + px!
                                 ] |:
                             UNGIRD
                             b d store-byte
@@ -2627,10 +2608,7 @@ IMPORT ICN
     sel-active LOADI [
         snarf-pack { len }
             len SNARF_CAP <= [
-                T"/sys/snarf" VFS::open dup 0 >= [
-                    dup SNARF_BUF len VFS::write drop
-                    VFS::close drop
-                ] [ drop ] ?:
+                SNARF_BUF len VFS::snarf-write drop
             ] ?
         UNGIRD
     ] ?
@@ -2655,7 +2633,7 @@ IMPORT ICN
     SNARF_BUF load-byte 69 =
     SNARF_BUF 1 + load-byte 65 = AND
     SNARF_BUF 2 + load-byte 83 = AND
-    SNARF_BUF 3 + load-byte 83 = AND
+    SNARF_BUF 3 + load-byte 71 = AND
 ;
 
 @snarf-in-w ( -- w ) SNARF_BUF 4 + DRAW::load-word-le ;
@@ -2666,11 +2644,11 @@ IMPORT ICN
   always lands somewhere the user can see without having to pan for it. )
 @snarf-in-ox ( -- ox ) view-x LOADI CANVAS_W snarf-in-cw - 2 / + ;
 @snarf-in-oy ( -- oy ) view-y LOADI CANVAS_H snarf-in-ch - 2 / + ;
-@snarf-in-rb ( -- rb ) snarf-in-w 7 + 8 / ;
+@snarf-in-rb ( -- rb ) snarf-in-w 3 + 4 / ;
 
-@snarf-in-bit { cx ry -- bit }
-    SNARF_BUF 8 + ry snarf-in-rb * + cx 8 / + load-byte
-    128 cx 8 MOD RSHIFT AND 0 = [ 0 ] [ 1 ] ?:
+@snarf-in-gray { cx ry -- v }
+    SNARF_BUF 8 + ry snarf-in-rb * + cx 4 / + load-byte
+    3 cx 3 AND - 2 * RSHIFT 3 AND
 ;
 
 ( Unpacks SNARF_BUF's EASS payload into CANVAS centered in the canvas
@@ -2686,7 +2664,7 @@ IMPORT ICN
             0 { cx }
                 [ cx snarf-in-cw < ]
                 [
-                    cx ry snarf-in-bit snarf-in-ox cx + snarf-in-oy ry + pix!
+                    cx ry snarf-in-gray snarf-in-ox cx + snarf-in-oy ry + pix!
                     SEL_MASK snarf-in-ox cx + snarf-in-oy ry + 1 BITMAP::set
                     cx 1 + cx!
                 ] |:
@@ -2704,14 +2682,11 @@ IMPORT ICN
 ;
 
 @snarf-paste ( -- )
-    T"/sys/snarf" VFS::open dup 0 >= [
-        dup SNARF_BUF SNARF_CAP VFS::read { n }
-            VFS::close drop
-            n 8 >= snarf-magic-ok? AND [
-                snarf-unpack
-            ] ?
-        UNGIRD
-    ] [ drop ] ?:
+    SNARF_BUF SNARF_CAP VFS::snarf-read { n }
+        n 8 >= snarf-magic-ok? AND [
+            snarf-unpack
+        ] ?
+    UNGIRD
 ;
 
 @menu-paste ( val -- ) drop snarf-paste ;
@@ -2723,37 +2698,34 @@ IMPORT ICN
     y view-y LOADI MAX view-y LOADI CANVAS_H + 1 - MIN
 ;
 
-( --- File format EAS2 ---
-  CANVAS is already a packed-1bpp BITMAP page, laid out byte-for-byte the way
-  the plan's EAS2 format wants, so save/load is a header plus one whole-page
-  BITMAP::copy -- no per-pixel packing loop needed. Drops the old EAS1 reader
-  (it was sized to CANVAS_W x CANVAS_H, which has already changed shape once
-  before as the app's geometry moved; there's no shipped EAS1 content to stay
-  compatible with). )
+( --- File format EAS3 ---
+  CANVAS is a packed-2bpp GRAYMAP page. Save/load is a header plus one
+  whole-page GRAYMAP::copy. No EAS2 reader -- the 1bpp files were never
+  a shipped format. )
 
 @write-magic { d -- }
     69 d store-byte
     65 d 1 + store-byte
     83 d 2 + store-byte
-    50 d 3 + store-byte ( '2' -- EAS2 )
+    51 d 3 + store-byte ( '3' -- EAS3 )
     PAGE_W d 4 + DRAW::store-word-le
     PAGE_H d 6 + DRAW::store-word-le
 ;
 
 @pack-bits ( -- )
     PACK write-magic
-    CANVAS PACK 8 + BITMAP::copy
+    CANVAS PACK 8 + GRAYMAP::copy
 ;
 
 @unpack-bits ( -- )
-    PACK 8 + CANVAS BITMAP::copy
+    PACK 8 + CANVAS GRAYMAP::copy
 ;
 
 @magic-ok? ( -- f )
     PACK load-byte 69 =
     PACK 1 + load-byte 65 = AND
     PACK 2 + load-byte 83 = AND
-    PACK 3 + load-byte 50 = AND
+    PACK 3 + load-byte 51 = AND
     PACK 4 + DRAW::load-word-le PAGE_W = AND
     PACK 6 + DRAW::load-word-le PAGE_H = AND
 ;
@@ -2867,8 +2839,8 @@ IMPORT ICN
   destination, or (for load) reading a full/valid EAS1 file. Reuses the
   confirm sheet's panel geometry with a single centered OK button instead
   of three. )
-@io-alert-open  0x8A0104 ; ( 0/1 )
-@io-alert-text  0x8A0108 ; ( T-string ptr shown in the panel )
+RESERVE io-alert-open 4 ; ( 0/1 )
+RESERVE io-alert-text 4 ; ( T-string ptr shown in the panel )
 
 @io-alert-dismiss ( -- )
     0 io-alert-open STOREI
@@ -2918,7 +2890,7 @@ IMPORT ICN
 
 @save-file ( -- )
     pack-bits
-    PATH make-vfs-path 6 VFS::open-mode
+    PATH VFS_PATH VFS::sys-file 6 VFS::open-mode
     dup 0 >= [
         dup PACK PACK_BYTES VFS::write drop
         VFS::close drop
@@ -2934,7 +2906,7 @@ IMPORT ICN
 @load-path ( path -- )
     dup load-byte 47 = [ 1 + ] ?
     PATH STR::strcpy
-    PATH make-vfs-path 0 VFS::open-mode
+    PATH VFS_PATH VFS::sys-file 0 VFS::open-mode
     dup 0 >= [
         dup PACK PACK_BYTES VFS::read { n }
             VFS::close drop
@@ -3158,7 +3130,7 @@ IMPORT ICN
                                 0 { rx }
                                     [ rx SP_Z < ]
                                     [
-                                        CANVAS mx SP_Z * rx + my SP_Z * ry + BITMAP::get 0 > any OR any!
+                                        CANVAS mx SP_Z * rx + my SP_Z * ry + GRAYMAP::get 0 > any OR any!
                                         rx 1 + rx!
                                     ] |:
                                 UNGIRD
@@ -3504,28 +3476,42 @@ IMPORT ICN
     UNGIRD
 ;
 
-( Always-visible preview of the selected pattern, at the pattern strip's
-  left edge (x 0..PAT_CUR_W-1) -- separate from the 19x2 swatch grid, which
-  only shows a selection outline on its own cell. )
-@draw-current-pat ( -- )
-    APP::draw-fd 0 PAT_Y PAT_CUR_W WIN_H PAT_Y - CLR_WHITE DRAW::fill-rect
-    APP::draw-fd 0 PAT_Y PAT_CUR_W WIN_H PAT_Y - CLR_FG DRAW::frame-rect
-    0 { py }
-        [ py 32 < ]
-        [
-            0 { px }
-                [ px 32 < ]
-                [
-                    PATTERNS pat-id LOADI 8 * + py 7 AND + load-byte
-                    128 px 7 AND RSHIFT AND [
-                        APP::draw-fd 2 px + PAT_Y 2 + py + CLR_FG DRAW::pix
-                    ] ?
-                    px 1 + px!
-                ] |:
-            UNGIRD
-            py 1 + py!
-        ] |:
+( 2x2 gray-ink picker in the pattern strip's left box (x 0..PAT_CUR_W).
+  Levels 0..3 = white / light / dark / black. )
+@gray-cell-w ( -- w ) PAT_CUR_W 2 / ;
+@gray-cell-xy { i -- x y }
+    i 2 MOD gray-cell-w *
+    PAT_Y i 2 / PAT_CELL_H * +
+;
+
+@draw-gray-cell { i -- }
+    i gray-cell-xy { x y }
+        255 i 85 * - DRAW::gray { gc }
+            i ink LOADI = [
+                APP::draw-fd x y gray-cell-w PAT_CELL_H CLR_FG DRAW::fill-rect
+                APP::draw-fd x 2 + y 2 + gray-cell-w 4 - PAT_CELL_H 4 - gc DRAW::fill-rect
+            ] [
+                APP::draw-fd x y gray-cell-w PAT_CELL_H CLR_FG DRAW::frame-rect
+                APP::draw-fd x 1 + y 1 + gray-cell-w 2 - PAT_CELL_H 2 - gc DRAW::fill-rect
+            ] ?:
+        UNGIRD
     UNGIRD
+;
+
+@draw-current-pat ( -- )
+    damage LOADI DIRTY_PATS AND 0 > [
+        0 { i }
+            [ i 4 < ]
+            [
+                i draw-gray-cell
+                i 1 + i!
+            ] |:
+        UNGIRD
+    ] [
+        last-ink LOADI dup -1 > [ draw-gray-cell ] [ drop ] ?:
+        ink LOADI draw-gray-cell
+    ] ?:
+    ink LOADI last-ink STOREI
 ;
 
 ( PATTERNS is static once loaded -- the pixel content of every swatch never
@@ -3638,49 +3624,46 @@ IMPORT ICN
     UNGIRD
 ;
 
-( Word-at-a-time: an all-white 32-pixel word is skipped in one word@ + compare
-  instead of 32 pixel tests. CANVAS_W is exactly CANVAS_WORDS*32, and view-x's
-  bit-shift into the page (0..31, constant for the whole scan since view-x's
-  low 5 bits don't depend on wx) is the same for every screen word, so each
-  screen word is built from at most two adjacent page words: vwx + wx and,
-  when shift > 0, vwx + wx + 1. view-x is clamped to VIEW_MAX_X (PAGE_W -
-  CANVAS_W), so that "+1" word index never runs past the page's last word in
-  a row -- see VIEW_MAX_X's definition. No edge masking is needed beyond
-  that, unlike BITMAP::hspan's general case. )
+( Word-at-a-time over 16-pixel GRAYMAP words. An all-white word is skipped.
+  view-x's pixel-shift (0..15) is the same for every screen word; each screen
+  word is built from at most two adjacent page words. When view-x is a
+  multiple of 16 the shift is 0 and the +1 word is not read -- that's what
+  keeps vwx+wx+1 inside the 36-word page row at VIEW_MAX_X. )
 @draw-canvas-1x ( -- )
-    view-x LOADI 32 / view-x LOADI 32 MOD view-y LOADI { vwx shift vy }
+    view-x LOADI 16 / view-x LOADI 16 MOD 2 * view-y LOADI { vwx bshift vy }
         0 { y }
             [ y CANVAS_H < ]
             [
                 0 { wx }
                     [ wx CANVAS_WORDS < ]
                     [
-                        CANVAS wx vwx + y vy + BITMAP::word@ { w0 }
-                            shift 0 = [
-                                w0
-                            ] [
-                                CANVAS wx vwx + 1 + y vy + BITMAP::word@
-                                w0 shift LSHIFT swap 32 shift - RSHIFT OR
-                            ] ?: { w }
+                        CANVAS wx vwx + y vy + GRAYMAP::word@
+                        bshift 0 = [
+                        ] [
+                            CANVAS wx vwx + 1 + y vy + GRAYMAP::word@
+                            SWAP bshift LSHIFT swap 32 bshift - RSHIFT OR
+                        ] ?: { w }
                             w 0 = [
                             ] [
-                                0 { bit }
-                                    [ bit 32 < ]
+                                0 { px }
+                                    [ px 16 < ]
                                     [
-                                        w 31 bit - RSHIFT 1 AND [
-                                            bit { rstart }
-                                                [ bit 32 < w 31 bit - RSHIFT 1 AND AND ]
-                                                [ bit 1 + bit! ] |:
-                                                APP::draw-fd CANVAS_X wx 32 * rstart + +
-                                                    CANVAS_Y y + bit rstart - 1 CLR_FG DRAW::fill-rect
-                                            UNGIRD
+                                        w 30 px 2 * - RSHIFT 3 AND dup 0 = [
+                                            drop
+                                            px 1 + px!
                                         ] [
-                                            bit 1 + bit!
+                                            px SWAP { rstart runv }
+                                                [ px 16 < w 30 px 2 * - RSHIFT 3 AND runv = AND ]
+                                                [ px 1 + px! ] |:
+                                                APP::draw-fd CANVAS_X wx 16 * rstart + +
+                                                    CANVAS_Y y + px rstart - 1
+                                                    255 runv 85 * - DRAW::gray
+                                                    DRAW::fill-rect
+                                            UNGIRD
                                         ] ?:
                                     ] |:
                                 UNGIRD
                             ] ?:
-                        UNGIRD
                         UNGIRD
                         wx 1 + wx!
                     ] |:
@@ -3703,15 +3686,19 @@ IMPORT ICN
             0 vx!
                 [ vx FAT_VW < ]
                 [
-                    fat-ox LOADI vx + cy pix@ [
-                        vx vx0!
-                        [ vx FAT_VW < fat-ox LOADI vx + cy pix@ AND ]
-                        [ vx 1 + vx! ] |:
-                        APP::draw-fd CANVAS_X vx0 FAT_Z * + CANVAS_Y vy FAT_Z * +
-                            vx vx0 - FAT_Z * FAT_Z CLR_FG DRAW::fill-rect
-                    ] [
-                        vx 1 + vx!
-                    ] ?:
+                    fat-ox LOADI vx + cy pix@ { g }
+                        g 0 = [
+                            vx 1 + vx!
+                        ] [
+                            vx vx0!
+                            [ vx FAT_VW < fat-ox LOADI vx + cy pix@ g = AND ]
+                            [ vx 1 + vx! ] |:
+                            APP::draw-fd CANVAS_X vx0 FAT_Z * + CANVAS_Y vy FAT_Z * +
+                                vx vx0 - FAT_Z * FAT_Z
+                                255 g 85 * - DRAW::gray
+                                DRAW::fill-rect
+                        ] ?:
+                    UNGIRD
                 ] |:
             vy 1 + vy!
         ] |:
@@ -3968,7 +3955,7 @@ IMPORT ICN
             cx last-cx STOREI
             cy last-cy STOREI
             cx cy lasso-plot
-            1 cx cy pix!
+            ink LOADI cx cy pix!
             DRAG_FREEFORM drag STOREI
             APP::dirty!
         ] [
@@ -3985,7 +3972,7 @@ IMPORT ICN
                 cy lasso-miny STOREI
                 cy lasso-maxy STOREI
                 cx cy lasso-plot
-                1 cx cy pix!
+                ink LOADI cx cy pix!
                 cx last-cx STOREI
                 cy last-cy STOREI
                 TIME::milli@ poly-last-time STOREI
@@ -4112,9 +4099,15 @@ IMPORT ICN
     UNGIRD
 ;
 
-( -1 for a click inside the current-pattern preview box (x < PAT_CUR_W) --
-  that box doesn't pick a swatch; a future Edit Pattern double-click will
-  live there instead (Step 4). )
+@hit-gray { mx my -- idx }
+    mx PAT_CUR_W < my PAT_Y >= AND my WIN_H < AND [
+        mx gray-cell-w / 0 MAX 1 MIN
+        my PAT_Y - PAT_CELL_H / 0 MAX 1 MIN
+        2 * +
+    ] [ -1 ] ?:
+;
+
+( -1 for a click inside the gray-ink picker (x < PAT_CUR_W). )
 @hit-pat { mx my -- idx }
     mx PAT_CUR_W < [
         -1
@@ -4180,6 +4173,12 @@ IMPORT ICN
                 ] ?
             ] [
                 mx my in-pat? [
+                    mx my hit-gray { gi }
+                        gi 0 >= [
+                            gi ink STOREI
+                            DIRTY_PATS damage!
+                            APP::dirty!
+                        ] [
                     mx my hit-pat { pi }
                         pi 0 >= [
                             TIME::milli@ { now }
@@ -4196,6 +4195,8 @@ IMPORT ICN
                             pi pat-id STOREI
                             APP::dirty!
                         ] ?
+                    UNGIRD
+                        ] ?:
                     UNGIRD
                 ] [
                     mx my hit-lw { li }
@@ -4473,6 +4474,7 @@ IMPORT ICN
 
 @start
     T"Easel" APP::init
+    APP::grayscale!
     APP::draw-fd DRAW::batch-begin
     APP::draw-fd FONT_SIZE DRAW::set-font-size
     UI::new
@@ -4549,6 +4551,8 @@ IMPORT ICN
     0 mirror-h STOREI
     0 mirror-v STOREI
     0 pen-width STOREI
+    3 ink STOREI
+    -1 last-ink STOREI
     -1 last-pat-id STOREI
     -1 last-tool STOREI
     -1 hover-tool STOREI

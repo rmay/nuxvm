@@ -6,27 +6,38 @@ INCLUDE "lib/str.lux"
 
 MODULE DRAW
 
-@BUF 0x8F0000 ; ( Static buffer for command packing )
-@ST_FD     0x8F8000 ;
-@ST_CW     0x8F8004 ;
-@ST_CH     0x8F8008 ;
-@ST_READY  0x8F800C ;
-@ST_FONT   0x8F8010 ;
-@WIDTHS    0x8F8100 ;
+( Command packing buffer: a fixed header of at most 32 bytes, plus the
+  string body draw-string appends at BUF+24. 4096 is the bound the
+  hand-picked layout gave it (0x8F0000..0x8F1000), kept as-is. )
+RESERVE BUF 4096 ;
+RESERVE ST_FD     4 ;
+RESERVE ST_CW     4 ;
+RESERVE ST_CH     4 ;
+RESERVE ST_READY  4 ;
+RESERVE ST_FONT   4 ;
+( One byte of advance width per character, filled by a 256-byte read. )
+RESERVE WIDTHS  256 ;
+( Scratch for draw-int's number formatting. This was a bare 0x530900 in
+  two places -- a silent copy of lib/memory.lux's DIALOG_SCRATCH_BUF,
+  borrowed from another module by literal address. 32 bytes covers any
+  32-bit integer's decimal text. )
+RESERVE INT_BUF 32 ;
 
 ( --- /dev/draw command batching: accumulate into BATCH_BUF and flush with one
   VFS::write instead of one write per command. Off by default; existing callers
   are unaffected until batch-begin is called. `send` (not `emit` -- that token
   is hardcoded by the compiler to always mean char-output, shadowing any word
   definition of that name) is the shared tail every packer word calls. )
-@BATCH_BUF     0x8F1000 ; ( accumulation buffer, clear of BUF/ST_*/WIDTHS )
 ( Word-aligned commands are roughly twice the wire size of the old byte-packed
   ones, so this doubled with them to keep the same number of commands per
-  flush. Still well clear of ST_FD at 0x8F8000: 0x8F1000 + 16384 = 0x8F5000. )
+  flush. The buffer is sized from BATCH_CAP directly now, so the two can no
+  longer drift apart the way an address and a capacity constant could. )
 @BATCH_CAP     16384 ;
-@ST_BATCH_ON   0x8F8200 ;
-@ST_BATCH_FD   0x8F8204 ;
-@ST_BATCH_LEN  0x8F8208 ;
+RESERVE BATCH_BUF 16384 ;
+RESERVE ST_BATCH_ON   4 ;
+RESERVE ST_BATCH_FD   4 ;
+RESERVE ST_BATCH_LEN  4 ;
+RESERVE ST_CHAN       4 ; ( last DRAW::chan! / cmd 11; 0=RGB until set )
 
 @copy-bytes { src dst len -- }
     0 { i }
@@ -248,6 +259,30 @@ MODULE DRAW
     2 unframe!
 ;
 
+( /dev/draw cmd 11 SetChan. Host maps subsequent ink through this channel. )
+@CHAN_RGB 0 ;
+@CHAN_K8  1 ;
+@CHAN_K2  2 ;
+@CHAN_K1  3 ;
+
+@chan! { fd n -- }
+    n ST_CHAN STOREI
+    11 BUF STOREI
+    n BUF 4 + STOREI
+    fd 8 send
+;
+
+@chan@ ( -- n ) ST_CHAN LOADI ;
+
+@grayscale { fd -- }
+    fd CHAN_K8 chan!
+;
+
+( Pack 0..255 luma as 0xYYGGBB with R=G=B. )
+@gray ( y -- color )
+    255 AND dup 8 LSHIFT OR dup 8 LSHIFT OR
+;
+
 @begin-frame ( fd -- )
     1 frame!
     batch-on? [ batch-flush ] ?
@@ -318,8 +353,8 @@ MODULE DRAW
 
 @draw-int ( fd x y n color scale -- )
     6 frame! ( 0:scale, 1:color, 2:n, 3:y, 4:x, 5:fd )
-    2 local@ 0x530900 STR::int-to-str
-    5 local@ 4 local@ 3 local@ 0x530900 1 local@ 0 local@ draw-str
+    2 local@ INT_BUF STR::int-to-str
+    5 local@ 4 local@ 3 local@ INT_BUF 1 local@ 0 local@ draw-str
     6 unframe!
 ;
 

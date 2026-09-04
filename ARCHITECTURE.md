@@ -240,6 +240,7 @@ opcode is not.
 | 8 | FillPat (dither) |
 | 9 | DrawCFFGlyph |
 | 10 | BlitTile (RGB bitmap, optional key color) |
+| 11 | SetChan (0 RGB, 1 k8, 2 k2, 3 k1) |
 
 Ovals, roundrects, and lines are spans of FillRect in Lux, not extra
 commands. Cmd 10 is the sprite/tile primitive; `lib/tilemap.lux` and

@@ -41,6 +41,7 @@
 #define FX_DRAW_CMD_DRAW_STRING 2
 #define FX_DRAW_CMD_BEGIN_FRAME 6
 #define FX_DRAW_CMD_END_FRAME   7
+#define FX_DRAW_CMD_SET_CHAN    11
 
 typedef struct { size_t imm_offset; char* name; int line; } FxFixup;
 
@@ -270,6 +271,7 @@ static const FxBuiltinSpec FX_BUILTINS[] = {
     { "begin_frame",       1, { FX_ARG_INT } },
     { "end_frame",         1, { FX_ARG_INT } },
     { "fill_rect",         6, { FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_INT } }, /* fd,x,y,w,h,color */
+    { "set_chan",          2, { FX_ARG_INT, FX_ARG_INT } }, /* fd, chan 0=RGB 1=k8 2=k2 3=k1 */
     { "draw_str",          6, { FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_INT, FX_ARG_STRING } }, /* fd,x,y,color,scale,text */
     /* Phase A3, docs/quill_fluxio.md: same wire format as draw_str, but the
      * text comes from a runtime buffer+length (e.g. a byte[] holding live
@@ -1254,6 +1256,21 @@ static void codegen_builtin_call(Codegen* cg, FxProgram* program, const FxBuilti
         codegen_expr(cg, program, args[0]);
         emit_imm_op(cg, OP_STORE, FX_SCI_ARG1_ADDR);
         emit_imm_op(cg, OP_PUSH, 4);
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG3_ADDR);
+        emit_imm_op(cg, OP_PUSH, FX_SCI_CMD_VFS_WRITE);
+        emit_imm_op(cg, OP_STORE, FX_SCI_CMD_ADDR);
+        emit_imm_op(cg, OP_PUSH, cg->sci_buf_addr);
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG2_ADDR);
+        emit_imm_op(cg, OP_LOAD, FX_SCI_PORT);
+        return;
+    }
+    if (strcmp(name, "set_chan") == 0) {
+        /* cmd 11 SetChan, chan -- one word each = 8 bytes */
+        emit_pack_const_word(cg, cg->sci_buf_addr, 0, FX_DRAW_CMD_SET_CHAN);
+        emit_pack_word(cg, program, args[1], cg->sci_buf_addr, 1);
+        codegen_expr(cg, program, args[0]);
+        emit_imm_op(cg, OP_STORE, FX_SCI_ARG1_ADDR);
+        emit_imm_op(cg, OP_PUSH, 8);
         emit_imm_op(cg, OP_STORE, FX_SCI_ARG3_ADDR);
         emit_imm_op(cg, OP_PUSH, FX_SCI_CMD_VFS_WRITE);
         emit_imm_op(cg, OP_STORE, FX_SCI_CMD_ADDR);

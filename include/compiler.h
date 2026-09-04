@@ -149,6 +149,24 @@ typedef struct {
     } *addr_consts;
     size_t addr_const_count;
     size_t addr_const_cap;
+
+    /* `RESERVE <name> <bytes> ;` (docs/reserve-directive.md): the compiler
+     * bump-allocates guest RAM out of MM_LUX_RESERVE_BASE..END instead of
+     * the author hand-picking a hex address, so reserved state cannot
+     * collide. reserve_next is the bump pointer (4-byte aligned);
+     * reservations records every span so warn_duplicate_addr_consts() can
+     * flag a hand-picked constant that lands inside one, and so luxc's
+     * -symbols dump can report the data addresses (the dictionary holds
+     * only the address of each reservation's PUSH/RET stub). */
+    int32_t reserve_next;
+    struct {
+        char* name;
+        int32_t addr;
+        int32_t size;
+        int line;
+    } *reservations;
+    size_t reservation_count;
+    size_t reservation_cap;
 } Compiler;
 
 Compiler* compiler_create(TokenList* list, int32_t base_addr, bool trace);

@@ -1,0 +1,132 @@
+( In-app modal sheets: Save/Don't Save/Cancel, and a one-button alert.
+  Buttons ride UI::overlay-*; the panel is painted here. One instance. )
+
+INCLUDE "lib/app.lux"
+INCLUDE "lib/ui.lux"
+INCLUDE "lib/event.lux"
+
+MODULE DIALOG
+
+IMPORT APP
+IMPORT UI
+IMPORT DRAW
+IMPORT EVENT
+
+@PANEL_W  260 ;
+@PANEL_H  170 ;
+@BTN_W    180 ;
+@BTN_H     30 ;
+@BTN_GAP   10 ;
+@SHADOW     4 ;
+
+@CLR_PANEL  0xFFFFFF ;
+@CLR_BORDER 0x000000 ;
+@CLR_TEXT   0x000000 ;
+@CLR_SHADOW 0x000000 ;
+
+@KIND_NONE    0 ;
+@KIND_CONFIRM 1 ;
+@KIND_ALERT   2 ;
+
+( Modal dialog state: open flag, kind, title pointer and up to three
+  button execution tokens. )
+RESERVE open-f 4 ;
+RESERVE kind   4 ;
+RESERVE title  4 ;
+RESERVE xt0    4 ;
+RESERVE xt1    4 ;
+RESERVE xt2    4 ;
+
+@open? ( -- f ) open-f LOADI ;
+
+@panel-x ( -- x ) APP::width PANEL_W UI::center-coord ;
+@panel-y ( -- y ) APP::height PANEL_H UI::center-coord ;
+@btn-x   ( -- x ) panel-x PANEL_W BTN_W UI::modal-center-btn-x ;
+@btn-y   ( i -- y ) panel-y 46 + swap BTN_H BTN_GAP + * + ;
+
+@hide ( -- )
+    0 open-f STOREI
+    0 kind STOREI
+    UI::overlay-clear
+    0 APP::modal!
+;
+
+@fire { addr -- }
+    hide
+    addr LOADI dup 0 > [ CALL ] [ drop ] ?:
+;
+
+@on-0 ( val -- ) drop xt0 fire ;
+@on-1 ( val -- ) drop xt1 fire ;
+@on-2 ( val -- ) drop xt2 fire ;
+
+@build-confirm ( -- )
+    UI::overlay-clear
+    T"Save"       btn-x 0 btn-y BTN_W BTN_H [ on-0 ] UI::overlay-button
+    T"Don't Save" btn-x 1 btn-y BTN_W BTN_H [ on-1 ] UI::overlay-button
+    T"Cancel"     btn-x 2 btn-y BTN_W BTN_H [ on-2 ] UI::overlay-button
+    T"Save" UI::overlay-default
+;
+
+@build-alert ( -- )
+    UI::overlay-clear
+    T"OK" btn-x 1 btn-y BTN_W BTN_H [ on-0 ] UI::overlay-button
+    T"OK" UI::overlay-default
+;
+
+@confirm-save { save-xt dont-xt cancel-xt -- }
+    save-xt   xt0 STOREI
+    dont-xt   xt1 STOREI
+    cancel-xt xt2 STOREI
+    T"Save changes?" title STOREI
+    KIND_CONFIRM kind STOREI
+    1 open-f STOREI
+    1 APP::modal!
+    build-confirm
+;
+
+@alert { msg ok-xt -- }
+    ok-xt xt0 STOREI
+    0 xt1 STOREI
+    0 xt2 STOREI
+    msg title STOREI
+    KIND_ALERT kind STOREI
+    1 open-f STOREI
+    1 APP::modal!
+    build-alert
+;
+
+@draw ( -- )
+    open-f LOADI [
+        panel-x panel-y 2 frame! ( 0:py 1:px )
+        APP::draw-fd 1 local@ 0 local@ PANEL_W PANEL_H SHADOW CLR_SHADOW UI::draw-modal-shadow
+        APP::draw-fd 1 local@ 0 local@ PANEL_W PANEL_H CLR_PANEL CLR_BORDER UI::draw-modal-panel
+        APP::draw-fd 1 local@ 26 + 0 local@ 16 + title LOADI CLR_TEXT 16 DRAW::draw-str
+        2 unframe!
+        UI::overlay-draw
+    ] ?
+;
+
+@mouse ( mpkt -- )
+    dup UI::overlay-feed
+    UI::overlay-handle
+    drop
+;
+
+@kbd ( kpkt -- )
+    dup EVENT::kbd-type EVENT::KEY_DOWN = [
+        dup EVENT::kbd-key EVENT::KEY_ESC = [
+            kind LOADI KIND_CONFIRM = [
+                xt2 fire
+            ] [
+                xt0 fire
+            ] ?:
+        ] [
+            dup EVENT::kbd-key EVENT::KEY_ENTER = [
+                UI::overlay-enter drop
+                UI::overlay-handle
+            ] ?
+        ] ?:
+    ] ?
+    drop
+;

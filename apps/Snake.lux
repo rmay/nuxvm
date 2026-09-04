@@ -19,25 +19,23 @@ IMPORT TILEMAP
 @SEGS   400 ;
 @BAR_H  28 ;
 
-@head   0x8A0000 ;
-@len    0x8A0004 ;
-@dir    0x8A0008 ;
-@want   0x8A000C ;
-@foodx  0x8A0010 ;
-@foody  0x8A0014 ;
-@state  0x8A0018 ;
-@tick   0x8A001C ;
-@speed  0x8A0020 ;
-@score  0x8A0024 ;
-@best   0x8A0028 ;
-@seed   0x8A002C ;
-@afd    0x8A0030 ;
-@nx     0x8A0040 ;
-@ny     0x8A0044 ;
-@nbuf   0x8A0050 ;
-@abuf   0x8A0060 ;
-@btitle 0x8A0070 ;
-@body   0x8A1000 ;
+RESERVE head   4 ;
+RESERVE len    4 ;
+RESERVE dir    4 ;
+RESERVE want   4 ;
+RESERVE foodx  4 ;
+RESERVE foody  4 ;
+RESERVE state  4 ;
+RESERVE tick   4 ;
+RESERVE speed  4 ;
+RESERVE score  4 ;
+RESERVE best   4 ;
+RESERVE seed   4 ;
+RESERVE nx     4 ;
+RESERVE ny     4 ;
+RESERVE nbuf  32 ; ( score/best as decimal text )
+RESERVE btitle 4 ; ( pointer to the current banner string )
+RESERVE body 3200 ; ( SEGS * 8 -- the segment ring, see TILEMAP::ent-get/set )
 
 @get-seg ( i -- x y ) SEGS body TILEMAP::ent-get ;
 @set-seg ( x y i -- ) SEGS body TILEMAP::ent-set ;
@@ -84,34 +82,14 @@ IMPORT TILEMAP
     drop
 ;
 
-@beep ( id -- )
-    afd LOADI 0 < [
-        drop
-    ] [
-        abuf DRAW::store-int-le
-        afd LOADI abuf 4 VFS::write drop
-    ] ?:
-;
+@beep ( id -- ) APP::beep ;
 
 @load-best
-    T"/sys/file/.snake_hi" VFS::open
-    dup 0 < [
-        drop
-        0 best STOREI
-    ] [
-        dup best 4 VFS::read drop
-        VFS::close drop
-    ] ?:
+    T"/sys/file/.snake_hi" best VFS::load-i32 drop
 ;
 
 @save-best
-    T"/sys/file/.snake_hi" VFS::open
-    dup 0 < [
-        drop
-    ] [
-        dup best 4 VFS::write drop
-        VFS::close drop
-    ] ?:
+    T"/sys/file/.snake_hi" best VFS::save-i32 drop
 ;
 
 @layout
@@ -337,7 +315,6 @@ IMPORT TILEMAP
     UI::new
     1 seed STOREI
     0 state STOREI
-    T"/dev/audio" VFS::open afd STOREI
     load-best
     layout
     reset
