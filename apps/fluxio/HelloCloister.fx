@@ -6,7 +6,7 @@
  * Loops long enough to see, then HALTs back to the picker -- or press
  * Esc any time for the System 6 System Menu (lib/escape_menu.fx),
  * which every Fluxio app should include the same way: poll kbd/mouse,
- * feed each event to escmenu_key/escmenu_mouse first (skipping the app's
+ * feed each event to escmenu_kbd/escmenu_mouse first (skipping the app's
  * own handling of anything they consume), draw the app's own frame, then
  * escmenu_draw() last so the panel sits on top, and check
  * escmenu_wants_quit() to exit the loop.
@@ -36,11 +36,23 @@ int main() {
 
     int frame = 0;
     while (frame < 600) {
-        if (poll_kbd(kfd)) {
-            escmenu_key(kbd_key());
+        /* Drain the whole queue each frame rather than one event per frame:
+         * every physical keypress is two events (KEY_DOWN + KEY_UP), so an
+         * `if` here leaves the release sitting in the queue for a frame and
+         * any real burst of input falls steadily further behind. */
+        int got_k = poll_kbd(kfd);
+        while (got_k) {
+            escmenu_kbd(kbd_type(), kbd_key());
+            got_k = poll_kbd(kfd);
         }
-        if (poll_mouse(mfd)) {
+        int got_m = poll_mouse(mfd);
+        while (got_m) {
             escmenu_mouse(mouse_type(), mouse_button(), mouse_x(), mouse_y());
+            got_m = poll_mouse(mfd);
+        }
+        if (escmenu_wants_restart()) {
+            escmenu_ack_restart();
+            frame = 0;
         }
         if (escmenu_wants_quit()) {
             frame = 600;

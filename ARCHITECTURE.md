@@ -124,9 +124,9 @@ process.
 
 **Fluxio** (`src/fluxio_*.c`, `bin/fluxioc`) is C-like: functions, `if` /
 `while` / `for`, structs, arrays, bounded `recursive(N)`, snake_case,
-required doc comments. There is no Fluxio REPL. `.fx` always goes through
-`fluxioc` to a `.bin` first. The picker lists those bins from
-`apps/fluxio/`.
+required doc comments. There is no Fluxio REPL. Under `bin/nux`, `.fx`
+goes through `fluxioc` to a `.bin` first; `cloister` compiles (and links)
+`.fx` in-process. The picker lists those sources from `apps/fluxio/`.
 
 Language guides: `docs/using-lux.md`, `docs/using-fluxio.md`.
 
@@ -266,11 +266,19 @@ of the 16 fixed system-palette entries. Channel 0 leaves ink alone. See
 
 Boot:
 
-1. Argument path → load that ROM.
+1. Argument path → load it. A `.lux` or `.fx` source is compiled in-process
+   (`compile_source`, `fx_build_image`); anything else is loaded as a ROM.
+   A `.fx` that declares `extern`s is also linked against the Lux UI/SF
+   library on the way, in memory, exactly as `bin/fluxlink` would.
 2. Else compile and run `apps/Picker.lux`.
 
-The picker is itself a guest. Choosing an app writes `apps/Quill.lux` (or a
-Fluxio `.bin`) to `/sys/launch` and HALTs. Cloister ejects the current
+The window is sized from the app's own declared size when it declares one:
+`@WIN_W`/`@WIN_H` in Lux, `int win_w`/`int win_h` in Fluxio, read out of the
+source text (for a `.bin`, out of the sibling source next to it).
+
+The picker is itself a guest, and both its columns list sources. Choosing
+an app writes `apps/Quill.lux` (or `apps/fluxio/Quill.fx`) to `/sys/launch`
+and HALTs. Cloister ejects the current
 machine and loads the new image at `0x600000`. An empty launch path from
 the picker means Quit. An app that HALTs without a launch path returns to
 the picker.

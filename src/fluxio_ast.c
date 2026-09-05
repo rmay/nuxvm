@@ -1,4 +1,5 @@
 #include "fluxio_ast.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -130,4 +131,10 @@ const FxStructDef* fx_find_struct(const FxProgram* program, const char* name) {
         if (strcmp(program->structs[i].name, name) == 0) return &program->structs[i];
     }
     return NULL;
+}
+
+bool fx_require_version(const FxProgram* program, const char* tool, const char* path) {
+    if (program->version_seen) return true;
+    fprintf(stderr, "%s: %s: missing required 'version <n>;' directive\n", tool, path);
+    return false;
 }

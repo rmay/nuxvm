@@ -25,6 +25,7 @@
  */
 
 #include "compiler.h"
+#include "fluxio_build.h"
 #include "kelvin.h"
 #include "vm.h"
 #include "opcodes.h"
@@ -755,6 +756,78 @@ static void test_shipped_apps_declare_a_legal_version(void) {
     CHECK(log[0] == '\0', "every apps/*.lux and apps/fluxio/*.fx declares a version the platform accepts");
 }
 
+/* cloister launches a `.fx` app by building it in memory -- the whole fluxioc
+ * pipeline plus, for an app with externs, the fluxlink merge (src/fluxio_build.c)
+ * -- instead of loading a prebuilt .bin. That is only trustworthy if it lands
+ * on exactly the same image the Makefile's compile-then-link pipeline writes
+ * out; otherwise an app would behave one way from source and another from its
+ * .bin, and every other test here (which all go through the .bin) would stop
+ * covering the launch path people actually use. Compare the bytes.
+ *
+ * Quill.fx is the case that matters: it is the only shipped app whose externs
+ * force the in-process link. Snake.fx/HelloCloister.fx cover the plain-codegen
+ * path where no link happens at all. */
+static void test_in_process_build_matches_shipped_bin(void) {
+    printf("Testing cloister's in-process .fx build reproduces the shipped .bin...\n");
+
+    static const char* apps[][2] = {
+        { "apps/fluxio/Quill.fx",         "apps/fluxio/Quill.bin" },
+        { "apps/fluxio/Snake.fx",         "apps/fluxio/Snake.bin" },
+        { "apps/fluxio/HelloCloister.fx", "apps/fluxio/HelloCloister.bin" },
+    };
+
+    for (size_t i = 0; i < sizeof(apps) / sizeof(apps[0]); i++) {
+        const char* src = apps[i][0];
+        const char* bin = apps[i][1];
+
+        FILE* f = fopen(bin, "rb");
+        if (!f) {
+            printf("  (skipping %s -- not built; run `make apps`)\n", bin);
+            continue;
+        }
+        fseek(f, 0, SEEK_END);
+        long file_len = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        uint8_t* file_bytes = malloc((size_t)file_len);
+        size_t got = fread(file_bytes, 1, (size_t)file_len, f);
+        fclose(f);
+        CHECK(got == (size_t)file_len, "read the shipped .bin");
+
+        char romerr[256];
+        size_t want_len = 0;
+        uint8_t* want = rom_open_image(file_bytes, (size_t)file_len, &want_len,
+                                       NULL, NULL, NULL, romerr, sizeof(romerr));
+        free(file_bytes);
+        CHECK(want != NULL, "shipped .bin opened as a ROM image");
+        if (!want) continue;
+
+        size_t got_len = 0;
+        uint8_t* built = fx_build_image(src, GRAPHICAL_BASE_ADDRESS, "test_abi_conformance", &got_len);
+        CHECK(built != NULL, "in-process build of the .fx source succeeded");
+        if (!built) { free(want); continue; }
+
+        if (got_len != want_len) {
+            fprintf(stderr, "  %s: built %zu bytes, %s holds %zu\n", src, got_len, bin, want_len);
+        }
+        CHECK(got_len == want_len, "in-process build is the same size as the shipped image");
+
+        size_t diff_at = (size_t)-1;
+        if (got_len == want_len) {
+            for (size_t j = 0; j < want_len; j++) {
+                if (built[j] != want[j]) { diff_at = j; break; }
+            }
+            if (diff_at != (size_t)-1) {
+                fprintf(stderr, "  %s: first byte differing from %s at offset %zu (%02X vs %02X)\n",
+                        src, bin, diff_at, built[diff_at], want[diff_at]);
+            }
+            CHECK(diff_at == (size_t)-1, "in-process build is byte-identical to the shipped image");
+        }
+
+        free(built);
+        free(want);
+    }
+}
+
 int main(void) {
     printf("\n=== ABI Conformance Tests (docs/quill_fluxio.md Phase 0.5 / B1) ===\n\n");
 
@@ -765,6 +838,7 @@ int main(void) {
     test_fluxio_extern_end_to_end();
     test_fluxio_extern_void_end_to_end();
     test_uisf_library_link();
+    test_in_process_build_matches_shipped_bin();
     test_version_required_by_drivers();
     test_shipped_apps_declare_a_legal_version();
 

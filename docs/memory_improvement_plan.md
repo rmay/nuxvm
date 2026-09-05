@@ -238,5 +238,5 @@ the change that closes the budget.
   shape, enumerate the callers before any bulk edit.
 - **Scope creep to other apps.** Snake is the target. Easel (145,202 B)
   and the Fluxio Quill path (1,126,474 B, 93.5% of it zero padding from
-  `src/fluxlink.c:296-298`) are separate problems; the fluxlink padding
+  `src/fluxlink_core.c`) are separate problems; the fluxlink padding
   in particular is worth fixing but is not on this path.

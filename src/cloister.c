@@ -9,6 +9,7 @@
 #include "machine.h"
 #include "vfs.h"
 #include "compiler.h"
+#include "fluxio_build.h"
 #include "dialog.h"
 #include "system.h"
 #include "rom.h"
@@ -19,8 +20,9 @@
 
 // Window size is resolved per app: a --width/--height CLI flag wins outright
 // (and stays fixed for the whole session); otherwise an app that declares its
-// own "@WIN_W <n> ;" / "@WIN_H <n> ;" constants (see apps/Easel.lux etc.) gets
-// a window sized to fit its own layout instead of the one-size-fits-all
+// own window size -- "@WIN_W <n> ;" / "@WIN_H <n> ;" in Lux (see
+// apps/Easel.lux etc.), "int win_w = <n>;" / "int win_h = <n>;" in Fluxio --
+// gets a window sized to fit its own layout instead of the one-size-fits-all
 // default below, which apps that don't declare these keep.
 static int g_win_w = DEFAULT_WIN_WIDTH;
 static int g_win_h = DEFAULT_WIN_HEIGHT;
@@ -29,40 +31,69 @@ static bool g_cli_h_set = false;
 static int g_cli_w = DEFAULT_WIN_WIDTH;
 static int g_cli_h = DEFAULT_WIN_HEIGHT;
 
-// Scans a .lux source file's text for top-level "@WIN_W <int> ;" and
-// "@WIN_H <int> ;" constant declarations (compiled .bin files carry no such
-// metadata, so this is read straight from source before compiling). Matches
-// on a word boundary so "@WIN_WIDTH" etc. can't be mistaken for "@WIN_W".
-// Apps are normally launched by their compiled .bin (see the doc comments at
-// the top of apps/*.lux), so a ".bin" path is redirected to its sibling
-// ".lux" source (same directory, same basename) when one exists.
-static bool scan_lux_win_size(const char* path, int* out_w, int* out_h) {
-    size_t path_len = strlen(path);
-    char lux_path[1024];
-    const char* src_path;
-    if (path_len >= 4 && strcmp(path + path_len - 4, ".lux") == 0) {
-        src_path = path;
-    } else if (path_len >= 4 && strcmp(path + path_len - 4, ".bin") == 0 &&
-               path_len - 4 < sizeof(lux_path) - 4) {
-        memcpy(lux_path, path, path_len - 4);
-        strcpy(lux_path + path_len - 4, ".lux");
-        src_path = lux_path;
-    } else {
-        return false;
-    }
+// Which language a path is written in. SRC_NONE means "not source" -- a
+// compiled .bin with no sibling source to read metadata out of.
+typedef enum { SRC_NONE, SRC_LUX, SRC_FX } SourceKind;
 
-    FILE* f = fopen(src_path, "rb");
+static bool has_ext(const char* path, const char* ext) {
+    size_t path_len = strlen(path), ext_len = strlen(ext);
+    return path_len >= ext_len && strcmp(path + path_len - ext_len, ext) == 0;
+}
+
+static bool file_exists(const char* path) {
+    FILE* f = fopen(path, "rb");
     if (!f) return false;
+    fclose(f);
+    return true;
+}
+
+// Classifies `path` and, for a compiled .bin, points src_out at the sibling
+// source file (same directory, same basename) it was built from, if one
+// exists: apps are normally launched by their .bin (see the doc comments at
+// the top of apps/*.lux and apps/fluxio/*.fx), but a .bin carries no
+// window-size metadata, so that has to be read out of the source. Lux is
+// tried before Fluxio only because the .lux tree is the older one; a basename
+// never has both.
+static SourceKind source_for(const char* path, char* src_out, size_t cap) {
+    if (has_ext(path, ".lux")) { snprintf(src_out, cap, "%s", path); return SRC_LUX; }
+    if (has_ext(path, ".fx"))  { snprintf(src_out, cap, "%s", path); return SRC_FX; }
+    if (!has_ext(path, ".bin")) return SRC_NONE;
+
+    size_t stem_len = strlen(path) - 4;
+    if (stem_len + 5 >= cap) return SRC_NONE;
+    snprintf(src_out, cap, "%.*s.lux", (int)stem_len, path);
+    if (file_exists(src_out)) return SRC_LUX;
+    snprintf(src_out, cap, "%.*s.fx", (int)stem_len, path);
+    if (file_exists(src_out)) return SRC_FX;
+    return SRC_NONE;
+}
+
+// Reads a whole file as a NUL-terminated string, or NULL on any failure.
+static char* read_text_file(const char* path, size_t* out_len) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
     fseek(f, 0, SEEK_END);
     long fsize = ftell(f);
     fseek(f, 0, SEEK_SET);
-    if (fsize <= 0) { fclose(f); return false; }
+    if (fsize <= 0) { fclose(f); return NULL; }
     char* buf = malloc((size_t)fsize + 1);
-    if (!buf) { fclose(f); return false; }
+    if (!buf) { fclose(f); return NULL; }
     size_t nread = fread(buf, 1, (size_t)fsize, f);
     fclose(f);
     buf[nread] = '\0';
+    if (out_len) *out_len = nread;
+    return buf;
+}
 
+// A declared window dimension is only believed inside this range: it filters
+// out incidental numbers that happen to follow the name in source text.
+static bool plausible_win_dim(long v) { return v >= 100 && v <= 4000; }
+
+// Scans Lux source for top-level "@WIN_W <int> ;" / "@WIN_H <int> ;" constant
+// declarations. Matches on a word boundary so "@WIN_WIDTH" etc. can't be
+// mistaken for "@WIN_W", and only looks at the "@"-prefixed *declaration*, so
+// a later *use* of the constant can't be misread as one.
+static bool scan_lux_win_size(const char* buf, int* out_w, int* out_h) {
     int found_w = 0, found_h = 0;
     const char* p = buf;
     while ((p = strstr(p, "@WIN_")) != NULL) {
@@ -74,29 +105,75 @@ static bool scan_lux_win_size(const char* path, int* out_w, int* out_h) {
             while (*num && isspace((unsigned char)*num)) num++;
             char* end;
             long v = strtol(num, &end, 10);
-            if (end != num && v >= 100 && v <= 4000) {
+            if (end != num && plausible_win_dim(v)) {
                 if (is_w) { found_w = (int)v; }
                 else { found_h = (int)v; }
             }
         }
         p += 5;
     }
-    free(buf);
+    *out_w = found_w;
+    *out_h = found_h;
+    return found_w > 0 && found_h > 0;
+}
 
-    if (found_w > 0 && found_h > 0) {
-        *out_w = found_w;
-        *out_h = found_h;
-        return true;
+// The Fluxio equivalent: top-level "int win_w = <n>;" / "int win_h = <n>;"
+// globals (docs/using-fluxio.md). Fluxio has no @-constants and enforces
+// lower_snake_case identifiers, so the names differ in case from Lux's; the
+// leading "int" is what pins a match to the *declaration* rather than to any
+// later assignment or use of the same global.
+static bool scan_fx_win_size(const char* buf, int* out_w, int* out_h) {
+    int found_w = 0, found_h = 0;
+    const char* p = buf;
+    while ((p = strstr(p, "int")) != NULL) {
+        const char* q = p + 3;
+        bool at_word_start = (p == buf) || (!isalnum((unsigned char)p[-1]) && p[-1] != '_');
+        p += 3;
+        if (!at_word_start || !isspace((unsigned char)*q)) continue;
+        while (*q && isspace((unsigned char)*q)) q++;
+
+        int is_w = strncmp(q, "win_w", 5) == 0;
+        int is_h = strncmp(q, "win_h", 5) == 0;
+        if (!is_w && !is_h) continue;
+        q += 5;
+        if (isalnum((unsigned char)*q) || *q == '_') continue;
+
+        while (*q && isspace((unsigned char)*q)) q++;
+        if (*q != '=' || q[1] == '=') continue;
+        q++;
+        while (*q && isspace((unsigned char)*q)) q++;
+        char* end;
+        long v = strtol(q, &end, 10);
+        if (end != q && plausible_win_dim(v)) {
+            if (is_w) { found_w = (int)v; }
+            else { found_h = (int)v; }
+        }
     }
-    return false;
+    *out_w = found_w;
+    *out_h = found_h;
+    return found_w > 0 && found_h > 0;
+}
+
+// Reads the window size an app declares in its own source, if it declares one.
+static bool scan_win_size(const char* path, int* out_w, int* out_h) {
+    char src_path[1024];
+    SourceKind kind = source_for(path, src_path, sizeof(src_path));
+    if (kind == SRC_NONE) return false;
+
+    char* buf = read_text_file(src_path, NULL);
+    if (!buf) return false;
+    bool found = (kind == SRC_LUX) ? scan_lux_win_size(buf, out_w, out_h)
+                                   : scan_fx_win_size(buf, out_w, out_h);
+    free(buf);
+    return found;
 }
 
 // Resolves the window size to use for launching `path`: a locked CLI
-// override wins per-dimension, otherwise the app's own @WIN_W/@WIN_H (if
-// declared), otherwise the shared default.
+// override wins per-dimension, otherwise the app's own declared size (if
+// any), otherwise the shared default.
 static void resolve_win_size(const char* path, int* out_w, int* out_h) {
     int scanned_w = 0, scanned_h = 0;
-    bool scanned = scan_lux_win_size(path, &scanned_w, &scanned_h);
+    bool scanned = scan_win_size(path, &scanned_w, &scanned_h);
     *out_w = g_cli_w_set ? g_cli_w : (scanned ? scanned_w : DEFAULT_WIN_WIDTH);
     *out_h = g_cli_h_set ? g_cli_h : (scanned ? scanned_h : DEFAULT_WIN_HEIGHT);
 }
@@ -275,54 +352,36 @@ static void cloister_open_dialog(void* ctx) {
 
 static bool load_app(const char* path, uint8_t** program_out, Machine** machine_out,
                      SDL_Window* win, int win_w, int win_h) {
-    FILE* f = fopen(path, "rb");
-    if (!f) {
-        fprintf(stderr, "Could not open %s\n", path);
-        return false;
-    }
-    fseek(f, 0, SEEK_END);
-    long fsize = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (fsize <= 0) {
-        fclose(f);
-        fprintf(stderr, "Empty or unreadable file: %s\n", path);
-        return false;
-    }
-
-    char* file_content = malloc((size_t)fsize + 1);
-    if (!file_content) {
-        fclose(f);
-        return false;
-    }
-    if (fread(file_content, 1, (size_t)fsize, f) != (size_t)fsize) {
-        free(file_content);
-        fclose(f);
-        fprintf(stderr, "Failed to read %s\n", path);
-        return false;
-    }
-    file_content[fsize] = '\0';
-    fclose(f);
-
     uint8_t* program = NULL;
     size_t code_len = 0;
-    size_t path_len = strlen(path);
-    bool is_lux = path_len >= 4 && strcmp(path + path_len - 4, ".lux") == 0;
 
-    if (is_lux) {
-        program = compile_source(file_content, GRAPHICAL_BASE_ADDRESS, &code_len, false);
-        free(file_content);
-        if (!program) {
-            fprintf(stderr, "Failed to compile %s\n", path);
+    // Source launches compile on the fly; anything else is a compiled ROM.
+    if (has_ext(path, ".fx")) {
+        program = fx_build_image(path, GRAPHICAL_BASE_ADDRESS, "cloister", &code_len);
+        if (!program) return false;
+    } else {
+        size_t fsize = 0;
+        char* file_content = read_text_file(path, &fsize);
+        if (!file_content) {
+            fprintf(stderr, "Could not open (or empty) %s\n", path);
             return false;
         }
-    } else {
-        char romerr[256];
-        program = rom_open_image((uint8_t*)file_content, (size_t)fsize, &code_len,
-                                 NULL, NULL, NULL, romerr, sizeof(romerr));
-        free(file_content);
-        if (!program) {
-            fprintf(stderr, "cloister: %s: %s\n", path, romerr);
-            return false;
+        if (has_ext(path, ".lux")) {
+            program = compile_source(file_content, GRAPHICAL_BASE_ADDRESS, &code_len, false);
+            free(file_content);
+            if (!program) {
+                fprintf(stderr, "Failed to compile %s\n", path);
+                return false;
+            }
+        } else {
+            char romerr[256];
+            program = rom_open_image((uint8_t*)file_content, fsize, &code_len,
+                                     NULL, NULL, NULL, romerr, sizeof(romerr));
+            free(file_content);
+            if (!program) {
+                fprintf(stderr, "cloister: %s: %s\n", path, romerr);
+                return false;
+            }
         }
     }
 

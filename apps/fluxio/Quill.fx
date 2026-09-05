@@ -51,6 +51,12 @@
  * ./bin/cloister   (pick Quill.bin from the Fluxio column)
  */
 
+/* Esc opens the same System 6 "System Menu" sheet every other Fluxio app
+ * gets. Before this, Esc quit Quill outright -- silently discarding
+ * unsaved edits, with no confirmation and no way back -- which is also
+ * why the Esc menu appeared to work only in Snake. */
+include "../../lib/escape_menu.fx";
+
 /* Trampoline slot addresses are abi/uisf.exports.json's committed,
  * append-only order: MM_ABI_LIBRARY_LINK_BASE (0x700000) + 12 +
  * 5*index. Built and linked by the apps/fluxio/Quill.bin Makefile rule
@@ -102,6 +108,13 @@ byte menu_geneva_label[8] = "Geneva";
 byte menu_monaco_label[8] = "Monaco";
 byte scratch_path[300] = "/sys/file/quill_scratch.txt";
 int scratch_path_len = 28;
+/* The path Quill opens on launch, kept so the Esc menu's "Restart App"
+ * can get back to the startup document even after File > Open/New has
+ * repointed scratch_path somewhere else. lib/app.lux's own esc-restart
+ * does this by jumping to the program entry (0x600000 JMPSTACK); Fluxio
+ * has no equivalent, so restart_app() re-runs the init by hand. */
+byte startup_path[300] = "/sys/file/quill_scratch.txt";
+int startup_path_len = 28;
 byte sf_raw_path[256];
 byte vfs_file_prefix[12] = "/sys/file";
 byte sf_kpkt[8];
@@ -866,6 +879,41 @@ int save_picked_file() {
 }
 
 /**
+ * The Esc menu's "Restart App": puts Quill back in its launch state --
+ * startup document reloaded from disk, text mode, Chicago face, no
+ * selection, no open modal, view scrolled to the top. Unsaved edits are
+ * discarded, same as lib/app.lux's esc-restart re-entry does for Lux
+ * apps.
+ */
+int restart_app(int fd) {
+    int i = 0;
+    while (i < startup_path_len) {
+        scratch_path[i] = startup_path[i];
+        i = i + 1;
+    }
+    scratch_path_len = startup_path_len;
+
+    confirm_new_open = 0;
+    save_as = 0;
+    anchor = -1;
+    mouse_held = 0;
+    sb_dragging = 0;
+    hex_nibble = 0;
+    last_cursor = -1;
+    if (hex_mode) {
+        hex_mode = 0;
+        ui_item_set(menu_hex_label, 0);
+    }
+    apply_text_font(fd, 0);
+
+    load_file();
+    update_status_label_from_path();
+    update_scrollbar_geometry();
+    ui_sbar_set_val(sb_bar, 0);
+    return 0;
+}
+
+/**
  * File > New: discards the in-memory buffer and starts a fresh, empty
  * "new.quill" document -- same reset apps/Quill.lux's menu-new does (it
  * doesn't touch hex_mode either, so New in hex mode just clears the
@@ -1501,6 +1549,7 @@ int main() {
      * those globals would otherwise stay 0 -- see APP::win-set!'s own
      * doc comment (lib/app.lux). */
     app_win_set(canvas_w, canvas_h);
+    escmenu_init(canvas_w, canvas_h);
 
     /* UI::draw's own menu-bar rendering (mb-draw-bar/mb-draw-drop) draws
      * through DRAW::fd (lib/draw.lux), a Lux-side global set only by
@@ -1554,6 +1603,17 @@ int main() {
          * as menu-open/click/close all feeling delayed by roughly a
          * second. A `while` drains the backlog to zero every frame
          * instead of growing it. */
+        if (escmenu_wants_quit()) {
+            vfs_close(fd);
+            vfs_close(kfd);
+            vfs_close(mfd);
+            return 0;
+        }
+        if (escmenu_wants_restart()) {
+            escmenu_ack_restart();
+            restart_app(fd);
+        }
+
         int had_mouse = poll_mouse(mfd);
         while (had_mouse) {
             int mtype = mouse_type();
@@ -1590,6 +1650,13 @@ int main() {
              * as a real modal dialog blocking input to what's under it. */
             if (sf_is_open()) {
                 sf_mouse(ui_mpkt);
+            } else {
+            /* The Esc sheet sits below both modals and above the menu bar
+             * and text pane, mirroring the keyboard chain's order exactly
+             * -- while the sheet is up it owns the mouse, so a click on
+             * Continue / Restart App / Quit can't also land on whatever is
+             * underneath it. */
+            if (escmenu_mouse(mtype, mouse_button(), mx, my)) {
             } else {
                 int menu_was_open = ui_menu_open();
                 ui_feed(ui_mpkt);
@@ -1637,6 +1704,7 @@ int main() {
                         }
                     }
                 }
+            }
             }
             }
             had_mouse = poll_mouse(mfd);
@@ -1755,6 +1823,17 @@ int main() {
                 sf_kpkt[7] = 0;
                 sf_kbd(sf_kpkt);
             } else {
+            /* The Esc sheet sits below both modals and above Quill's own
+             * keys: while the confirm panel or the file picker is up, Esc
+             * belongs to that dialog (it cancels it) and must not raise
+             * the system menu behind it -- docs/user-manual.md's "System
+             * menu (Esc)" spells that precedence out, and it's the same
+             * order APP::modal! gives Lux apps. escmenu_kbd, not
+             * escmenu_key: it drops the KEY_UP half of each press, and
+             * since Esc *toggles*, feeding it both halves would open the
+             * sheet on the down and shut it again on the up. */
+            if (escmenu_kbd(kbd_type(), kbd_key())) {
+            } else {
             if (kbd_type() == 0) {
                 int key = kbd_key();
                 if (key == 23) {
@@ -1763,11 +1842,12 @@ int main() {
                     if (key == 9) {
                         save_file();
                     } else {
-                        if (key == 27) {
-                            vfs_close(fd);
-                            vfs_close(kfd);
-                            vfs_close(mfd);
-                            return 0;
+                        if (0) {
+                            /* Esc used to quit here, discarding unsaved
+                             * edits without a prompt. It never reaches
+                             * this branch now -- escmenu_kbd above
+                             * consumes 27 to open the System Menu, whose
+                             * Quit button is the deliberate way out. */
                         } else {
                             if (hex_mode) {
                                 if (key == 19) {
@@ -1871,6 +1951,7 @@ int main() {
             }
             }
             }
+            }
             had_kbd = poll_kbd(kfd);
         }
 
@@ -1894,6 +1975,14 @@ int main() {
             sf_draw();
         }
         confirm_new_draw(fd);
+        /* The sheet is drawn last so it sits over everything, and with
+         * the Chicago face explicitly selected -- ui_draw()/sf_draw()
+         * above leave whatever face they last used current, and
+         * escape_menu.fx deliberately calls nothing but fill_rect/
+         * draw_str, so it can't pin the font itself. lib/app.lux's
+         * draw-esc-popup does the same set-font first. */
+        set_font(fd, 0);
+        escmenu_draw(fd);
         end_frame(fd);
         yield();
     }

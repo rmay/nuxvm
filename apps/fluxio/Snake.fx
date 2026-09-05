@@ -590,8 +590,8 @@ int main() {
         }
         int got_k = poll_kbd(kfd);
         while (got_k) {
-            if (kbd_type() == 0) {
-                if (!escmenu_key(kbd_key())) {
+            if (!escmenu_kbd(kbd_type(), kbd_key())) {
+                if (kbd_type() == 0) {
                     handle_key(kbd_key());
                 }
             }

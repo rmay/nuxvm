@@ -211,6 +211,15 @@ typedef struct {
 /* Looks up a struct definition by name, or NULL if none exists. */
 const FxStructDef* fx_find_struct(const FxProgram* program, const char* name);
 
+/* Every Fluxio app build must declare `version <n>;` (Kelvin versioning,
+ * AGENTS.md). Fluxio has no library-build mode (that's a luxc -base concept
+ * -- it only produces apps, linking against already-compiled Lux libraries
+ * via fluxlink), so this is unconditional for every caller that turns a
+ * parsed program into a runnable image: fluxioc and cloister both call it.
+ * Returns false, having printed a "<tool>: <path>: ..." diagnostic, when
+ * absent. */
+bool fx_require_version(const FxProgram* program, const char* tool, const char* path);
+
 FxNode* fx_node_new(FxNodeKind kind, int line, int col);
 void fx_node_free(FxNode* node);
 

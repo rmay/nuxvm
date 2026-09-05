@@ -113,6 +113,7 @@ CLOISTER is the graphical environment: a windowed framebuffer, keyboard/mouse in
 ```bash
 ./bin/cloister                       # REPL mode; loads lib/boot.lux if present
 ./bin/cloister program.lux           # compile and run this program
+./bin/cloister program.fx            # same, for a Fluxio source (see using-fluxio.md)
 ./bin/cloister program.bin           # run precompiled bytecode
 ```
 

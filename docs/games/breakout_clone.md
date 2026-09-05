@@ -30,7 +30,7 @@ non-square cell.
 ## 1. Window and geometry
 
 `@WIN_W` / `@WIN_H` are read straight out of the source text by
-`scan_lux_win_size` (`src/cloister.c:38`), which sizes the SDL window before the
+`scan_lux_win_size` (`src/cloister.c`), which sizes the SDL window before the
 ROM boots. The app then reads the same numbers back off `/dev/draw` through
 `APP::width` / `APP::height`, and draws from *those*, so a restart from the ESC
 menu re-derives its layout rather than trusting the constants.

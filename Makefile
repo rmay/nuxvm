@@ -37,13 +37,17 @@ NUX_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(NUX_SRCS))
 LUXC_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(LUXC_SRCS))
 REPL_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(REPL_SRCS))
 
-CLOISTER_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(SRC_DIR)/dialog.c $(SRC_DIR)/cloister.c $(SRC_DIR)/fonts.c $(ROM_SRCS)
-CLOISTER_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(CLOISTER_SRCS))
-
 FLUXIO_COMPILER_SRCS = $(SRC_DIR)/fluxio_lexer.c $(SRC_DIR)/fluxio_ast.c \
                        $(SRC_DIR)/fluxio_parser.c $(SRC_DIR)/fluxio_codegen.c $(SRC_DIR)/fluxio_include.c
 FLUXIO_COMPILER_OBJS = $(OBJ_DIR)/fluxio_lexer.o $(OBJ_DIR)/fluxio_ast.o \
                        $(OBJ_DIR)/fluxio_parser.o $(OBJ_DIR)/fluxio_codegen.o $(OBJ_DIR)/fluxio_include.o
+
+# cloister links both front ends plus the fluxlink core, so it can compile
+# (and, for an app with externs, link) a .lux or .fx app on the fly at launch.
+CLOISTER_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(FLUXIO_COMPILER_SRCS) \
+                $(SRC_DIR)/fluxlink_core.c $(SRC_DIR)/fluxio_build.c $(SRC_DIR)/dialog.c $(SRC_DIR)/cloister.c $(SRC_DIR)/fonts.c $(ROM_SRCS)
+CLOISTER_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(CLOISTER_SRCS))
+
 
 FLUXIOC_SRCS = $(VM_SRCS) $(SYS_SRCS) $(SRC_DIR)/vfs.c $(COMPILER_SRCS) $(FLUXIO_COMPILER_SRCS) $(SRC_DIR)/fluxioc.c $(SRC_DIR)/fonts_stub.c $(ROM_SRCS)
 FLUXIOC_OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(FLUXIOC_SRCS))
@@ -70,7 +74,10 @@ apps/%.bin: apps/%.lux $(BIN_DIR)/luxc $(wildcard lib/*.lux)
 	@echo "Compiling $< -> $@"
 	@$(BIN_DIR)/luxc -target graphical -o $@ $<
 
-apps/fluxio/%.bin: apps/fluxio/%.fx $(BIN_DIR)/fluxioc
+# The lib/*.fx dependency mirrors the Lux rule's lib/*.lux one: Fluxio
+# apps `include` library sources (lib/escape_menu.fx), and without it an
+# edit to the library left every app's .bin stale.
+apps/fluxio/%.bin: apps/fluxio/%.fx $(BIN_DIR)/fluxioc $(wildcard lib/*.fx)
 	@echo "Compiling $< -> $@"
 	@$(BIN_DIR)/fluxioc -target graphical -o $@ $<
 
@@ -99,7 +106,7 @@ uilib: $(BIN_DIR)/luxc
 # the same target) so this one compile-then-link pipeline runs instead of
 # a plain fluxioc compile. $@.app is a scratch intermediate, not shipped.
 apps/fluxio/Quill.bin: apps/fluxio/Quill.fx $(BIN_DIR)/fluxioc $(BIN_DIR)/fluxlink $(BIN_DIR)/luxc \
-    lib/sf.lux lib/ui.lux abi/uisf.exports.json
+    lib/sf.lux lib/ui.lux abi/uisf.exports.json $(wildcard lib/*.fx)
 	@echo "Compiling lib/sf.lux (+ lib/ui.lux) -> lib/uisf.bin"
 	@$(BIN_DIR)/luxc -base $(UI_LIB_BASE) -symbols lib/uisf.symtab.json -o lib/uisf.bin lib/sf.lux
 	@echo "Compiling $< -> $@.app"
@@ -134,9 +141,9 @@ $(BIN_DIR)/cloister: $(CLOISTER_OBJS)
 	$(CC) $(CLOISTER_OBJS) -o $@ $(LDFLAGS) $(SDL_LIBS)
 	@echo "Built bin/cloister successfully!"
 
-$(BIN_DIR)/fluxlink: $(OBJ_DIR)/fluxlink.o $(ROM_OBJS)
+$(BIN_DIR)/fluxlink: $(OBJ_DIR)/fluxlink.o $(OBJ_DIR)/fluxlink_core.o $(ROM_OBJS)
 	@echo "Linking fluxlink..."
-	$(CC) $(OBJ_DIR)/fluxlink.o $(ROM_OBJS) -o $@
+	$(CC) $(OBJ_DIR)/fluxlink.o $(OBJ_DIR)/fluxlink_core.o $(ROM_OBJS) -o $@
 	@echo "Built bin/fluxlink successfully!"
 
 $(BIN_DIR)/fluxioc: $(FLUXIOC_OBJS)
@@ -179,9 +186,16 @@ $(BIN_DIR)/test_fluxio_compiler: $(OBJ_DIR)/test_fluxio_compiler.o $(FLUXIO_COMP
 	$(CC) $(OBJ_DIR)/test_fluxio_compiler.o $(FLUXIO_COMPILER_OBJS) $(COMPILER_OBJS) $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ) $(ROM_OBJS) -o $@ $(LDFLAGS)
 	@echo "Built bin/test_fluxio_compiler successfully!"
 
-$(BIN_DIR)/test_abi_conformance: $(OBJ_DIR)/test_abi_conformance.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ) $(ROM_OBJS)
+# Also links the Fluxio front end, the fluxlink core and fluxio_build, so the
+# suite can check cloister's in-process .fx build against the shipped .bin.
+ABI_TEST_OBJS = $(OBJ_DIR)/test_abi_conformance.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o \
+                $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o \
+                $(OBJ_DIR)/display.o $(FONT_OBJ) $(FLUXIO_COMPILER_OBJS) \
+                $(OBJ_DIR)/fluxlink_core.o $(OBJ_DIR)/fluxio_build.o $(ROM_OBJS)
+
+$(BIN_DIR)/test_abi_conformance: $(ABI_TEST_OBJS)
 	@echo "Linking test_abi_conformance..."
-	$(CC) $(OBJ_DIR)/test_abi_conformance.o $(OBJ_DIR)/compiler.o $(OBJ_DIR)/lexer.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(FONT_OBJ) $(ROM_OBJS) -o $@ $(LDFLAGS)
+	$(CC) $(ABI_TEST_OBJS) -o $@ $(LDFLAGS)
 	@echo "Built bin/test_abi_conformance successfully!"
 
 $(BIN_DIR)/test_rom: $(OBJ_DIR)/test_rom.o $(ROM_OBJS)

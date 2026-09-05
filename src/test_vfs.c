@@ -1761,7 +1761,9 @@ static void test_picker_starts(void) {
     machine_free(m);
     free(sprog);
 
-    /* Fluxio column lists compiled bins under apps/fluxio. */
+    /* Fluxio column lists .fx SOURCES under apps/fluxio: cloister compiles
+     * (and, for an app with externs, links) them in-process at launch, the
+     * same way the Lux column's .lux sources are handled. */
     src = load_text_file("apps/Picker.lux");
     assert(src != NULL);
     slen = 0;
@@ -1782,7 +1784,8 @@ static void test_picker_starts(void) {
     }
     assert(halted);
     assert(strncmp(m->system->launch_path, "apps/fluxio/", 12) == 0);
-    assert(strstr(m->system->launch_path, ".bin") != NULL);
+    assert(strstr(m->system->launch_path, ".fx") != NULL);
+    assert(strstr(m->system->launch_path, ".bin") == NULL);
     assert(strstr(m->system->launch_path, ".lux") == NULL);
 
     machine_free(m);

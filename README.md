@@ -967,7 +967,7 @@ A headless ROM that stores into the heap or Fluxio bulk bands (`0xA00000` / `0xD
 
 # Cloister
 
-Cloister is the graphical host for NUX — a fantasy machine, not a multi-app OS. One program owns the screen, `/dev/draw`, `/dev/mouse`, and `/dev/kbd`. Run `./bin/cloister` to pick a ROM: the picker is itself a Lux app (`apps/Picker.lux`) with two group-box columns, Lux sources on the left (compiled on the fly) and compiled Fluxio bins from `apps/fluxio/` on the right. **Cloister > About Cloister** is a modal info box; **Cloister > Quit** leaves the host. Pass a `.bin` / `.lux` path to boot that ROM directly. Esc is Continue / Restart / Quit inside an app (and closes About on the picker).
+Cloister is the graphical host for NUX — a fantasy machine, not a multi-app OS. One program owns the screen, `/dev/draw`, `/dev/mouse`, and `/dev/kbd`. Run `./bin/cloister` to pick a ROM: the picker is itself a Lux app (`apps/Picker.lux`) with two group-box columns of sources, both compiled on the fly when picked: Lux from `apps/` on the left, Fluxio from `apps/fluxio/` on the right. **Cloister > About Cloister** is a modal info box; **Cloister > Quit** leaves the host. Pass a `.bin` / `.lux` / `.fx` path to boot it directly. Esc is Continue / Restart / Quit inside an app (and closes About on the picker).
 
 The five guest apps — **Quill** (text), **Illumos** (bitmap fonts), **Tabula** (spreadsheet), **Nib** (object drawing), and **Easel** (pixel painting) — are documented in **[docs/user-manual.md](docs/user-manual.md)**. Menus and buttons are Chicago. Quill, Tabula, and Nib have **Font > Chicago / Geneva / Monaco** for document text.
 

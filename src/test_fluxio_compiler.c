@@ -3,6 +3,7 @@
 #include "fluxio_parser.h"
 #include "kelvin.h"
 #include "fluxio_codegen.h"
+#include "compiler.h"
 #include "machine.h"
 #include "vfs.h"
 #include "vm.h"
@@ -1002,6 +1003,26 @@ static void escmenu_include_path(char* out, size_t cap) {
  * out-param instead of running it -- callers that need machine_create()
  * (for fill_rect/draw_str's System dependency) rather than a bare VM use
  * this directly. */
+/* Same as must_compile_with_includes, but codegens for an explicit base
+ * address. Anything that has to actually draw needs GRAPHICAL_BASE_ADDRESS:
+ * System aliases screen_pixels into guest RAM only when the guest buffer
+ * reaches 2MB (system_set_memory), and a headless-base image is sized to
+ * just the loaded program, so it has no framebuffer at all. */
+static uint8_t* must_compile_with_includes_at(const char* dir, const char* entry_name,
+                                              uint32_t base, size_t* out_len) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", dir, entry_name);
+    FxTokenList* tokens = fx_load_with_includes(path);
+    assert(tokens != NULL);
+    FxProgram* program = fx_parse(tokens);
+    fx_token_list_free(tokens);
+    assert(program != NULL);
+    uint8_t* bc = fx_codegen(program, base, out_len);
+    fx_program_free(program);
+    assert(bc != NULL);
+    return bc;
+}
+
 static uint8_t* must_compile_with_includes(const char* dir, const char* entry_name, size_t* out_len) {
     char path[1024];
     snprintf(path, sizeof(path), "%s/%s", dir, entry_name);
@@ -1042,6 +1063,40 @@ static void test_escape_menu_esc_toggles_open(void) {
     check_include_result(dir, "main.fx", 111100);
 }
 
+static void test_escape_menu_keyup_does_not_close(void) {
+    printf("Testing escape_menu: escmenu_kbd ignores KEY_UP, so one Esc press leaves the sheet open...\n");
+    char libpath[1024];
+    escmenu_include_path(libpath, sizeof(libpath));
+    char dir[] = "/tmp/fluxio_test_escmenu_keyup_XXXXXX";
+    assert(mkdtemp(dir) != NULL);
+    char main_src[2048];
+    /* The regression this guards: /dev/kbd sends KEY_DOWN (type 0) then
+     * KEY_UP (type 1) for one physical press, and Esc *toggles*, so feeding
+     * both halves through escmenu_key() opened the sheet and immediately
+     * shut it again -- it never survived to be drawn. Every app but Snake
+     * did exactly that, which is why the Esc menu appeared to work only in
+     * Snake. escmenu_kbd() filters the type instead of leaving it to each
+     * caller to remember. */
+    snprintf(main_src, sizeof(main_src),
+        "include \"%s\";\n"
+        "/** e */\n"
+        "int main() {\n"
+        "    escmenu_init(320, 240);\n"
+        "    int d = escmenu_kbd(0, 27);\n"      /* KEY_DOWN Esc: opens, consumed */
+        "    int u = escmenu_kbd(1, 27);\n"      /* KEY_UP Esc: ignored, still consumed */
+        "    int open1 = escmenu_is_open();\n"   /* must still be open */
+        "    int ku = escmenu_kbd(1, 65);\n"     /* KEY_UP 'A' while open: consumed */
+        "    int d2 = escmenu_kbd(0, 27);\n"     /* second real press: closes */
+        "    int open2 = escmenu_is_open();\n"
+        "    int uc = escmenu_kbd(1, 65);\n"     /* KEY_UP while closed: passes through */
+        "    return d*1000000 + u*100000 + open1*10000 + ku*1000 + d2*100 + open2*10 + uc;\n"
+        "}\n", libpath);
+    write_temp_file(dir, "main.fx", main_src);
+    /* d=1, u=1 (consumed but ignored), open1=1 (the bug made this 0),
+     * ku=1, d2=1 (closes), open2=0, uc=0 (nothing to consume once closed). */
+    check_include_result(dir, "main.fx", 1111100);
+}
+
 static void test_escape_menu_quit_click_sets_flag(void) {
     printf("Testing escape_menu: clicking Quit sets escmenu_wants_quit() and leaves the menu open...\n");
     char libpath[1024];
@@ -1058,6 +1113,7 @@ static void test_escape_menu_quit_click_sets_flag(void) {
         "    int bx = escmenu_btn_x();\n"
         "    int by = escmenu_btn_y(2);\n"
         "    int consumed = escmenu_mouse(3, 1, bx + 5, by + 5);\n"
+        "    escmenu_mouse(4, 0, bx + 5, by + 5);\n"
         "    int wants_quit = escmenu_wants_quit();\n"
         "    int still_open = escmenu_is_open();\n"
         "    return consumed*100 + wants_quit*10 + still_open;\n"
@@ -1082,6 +1138,7 @@ static void test_escape_menu_resume_click_closes(void) {
         "    int bx = escmenu_btn_x();\n"
         "    int by = escmenu_btn_y(0);\n"
         "    int consumed = escmenu_mouse(3, 1, bx + 5, by + 5);\n"
+        "    escmenu_mouse(4, 0, bx + 5, by + 5);\n"
         "    int still_open = escmenu_is_open();\n"
         "    int wants_quit = escmenu_wants_quit();\n"
         "    return consumed*100 + still_open*10 + wants_quit;\n"
@@ -1106,6 +1163,7 @@ static void test_escape_menu_restart_click_sets_flag(void) {
         "    int bx = escmenu_btn_x();\n"
         "    int by = escmenu_btn_y(1);\n"
         "    int consumed = escmenu_mouse(3, 1, bx + 5, by + 5);\n"
+        "    escmenu_mouse(4, 0, bx + 5, by + 5);\n"
         "    int wants_restart = escmenu_wants_restart();\n"
         "    int still_open = escmenu_is_open();\n"
         "    int wants_quit = escmenu_wants_quit();\n"
@@ -1116,7 +1174,7 @@ static void test_escape_menu_restart_click_sets_flag(void) {
 }
 
 static void test_escape_menu_click_outside_buttons_is_noop(void) {
-    printf("Testing escape_menu: a click inside the panel but outside both buttons is consumed but does nothing...\n");
+    printf("Testing escape_menu: a click outside every button closes the sheet, same as Continue...\n");
     char libpath[1024];
     escmenu_include_path(libpath, sizeof(libpath));
     char dir[] = "/tmp/fluxio_test_escmenu_missclick_XXXXXX";
@@ -1134,7 +1192,212 @@ static void test_escape_menu_click_outside_buttons_is_noop(void) {
         "    return consumed*100 + still_open*10 + wants_quit;\n"
         "}\n", libpath);
     write_temp_file(dir, "main.fx", main_src);
-    check_include_result(dir, "main.fx", 110);
+    /* consumed=1, still_open=0 (a click outside Continues, exactly what
+     * APP::handle-esc-mouse does when overlay-held? is false -- see
+     * docs/user-manual.md "Esc or a click outside Continues"), quit=0. */
+    check_include_result(dir, "main.fx", 100);
+}
+
+/* UI::button-update's WAS_DOWN rule: a push button posts on release inside
+ * the button it was pressed in, so pressing Quit and releasing somewhere
+ * else cancels the click instead of firing it -- the same escape hatch a
+ * real Mac push button gives you. */
+static void test_escape_menu_drag_off_button_cancels(void) {
+    printf("Testing escape_menu: pressing Quit then releasing off the button cancels the click...\n");
+    char libpath[1024];
+    escmenu_include_path(libpath, sizeof(libpath));
+    char dir[] = "/tmp/fluxio_test_escmenu_dragoff_XXXXXX";
+    assert(mkdtemp(dir) != NULL);
+    char main_src[2048];
+    snprintf(main_src, sizeof(main_src),
+        "include \"%s\";\n"
+        "/** e */\n"
+        "int main() {\n"
+        "    escmenu_init(320, 240);\n"
+        "    escmenu_key(27);\n"
+        "    int bx = escmenu_btn_x();\n"
+        "    int by = escmenu_btn_y(2);\n"
+        "    escmenu_mouse(3, 1, bx + 5, by + 5);\n"      /* press Quit */
+        "    escmenu_mouse(2, 1, bx + 5, by - 40);\n"     /* drag off it */
+        "    escmenu_mouse(4, 0, bx + 5, by - 40);\n"     /* release outside */
+        "    int wants_quit = escmenu_wants_quit();\n"
+        "    int still_open = escmenu_is_open();\n"
+        "    return wants_quit*10 + still_open;\n"
+        "}\n", libpath);
+    write_temp_file(dir, "main.fx", main_src);
+    /* wants_quit=0 (cancelled), still_open=1 (a release is not a click
+     * outside -- only a button-*down* outside Continues). */
+    check_include_result(dir, "main.fx", 1);
+}
+
+/* UI::overlay-pick re-runs UI::overlay-default for whatever button the
+ * pointer is over, on every mouse event -- so in Lux the default ring
+ * follows the mouse and isn't only moved by Up/Down. Enter then fires
+ * whatever the ring landed on. */
+static void test_escape_menu_hover_moves_default_ring(void) {
+    printf("Testing escape_menu: hovering a button moves the default ring onto it, so Enter fires that one...\n");
+    char libpath[1024];
+    escmenu_include_path(libpath, sizeof(libpath));
+    char dir[] = "/tmp/fluxio_test_escmenu_hover_XXXXXX";
+    assert(mkdtemp(dir) != NULL);
+    char main_src[2048];
+    snprintf(main_src, sizeof(main_src),
+        "include \"%s\";\n"
+        "/** e */\n"
+        "int main() {\n"
+        "    escmenu_init(320, 240);\n"
+        "    escmenu_key(27);\n"
+        "    int bx = escmenu_btn_x();\n"
+        "    int by = escmenu_btn_y(2);\n"
+        "    escmenu_mouse(2, 0, bx + 5, by + 5);\n"   /* MOVE over Quit */
+        "    escmenu_key(13);\n"                        /* Enter fires the ring */
+        "    return escmenu_wants_quit();\n"
+        "}\n", libpath);
+    write_temp_file(dir, "main.fx", main_src);
+    /* 1: the ring followed the pointer onto Quit, so Enter quit. Without
+     * overlay-pick parity the ring would still be on Continue and this
+     * would just close the sheet. */
+    check_include_result(dir, "main.fx", 1);
+}
+
+/* -----------------------------------------------------------------------
+ * The Esc sheet must be pixel-identical to the Lux one.
+ *
+ * lib/escape_menu.fx is a hand port of APP::draw-esc-popup plus the
+ * UI::overlay-button/button-draw stack it calls, and "looks the same" is
+ * not something the Fluxio-side unit tests above can see -- they only
+ * check flags. This renders the real Lux sheet (by booting a shipped Lux
+ * app and pressing Esc) and the Fluxio sheet, then compares the whole
+ * 204x164 panel region, frame included, pixel by pixel.
+ *
+ * It is what caught the original divergence: square buttons instead of the
+ * System 6 r=6 rounded ones, and labels centred on guessed offsets instead
+ * of DRAW::str-w's measured width -- 938 differing pixels. Anything that
+ * changes lib/draw.lux's rrect rasterisation, UI::button-draw's
+ * composition, the Chicago metrics, or the sheet's own geometry will show
+ * up here as a non-zero count.
+ * ----------------------------------------------------------------------- */
+
+#define ESC_CMP_W 960
+#define ESC_CMP_H 720
+#define ESC_PANEL_W 204
+#define ESC_PANEL_H 164
+
+/* One byte per pixel: is this pixel ink? screen_pixels is ARGB, so red is
+ * byte 1 -- byte 0 is the alpha the display layer pins to 255. */
+static void esc_grab_panel(Machine* m, uint8_t* out) {
+    const uint8_t* fb = m->system->screen_pixels;
+    assert(fb != NULL);
+    int px = (ESC_CMP_W - 200) / 2 - 2;
+    int py = (ESC_CMP_H - 160) / 2 - 2;
+    for (int y = 0; y < ESC_PANEL_H; y++) {
+        for (int x = 0; x < ESC_PANEL_W; x++) {
+            const uint8_t* p = fb + (size_t) ((py + y) * ESC_CMP_W + (px + x)) * 4;
+            out[y * ESC_PANEL_W + x] = (p[1] < 200) ? 1 : 0;
+        }
+    }
+}
+
+static Machine* esc_boot(const uint8_t* bc, size_t len, uint32_t base) {
+    Machine* m = machine_create(bc, (uint32_t) len, base,
+                               nux_guest_memory_size(base, (uint32_t) len), false);
+    assert(m != NULL);
+    system_set_resolution(m->system, ESC_CMP_W, ESC_CMP_H);
+    for (int i = 0; i < 14 && !m->cpu->halted; i++) machine_tick(m);
+    return m;
+}
+
+/* A physical Esc press: KEY_DOWN then KEY_UP, the pair a real host sends. */
+static void esc_press(Machine* m) {
+    system_push_kbd_event(m->system, 0, 27, 0);
+    system_push_kbd_event(m->system, 1, 27, 0);
+    for (int i = 0; i < 8 && !m->cpu->halted; i++) machine_tick(m);
+}
+
+static void test_escape_menu_matches_lux_pixel_for_pixel(void) {
+    printf("Testing escape_menu: the sheet is pixel-identical to lib/app.lux's Esc overlay...\n");
+
+    FILE* probe = fopen("apps/Snake.lux", "rb");
+    if (!probe) {
+        printf("  (skipped: apps/Snake.lux not found -- run from repo root)\n");
+        return;
+    }
+    fseek(probe, 0, SEEK_END);
+    long sz = ftell(probe);
+    fseek(probe, 0, SEEK_SET);
+    char* lux_src = malloc((size_t) sz + 1);
+    assert(fread(lux_src, 1, (size_t) sz, probe) == (size_t) sz);
+    lux_src[sz] = 0;
+    fclose(probe);
+
+    size_t lux_len = 0;
+    uint8_t* lux_bc = compile_source(lux_src, GRAPHICAL_BASE_ADDRESS, &lux_len, false);
+    free(lux_src);
+    assert(lux_bc != NULL);
+    Machine* lm = esc_boot(lux_bc, lux_len, GRAPHICAL_BASE_ADDRESS);
+    esc_press(lm);
+    static uint8_t lux_panel[ESC_PANEL_W * ESC_PANEL_H];
+    esc_grab_panel(lm, lux_panel);
+
+    /* The Fluxio side is the library itself, driven by a minimal app rather
+     * than a whole game, so a failure points at the sheet and not at
+     * whatever else an app happens to draw. */
+    char libpath[1024];
+    escmenu_include_path(libpath, sizeof(libpath));
+    char dir[] = "/tmp/fluxio_test_escmenu_pixels_XXXXXX";
+    assert(mkdtemp(dir) != NULL);
+    char main_src[2048];
+    snprintf(main_src, sizeof(main_src),
+        "include \"%s\";\n"
+        "/** e */\n"
+        "int main() {\n"
+        "    int fd = vfs_open(\"/dev/draw\");\n"
+        "    int kfd = vfs_open(\"/dev/kbd\");\n"
+        "    int size = canvas_size(fd);\n"
+        "    escmenu_init(size >> 16, size & 0xFFFF);\n"
+        "    int frame = 0;\n"
+        "    while (frame < 40) {\n"
+        "        int got = poll_kbd(kfd);\n"
+        "        while (got) {\n"
+        "            escmenu_kbd(kbd_type(), kbd_key());\n"
+        "            got = poll_kbd(kfd);\n"
+        "        }\n"
+        "        begin_frame(fd);\n"
+        "        fill_rect(fd, 0, 0, size >> 16, size & 0xFFFF, 0x808080);\n"
+        "        escmenu_draw(fd);\n"
+        "        end_frame(fd);\n"
+        "        yield();\n"
+        "        frame = frame + 1;\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n", libpath);
+    write_temp_file(dir, "main.fx", main_src);
+    size_t fx_len = 0;
+    uint8_t* fx_bc = must_compile_with_includes_at(dir, "main.fx", GRAPHICAL_BASE_ADDRESS, &fx_len);
+    Machine* fm = esc_boot(fx_bc, fx_len, GRAPHICAL_BASE_ADDRESS);
+    esc_press(fm);
+    static uint8_t fx_panel[ESC_PANEL_W * ESC_PANEL_H];
+    esc_grab_panel(fm, fx_panel);
+
+    int lux_ink = 0, fx_ink = 0, diff = 0;
+    for (int i = 0; i < ESC_PANEL_W * ESC_PANEL_H; i++) {
+        lux_ink += lux_panel[i];
+        fx_ink += fx_panel[i];
+        if (lux_panel[i] != fx_panel[i]) diff++;
+    }
+    /* Both sheets actually drew (a blank region would compare equal and
+     * prove nothing), then they agree everywhere. */
+    assert(lux_ink > 1000);
+    assert(fx_ink > 1000);
+    if (diff != 0) {
+        printf("  lux ink=%d fluxio ink=%d differing=%d\n", lux_ink, fx_ink, diff);
+    }
+    assert(diff == 0);
+
+    machine_free(lm);
+    machine_free(fm);
+    free(lux_bc);
+    free(fx_bc);
 }
 
 static void test_escape_menu_inert_while_closed(void) {
@@ -1927,6 +2190,29 @@ static Machine* quill_fx_machine(const char* dir, char* out_bin_path, size_t out
     return m;
 }
 
+/* Quill.fx no longer quits on a bare Esc. Esc now opens the shared System
+ * Menu sheet (lib/escape_menu.fx) that every Fluxio app gets, and Quit is
+ * a button on it -- so a test that just wants the app to exit drives the
+ * sheet's keyboard path: Esc to open, Down/Down to walk the default ring
+ * onto Quit, Enter to fire it. Only KEY_DOWN (type 0) records are sent;
+ * escmenu_kbd() ignores KEY_UP by design, which is the whole bug this
+ * replaced (feeding it both halves of one Esc press opened the sheet on
+ * the down and closed it again on the up). `cfd` is a /sys/chan bound to
+ * /dev/kbd. Pumps a few frames per key, since the app's loop checks
+ * escmenu_wants_quit() at the top of the *next* iteration. */
+static void quill_fx_send_quit(Machine* m, int32_t cfd) {
+    const int seq[] = { 27, 18, 18, 13 }; /* Esc, Down, Down, Enter */
+    for (int i = 0; i < 4; i++) {
+        uint8_t pkt[8] = { 0, 0, (uint8_t) (seq[i] & 0xFF), (uint8_t) ((seq[i] >> 8) & 0xFF), 0, 0, 0, 0 };
+        assert(vfs_write(m->system, cfd, pkt, 8) == 8);
+        int frames = 0;
+        while (!m->cpu->halted && frames < 4) {
+            machine_tick(m);
+            frames++;
+        }
+    }
+}
+
 static void test_quill_fx_type_and_save(void) {
     printf("Testing apps/fluxio/Quill.fx: type \"Hi\", save, verify file content...\n");
 
@@ -1944,9 +2230,10 @@ static void test_quill_fx_type_and_save(void) {
     vfs_close(m->system, pfd);
 
     /* Type(1)=0 (KEY_DOWN), pad(1), key:u16 LE, mods:u32 (unused, zero).
-     * "Hi", then Tab (Quill.fx's placeholder save key), then Esc (quit). */
-    int keys[] = { 'H', 'i', 9, 27 };
-    for (int k = 0; k < 4; k++) {
+     * "Hi", then Tab (Quill.fx's placeholder save key); the quit goes
+     * through the Esc sheet afterwards, via quill_fx_send_quit(). */
+    int keys[] = { 'H', 'i', 9 };
+    for (int k = 0; k < 3; k++) {
         uint8_t pkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
         assert(vfs_write(m->system, cfd, pkt, 8) == 8);
         int frames = 0;
@@ -1955,9 +2242,10 @@ static void test_quill_fx_type_and_save(void) {
             frames++;
         }
     }
+    quill_fx_send_quit(m, cfd);
     vfs_close(m->system, cfd);
 
-    assert(m->cpu->halted); /* Esc returned from main() */
+    assert(m->cpu->halted); /* the sheet's Quit returned from main() */
     machine_free(m);
 
     System* check = quill_fx_check_system();
@@ -2020,9 +2308,10 @@ static void test_quill_fx_click_positions_cursor(void) {
         frames++;
     }
 
-    /* Type 'X' at the clicked position, then Tab (save) and Esc (quit). */
-    int keys[] = { 'X', 9, 27 };
-    for (int k = 0; k < 3; k++) {
+    /* Type 'X' at the clicked position, then Tab (save); the quit goes
+     * through the Esc sheet afterwards (quill_fx_send_quit). */
+    int keys[] = { 'X', 9 };
+    for (int k = 0; k < 2; k++) {
         uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
         assert(vfs_write(m->system, kc, kpkt, 8) == 8);
         frames = 0;
@@ -2031,6 +2320,7 @@ static void test_quill_fx_click_positions_cursor(void) {
             frames++;
         }
     }
+    quill_fx_send_quit(m, kc);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
 
@@ -2112,8 +2402,8 @@ static void test_quill_fx_wraps_long_word_without_fault(void) {
         frames++;
     }
 
-    int keys[] = { 'Z', 9, 27 };
-    for (int k = 0; k < 3; k++) {
+    int keys[] = { 'Z', 9 };
+    for (int k = 0; k < 2; k++) {
         uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
         assert(vfs_write(m->system, kc, kpkt, 8) == 8);
         frames = 0;
@@ -2122,6 +2412,7 @@ static void test_quill_fx_wraps_long_word_without_fault(void) {
             frames++;
         }
     }
+    quill_fx_send_quit(m, kc);
     vfs_close(m->system, kc);
     vfs_close(m->system, mc);
 
@@ -2173,9 +2464,10 @@ static void test_quill_fx_hex_mode_toggle(void) {
     vfs_close(m->system, kp);
 
     /* Home (23) -> hex mode, right-arrow (20) x3 -> cursor to byte 3,
-     * Home again -> back to text mode, then 'X', Tab (save), Esc (quit). */
-    int keys[] = { 23, 20, 20, 20, 23, 'X', 9, 27 };
-    for (int k = 0; k < 8; k++) {
+     * Home again -> back to text mode, then 'X', Tab (save); the quit
+     * goes through the Esc sheet afterwards (quill_fx_send_quit). */
+    int keys[] = { 23, 20, 20, 20, 23, 'X', 9 };
+    for (int k = 0; k < 7; k++) {
         uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
         assert(vfs_write(m->system, kc, kpkt, 8) == 8);
         int frames = 0;
@@ -2184,6 +2476,7 @@ static void test_quill_fx_hex_mode_toggle(void) {
             frames++;
         }
     }
+    quill_fx_send_quit(m, kc);
     vfs_close(m->system, kc);
 
     assert(m->cpu->halted);
@@ -2295,8 +2588,8 @@ static void test_quill_fx_scrollbar_scrolls_view(void) {
         frames++;
     }
 
-    int keys[] = { 'Z', 9, 27 };
-    for (int k = 0; k < 3; k++) {
+    int keys[] = { 'Z', 9 };
+    for (int k = 0; k < 2; k++) {
         uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
         assert(vfs_write(m->system, kc, kpkt, 8) == 8);
         frames = 0;
@@ -2305,6 +2598,7 @@ static void test_quill_fx_scrollbar_scrolls_view(void) {
             frames++;
         }
     }
+    quill_fx_send_quit(m, kc);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
 
@@ -2432,8 +2726,8 @@ static void test_quill_fx_hex_click_after_scroll(void) {
 
     /* Home again -> back to text mode (cursor, a byte offset, carries
      * over unchanged), then type a marker at that offset, save, quit. */
-    int keys[] = { 23, '#', 9, 27 };
-    for (int k = 0; k < 4; k++) {
+    int keys[] = { 23, '#', 9 };
+    for (int k = 0; k < 3; k++) {
         uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
         assert(vfs_write(m->system, kc, kpkt, 8) == 8);
         frames = 0;
@@ -2442,6 +2736,7 @@ static void test_quill_fx_hex_click_after_scroll(void) {
             frames++;
         }
     }
+    quill_fx_send_quit(m, kc);
     vfs_close(m->system, kc);
 
     assert(m->cpu->halted);
@@ -2668,13 +2963,7 @@ static void test_quill_fx_status_line_reflects_dirty_state(void) {
     int saved_ink = quill_fx_status_ink_pixels(m);
     assert(saved_ink < dirty_ink); /* " *" marker gone after save */
 
-    uint8_t quit[8] = { 0, 0, 27, 0, 0, 0, 0, 0 }; /* Esc */
-    assert(vfs_write(m->system, kc, quit, 8) == 8);
-    frames = 0;
-    while (!m->cpu->halted && frames < 3) {
-        machine_tick(m);
-        frames++;
-    }
+    quill_fx_send_quit(m, kc);
     vfs_close(m->system, kc);
     assert(m->cpu->halted);
     machine_free(m);
@@ -2777,8 +3066,8 @@ static void test_quill_fx_viewport_follows_cursor(void) {
      * (line i uses 'A' + i%26), so a letter marker like 'Z' would
      * collide with the *pre-existing* 'Z' the seed loop already placed
      * at line 25 (byte 50) and silently match the wrong occurrence. */
-    int keys[] = { '#', 9, 27 };
-    for (int k = 0; k < 3; k++) {
+    int keys[] = { '#', 9 };
+    for (int k = 0; k < 2; k++) {
         uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
         assert(vfs_write(m->system, kc, kpkt, 8) == 8);
         frames = 0;
@@ -2787,6 +3076,7 @@ static void test_quill_fx_viewport_follows_cursor(void) {
             frames++;
         }
     }
+    quill_fx_send_quit(m, kc);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
 
@@ -3008,13 +3298,7 @@ static void test_quill_fx_menu_bar_works_in_hex_mode(void) {
         machine_tick(m);
         frames++;
     }
-    uint8_t quit[8] = { 0, 0, 27, 0, 0, 0, 0, 0 };
-    assert(vfs_write(m->system, kc, quit, 8) == 8);
-    frames = 0;
-    while (!m->cpu->halted && frames < 3) {
-        machine_tick(m);
-        frames++;
-    }
+    quill_fx_send_quit(m, kc);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     assert(m->cpu->halted);
@@ -3078,8 +3362,8 @@ static void test_quill_fx_hex_nibble_edit(void) {
     /* Home -> hex mode, '4' '1' -> byte 0 becomes 0x41 ('A'), Tab -> save,
      * Esc -> quit. No second Home needed: save (Tab) and quit (Esc) both
      * work directly in hex mode already. */
-    int keys[] = { 23, '4', '1', 9, 27 };
-    for (int k = 0; k < 5; k++) {
+    int keys[] = { 23, '4', '1', 9 };
+    for (int k = 0; k < 4; k++) {
         uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
         assert(vfs_write(m->system, kc, kpkt, 8) == 8);
         frames = 0;
@@ -3088,6 +3372,7 @@ static void test_quill_fx_hex_nibble_edit(void) {
             frames++;
         }
     }
+    quill_fx_send_quit(m, kc);
     vfs_close(m->system, kc);
 
     assert(m->cpu->halted);
@@ -3162,14 +3447,15 @@ static void test_quill_fx_hex_up_down_arrows(void) {
     /* Home, right x3 (cursor=3), down (->19, edit 0x55, cursor auto-
      * advances to 20), down (->36, edit 0x66, cursor -> 37), up x2
      * (->21->5, edit 0x77, cursor -> 6), up (5(sic: cursor is 6 here,
-     * 6-16<0) clamps, edit 0x88), Tab save, Esc quit. */
+     * 6-16<0) clamps, edit 0x88), Tab save; the quit goes through the Esc
+     * sheet afterwards (quill_fx_send_quit). */
     int keys[] = {
         23, 20, 20, 20,             /* Home, right x3: cursor=3 */
         18, '5', '5',               /* down: cursor=19; edit byte 19 = 0x55; cursor->20 */
         18, '6', '6',               /* down: cursor=36; edit byte 36 = 0x66; cursor->37 */
         17, 17, '7', '7',           /* up,up: cursor=37->21->5; edit byte 5 = 0x77; cursor->6 */
         17, '8', '8',               /* up: cursor 6-16<0, clamps at 6; edit byte 6 = 0x88 */
-        9, 27
+        9
     };
     int nkeys = (int) (sizeof(keys) / sizeof(keys[0]));
     for (int k = 0; k < nkeys; k++) {
@@ -3181,6 +3467,7 @@ static void test_quill_fx_hex_up_down_arrows(void) {
             frames++;
         }
     }
+    quill_fx_send_quit(m, kc);
     vfs_close(m->system, kc);
 
     assert(m->cpu->halted);
@@ -3531,13 +3818,7 @@ static void test_quill_fx_menu_save_via_click(void) {
     int saved_ink = quill_fx_status_ink_pixels(m);
     assert(saved_ink < dirty_ink); /* dirty marker gone -- Save actually ran */
 
-    uint8_t quit[8] = { 0, 0, 27, 0, 0, 0, 0, 0 };
-    assert(vfs_write(m->system, kc, quit, 8) == 8);
-    frames = 0;
-    while (!m->cpu->halted && frames < 3) {
-        machine_tick(m);
-        frames++;
-    }
+    quill_fx_send_quit(m, kc);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     assert(m->cpu->halted);
@@ -3709,8 +3990,8 @@ static void test_quill_fx_edit_copy_paste(void) {
         frames++;
     }
 
-    int keys[] = { 9, 27 }; /* Tab (save), Esc (quit) */
-    for (int k = 0; k < 2; k++) {
+    int keys[] = { 9 }; /* Tab (save) */
+    for (int k = 0; k < 1; k++) {
         uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
         assert(vfs_write(m->system, kc, kpkt, 8) == 8);
         frames = 0;
@@ -3719,6 +4000,7 @@ static void test_quill_fx_edit_copy_paste(void) {
             frames++;
         }
     }
+    quill_fx_send_quit(m, kc);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     assert(m->cpu->halted);
@@ -3851,8 +4133,8 @@ static void test_quill_fx_edit_select_all_and_cut(void) {
     assert(sn == 3);
     assert(memcmp(snarf_got, "Hi\n", 3) == 0);
 
-    int keys[] = { 9, 27 }; /* Tab (save), Esc (quit) */
-    for (int k = 0; k < 2; k++) {
+    int keys[] = { 9 }; /* Tab (save) */
+    for (int k = 0; k < 1; k++) {
         uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
         assert(vfs_write(m->system, kc, kpkt, 8) == 8);
         frames = 0;
@@ -3861,6 +4143,7 @@ static void test_quill_fx_edit_select_all_and_cut(void) {
             frames++;
         }
     }
+    quill_fx_send_quit(m, kc);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     assert(m->cpu->halted);
@@ -3958,8 +4241,8 @@ static void test_quill_fx_file_new_without_changes_skips_confirm(void) {
      * position must be a plain miss-click on the (now empty) text pane,
      * not something the dialog intercepts. Cheaper proof: just type and
      * save directly, no dialog-dismissal clicks needed at all. */
-    int keys[] = { 'Z', 9, 27 }; /* type 'Z', Tab (save), Esc (quit) */
-    for (int k = 0; k < 3; k++) {
+    int keys[] = { 'Z', 9 }; /* type 'Z', Tab (save) */
+    for (int k = 0; k < 2; k++) {
         uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
         assert(vfs_write(m->system, kc, kpkt, 8) == 8);
         frames = 0;
@@ -3968,6 +4251,7 @@ static void test_quill_fx_file_new_without_changes_skips_confirm(void) {
             frames++;
         }
     }
+    quill_fx_send_quit(m, kc);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     assert(m->cpu->halted);
@@ -4083,9 +4367,7 @@ static void test_quill_fx_file_new_dirty_confirm_dialog_buttons(void) {
         assert(vfs_write(m->system, mc, save_btn_up, 8) == 8);
         frames = 0; while (!m->cpu->halted && frames < 3) { machine_tick(m); frames++; }
 
-        uint8_t quit[8] = { 0, 0, 27, 0, 0, 0, 0, 0 };
-        assert(vfs_write(m->system, kc, quit, 8) == 8);
-        frames = 0; while (!m->cpu->halted && frames < 3) { machine_tick(m); frames++; }
+        quill_fx_send_quit(m, kc);
         vfs_close(m->system, mc);
         vfs_close(m->system, kc);
         assert(m->cpu->halted);
@@ -4163,13 +4445,14 @@ static void test_quill_fx_file_new_dirty_confirm_dialog_buttons(void) {
         /* Type into the fresh document and save it -- proves New actually
          * ran (the buffer is really the empty new.quill now), separately
          * from the "old content untouched" check below. */
-        int keys[] = { 'Q', 9, 27 };
-        for (int k = 0; k < 3; k++) {
+        int keys[] = { 'Q', 9 };
+        for (int k = 0; k < 2; k++) {
             uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), 0, 0, 0, 0, 0 };
             assert(vfs_write(m->system, kc, kpkt, 8) == 8);
             frames = 0;
             while (!m->cpu->halted && frames < 3) { machine_tick(m); frames++; }
         }
+        quill_fx_send_quit(m, kc);
         vfs_close(m->system, mc);
         vfs_close(m->system, kc);
         assert(m->cpu->halted);
@@ -4272,9 +4555,7 @@ static void test_quill_fx_file_new_dirty_confirm_dialog_buttons(void) {
         assert(vfs_write(m->system, kc, save_key, 8) == 8);
         frames = 0;
         while (!m->cpu->halted && frames < 3) { machine_tick(m); frames++; }
-        uint8_t quit[8] = { 0, 0, 27, 0, 0, 0, 0, 0 };
-        assert(vfs_write(m->system, kc, quit, 8) == 8);
-        frames = 0; while (!m->cpu->halted && frames < 3) { machine_tick(m); frames++; }
+        quill_fx_send_quit(m, kc);
         vfs_close(m->system, mc);
         vfs_close(m->system, kc);
         assert(m->cpu->halted);
@@ -4315,6 +4596,89 @@ static void test_quill_fx_file_new_dirty_confirm_dialog_buttons(void) {
  * bypasses APP::init/loop entirely and SF::show centers on
  * APP::width/height) and that save_file() now targets the newly picked
  * path. */
+/* Esc precedence, the rule docs/user-manual.md's "System menu (Esc)"
+ * states: the Esc sheet is the host-level pause menu, but while a dialog
+ * is up Esc belongs to that dialog. Quill.fx's own chain is confirm panel
+ * -> file picker -> Esc sheet -> Quill's keys, so Esc with the picker open
+ * must cancel the picker and must NOT raise the sheet behind it.
+ *
+ * Asserted without reading pixels: if Esc had wrongly opened the sheet,
+ * the Down/Down/Enter that follows would walk the sheet's default ring
+ * onto Quit and fire it, halting the VM. Staying alive is the proof the
+ * sheet was not open; the second sequence then shows the sheet does work
+ * once no dialog is in front of it. */
+static void test_quill_fx_esc_belongs_to_picker_not_sheet(void) {
+    printf("Testing apps/fluxio/Quill.fx: Esc cancels the open file picker instead of raising the Esc sheet...\n");
+
+    const char* dir = "/tmp/nuxvm_test_quill_fx_escprec";
+    char binpath[256];
+    Machine* m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    if (!m) return;
+    machine_free(m);
+
+    const char* sandbox = "/tmp/nuxvm_test_quill_fx_escprec_sandbox";
+    mkdir(sandbox, 0755);
+    char scratch_path[512];
+    snprintf(scratch_path, sizeof(scratch_path), "%s/quill_scratch.txt", sandbox);
+    FILE* seed = fopen(scratch_path, "wb");
+    assert(seed != NULL);
+    assert(fwrite("Hello\n", 1, 6, seed) == 6);
+    fclose(seed);
+
+    m = quill_fx_machine(dir, binpath, sizeof(binpath));
+    assert(m != NULL);
+    system_set_sandbox_root(m->system, sandbox);
+
+    int32_t mc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t mp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(mc >= 100 && mp >= 100);
+    assert(vfs_bind(m->system, mp, "/dev/mouse") == 0);
+    vfs_close(m->system, mp);
+    int32_t kc = vfs_open(m->system, "/sys/chan/new", 0);
+    int32_t kp = vfs_open(m->system, "/sys/chan/peer", 0);
+    assert(kc >= 100 && kp >= 100);
+    assert(vfs_bind(m->system, kp, "/dev/kbd") == 0);
+    vfs_close(m->system, kp);
+
+    int frames = 0;
+    while (!m->cpu->halted && frames < 5) { machine_tick(m); frames++; }
+    assert(!m->cpu->halted);
+
+    /* File title, then Open... -- same coordinates as
+     * test_quill_fx_file_picker_opens_and_picks above (row 1 center =
+     * MENU_H 20 + ITEM_H 18 + 9 = 47). */
+    const uint8_t clicks[4][8] = {
+        { 3, 1, 20, 0, 10, 0, 0, 0 }, { 4, 1, 20, 0, 10, 0, 0, 0 },
+        { 3, 1, 20, 0, 47, 0, 0, 0 }, { 4, 1, 20, 0, 47, 0, 0, 0 },
+    };
+    for (int i = 0; i < 4; i++) {
+        assert(vfs_write(m->system, mc, clicks[i], 8) == 8);
+        frames = 0;
+        while (!m->cpu->halted && frames < 10) { machine_tick(m); frames++; }
+    }
+    assert(!m->cpu->halted);
+
+    /* Esc: the picker's cancel, not the sheet. Then Down/Down/Enter, which
+     * would be "Quit" if the sheet had opened. */
+    const int seq[] = { 27, 18, 18, 13 };
+    for (int i = 0; i < 4; i++) {
+        uint8_t pkt[8] = { 0, 0, (uint8_t) seq[i], 0, 0, 0, 0, 0 };
+        assert(vfs_write(m->system, kc, pkt, 8) == 8);
+        frames = 0;
+        while (!m->cpu->halted && frames < 4) { machine_tick(m); frames++; }
+    }
+    assert(!m->cpu->halted); /* the regression: sheet behind the picker -> Quit -> halted */
+
+    /* No dialog in front of it now, so the sheet is reachable and Quit works. */
+    quill_fx_send_quit(m, kc);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    assert(m->cpu->halted);
+    machine_free(m);
+
+    remove(scratch_path);
+}
+
 static void test_quill_fx_file_picker_opens_and_picks(void) {
     printf("Testing apps/fluxio/Quill.fx: File > Open... picks a different file via the SF picker...\n");
 
@@ -4429,8 +4793,8 @@ static void test_quill_fx_file_picker_opens_and_picks(void) {
     vfs_close(m->system, mc);
 
     /* Marker at cursor 0 (load_file() resets cursor to 0), save, quit. */
-    int keys[] = { '#', 9, 27 };
-    for (int k = 0; k < 3; k++) {
+    int keys[] = { '#', 9 };
+    for (int k = 0; k < 2; k++) {
         uint8_t kpkt[8] = { 0, 0, (uint8_t) (keys[k] & 0xFF), (uint8_t) ((keys[k] >> 8) & 0xFF), 0, 0, 0, 0 };
         assert(vfs_write(m->system, kc, kpkt, 8) == 8);
         frames = 0;
@@ -4439,6 +4803,7 @@ static void test_quill_fx_file_picker_opens_and_picks(void) {
             frames++;
         }
     }
+    quill_fx_send_quit(m, kc);
     vfs_close(m->system, kc);
 
     assert(m->cpu->halted);
@@ -4556,10 +4921,7 @@ static void test_quill_fx_file_save_as_creates_new_file(void) {
     frames = 0;
     while (!m->cpu->halted && frames < 10) { machine_tick(m); frames++; }
 
-    uint8_t quit[8] = { 0, 0, 27, 0, 0, 0, 0, 0 };
-    assert(vfs_write(m->system, kc, quit, 8) == 8);
-    frames = 0;
-    while (!m->cpu->halted && frames < 10) { machine_tick(m); frames++; }
+    quill_fx_send_quit(m, kc);
     vfs_close(m->system, mc);
     vfs_close(m->system, kc);
     assert(m->cpu->halted);
@@ -4855,10 +5217,14 @@ int main(void) {
     test_include_transitive();
 
     test_escape_menu_esc_toggles_open();
+    test_escape_menu_keyup_does_not_close();
     test_escape_menu_quit_click_sets_flag();
     test_escape_menu_resume_click_closes();
     test_escape_menu_restart_click_sets_flag();
     test_escape_menu_click_outside_buttons_is_noop();
+    test_escape_menu_drag_off_button_cancels();
+    test_escape_menu_hover_moves_default_ring();
+    test_escape_menu_matches_lux_pixel_for_pixel();
     test_escape_menu_inert_while_closed();
     test_escape_menu_renders_when_open();
 
@@ -4925,6 +5291,7 @@ int main(void) {
     test_quill_fx_edit_select_all_and_cut();
     test_quill_fx_file_new_without_changes_skips_confirm();
     test_quill_fx_file_new_dirty_confirm_dialog_buttons();
+    test_quill_fx_esc_belongs_to_picker_not_sheet();
     test_quill_fx_file_picker_opens_and_picks();
     test_quill_fx_file_save_as_creates_new_file();
     test_fluxioc_examples_compile();

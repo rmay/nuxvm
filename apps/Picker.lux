@@ -1,7 +1,9 @@
-( Cloister home screen. Two group-box lists: Lux sources and compiled
-  Fluxio bins. Click or Enter writes the path to /sys/launch and HALTs;
-  the host loads that ROM. Quit HALTs with an empty launch path.
-  ./bin/cloister )
+( Cloister home screen. Two group-box lists, both of SOURCES: Lux on the
+  left, Fluxio on the right. Click or Enter writes the path to /sys/launch
+  and HALTs; the host compiles it in-process and loads the result -- for a
+  .fx that declares externs, linking the UI/SF library in on the way (see
+  fx_build_image, src/fluxio_build.c). Quit HALTs with an empty launch
+  path. ./bin/cloister )
 
 INCLUDE "lib/app.lux"
 INCLUDE "lib/ui.lux"
@@ -97,7 +99,7 @@ RESERVE path 256 ;
     T"/sys/dir/apps" read-dir
     LUX T".lux" fill-ext
     T"/sys/dir/apps/fluxio" read-dir
-    FX T".bin" fill-ext
+    FX T".fx" fill-ext
     LUX UI::list-count 0 > [ LUX 0 UI::list-sel! ] ?
     FX UI::list-count 0 > [ FX 0 UI::list-sel! ] ?
     0 focus STOREI
