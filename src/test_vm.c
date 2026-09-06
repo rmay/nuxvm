@@ -567,6 +567,382 @@ void test_guest_memory_size() {
     printf("  guest memory size: OK\n");
 }
 
+
+/* --- Tier 1: every arithmetic edge case that used to be C undefined
+ * behaviour now has a defined, tested answer. See docs/semantics.md. --- */
+
+/* Run a binary op over two literals and return the resulting top of stack. */
+static int32_t eval_binop(int32_t x, int32_t y, uint8_t op) {
+    uint8_t prog[] = {
+        OP_PUSH, 0, 0, 0, 0,
+        OP_PUSH, 0, 0, 0, 0,
+        op,
+        OP_HALT
+    };
+    write_int32(prog + 1, x);
+    write_int32(prog + 6, y);
+    VM* vm = vm_create(prog, sizeof(prog), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->halted == true);
+    assert(vm->trap == TRAP_NONE);
+    int32_t r;
+    assert(vm_get_stack_count(vm) == 1);
+    assert(vm_pop(vm, &r) == true);
+    vm_free(vm);
+    return r;
+}
+
+/* Run a unary op over one literal and return the resulting top of stack. */
+static int32_t eval_unop(int32_t x, uint8_t op) {
+    uint8_t prog[] = {
+        OP_PUSH, 0, 0, 0, 0,
+        op,
+        OP_HALT
+    };
+    write_int32(prog + 1, x);
+    VM* vm = vm_create(prog, sizeof(prog), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->halted == true);
+    assert(vm->trap == TRAP_NONE);
+    int32_t r;
+    assert(vm_get_stack_count(vm) == 1);
+    assert(vm_pop(vm, &r) == true);
+    vm_free(vm);
+    return r;
+}
+
+void test_defined_arithmetic() {
+    printf("Testing defined arithmetic at the 32-bit boundaries...\n");
+
+    /* Overflow wraps modulo 2^32 rather than being undefined. */
+    assert(eval_binop(INT32_MAX, 1, OP_ADD) == INT32_MIN);
+    assert(eval_binop(INT32_MIN, -1, OP_ADD) == INT32_MAX);
+    assert(eval_binop(INT32_MIN, 1, OP_SUB) == INT32_MAX);
+    assert(eval_binop(INT32_MAX, -1, OP_SUB) == INT32_MIN);
+    assert(eval_binop(INT32_MIN, -1, OP_MUL) == INT32_MIN);
+    assert(eval_binop(65536, 65536, OP_MUL) == 0);
+    assert(eval_unop(INT32_MAX, OP_INC) == INT32_MIN);
+    assert(eval_unop(INT32_MIN, OP_DEC) == INT32_MAX);
+
+    /* NEG and ABS of INT32_MIN wrap to INT32_MIN; they do not trap. */
+    assert(eval_unop(INT32_MIN, OP_NEG) == INT32_MIN);
+    assert(eval_unop(INT32_MIN, OP_ABS) == INT32_MIN);
+    assert(eval_unop(-5, OP_ABS) == 5);
+    assert(eval_unop(5, OP_ABS) == 5);
+
+    /* INT32_MIN / -1 overflows the quotient and traps on x86 hardware.
+     * NUX defines it: quotient wraps, remainder is zero. */
+    assert(eval_binop(INT32_MIN, -1, OP_DIV) == INT32_MIN);
+    assert(eval_binop(INT32_MIN, -1, OP_MOD) == 0);
+
+    /* Division truncates toward zero, and the remainder takes the sign of
+     * the dividend. */
+    assert(eval_binop(-7, 2, OP_DIV) == -3);
+    assert(eval_binop(-7, 2, OP_MOD) == -1);
+    assert(eval_binop(7, -2, OP_DIV) == -3);
+    assert(eval_binop(7, -2, OP_MOD) == 1);
+
+    printf("  defined arithmetic: OK\n");
+}
+
+void test_shift_counts() {
+    printf("Testing shift counts are masked to 5 bits...\n");
+
+    /* Counts are masked with & 31, so 32 is a no-op and 33 shifts by one. */
+    assert(eval_binop(1, 0, OP_SHL) == 1);
+    assert(eval_binop(1, 31, OP_SHL) == INT32_MIN);
+    assert(eval_binop(1, 32, OP_SHL) == 1);
+    assert(eval_binop(1, 33, OP_SHL) == 2);
+
+    /* A negative count would have been an undefined negative shift
+     * distance; masking makes it total. -1 & 31 == 31. */
+    assert(eval_binop(1, -1, OP_SHL) == INT32_MIN);
+    assert(eval_binop(INT32_MIN, -1, OP_SHR) == 1);
+    assert(eval_binop(INT32_MIN, -1, OP_SAR) == -1);
+
+    /* SHR is logical, SAR is arithmetic. */
+    assert(eval_binop(INT32_MIN, 31, OP_SHR) == 1);
+    assert(eval_binop(INT32_MIN, 31, OP_SAR) == -1);
+    assert(eval_binop(-8, 1, OP_SAR) == -4);
+    assert(eval_binop(-1, 31, OP_SAR) == -1);
+    assert(eval_binop(-1, 0, OP_SAR) == -1);   /* shift by zero sign-fills nothing */
+    assert(eval_binop(-1, 0, OP_SHR) == -1);
+    assert(eval_binop(-1, 32, OP_SAR) == -1);  /* 32 & 31 == 0 */
+
+    printf("  shift counts: OK\n");
+}
+
+void test_trap_causes() {
+    printf("Testing traps are recorded as machine state...\n");
+
+    /* A clean HALT leaves no trap. */
+    uint8_t prog_ok[] = { OP_HALT };
+    VM* vm = vm_create(prog_ok, sizeof(prog_ok), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->halted == true && vm->trap == TRAP_NONE);
+    vm_free(vm);
+
+    /* Division by zero names itself. */
+    uint8_t prog_div[] = {
+        OP_PUSH, 0, 0, 0, 1,
+        OP_PUSH, 0, 0, 0, 0,
+        OP_DIV,
+        OP_HALT
+    };
+    vm = vm_create(prog_div, sizeof(prog_div), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->running == false && vm->halted == false);
+    assert(vm->trap == TRAP_DIVIDE_BY_ZERO);
+    /* Fault atomicity: the trapping DIV committed nothing, so both
+     * operands are still on the stack. */
+    assert(vm_get_stack_count(vm) == 2);
+    vm_free(vm);
+
+    /* Underflow on an empty stack. */
+    uint8_t prog_under[] = { OP_ADD, OP_HALT };
+    vm = vm_create(prog_under, sizeof(prog_under), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->trap == TRAP_STACK_UNDERFLOW);
+    assert(vm_get_stack_count(vm) == 0);
+    vm_free(vm);
+
+    /* A partial pop must not happen: SWAP with one operand leaves it. */
+    uint8_t prog_swap[] = {
+        OP_PUSH, 0, 0, 0, 7,
+        OP_SWAP,
+        OP_HALT
+    };
+    vm = vm_create(prog_swap, sizeof(prog_swap), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->trap == TRAP_STACK_UNDERFLOW);
+    assert(vm_get_stack_count(vm) == 1);
+    int32_t v;
+    assert(vm_pop(vm, &v) == true && v == 7);
+    vm_free(vm);
+
+    /* Unknown opcode: 0x37 is the first byte past the frozen ISA. */
+    uint8_t prog_bad[] = { 0x37, OP_HALT };
+    vm = vm_create(prog_bad, sizeof(prog_bad), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->trap == TRAP_UNKNOWN_OPCODE);
+    vm_free(vm);
+
+    /* Memory traps carry their specific cause. */
+    uint8_t prog_unal[] = {
+        OP_PUSH, 0, 0, 0, 1,
+        OP_LOADI,
+        OP_HALT
+    };
+    vm = vm_create(prog_unal, sizeof(prog_unal), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->trap == TRAP_UNALIGNED_READ);
+    vm_free(vm);
+
+    uint8_t prog_img[] = {
+        OP_PUSH, 0xAA, 0xBB, 0xCC, 0xDD,
+        OP_PUSH, 0, 0, 0, 0,
+        OP_STOREI,
+        OP_HALT
+    };
+    vm = vm_create(prog_img, sizeof(prog_img), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->trap == TRAP_WRITE_INTO_IMAGE);
+    vm_free(vm);
+
+    uint8_t prog_jmp[] = { OP_JMP, 0, 0, 0, 100, OP_HALT };
+    vm = vm_create(prog_jmp, sizeof(prog_jmp), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->trap == TRAP_JUMP_OUTSIDE_IMAGE);
+    vm_free(vm);
+
+    /* Running off the end of the image. */
+    uint8_t prog_run[] = { OP_PUSH, 0, 0, 0, 1 };
+    vm = vm_create(prog_run, sizeof(prog_run), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->trap == TRAP_EXEC_OUTSIDE_IMAGE);
+    vm_free(vm);
+
+    /* Every trap cause has a name. */
+    for (int t = 0; t < TRAP__COUNT; t++) {
+        const char* n = nux_trap_name((NuxTrap)t);
+        assert(n != NULL && strcmp(n, "unknown trap") != 0);
+    }
+
+    printf("  trap causes: OK\n");
+}
+
+void test_stack_edges() {
+    printf("Testing PICK/ROLL/DIVMOD/MIN/MAX edges...\n");
+    int32_t v;
+
+    /* PICK 0 duplicates the top; PICK past the bottom traps. */
+    uint8_t prog_pick[] = {
+        OP_PUSH, 0, 0, 0, 11,
+        OP_PUSH, 0, 0, 0, 22,
+        OP_PUSH, 0, 0, 0, 0,
+        OP_PICK,
+        OP_HALT
+    };
+    VM* vm = vm_create(prog_pick, sizeof(prog_pick), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->trap == TRAP_NONE);
+    assert(vm_get_stack_count(vm) == 3);
+    assert(vm_pop(vm, &v) && v == 22);
+    vm_free(vm);
+
+    uint8_t prog_pick_bad[] = {
+        OP_PUSH, 0, 0, 0, 11,
+        OP_PUSH, 0, 0, 0, 5,
+        OP_PICK,
+        OP_HALT
+    };
+    vm = vm_create(prog_pick_bad, sizeof(prog_pick_bad), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->trap == TRAP_PICK_RANGE);
+    vm_free(vm);
+
+    /* ROLL 0 is a no-op that still consumes its index. */
+    uint8_t prog_roll0[] = {
+        OP_PUSH, 0, 0, 0, 11,
+        OP_PUSH, 0, 0, 0, 0,
+        OP_ROLL,
+        OP_HALT
+    };
+    vm = vm_create(prog_roll0, sizeof(prog_roll0), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->trap == TRAP_NONE);
+    assert(vm_get_stack_count(vm) == 1);
+    assert(vm_pop(vm, &v) && v == 11);
+    vm_free(vm);
+
+    /* ROLL 2 brings the third element to the top: [1,2,3] -> [2,3,1]. */
+    uint8_t prog_roll2[] = {
+        OP_PUSH, 0, 0, 0, 1,
+        OP_PUSH, 0, 0, 0, 2,
+        OP_PUSH, 0, 0, 0, 3,
+        OP_PUSH, 0, 0, 0, 2,
+        OP_ROLL,
+        OP_HALT
+    };
+    vm = vm_create(prog_roll2, sizeof(prog_roll2), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->trap == TRAP_NONE);
+    assert(vm_get_stack_count(vm) == 3);
+    assert(vm_pop(vm, &v) && v == 1);
+    assert(vm_pop(vm, &v) && v == 3);
+    assert(vm_pop(vm, &v) && v == 2);
+    vm_free(vm);
+
+    /* ROLL past the bottom traps, and commits nothing. */
+    uint8_t prog_roll_bad[] = {
+        OP_PUSH, 0, 0, 0, 1,
+        OP_PUSH, 0, 0, 0, 4,
+        OP_ROLL,
+        OP_HALT
+    };
+    vm = vm_create(prog_roll_bad, sizeof(prog_roll_bad), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->trap == TRAP_ROLL_RANGE);
+    assert(vm_get_stack_count(vm) == 2);
+    vm_free(vm);
+
+    /* DIVMOD leaves quotient then remainder. */
+    uint8_t prog_dm[] = {
+        OP_PUSH, 0, 0, 0, 17,
+        OP_PUSH, 0, 0, 0, 5,
+        OP_DIVMOD,
+        OP_HALT
+    };
+    vm = vm_create(prog_dm, sizeof(prog_dm), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->trap == TRAP_NONE);
+    assert(vm_get_stack_count(vm) == 2);
+    assert(vm_pop(vm, &v) && v == 2);   /* remainder on top */
+    assert(vm_pop(vm, &v) && v == 3);   /* quotient below */
+    vm_free(vm);
+
+    /* DIVMOD by zero traps and commits nothing. */
+    uint8_t prog_dm0[] = {
+        OP_PUSH, 0, 0, 0, 17,
+        OP_PUSH, 0, 0, 0, 0,
+        OP_DIVMOD,
+        OP_HALT
+    };
+    vm = vm_create(prog_dm0, sizeof(prog_dm0), 0, 1024, false);
+    vm_run(vm);
+    assert(vm->trap == TRAP_DIVIDE_BY_ZERO);
+    assert(vm_get_stack_count(vm) == 2);
+    vm_free(vm);
+
+    /* MIN/MAX at the boundaries. */
+    assert(eval_binop(INT32_MIN, INT32_MAX, OP_MIN) == INT32_MIN);
+    assert(eval_binop(INT32_MIN, INT32_MAX, OP_MAX) == INT32_MAX);
+    assert(eval_binop(-1, 0, OP_MIN) == -1);
+    assert(eval_binop(-1, 0, OP_MAX) == 0);
+
+    printf("  stack edges: OK\n");
+}
+
+
+void test_frame_pointer_cannot_escape() {
+    printf("Testing a guest cannot corrupt the frame pointer...\n");
+
+    /* The saved-FP slot is an ordinary local, so LOCALSET can overwrite it.
+     * Restoring it unchecked used to let FP leave [-1, MAX_LOCALS_SIZE),
+     * and the next FRAME then indexed locals[] out of bounds with a
+     * negative subscript -- a guest-triggerable write outside the VM's own
+     * arrays. Found by the CBMC harness in verify/; see docs/semantics.md
+     * section 9. UNFRAME must reject a corrupt frame pointer instead. */
+    uint8_t prog[] = {
+        OP_PUSH, 0, 0, 0, 7,                 /* a local value             */
+        OP_PUSH, 0, 0, 0, 1,                 /* n = 1                     */
+        OP_FRAME,                            /* fp = 1, saved fp at L[0]  */
+        OP_PUSH, 0xFF, 0xF0, 0xBD, 0xC0,     /* -1000000                  */
+        OP_PUSH, 0, 0, 0, 1,                 /* offset 1 -> the saved-FP slot */
+        OP_LOCALSET,                         /* poison it                 */
+        OP_PUSH, 0, 0, 0, 1,
+        OP_UNFRAME,                          /* must trap, not restore it */
+        OP_PUSH, 0, 0, 0, 0,
+        OP_FRAME,                            /* would have written L[-999999] */
+        OP_HALT
+    };
+    VM* vm = vm_create(prog, sizeof(prog), 0, 4096, false);
+    vm_run(vm);
+    assert(vm->running == false);
+    assert(vm->halted == false);
+    assert(vm->trap == TRAP_FRAME_RANGE);
+    /* The machine stopped at the UNFRAME, with the frame pointer still
+     * whatever the last legitimate FRAME made it. */
+    assert(vm->fp >= -1 && vm->fp < MAX_LOCALS_SIZE);
+    vm_free(vm);
+
+    /* A well-behaved frame still nests and unwinds correctly. */
+    uint8_t ok[] = {
+        OP_PUSH, 0, 0, 0, 11,
+        OP_PUSH, 0, 0, 0, 1,
+        OP_FRAME,                            /* frame A: fp = 1 */
+        OP_PUSH, 0, 0, 0, 22,
+        OP_PUSH, 0, 0, 0, 1,
+        OP_FRAME,                            /* frame B: fp = 3 */
+        OP_PUSH, 0, 0, 0, 0,
+        OP_LOCALGET,                         /* B's local 0 -> 22 */
+        OP_PUSH, 0, 0, 0, 1,
+        OP_UNFRAME,                          /* back to frame A */
+        OP_PUSH, 0, 0, 0, 0,
+        OP_LOCALGET,                         /* A's local 0 -> 11 */
+        OP_HALT
+    };
+    vm = vm_create(ok, sizeof(ok), 0, 4096, false);
+    vm_run(vm);
+    assert(vm->halted == true && vm->trap == TRAP_NONE);
+    int32_t v;
+    assert(vm_pop(vm, &v) && v == 11);
+    assert(vm_pop(vm, &v) && v == 22);
+    vm_free(vm);
+
+    printf("  frame pointer integrity: OK\n");
+}
+
 int main() {
     test_push_pop();
     test_stack_manipulation();
@@ -583,6 +959,11 @@ int main() {
     test_yield();
     test_memory_faults();
     test_guest_memory_size();
+    test_defined_arithmetic();
+    test_shift_counts();
+    test_trap_causes();
+    test_stack_edges();
+    test_frame_pointer_cannot_escape();
     printf("All VM opcode tests passed!\n");
     return 0;
 }

@@ -34,6 +34,7 @@
  * Where `nux` loads a compiled .bin (Lux or Fluxio, -target headless). */
 #define MM_HEADLESS_CODE_BASE 0x011000
 
+
 /* --- Shared small Lux flags/state: MM_SHARED_LUX_FLAGS_BASE .. MM_SHARED_LUX_FLAGS_END ---
  * A tiny pocket for small cross-cutting Lux library state that doesn't
  * belong to any one app (e.g. lib/log.lux's enabled flag). Kept separate
@@ -41,6 +42,27 @@
  * don't need manual coordination either. */
 #define MM_SHARED_LUX_FLAGS_BASE 0x500000
 #define MM_SHARED_LUX_FLAGS_END  0x510000
+
+/* --- Framebuffer: MM_FRAMEBUFFER_BASE .. MM_FRAMEBUFFER_END ---
+ * Ordinary guest RAM that the host ALSO reads directly, to present the
+ * screen: src/system.c does `sys->screen_pixels = &mem[MM_FRAMEBUFFER_BASE]`.
+ * It is not a device and not MMIO -- a guest writes pixels here with plain
+ * STOREI, and /dev/draw's blitters target the same band. 32bpp ARGB, rows
+ * of screen_width pixels.
+ *
+ * This band was an unnamed hole in the map for a long time, which is
+ * exactly the ad hoc practice this file's header warns about. Naming it
+ * also settles how far the screen may grow: the next named band above is
+ * MM_SHARED_LUX_FLAGS_BASE, so the ceiling is 4MB = 1,048,576 pixels
+ * (1024x1024, or 1280x819). The dead VIDEO_FRAMEBUFFER_MAX_SIZE macro that
+ * used to sit in vm.h claimed 1280x1024 -- that is 5MB and would have run
+ * straight into the shared-Lux-flags band. It never applied to this
+ * address and has been removed.
+ *
+ * Only graphical machines have this band; headless ones get RAM only up to
+ * base+program (see nux_guest_memory_size in vm.h) and stop well below. */
+#define MM_FRAMEBUFFER_BASE  0x100000
+#define MM_FRAMEBUFFER_END   MM_SHARED_LUX_FLAGS_BASE
 
 /* --- Graphical program code: starts at MM_GRAPHICAL_CODE_BASE ---
  * Where `cloister` loads a compiled .bin (Lux or Fluxio, -target graphical). */

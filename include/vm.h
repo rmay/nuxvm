@@ -6,10 +6,24 @@
 #include "bus.h"
 #include "memory_map.h"
 
+/* Machine bounds. These are the real, normative sizes (docs/semantics.md
+ * section 2). They are overridable only so the CBMC harness in verify/ can
+ * instantiate a small model of the same machine -- the proofs are about the
+ * shape of the code, which does not depend on the constants, and a 8192-slot
+ * stack of nondeterministic words is not tractable for a solver. Nothing in
+ * the shipping build ever overrides them. */
+#ifndef MAX_STACK_SIZE
 #define MAX_STACK_SIZE 8192
+#endif
+#ifndef MAX_RETURN_STACK_SIZE
 #define MAX_RETURN_STACK_SIZE 1024
+#endif
+#ifndef MAX_LOCALS_SIZE
 #define MAX_LOCALS_SIZE 4096
+#endif
+#ifndef MAX_LOOP_STACK_SIZE
 #define MAX_LOOP_STACK_SIZE 1024
+#endif
 
 #define RESERVED_MEMORY_SIZE 0x4000
 #define DEVICE_MEMORY_OFFSET MM_DEVICE_BASE
@@ -32,9 +46,40 @@ static inline uint32_t nux_guest_memory_size(uint32_t base_address, uint32_t pro
     return (uint32_t)need;
 }
 
-#define VIDEO_FRAMEBUFFER_START HEADLESS_BASE_ADDRESS
-#define VIDEO_FRAMEBUFFER_MAX_SIZE (1280 * 1024 * 4)
-#define VIDEO_FRAMEBUFFER_END (VIDEO_FRAMEBUFFER_START + VIDEO_FRAMEBUFFER_MAX_SIZE)
+/* Trap causes. A trap is machine state, not just a message on stderr:
+ * vm_fault() records the cause here so "the machine faulted, and why" is a
+ * proposition a caller (or a proof) can state. TRAP_NONE means the machine
+ * has not faulted -- it is either still running, halted, or yielded. */
+typedef enum {
+    TRAP_NONE = 0,
+    TRAP_EXEC_OUTSIDE_IMAGE,
+    TRAP_JUMP_OUTSIDE_IMAGE,
+    TRAP_PC_OUT_OF_BOUNDS,
+    TRAP_TRUNCATED_IMMEDIATE,
+    TRAP_UNKNOWN_OPCODE,
+    TRAP_STACK_UNDERFLOW,
+    TRAP_STACK_OVERFLOW,
+    TRAP_RETURN_STACK_UNDERFLOW,
+    TRAP_RETURN_STACK_OVERFLOW,
+    TRAP_LOOP_STACK_UNDERFLOW,
+    TRAP_LOOP_STACK_OVERFLOW,
+    TRAP_PICK_RANGE,
+    TRAP_ROLL_RANGE,
+    TRAP_FRAME_RANGE,
+    TRAP_LOCAL_RANGE,
+    TRAP_DIVIDE_BY_ZERO,
+    TRAP_UNALIGNED_READ,
+    TRAP_UNALIGNED_WRITE,
+    TRAP_READ_OUT_OF_BOUNDS,
+    TRAP_WRITE_OUT_OF_BOUNDS,
+    TRAP_WRITE_INTO_IMAGE,
+    TRAP_DEVICE_READ_FAILED,
+    TRAP_NO_BUS,
+    TRAP__COUNT
+} NuxTrap;
+
+/* Human-readable name for a trap cause. */
+const char* nux_trap_name(NuxTrap trap);
 
 typedef struct {
     int32_t stack[MAX_STACK_SIZE];
@@ -49,6 +94,7 @@ typedef struct {
     uint32_t pc;
     bool running;
     bool halted;
+    uint8_t trap; // NuxTrap: cause of the fault that stopped the machine
     
     uint32_t reserved_memory_size;
     uint32_t user_memory_start;
@@ -62,7 +108,6 @@ typedef struct {
     bool trace;
     
     int32_t locals[MAX_LOCALS_SIZE];
-    int32_t locals_count; // Number of slots used in locals[]
     int32_t fp; // Frame pointer: index of saved-FP slot for current frame, -1 if none
 
     int32_t loop_stack[MAX_LOOP_STACK_SIZE];

@@ -10,7 +10,7 @@ CC = gcc
 # test_fluxio_compiler that a full rebuild (`make clean && make`) fixed --
 # exactly this class of bug. The -include below wires the generated .d
 # files back into the dependency graph so incremental builds are safe.
-CFLAGS = -Wall -Wextra -Iinclude -O2 -g -MMD -MP
+CFLAGS = -Wall -Wextra -std=c11 -Iinclude -O2 -g -MMD -MP
 # SDL is only for Cloister (src/cloister.c, src/dialog.c). Headless tools
 # must not link it -- that was most of nux's process RSS.
 SDL_CFLAGS := $(shell pkg-config --cflags sdl2)
@@ -170,6 +170,11 @@ $(BIN_DIR)/test_vfs: $(OBJ_DIR)/test_vfs.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o 
 	$(CC) $(OBJ_DIR)/test_vfs.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/vm.o $(COMPILER_OBJS) $(FONT_OBJ) $(ROM_OBJS) -o $@ $(LDFLAGS)
 	@echo "Built bin/test_vfs successfully!"
 
+$(BIN_DIR)/nuxstep: $(OBJ_DIR)/nuxstep.o $(OBJ_DIR)/vm.o
+	@echo "Linking nuxstep..."
+	$(CC) $(OBJ_DIR)/nuxstep.o $(OBJ_DIR)/vm.o -o $@
+	@echo "Built bin/nuxstep successfully!"
+
 $(BIN_DIR)/test_vm: $(OBJ_DIR)/test_vm.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(COMPILER_OBJS) $(FONT_OBJ) $(ROM_OBJS)
 	@echo "Linking test_vm..."
 	$(CC) $(OBJ_DIR)/test_vm.o $(OBJ_DIR)/vm.o $(OBJ_DIR)/vfs.o $(OBJ_DIR)/system.o $(OBJ_DIR)/machine.o $(OBJ_DIR)/display.o $(COMPILER_OBJS) $(FONT_OBJ) $(ROM_OBJS) -o $@ $(LDFLAGS)
@@ -236,18 +241,85 @@ verify-bins: apps $(BIN_DIR)/luxc $(BIN_DIR)/fluxioc
 	echo "All app images reproduce from source."; \
 	$(HASHCMD) -c abi/app-images.sha256
 
-test: $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler $(BIN_DIR)/test_fluxio_compiler $(BIN_DIR)/test_abi_conformance $(BIN_DIR)/test_rom
-	@vfs=FAIL; vm=FAIL; compiler=FAIL; fluxio=FAIL; abi=FAIL; rom=FAIL; bins=FAIL; fail=0; \
+# Machine-checked safety proofs for the interpreter core (docs/semantics.md
+# section 12). CBMC builds a completely nondeterministic machine, runs one
+# vm_tick(), and checks the proof obligations plus its own memory-safety and
+# undefined-behaviour checks over every path. Because the representation
+# invariant is assumed before the step and asserted after it, the result is
+# inductive: proving it for one step proves it for every step of every run of
+# every program.
+#
+# The bounds are shrunk so the solver sees a small model; the code under test
+# is the shipping code, unmodified. Two configurations are run so a proof
+# cannot pass by accident of one particular size.
+#
+# Needs `brew install cbmc`.
+CBMC_FLAGS = --function harness --unwinding-assertions --object-bits 12 \
+             --bounds-check --pointer-check --div-by-zero-check \
+             --signed-overflow-check --undefined-shift-check
+CBMC_SRCS = verify/vm_step_harness.c src/vm.c -Iinclude
+
+verify:
+	@command -v cbmc >/dev/null || { echo "cbmc not found -- brew install cbmc"; exit 1; }
+	@rm -f /tmp/nux-verify.log
+	@echo "Proving vm_tick (small model: stack 6, locals 6, memory 32)..."
+	@cbmc $(CBMC_SRCS) -DMAX_STACK_SIZE=6 -DMAX_RETURN_STACK_SIZE=3 \
+	      -DMAX_LOOP_STACK_SIZE=3 -DMAX_LOCALS_SIZE=6 -DVERIFY_MEM_BYTES=32 \
+	      --unwind 40 $(CBMC_FLAGS) | tee -a /tmp/nux-verify.log | tail -n 20
+	@echo "Proving vm_tick (wider model: stack 9, locals 12, memory 48)..."
+	@cbmc $(CBMC_SRCS) -DMAX_STACK_SIZE=9 -DMAX_RETURN_STACK_SIZE=4 \
+	      -DMAX_LOOP_STACK_SIZE=4 -DMAX_LOCALS_SIZE=12 -DVERIFY_MEM_BYTES=48 \
+	      --unwind 56 $(CBMC_FLAGS) | tee -a /tmp/nux-verify.log | tail -n 20
+	@grep -c "^VERIFICATION SUCCESSFUL" /tmp/nux-verify.log | grep -qx 2 \
+	  || { echo "  proof did NOT succeed in both configurations"; exit 1; }
+	@echo "  both configurations: VERIFICATION SUCCESSFUL"
+
+# Differential test: the C interpreter against tools/nuxref.py, an
+# independent model written from docs/semantics.md.
+difftest: $(BIN_DIR)/nuxstep
+	@python3 tools/difftest.py --count 1500
+
+# docs/opcodes.md drifted from the implementation once already (see
+# docs/semantics.md section 14). Check the mechanically checkable parts of it
+# on every build so it cannot drift again unnoticed.
+check-docs:
+	@python3 tools/check_opcode_docs.py
+
+# Undefined-behaviour gate for the VM core. The interpreter must be free of
+# UB for its semantics (docs/semantics.md) to mean anything, so the opcode
+# tests are re-run under UBSan/ASan on every `make test`. This builds into a
+# scratch directory so it never clobbers the ordinary -O2 objects.
+SAN_DIR = $(OBJ_DIR)/san
+SAN_SRCS = src/test_vm.c src/vm.c src/vfs.c src/system.c src/machine.c src/display.c \
+           src/compiler.c src/lexer.c src/rom.c src/sha256.c src/fonts.c
+SAN_FLAGS = -Wall -Wextra -std=c11 -Iinclude -O1 -g -fsanitize=address,undefined \
+            -fno-sanitize-recover=undefined
+
+ubsan-vm:
+	@mkdir -p $(SAN_DIR)
+	@echo "Building VM opcode tests with ASan+UBSan..."
+	@$(CC) $(SAN_FLAGS) $(SAN_SRCS) -o $(SAN_DIR)/test_vm
+	@echo "Running VM opcode tests under ASan+UBSan..."
+	@$(SAN_DIR)/test_vm > /dev/null
+
+test: $(BIN_DIR)/nuxstep $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler $(BIN_DIR)/test_fluxio_compiler $(BIN_DIR)/test_abi_conformance $(BIN_DIR)/test_rom
+	@vfs=FAIL; vm=FAIL; ubsan=FAIL; docs=FAIL; diff=FAIL; compiler=FAIL; fluxio=FAIL; abi=FAIL; rom=FAIL; bins=FAIL; fail=0; \
 	echo "Running VFS tests..."; \
 	./$(BIN_DIR)/test_vfs && vfs=PASS || fail=1; \
 	echo "Running VM opcode tests..."; \
 	./$(BIN_DIR)/test_vm && vm=PASS || fail=1; \
+	echo "Running VM opcode tests under ASan+UBSan..."; \
+	$(MAKE) ubsan-vm && ubsan=PASS || fail=1; \
 	echo "Running Compiler tests..."; \
 	./$(BIN_DIR)/test_compiler && compiler=PASS || fail=1; \
 	echo "Running Fluxio compiler tests..."; \
 	./$(BIN_DIR)/test_fluxio_compiler && fluxio=PASS || fail=1; \
 	echo "Running ABI conformance tests..."; \
 	./$(BIN_DIR)/test_abi_conformance && abi=PASS || fail=1; \
+	echo "Checking opcode docs against the headers..."; \
+	$(MAKE) check-docs && docs=PASS || fail=1; \
+	echo "Running differential test (C vs reference model)..."; \
+	$(MAKE) difftest && diff=PASS || fail=1; \
 	echo "Running ROM header tests..."; \
 	./$(BIN_DIR)/test_rom && rom=PASS || fail=1; \
 	echo "Verifying app image digests..."; \
@@ -256,9 +328,12 @@ test: $(BIN_DIR)/test_vfs $(BIN_DIR)/test_vm $(BIN_DIR)/test_compiler $(BIN_DIR)
 	echo "========== Test summary =========="; \
 	printf "  %-22s %s\n" "VFS" "$$vfs"; \
 	printf "  %-22s %s\n" "VM opcodes" "$$vm"; \
+	printf "  %-22s %s\n" "VM sanitizers" "$$ubsan"; \
 	printf "  %-22s %s\n" "Compiler" "$$compiler"; \
 	printf "  %-22s %s\n" "Fluxio compiler" "$$fluxio"; \
 	printf "  %-22s %s\n" "ABI conformance" "$$abi"; \
+	printf "  %-22s %s\n" "Opcode docs" "$$docs"; \
+	printf "  %-22s %s\n" "Differential model" "$$diff"; \
 	printf "  %-22s %s\n" "ROM header" "$$rom"; \
 	printf "  %-22s %s\n" "App image SHA-256" "$$bins"; \
 	echo "----------------------------------"; \
@@ -283,4 +358,4 @@ asan:
 	$(MAKE) clean
 	$(MAKE) all CFLAGS="$(CFLAGS) -O1 -fsanitize=address,undefined" LDFLAGS="-fsanitize=address,undefined"
 
-.PHONY: all clean dir test apps uilib asan pin-bins verify-bins
+.PHONY: all clean dir test apps uilib asan ubsan-vm verify difftest check-docs pin-bins verify-bins

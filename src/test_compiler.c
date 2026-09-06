@@ -6391,6 +6391,178 @@ static void test_easel_paints_in_colour(void) {
     lux_app_remove("untitled.eas");
 }
 
+/* FatBits has to render the page through the same 16-colour CLUT the 1x view
+ * uses. draw-canvas-fat used to convert a pixel with `255 g 85 * - DRAW::gray`
+ * -- correct only while a page pixel was a 2bpp gray level, since palette
+ * indices 0..3 are exactly that white..black ramp. At 4bpp, index 4 (red)
+ * drove that expression to -85, which DRAW::gray's `255 AND` wrapped into the
+ * gray 0xABABAB: every colour above black came out as a wrong gray, and the
+ * zoomed view disagreed with the unzoomed one about what was on the page. */
+static void test_easel_fatbits_renders_colour(void) {
+    printf("Testing apps/Easel.lux: FatBits renders palette colours, not grays...\n");
+    lux_app_remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    /* Ink picker cell for index 4 (red): row 1, column 0. Same geometry as
+     * test_easel_paints_in_colour. */
+    const int PAT_Y = 436, CELL_W = 16, CELL_H = 14;
+    quill_lux_click(m, mc, CELL_W / 2, PAT_Y + CELL_H + CELL_H / 2);
+    quill_lux_pump(m, 20);
+
+    /* Double-click Pencil to enter FatBits, then paint one page pixel at the
+     * zoomed view's top-left -- page (fat-ox,fat-oy) = (210,182). */
+    quill_lux_click(m, mc, 60, 132);
+    quill_lux_pump(m, 5);
+    quill_lux_click(m, mc, 60, 132);
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 84, 24);
+    quill_lux_pump(m, 20);
+
+    /* Count only inside the canvas rect (CANVAS_X,CANVAS_Y,CANVAS_W,CANVAS_H)
+     * -- the ink picker's own red swatch lives in the pattern strip below and
+     * would otherwise pass this test with the canvas still gray. */
+    const int CX = 80, CY = 20, CW = 480, CH = 416;
+    int sw = m->system->screen_width;
+    long red = 0, stale_gray = 0;
+    for (int y = CY; y < CY + CH; y++) {
+        for (int x = CX; x < CX + CW; x++) {
+            const uint8_t* px = m->system->screen_pixels + ((size_t) y * sw + x) * 4;
+            uint32_t c = ((uint32_t) px[1] << 16) | ((uint32_t) px[2] << 8) | px[3];
+            if (c == 0xDD0000) red++;
+            else if (c == 0xABABAB) stale_gray++;
+        }
+    }
+    /* One page pixel is FAT_Z x FAT_Z = 64 screen pixels, less the grid line
+     * drawn back over its top row and left column: 7x7 = 49. */
+    assert(red >= 49);
+    assert(stale_gray == 0);
+
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    lux_app_remove("untitled.eas");
+}
+
+/* Clicks the ink picker cell for a palette index and leaves it as the ink.
+ * The picker is a 4x4 grid in the pattern strip's left box: PAT_CUR_W=66 wide
+ * by 2*PAT_CELL_H=56 tall, so cells are 16 x 14 starting at PAT_Y=436. */
+static void easel_pick_ink(Machine* m, int32_t mc, int index) {
+    const int PAT_Y = 436, CELL_W = 16, CELL_H = 14;
+    int col = index % 4, row = index / 4;
+    quill_lux_click(m, mc, col * CELL_W + CELL_W / 2,
+                    PAT_Y + row * CELL_H + CELL_H / 2);
+    quill_lux_pump(m, 20);
+}
+
+/* Edit > Invert over a selection has to agree with CMAP::invert, which the
+ * no-selection path uses for the whole page. The palette is ordered so that
+ * i XOR 3 is i's visual complement for all 16 entries (docs/palette.md), and
+ * CMAP::invert's 0x33333333 mask is that XOR a word at a time. do-invert's
+ * per-pixel branch used to compute `3 SWAP -` instead: identical across the
+ * 0..3 gray ramp, so it was right at 2bpp, but at 4bpp it sends red (4) to
+ * -1 rather than to cyan (7).
+ *
+ * Edit title is at MN_X=58 (+10=68); Invert is item row 6 (Undo, sep, Cut,
+ * Copy, Paste, sep, Invert), y=BAR_H+6*18+9=137. */
+static void test_easel_invert_selection_uses_complement(void) {
+    printf("Testing apps/Easel.lux: Invert over a selection complements palette indices...\n");
+    lux_app_remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    easel_pick_ink(m, mc, 4);         /* red */
+    quill_lux_click(m, mc, 95, 43);   /* pencil paints canvas (15,23) red */
+    quill_lux_pump(m, 20);
+
+    quill_lux_click(m, mc, 60, 36);   /* Marquee tool */
+    quill_lux_pump(m, 20);
+    lux_drag(m, mc, 90, 40, 140, 55); /* canvas (10,20)-(60,35) */
+    quill_lux_pump(m, 20);
+
+    quill_lux_click(m, mc, 68, 10);   /* Edit menu */
+    quill_lux_pump(m, 20);
+    quill_lux_click(m, mc, 68, 137);  /* Invert */
+    quill_lux_pump(m, 20);
+
+    static uint8_t body[EASEL_EAS4_BYTES + 64];
+    int n = easel_save_and_read(m, mc, kc, body, (int) sizeof(body));
+
+    /* red (4) -> cyan (7), its complement -- not 15, which is what the old
+     * subtraction's -1 masked down to. */
+    assert(easel_pixel_index(body, n, 15, 23) == 7);
+    /* and an untouched pixel inside the selection: white (0) -> black (3),
+     * the behaviour that was already correct and must stay. */
+    assert(easel_pixel_index(body, n, 12, 22) == 3);
+    /* outside the selection, nothing moved. */
+    assert(easel_pixel_index(body, n, 5, 10) == 0);
+
+    lux_app_remove("untitled.eas");
+}
+
+/* draw-sel-float is the screen-space overlay drawn while a selection is being
+ * dragged -- CANVAS keeps the vacated rect blank until mouse-up, so this is
+ * the only thing showing the selection mid-drag. It converted each pixel with
+ * `255 bit 85 * - DRAW::gray`, the 2bpp ramp, so a red pixel previewed as the
+ * wrapped gray 0xABABAB and only turned red on the drop. */
+static void test_easel_sel_drag_previews_in_colour(void) {
+    printf("Testing apps/Easel.lux: a dragged selection previews in its own colours...\n");
+    lux_app_remove("untitled.eas");
+
+    Machine* m = lux_app_machine("apps/Easel.lux", "apps/Easel.bin");
+    assert(m != NULL);
+    int32_t mc, kc;
+    quill_lux_bind(m, &mc, &kc);
+    quill_lux_pump(m, 40);
+    assert(!m->cpu->halted);
+
+    easel_pick_ink(m, mc, 4);         /* red */
+    quill_lux_click(m, mc, 100, 50);  /* pencil paints canvas (20,30) red */
+    quill_lux_pump(m, 20);
+
+    quill_lux_click(m, mc, 60, 36);   /* Marquee tool */
+    quill_lux_pump(m, 20);
+    lux_drag(m, mc, 90, 40, 115, 65); /* canvas (10,20)-(35,45) */
+    quill_lux_pump(m, 20);
+
+    /* Press inside the selection and move, but hold the button: the frame
+     * drawn here is draw-sel-float's, not the committed canvas. */
+    lux_mouse(m, mc, 3, 1, 100, 50);
+    lux_mouse(m, mc, 2, 1, 140, 90);
+    quill_lux_pump(m, 20);
+
+    const int CX = 80, CY = 20, CW = 480, CH = 416;
+    int sw = m->system->screen_width;
+    long red = 0, stale_gray = 0;
+    for (int y = CY; y < CY + CH; y++) {
+        for (int x = CX; x < CX + CW; x++) {
+            const uint8_t* px = m->system->screen_pixels + ((size_t) y * sw + x) * 4;
+            uint32_t c = ((uint32_t) px[1] << 16) | ((uint32_t) px[2] << 8) | px[3];
+            if (c == 0xDD0000) red++;
+            else if (c == 0xABABAB) stale_gray++;
+        }
+    }
+    assert(red > 0);
+    assert(stale_gray == 0);
+
+    lux_mouse(m, mc, 4, 1, 140, 90);
+    quill_lux_pump(m, 20);
+    vfs_close(m->system, mc);
+    vfs_close(m->system, kc);
+    machine_free(m);
+    lux_app_remove("untitled.eas");
+}
+
 static void test_easel_quit_with_unsaved_changes_prompts(void) {
     printf("Testing apps/Easel.lux: File > Quit with unsaved changes prompts, and Don't Save still quits...\n");
     lux_app_remove("untitled.eas");
@@ -6561,6 +6733,9 @@ int main(void) {
     test_easel_revert_discards_unsaved_edits();
     test_easel_opens_legacy_eas3();
     test_easel_paints_in_colour();
+    test_easel_fatbits_renders_colour();
+    test_easel_invert_selection_uses_complement();
+    test_easel_sel_drag_previews_in_colour();
     test_easel_quit_with_unsaved_changes_prompts();
 
     printf("\n=== ALL COMPILER TESTS PASSED ===\n\n");

@@ -1529,7 +1529,13 @@ RESERVE TOOL_LABELS 4 ; ( TOOLS * 4 bytes: index -> label string pointer )
 ;
 
 ( Whole-page invert stays the fast word-wise XOR; a selection needs
-  per-pixel since it's not page-aligned. )
+  per-pixel since it's not page-aligned. Both must agree on what "invert"
+  means, so the per-pixel branch uses the same `3 XOR` that CMAP::invert's
+  0x33333333 mask applies a word at a time: the palette is ordered so that
+  i XOR 3 is i's visual complement for all 16 entries, not just the 0..3 gray
+  ramp (docs/palette.md). This used to be `3 SWAP -`, which agrees with the
+  XOR across 0..3 and so was right while the page was 2bpp, but sent every
+  colour index to 3-i -- negative from red (4) up. )
 @do-invert ( -- )
     snapshot
     sel-active LOADI [
@@ -1539,7 +1545,7 @@ RESERVE TOOL_LABELS 4 ; ( TOOLS * 4 bytes: index -> label string pointer )
                 sel-x0 LOADI { x }
                     [ x sel-x1 LOADI <= ]
                     [
-                        x y pix@ 3 SWAP - x y pix!
+                        x y pix@ 3 XOR x y pix!
                         x 1 + x!
                     ] |:
                 UNGIRD
@@ -1956,6 +1962,38 @@ RESERVE TOOL_LABELS 4 ; ( TOOLS * 4 bytes: index -> label string pointer )
     clamp-view
 ;
 
+( MacPaint's Hand grabs whatever is on screen, so in FatBits it has to move
+  fat-ox/fat-oy rather than the 1x view nothing is showing there. A screen
+  pixel is FAT_Z page pixels while zoomed, so the drag divides down -- and
+  the remainder has to be kept, or every sub-FAT_Z move would be discarded
+  and the page would only ever crawl in 8-pixel jumps. Advancing hand-last-*
+  by exactly the amount consumed leaves that residual in place. When
+  clamp-fat refuses the pan at a page edge the overshoot is dropped rather
+  than banked, so reversing direction moves at once instead of first paying
+  it back.
+
+  The zero guard is not cosmetic: pan-fat dirties, and a dirty frame repaints
+  the whole canvas, so panning on a move that has not yet crossed a whole
+  page pixel would put a full repaint on nearly every mouse-move packet --
+  the shape of the tooltip-hover lag regression noted in handle-page-mouse. )
+@hand-drag { mx my -- }
+    fat-f LOADI [
+        hand-last-mx LOADI mx - FAT_Z / { dx }
+        hand-last-my LOADI my - FAT_Z / { dy }
+            dx 0 = dy 0 = AND 0 = [
+                dx dy pan-fat
+                hand-last-mx LOADI dx FAT_Z * - hand-last-mx STOREI
+                hand-last-my LOADI dy FAT_Z * - hand-last-my STOREI
+            ] ?
+        UNGIRD UNGIRD
+    ] [
+        hand-last-mx LOADI mx - hand-last-my LOADI my - pan-view
+        mx hand-last-mx STOREI
+        my hand-last-my STOREI
+        APP::dirty!
+    ] ?:
+;
+
 ( --- Screen mapping --- )
 
 @in-page? { mx my -- f }
@@ -2125,7 +2163,12 @@ RESERVE TOOL_LABELS 4 ; ( TOOLS * 4 bytes: index -> label string pointer )
   the whole drag, so nothing here touches CANVAS until sel-drop on mouse-up.
   O(w*h) DRAW::pix calls per frame while actively moving; fine for the
   modest selections a marquee tool typically makes, batched through
-  DRAW::batch-begin like every other draw call in this app. )
+  DRAW::batch-begin like every other draw call in this app.
+
+  The pixel goes through DRAW::clut, the same conversion draw-canvas-1x uses,
+  so a dragged selection previews in the colours it will land in. It used to
+  be `255 bit 85 * - DRAW::gray`, correct only for the 0..3 gray ramp, which
+  made every colour above black preview as a wrong gray until the drop. )
 @draw-sel-float ( -- )
     sel-y0 LOADI { y }
         [ y sel-y1 LOADI <= ]
@@ -2145,7 +2188,7 @@ RESERVE TOOL_LABELS 4 ; ( TOOLS * 4 bytes: index -> label string pointer )
                                         APP::draw-fd
                                         nx view-x LOADI - CANVAS_X +
                                         ny view-y LOADI - CANVAS_Y +
-                                        255 bit 85 * - DRAW::gray
+                                        bit DRAW::clut
                                         DRAW::pix
                                     ] ?
                                 UNGIRD
@@ -3693,10 +3736,16 @@ RESERVE io-alert-text 4 ; ( T-string ptr shown in the panel )
     UNGIRD
 ;
 
-( FAT_VW x FAT_VH (64x42) is small and fat-ox is not generally word-aligned,
+( FAT_VW x FAT_VH (60x52) is small and fat-ox is not generally word-aligned,
   so this stays a plain per-pixel scan through pix@ -- correct and cheap
   enough at this size; the word-skip optimization above is what matters for
-  the full CANVAS_W x CANVAS_H repaint. )
+  the full CANVAS_W x CANVAS_H repaint.
+
+  A page pixel is a 4-bit palette index, so it goes through DRAW::clut just
+  like the 1x path does. This used to be `255 g 85 * - DRAW::gray`, which
+  was right only while pixels were 2bpp gray: indices 0..3 happen to be the
+  white..black ramp, but 4..15 drove the expression negative and DRAW::gray's
+  `255 AND` wrapped them into arbitrary grays. )
 @draw-canvas-fat ( -- )
     0 0 0 0 { vy cy vx vx0 }
         [ vy FAT_VH < ]
@@ -3714,7 +3763,7 @@ RESERVE io-alert-text 4 ; ( T-string ptr shown in the panel )
                             [ vx 1 + vx! ] |:
                             APP::draw-fd CANVAS_X vx0 FAT_Z * + CANVAS_Y vy FAT_Z * +
                                 vx vx0 - FAT_Z * FAT_Z
-                                255 g 85 * - DRAW::gray
+                                g DRAW::clut
                                 DRAW::fill-rect
                         ] ?:
                     UNGIRD
@@ -4063,12 +4112,7 @@ RESERVE io-alert-text 4 ; ( T-string ptr shown in the panel )
 ;
 
 @page-drag { mx my -- }
-    drag LOADI DRAG_HAND = [
-        hand-last-mx LOADI mx - hand-last-my LOADI my - pan-view
-        mx hand-last-mx STOREI
-        my hand-last-my STOREI
-        APP::dirty!
-    ] ?
+    drag LOADI DRAG_HAND = [ mx my hand-drag ] ?
     mx my scr>can clip-can { cx cy }
         drag LOADI DRAG_PAINT = [
             last-cx LOADI last-cy LOADI cx cy stroke-to

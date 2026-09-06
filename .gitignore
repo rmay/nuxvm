@@ -5,3 +5,6 @@
 /obj
 untitled.tabula
 .snake_hi
+
+# Python bytecode from tools/
+__pycache__/

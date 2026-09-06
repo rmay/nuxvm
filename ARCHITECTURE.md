@@ -350,11 +350,34 @@ are stubs. Drawing goes through `/dev/draw`.
 | `bin/fluxioc` | Fluxio compiler |
 | `bin/fluxlink` | Merge a Fluxio app with a Lux library image |
 | `bin/cloister` | Graphical host |
+| `bin/nuxstep` | Step-trace harness for differential testing |
 
 `make all` builds the tools and every `apps/*.lux` / `apps/fluxio/*.fx`
 ROM. `make test` runs VM, VFS, Lux compiler, Fluxio compiler, and ABI
 conformance, including headless drives of Quill, Tabula, Illumos, Nib, and
-Easel.
+Easel. It also re-runs the opcode tests under ASan/UBSan and differential-
+tests the interpreter against an independent model.
+
+### Checking the interpreter
+
+`docs/semantics.md` is the normative small-step semantics of the ISA: the
+state tuple, one rule per opcode, and the exact fault conditions. Three
+things keep the C honest to it.
+
+| Command | What it does |
+|---|---|
+| `make test` | Includes an ASan+UBSan run of the opcode tests and a differential test |
+| `make check-docs` | `docs/opcodes.md` still agrees with `opcodes.h` and `vm.h` |
+| `make difftest` | Random programs through `src/vm.c` and `tools/nuxref.py`, comparing state after every step |
+| `make verify` | CBMC proves memory safety, image immutability and invariant preservation over one step for *all* inputs (needs `brew install cbmc`) |
+
+`tools/nuxref.py` is a second interpreter written from the specification
+rather than translated from the C, so agreement between the two means
+something. `verify/vm_step_harness.c` assumes the representation invariant,
+runs one `vm_tick()` on a wholly nondeterministic machine, and asserts the
+invariant again — being inductive, a proof for one step is a proof for every
+run of every program. Both have already paid for themselves; see
+`docs/semantics.md` §14.
 
 ## Related documents
 
@@ -362,6 +385,7 @@ Easel.
 - `include/memory_map.h` / `docs/memory-map.md` — address bands
 - `abi/nux-abi.json` — Lux↔Fluxio ABI
 - `docs/quill_fluxio.md` — how the ABI and Quill.fx were built
+- `docs/semantics.md` — normative operational semantics of the 55 opcodes
 - `docs/ui.md` — widget protocol
 - `docs/user-manual.md` — Quill, Illumos, Tabula, Nib, Easel
 - `docs/tile-games-toolkit.md` — tile blit + `lib/tilemap.lux`

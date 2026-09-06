@@ -386,7 +386,7 @@ void system_set_memory(System* sys, uint8_t* mem, uint32_t mem_size) {
 
     // Alias screen_pixels to the VideoFramebuffer region so VM memory writes automatically show up
     if (mem_size >= 0x200000) {
-        sys->screen_pixels = &mem[0x100000];
+        sys->screen_pixels = &mem[MM_FRAMEBUFFER_BASE];
     }
 }
 

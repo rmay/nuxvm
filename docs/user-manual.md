@@ -796,7 +796,7 @@ There is no in-window status bar — the file name and dirty `*` are in the host
 | --- | --- |
 | **Lasso** | Freehand-trace a selection; the selection shrinks to the tight bounding box of the ink it enclosed. |
 | **Marquee** | Drag a rectangular selection. Shift constrains to a square. |
-| **Hand** | Drag to pan the viewport around the 576×720 page. |
+| **Hand** | Drag to pan the viewport around the 576×720 page. In FatBits it drags the zoomed view instead, at the zoomed scale. |
 | **Text** | Click to place a caret, type to insert; see Font/Size/Style below. |
 | **Fill** (bucket) | Flood-fill the connected region of the same color with the current pattern. |
 | **Spray** | Scatter of the current pattern in a small radius. |
@@ -853,7 +853,7 @@ All Edit operations snapshot first (except Undo itself, which swaps), so a secon
 | Item | What it does |
 | --- | --- |
 | **Grid** | 8-pixel dot grid on the page, and snaps shape-tool drags to it. |
-| **FatBits** | 8× zoom for pixel editing, centered on wherever the Hand tool currently has in view. Arrow keys pan. |
+| **FatBits** | 8× zoom for pixel editing, centered on wherever the Hand tool currently has in view. Drag with the Hand to move it around; arrow keys pan a pixel at a time. |
 | **Edit Pattern...** | 8×8 modal editor for the current pattern swatch. |
 | **Brush Shape...** | Picker over the 32 preset brush shapes. |
 | **Show Page...** | Reduced whole-page mini-map with a draggable rectangle marking the viewport. |
@@ -875,7 +875,7 @@ Click a swatch in the pattern strip. **[** and **]** cycle. Double-click a swatc
 
 | Key | Action |
 | --- | --- |
-| **Arrows** | Pan FatBits by 1 pixel |
+| **Arrows** | Pan FatBits by 1 pixel (or drag with the Hand) |
 | **[** **]** | Previous / next pattern |
 | **Cmd/Ctrl+N / O / S** | New / Open / Save |
 | **Cmd/Ctrl+Shift+S** | Save As |
@@ -1010,7 +1010,7 @@ Tabula will not store an 8,193rd cell. Typing into a new address when the pool i
 
 Nib will not store a 257th object. A new shape when the pool is full is ignored. There is no Undo.
 
-Easel’s canvas is fixed at 512×342. There is one level of Undo. Fill of a huge region can take a moment. FatBits shows a 64×42 slice of the page; arrow keys pan.
+Easel’s canvas is fixed at 512×342. There is one level of Undo. Fill of a huge region can take a moment. FatBits shows a 60×52 slice of the page; drag it with the Hand, or pan a pixel at a time with the arrow keys.
 
 Paste in Quill that would not fit the buffer is refused, not truncated. Inserts past 1 MB are ignored.
 
@@ -1089,7 +1089,7 @@ Cmd means Command on macOS and Ctrl on other platforms. Either modifier works.
 
 | Key | Action |
 | --- | --- |
-| **Arrows** | Pan FatBits |
+| **Arrows** | Pan FatBits (or drag with the Hand) |
 | **[** **]** | Previous / next pattern |
 | **Cmd+N / O / S** | New / Open / Save |
 | **Cmd+Z** | Undo |
